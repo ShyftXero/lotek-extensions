@@ -29,6 +29,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
     from fraction.artifacts_api import register as _artifacts
     from fraction.assessment_types_ui import register as _assessment_types_ui
     from fraction.autosave_api import register as _autosave
+    from fraction.checklists_api import register as _checklists
     from fraction.collab.crdt import register as _collab
     from fraction.collab.presence import register as _presence
     from fraction.engagement_ui import register as _engagement_ui
@@ -42,6 +43,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
         _engagement_ui,
         _assessment_types_ui,
         _artifacts,
+        _checklists,
         _templating,
         _report_html,
         _report_docx,

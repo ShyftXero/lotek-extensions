@@ -269,6 +269,73 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
     }
 
 
+def _append_checklists(doc, ctx: ReportContext) -> None:
+    """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
+    Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
+    section (status + note per item, grouped by section); compliance -> a "Compliance Attestation"
+    section with a per-framework table (Control / Requirement / Result / Notes). Only checklists that
+    opted into the report reach ``ctx.checklists``."""
+    if not ctx.checklists:
+        return
+    coverage = [c for c in ctx.checklists if c.kind != "compliance"]
+    compliance = [c for c in ctx.checklists if c.kind == "compliance"]
+
+    def _rollup_line(cl) -> str:
+        labels = [("satisfied", "Satisfied"), ("deficient", "Deficient"),
+                  ("not_applicable", "N/A"), ("open", "Open")]
+        return "   ".join(f"{lab}: {cl.rollup.get(k, 0)}" for k, lab in labels)
+
+    if coverage:
+        doc.add_heading("Methodology and Coverage", level=1)
+        for cl in coverage:
+            doc.add_heading(cl.name, level=2)
+            doc.add_paragraph(_rollup_line(cl))
+            last_section = object()
+            for it in cl.items:
+                if it.section != last_section:
+                    last_section = it.section
+                    if it.section:
+                        doc.add_heading(it.section, level=3)
+                p = doc.add_paragraph()
+                p.add_run(f"[{(it.status or it.bucket_label)}] ").bold = True
+                p.add_run(it.text)
+                if it.finding_id and it.finding_title:
+                    p.add_run(f"  (see: {it.finding_title})").italic = True
+                if it.note:
+                    doc.add_paragraph(it.note)
+
+    if compliance:
+        doc.add_heading("Compliance Attestation", level=1)
+        for cl in compliance:
+            doc.add_heading(cl.name, level=2)
+            doc.add_paragraph(_rollup_line(cl))
+            by_fw: dict[str, list] = {}
+            fw_order: list[str] = []
+            for it in cl.items:
+                fw = it.framework or ""
+                if fw not in by_fw:
+                    by_fw[fw] = []
+                    fw_order.append(fw)
+                by_fw[fw].append(it)
+            for fw in fw_order:
+                if fw:
+                    doc.add_heading(fw, level=3)
+                table = doc.add_table(rows=1, cols=4)
+                table.style = "Table Grid"
+                hdr = table.rows[0].cells
+                hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = (
+                    "Control", "Requirement", "Result", "Notes")
+                for it in by_fw[fw]:
+                    cells = table.add_row().cells
+                    cells[0].text = it.control_ref or ""
+                    cells[1].text = it.text
+                    cells[2].text = it.bucket_label
+                    note = it.note or ""
+                    if it.finding_id and it.finding_title:
+                        note = (note + f"  (see: {it.finding_title})").strip()
+                    cells[3].text = note
+
+
 def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:
     """Render ``ctx`` to a ``.docx`` document (bytes) using ``report_templates/default.docx``.
 
@@ -286,6 +353,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
 
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
+    _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
 
     buf = io.BytesIO()
     tpl.save(buf)

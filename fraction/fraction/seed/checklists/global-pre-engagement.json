@@ -1,0 +1,39 @@
+{
+  "slug": "global-pre-engagement",
+  "name": "Global Pre-Engagement",
+  "description": "Operational reminders to satisfy before active testing. Not a gate; just a checklist.",
+  "kind": "reminder",
+  "category": "operations",
+  "items": [
+    {
+      "section": null,
+      "text": "Signed Rules of Engagement (RoE)",
+      "guidance": "Secure written, legally binding permission from the target system owner."
+    },
+    {
+      "section": null,
+      "text": "Scope Definition",
+      "guidance": "Explicitly document included and excluded IP addresses, hostnames, domains, and sensitive systems."
+    },
+    {
+      "section": null,
+      "text": "Emergency Contacts",
+      "guidance": "Exchange secondary, out-of-band communication lines for urgent or critical incidents."
+    },
+    {
+      "section": null,
+      "text": "Testing Windows",
+      "guidance": "Confirm exact dates and time blocks allocated for active, aggressive testing."
+    },
+    {
+      "section": null,
+      "text": "IP Whitelisting",
+      "guidance": "Ensure testing-team infrastructure IPs are whitelisted on perimeter defences if using a grey-box approach."
+    },
+    {
+      "section": null,
+      "text": "Data Handling Agreement",
+      "guidance": "Align on how sensitive data, findings, and temporary credentials are stored and deleted post-engagement."
+    }
+  ]
+}

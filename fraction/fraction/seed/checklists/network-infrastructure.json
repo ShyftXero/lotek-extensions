@@ -1,0 +1,84 @@
+{
+  "slug": "network-infrastructure",
+  "name": "Network and Infrastructure",
+  "description": "External and internal network penetration testing coverage.",
+  "kind": "coverage",
+  "category": "external",
+  "items": [
+    {
+      "section": "Reconnaissance and Discovery",
+      "text": "Passive Reconnaissance",
+      "guidance": "External data via DNS lookups, ARIN/RIPE records, and public Shodan/Censys data."
+    },
+    {
+      "section": "Reconnaissance and Discovery",
+      "text": "Live Host Discovery",
+      "guidance": "ICMP, ARP, and TCP/UDP ping sweeps to map the perimeter or internal layout."
+    },
+    {
+      "section": "Reconnaissance and Discovery",
+      "text": "Port Scanning",
+      "guidance": "Full TCP and UDP scans over active hosts to locate open entry points."
+    },
+    {
+      "section": "Reconnaissance and Discovery",
+      "text": "Service and OS Fingerprinting",
+      "guidance": "Banner grabbing and TCP/IP stack analysis for exact versions and OS."
+    },
+    {
+      "section": "Vulnerability Assessment and Misconfigurations",
+      "text": "Automated Assessment",
+      "guidance": "Vulnerability scans (Nessus/OpenVAS) to baseline known CVEs."
+    },
+    {
+      "section": "Vulnerability Assessment and Misconfigurations",
+      "text": "Default Configurations",
+      "guidance": "Check for out-of-the-box configs, default passwords, and legacy service accounts."
+    },
+    {
+      "section": "Vulnerability Assessment and Misconfigurations",
+      "text": "Cleartext Network Protocols",
+      "guidance": "Audit for insecure unencrypted traffic (Telnet, FTP, HTTP, SNMPv1/v2)."
+    },
+    {
+      "section": "Vulnerability Assessment and Misconfigurations",
+      "text": "Weak Cryptography",
+      "guidance": "Identify outdated TLS (SSLv3, TLS 1.0/1.1) and weak cipher suites."
+    },
+    {
+      "section": "Exploitation and Post-Exploitation",
+      "text": "Public Exploit Analysis",
+      "guidance": "Correlate discovered versions with weaponized public exploits."
+    },
+    {
+      "section": "Exploitation and Post-Exploitation",
+      "text": "Credential Password Spraying",
+      "guidance": "Safely test common passwords against SSH, RDP, or SMB."
+    },
+    {
+      "section": "Exploitation and Post-Exploitation",
+      "text": "Local Privilege Escalation",
+      "guidance": "Audit compromised hosts for misconfigured services, unquoted paths, kernel gaps."
+    },
+    {
+      "section": "Exploitation and Post-Exploitation",
+      "text": "Pivoting and Lateral Movement",
+      "guidance": "Use footholds to proxy tools into isolated subnets."
+    },
+    {
+      "section": "Exploitation and Post-Exploitation",
+      "text": "Data Exfiltration Simulation",
+      "guidance": "Test firewall/DLP egress controls with dummy data."
+    },
+    {
+      "section": "Wireless (Optional / In-Scope)",
+      "text": "Encryption Analysis",
+      "guidance": "Audit corporate Wi-Fi security (WPA2/WPA3 Personal vs Enterprise)."
+    },
+    {
+      "section": "Wireless (Optional / In-Scope)",
+      "text": "Rogue Access Point Detection",
+      "guidance": "Inspect for unauthorized access points or SSID-mimicking devices."
+    }
+  ]
+}

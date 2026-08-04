@@ -5,6 +5,7 @@ declarative fact -> report-variable mapping (``TemplateVariable.from_facts``/``.
 seeded from ``report_variables.json``)."""
 
 from fraction.seed.loader import (  # noqa: F401
+    import_checklist_templates,
     import_vuln_templates,
     seed_assessment_types,
     seed_builtin_variables,

@@ -1,0 +1,59 @@
+{
+  "slug": "ai-llm-security",
+  "name": "AI and LLM Security",
+  "description": "Aligned with the OWASP Top 10 for LLM Applications and AI security standards.",
+  "kind": "coverage",
+  "category": "web-app",
+  "items": [
+    {
+      "section": "Prompt Injection and Manipulation",
+      "text": "Direct Prompt Injection",
+      "guidance": "Inputs designed to bypass system prompts and overwrite safety alignment."
+    },
+    {
+      "section": "Prompt Injection and Manipulation",
+      "text": "Indirect Prompt Injection",
+      "guidance": "Malicious instructions seeded in third-party data (PDFs, URLs, emails) the model processes."
+    },
+    {
+      "section": "Prompt Injection and Manipulation",
+      "text": "Adversarial Jailbreaking",
+      "guidance": "Encodings (Base64, leetspeak, rot13), roleplay, and linguistic tricks to force policy violations."
+    },
+    {
+      "section": "Data Exfiltration and Training-Set Security",
+      "text": "Data Poisoning",
+      "guidance": "Verify public fine-tuning/feedback loops cannot be fed corrupted data to alter behavior."
+    },
+    {
+      "section": "Data Exfiltration and Training-Set Security",
+      "text": "PII and Secret Extraction",
+      "guidance": "Trick the model into revealing its system prompt, training-data secrets, API keys, or infra paths."
+    },
+    {
+      "section": "Data Exfiltration and Training-Set Security",
+      "text": "Insecure Output Handling",
+      "guidance": "Check if model output reaches a shell, interpreter, or browser without sanitization (RCE/XSS)."
+    },
+    {
+      "section": "Denial of Service and Resource Exhaustion",
+      "text": "Model Denial of Service",
+      "guidance": "Long, complex, or recursive queries to exhaust processing tokens and memory."
+    },
+    {
+      "section": "Denial of Service and Resource Exhaustion",
+      "text": "Vector Database Overload",
+      "guidance": "High-dimensional queries designed to bottleneck semantic search."
+    },
+    {
+      "section": "Supply Chain and Plugin Vulnerabilities",
+      "text": "Insecure Plugins / Tool Calling",
+      "guidance": "Abuse the model's authorization to execute unauthorized actions on integrated tools."
+    },
+    {
+      "section": "Supply Chain and Plugin Vulnerabilities",
+      "text": "Model Supply Chain",
+      "guidance": "Audit the integrity of base models, open-source weights, and third-party wrappers."
+    }
+  ]
+}

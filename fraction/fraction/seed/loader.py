@@ -17,8 +17,15 @@ from pathlib import Path
 from sqlalchemy import select
 
 from fraction.content import render_html
-from fraction.enums import Severity, VariableScope, VariableType
-from fraction.models import AssessmentType, FractionVulnMap, TemplateVariable, VulnerabilityTemplate
+from fraction.enums import ChecklistKind, Severity, VariableScope, VariableType
+from fraction.models import (
+    AssessmentType,
+    ChecklistTemplate,
+    ChecklistTemplateItem,
+    FractionVulnMap,
+    TemplateVariable,
+    VulnerabilityTemplate,
+)
 from fraction.seed import faction_parse
 from fraction.templating import BUILTIN_KEYS
 
@@ -297,9 +304,67 @@ def seed_report_variables(session, json_path: str | Path | None = None) -> int:
     return touched
 
 
+_CHECKLISTS_DIR = Path(__file__).parent / "checklists"
+
+
+def import_checklist_templates(session, checklists_dir: str | Path | None = None) -> int:
+    """Seed builtin checklist templates from ``seed/checklists/*.json``.
+
+    Idempotent by slug + NEVER-CLOBBER: a slug that already exists in the DB is left untouched, so an
+    operator's in-place edit of a builtin survives every reboot (mirrors the vuln-template importer's
+    idempotence, tightened to protect edits). A NEW builtin shipped in a later release (new slug) still
+    seeds. Returns the number of templates added.
+    """
+    from fraction.checklists import normalize_template_dict
+
+    directory = Path(checklists_dir) if checklists_dir else _CHECKLISTS_DIR
+    if not directory.exists():
+        return 0
+    added = 0
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = normalize_template_dict(json.loads(path.read_text()))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("checklist seed: %s is missing or not valid JSON, skipping", path)
+            continue
+        slug = data.get("slug") or path.stem
+        if session.scalar(select(ChecklistTemplate).where(ChecklistTemplate.slug == slug)):
+            continue  # never-clobber: an existing (possibly user-edited) builtin is left alone
+        try:
+            kind = ChecklistKind(data["kind"])
+        except ValueError:
+            kind = ChecklistKind.coverage
+        tmpl = ChecklistTemplate(
+            slug=slug,
+            name=data["name"],
+            description=data.get("description"),
+            kind=kind,
+            category=data.get("category"),
+            builtin=True,
+            customized=False,
+            hidden=False,
+            active=True,
+        )
+        for it in data["items"]:
+            tmpl.items.append(
+                ChecklistTemplateItem(
+                    order_index=it["order_index"],
+                    section=it.get("section"),
+                    text=it["text"],
+                    guidance=it.get("guidance"),
+                    framework=it.get("framework"),
+                    control_ref=it.get("control_ref"),
+                    default_status=it.get("default_status"),
+                )
+            )
+        session.add(tmpl)
+        added += 1
+    return added
+
+
 def seed_defaults(session, *, import_library: bool = True) -> dict[str, int]:
-    """Seed assessment types, built-in variables, and (optionally) the vuln-template library
-    (the FACTION default set + lotek's AD/network entries) plus its VulnMap resolution seed."""
+    """Seed assessment types, built-in variables, the vuln-template library (the FACTION default set +
+    lotek's AD/network entries) plus its VulnMap resolution seed, and the builtin checklist templates."""
     templates = 0
     vuln_map = 0
     if import_library:
@@ -312,5 +377,6 @@ def seed_defaults(session, *, import_library: bool = True) -> dict[str, int]:
         "report_variables": seed_report_variables(session),
         "templates": templates,
         "vuln_map": vuln_map,
+        "checklists": import_checklist_templates(session),
     }
     return result
