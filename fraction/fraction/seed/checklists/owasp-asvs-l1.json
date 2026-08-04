@@ -1,0 +1,86 @@
+{
+  "slug": "owasp-asvs-l1",
+  "name": "OWASP ASVS L1",
+  "description": "A Level 1 verification subset of the OWASP Application Security Verification Standard.",
+  "kind": "compliance",
+  "category": "web-app",
+  "items": [
+    {
+      "section": "Authentication",
+      "text": "Verify secure authentication controls",
+      "guidance": "No default credentials; lockout/anti-automation on the login.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V2.1"
+    },
+    {
+      "section": "Authentication",
+      "text": "Verify credential storage",
+      "guidance": "Passwords stored with a strong, salted, adaptive hash.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V2.4"
+    },
+    {
+      "section": "Session Management",
+      "text": "Verify session token generation",
+      "guidance": "Session tokens are unpredictable and generated server-side.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V3.2"
+    },
+    {
+      "section": "Session Management",
+      "text": "Verify session termination",
+      "guidance": "Logout and idle/absolute timeout invalidate the session server-side.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V3.3"
+    },
+    {
+      "section": "Access Control",
+      "text": "Verify function-level access control",
+      "guidance": "Every function enforces authorization server-side, deny by default.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V4.1"
+    },
+    {
+      "section": "Access Control",
+      "text": "Verify object-level access control",
+      "guidance": "Users cannot access records they do not own (no IDOR).",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V4.2"
+    },
+    {
+      "section": "Validation and Encoding",
+      "text": "Verify input validation",
+      "guidance": "Untrusted input is validated with positive allow-lists.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V5.1"
+    },
+    {
+      "section": "Validation and Encoding",
+      "text": "Verify output encoding",
+      "guidance": "Context-aware output encoding prevents injection/XSS.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V5.3"
+    },
+    {
+      "section": "Communications",
+      "text": "Verify transport security",
+      "guidance": "TLS enforced everywhere; no weak protocols or ciphers.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V9.1"
+    },
+    {
+      "section": "Configuration",
+      "text": "Verify security headers",
+      "guidance": "CSP, HSTS, X-Content-Type-Options, and frame-ancestors set.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V14.4"
+    },
+    {
+      "section": "Configuration",
+      "text": "Verify error and logging hygiene",
+      "guidance": "No sensitive data in errors or logs; generic error responses.",
+      "framework": "OWASP ASVS 4.0",
+      "control_ref": "V7.1"
+    }
+  ]
+}

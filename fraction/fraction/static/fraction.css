@@ -96,3 +96,44 @@ h1, h2, h3 { margin: 0 0 .6rem; }
   .sidebar-foot { display: none; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---- engagement checklists (coverage panel) + library ------------------------------------------ */
+.ckp { margin-top: 18px; padding: 14px 16px; }
+.ckp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ckp-head h2 { margin: 0; font-size: 16px; }
+.ckp-tray { margin: 10px 0; padding: 8px; border: 1px dashed var(--line-strong); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.ckp-tray-h { width: 100%; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-top: 4px; }
+.ckp-list { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+.ckp-list-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ckp-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.ckp-rollup { display: flex; gap: 5px; flex-wrap: wrap; }
+.ckp-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+.ckp-toggle { font-size: 12px; color: var(--muted); margin-left: auto; display: inline-flex; gap: 4px; align-items: center; }
+.ckp-remove { padding: 2px 9px; }
+.ckp-section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 10px 0 3px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+.ckp-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+.ckp-item-mid { flex: 1; }
+.ckp-item-text { font-size: 14px; }
+.ckp-ctrl { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ckp-status { font-size: 12px; min-width: 92px; }
+.ckp-note { display: block; width: 100%; margin-top: 3px; font-size: 12px; background: var(--field-bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; color: var(--ink); }
+.ck-satisfied { border-color: var(--accent-strong) !important; color: var(--accent) !important; }
+.ck-deficient { border-color: var(--sev-high) !important; color: var(--sev-high) !important; }
+.ck-not_applicable { border-color: var(--line-strong) !important; }
+.ck-open { border-color: var(--sev-info) !important; color: var(--sev-info) !important; }
+
+.cklib-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.cklib-showhidden { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+.cklib-form { padding: 12px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+.cklib-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.cklib-form-row input { flex: 1; min-width: 180px; }
+.cklib-form textarea { width: 100%; font-family: monospace; font-size: 12px; }
+.cklib-form-actions { display: flex; gap: 8px; align-items: center; }
+.cklib-err { color: var(--danger); font-size: 12px; }
+.cklib-card { padding: 10px 12px; margin: 8px 0; }
+.cklib-card.is-hidden { opacity: .55; }
+.cklib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cklib-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.cklib-count { margin-left: auto; font-size: 12px; }
+.cklib-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.cklib-act { padding: 2px 10px; font-size: 12px; text-decoration: none; }

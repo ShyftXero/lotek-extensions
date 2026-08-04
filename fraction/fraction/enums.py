@@ -34,6 +34,16 @@ class FindingStatus(enum.StrEnum):
     needs_retest = "needs_retest"
 
 
+class ChecklistKind(enum.StrEnum):
+    """Engagement-checklist kind. Fixed set: the report layout and the recommended item-status
+    vocabulary are keyed to it. A checklist's kind is reassignable; adding a NEW kind is a code change
+    (it needs a report renderer). Checklists are non-blocking visual reminders in every kind."""
+
+    coverage = "coverage"      # testing methodology; a failed item may link a finding
+    reminder = "reminder"      # operational reminder (e.g. pre-engagement); internal by default
+    compliance = "compliance"  # attestation; items carry free-text framework + control_ref
+
+
 class OrderMode(enum.StrEnum):
     """How a FindingGroup orders its findings. ``manual`` persists explicit order_index."""
 

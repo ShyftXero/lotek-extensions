@@ -30,6 +30,7 @@ from fraction.db import Base, TimestampMixin
 from fraction.enums import (
     ArtifactKind,
     ArtifactPlacement,
+    ChecklistKind,
     Confidence,
     FindingStatus,
     OrderMode,
@@ -104,6 +105,9 @@ class Engagement(Base, TimestampMixin):
         back_populates="engagement", cascade="all, delete-orphan"
     )
     variable_values: Mapped[list[VariableValue]] = relationship(
+        back_populates="engagement", cascade="all, delete-orphan"
+    )
+    checklists: Mapped[list[EngagementChecklist]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan"
     )
 
@@ -494,6 +498,107 @@ class CollabDoc(Base, TimestampMixin):
     updated_at_ms: Mapped[int | None] = mapped_column(Integer)
 
 
+# --------------------------------------------------------------------------- checklists
+
+# NOTE: Integer PKs match the rest of Fraction's model (Client/Engagement/Finding). Checklists are
+# NON-BLOCKING visual reminders: no state here gates an operation or withholds a report. See
+# plans/FRACTION_CHECKLISTS.md (in lotek) for the full design.
+
+
+class ChecklistTemplate(Base, TimestampMixin):
+    """A reusable checklist definition (the library entry). ``builtin`` rows are seeded and editable in
+    place; ``customized`` flips once one is edited (drives a "modified from default" hint + Reset);
+    ``hidden`` drops it from the picker without deleting it."""
+
+    __tablename__ = "fraction_checklist_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[ChecklistKind] = mapped_column(Enum(ChecklistKind), default=ChecklistKind.coverage)
+    category: Mapped[str | None] = mapped_column(String(255))  # suggest-by-assessment-type hint
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    customized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    items: Mapped[list[ChecklistTemplateItem]] = relationship(
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="ChecklistTemplateItem.order_index",
+    )
+
+
+class ChecklistTemplateItem(Base, TimestampMixin):
+    """One item in a template. ``framework``/``control_ref`` (free text) power the compliance
+    attestation appendix. ``guidance`` is the how-to-test prose."""
+
+    __tablename__ = "fraction_checklist_template_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    template_id: Mapped[int] = mapped_column(ForeignKey("fraction_checklist_templates.id"))
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    section: Mapped[str | None] = mapped_column(String(255))
+    text: Mapped[str] = mapped_column(String(512))
+    guidance: Mapped[str | None] = mapped_column(Text)
+    framework: Mapped[str | None] = mapped_column(String(128))
+    control_ref: Mapped[str | None] = mapped_column(String(128))
+    default_status: Mapped[str | None] = mapped_column(String(64))
+
+    template: Mapped[ChecklistTemplate] = relationship(back_populates="items")
+
+
+class EngagementChecklist(Base, TimestampMixin):
+    """A checklist ASSIGNED to an engagement (the 0..N join). A SNAPSHOT: items are copied from the
+    template on assign, so a later template edit never rewrites a delivered engagement. ``template_id``
+    is a soft reference (provenance only), not an FK, so deleting a library template never touches an
+    assigned copy."""
+
+    __tablename__ = "fraction_engagement_checklists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[int] = mapped_column(ForeignKey("fraction_engagements.id"))
+    template_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # soft ref (provenance)
+    name: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[ChecklistKind] = mapped_column(Enum(ChecklistKind), default=ChecklistKind.coverage)
+    include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    assigned_by: Mapped[str | None] = mapped_column(String(128))
+
+    engagement: Mapped[Engagement] = relationship(back_populates="checklists")
+    items: Mapped[list[EngagementChecklistItem]] = relationship(
+        back_populates="checklist",
+        cascade="all, delete-orphan",
+        order_by="EngagementChecklistItem.order_index",
+    )
+
+
+class EngagementChecklistItem(Base, TimestampMixin):
+    """Per-assignment item state (copied from the template on assign). ``status`` is FREE TEXT (the UI
+    offers the kind's recommended values as a dropdown but accepts a custom label); rollup buckets it.
+    ``finding_id`` links a failed coverage item to the finding that documents it."""
+
+    __tablename__ = "fraction_engagement_checklist_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_checklist_id: Mapped[int] = mapped_column(
+        ForeignKey("fraction_engagement_checklists.id")
+    )
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    section: Mapped[str | None] = mapped_column(String(255))
+    text: Mapped[str] = mapped_column(String(512))
+    guidance: Mapped[str | None] = mapped_column(Text)
+    framework: Mapped[str | None] = mapped_column(String(128))
+    control_ref: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(64), default="pending")
+    note: Mapped[str | None] = mapped_column(Text)
+    finding_id: Mapped[int | None] = mapped_column(ForeignKey("fraction_findings.id"), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(128))
+
+    checklist: Mapped[EngagementChecklist] = relationship(back_populates="items")
+
+
 __all__ = [
     "Client",
     "Engagement",
@@ -511,6 +616,10 @@ __all__ = [
     "ReportTemplate",
     "ReportRender",
     "CollabDoc",
+    "ChecklistTemplate",
+    "ChecklistTemplateItem",
+    "EngagementChecklist",
+    "EngagementChecklistItem",
 ]
 
 # Register the v2-native enrichment table (fraction_enrichment_proposals) on Fraction's Base — imported

@@ -1,0 +1,129 @@
+{
+  "slug": "web-app-api",
+  "name": "Web Application and API",
+  "description": "Normalized from OWASP WSTG, ASVS, and public hunting repositories.",
+  "kind": "coverage",
+  "category": "web-app",
+  "items": [
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Passive Reconnaissance",
+      "guidance": "Google dorking, WHOIS queries, and Certificate Transparency logs."
+    },
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Subdomain Enumeration",
+      "guidance": "Enumerate subdomains via passive OSINT datasets and active bruteforcing."
+    },
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Application Fingerprinting",
+      "guidance": "Identify frameworks, languages, web servers, and versions."
+    },
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Directory and File Bruteforcing",
+      "guidance": "Scan for hidden endpoints, backups (.bak, .old), and exposed configs (.git)."
+    },
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Client-Side Source Review",
+      "guidance": "Analyze JavaScript bundles for hardcoded API keys, test environments, and secrets."
+    },
+    {
+      "section": "Information Gathering and Reconnaissance",
+      "text": "Metafile Analysis",
+      "guidance": "Inspect robots.txt, sitemap.xml, and security headers (security.txt)."
+    },
+    {
+      "section": "Identity and Access Management",
+      "text": "Horizontal Privilege Escalation",
+      "guidance": "Verify users cannot access peers' data (IDOR testing)."
+    },
+    {
+      "section": "Identity and Access Management",
+      "text": "Vertical Privilege Escalation",
+      "guidance": "Confirm standard users cannot reach administrative actions or endpoints."
+    },
+    {
+      "section": "Identity and Access Management",
+      "text": "Forced Browsing",
+      "guidance": "Attempt to access internal pages directly via URL manipulation without authentication."
+    },
+    {
+      "section": "Identity and Access Management",
+      "text": "Access Control Bypasses",
+      "guidance": "Test header manipulation (X-Forwarded-For, X-Original-URL) to bypass gateways."
+    },
+    {
+      "section": "Authentication and Session Management",
+      "text": "Credential Strength and Policies",
+      "guidance": "Test for default credentials, weak passwords, and lack of account lockouts."
+    },
+    {
+      "section": "Authentication and Session Management",
+      "text": "Multi-Factor Authentication",
+      "guidance": "Look for MFA bypass vectors (direct endpoint access, static response manipulation)."
+    },
+    {
+      "section": "Authentication and Session Management",
+      "text": "Session Token Security",
+      "guidance": "Check cookies for Secure, HttpOnly, and SameSite flags."
+    },
+    {
+      "section": "Authentication and Session Management",
+      "text": "Session Lifecycle",
+      "guidance": "Validate tokens are invalidated on logout and timeout."
+    },
+    {
+      "section": "Authentication and Session Management",
+      "text": "Session Fixation and Hijacking",
+      "guidance": "Verify tokens change after login and are not predictable."
+    },
+    {
+      "section": "Input Validation and Injection",
+      "text": "SQL Injection (SQLi)",
+      "guidance": "Test inputs, headers, and parameters for error-based, boolean, and time-based SQLi."
+    },
+    {
+      "section": "Input Validation and Injection",
+      "text": "Cross-Site Scripting (XSS)",
+      "guidance": "Probe inputs for reflected, stored, and DOM-based XSS."
+    },
+    {
+      "section": "Input Validation and Injection",
+      "text": "Command and Code Injection",
+      "guidance": "Inject payloads to test for RCE via OS commands."
+    },
+    {
+      "section": "Input Validation and Injection",
+      "text": "File Upload Vulnerabilities",
+      "guidance": "Test unrestricted uploads (extension bypass, magic bytes, achieving execution)."
+    },
+    {
+      "section": "Input Validation and Injection",
+      "text": "Server-Side Request Forgery (SSRF)",
+      "guidance": "Force the app to make unintended internal or external requests."
+    },
+    {
+      "section": "API and Business Logic",
+      "text": "Mass Assignment",
+      "guidance": "Attempt parameter stuffing to modify protected properties (e.g. isAdmin true)."
+    },
+    {
+      "section": "API and Business Logic",
+      "text": "Rate Limiting and Throttling",
+      "guidance": "Test for missing rate limits on login, forgot-password, and OTP."
+    },
+    {
+      "section": "API and Business Logic",
+      "text": "Workflow and Business Logic Bypasses",
+      "guidance": "Attempt out-of-order execution (e.g. skipping payment in checkout)."
+    },
+    {
+      "section": "API and Business Logic",
+      "text": "API Documentation Exposure",
+      "guidance": "Check for exposed Swagger, OpenAPI, or GraphiQL playgrounds."
+    }
+  ]
+}

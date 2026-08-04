@@ -71,6 +71,31 @@ class SeverityRollup:
 
 
 @dataclass
+class ChecklistItemCtx:
+    section: str | None
+    text: str
+    guidance: str | None
+    framework: str | None
+    control_ref: str | None
+    status: str
+    bucket: str  # satisfied | deficient | not_applicable | open
+    bucket_label: str
+    note: str | None
+    finding_id: int | None
+    finding_title: str | None  # resolved from the engagement's findings for a coverage cross-link
+
+
+@dataclass
+class ChecklistCtx:
+    id: int
+    name: str
+    kind: str  # coverage | reminder | compliance
+    rollup: dict[str, int]  # bucket -> count
+    total: int
+    items: list[ChecklistItemCtx]
+
+
+@dataclass
 class ReportContext:
     engagement_id: int
     engagement_name: str
@@ -81,6 +106,7 @@ class ReportContext:
     end_date: str | None
     groups: list[GroupCtx] = field(default_factory=list)
     rollup: SeverityRollup | None = None
+    checklists: list[ChecklistCtx] = field(default_factory=list)
     variables: dict[str, str] = field(default_factory=dict)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
@@ -242,6 +268,47 @@ def _build_narrative(company_name: str, rollup: SeverityRollup, groups: list[Gro
     return lead
 
 
+def _build_checklists(engagement) -> list[ChecklistCtx]:
+    """Build report contexts for the engagement's assigned checklists that opt into the report
+    (``include_in_report``). Non-blocking reminders that stay internal are simply absent here."""
+    from fraction import checklists as _cl
+
+    finding_titles = {f.id: f.title for f in engagement.findings}
+    out: list[ChecklistCtx] = []
+    for ec in sorted(engagement.checklists, key=lambda c: c.order_index):
+        if not ec.include_in_report:
+            continue
+        items: list[ChecklistItemCtx] = []
+        for it in sorted(ec.items, key=lambda i: i.order_index):
+            bucket = _cl.status_bucket(it.status)
+            items.append(
+                ChecklistItemCtx(
+                    section=it.section,
+                    text=it.text,
+                    guidance=it.guidance,
+                    framework=it.framework,
+                    control_ref=it.control_ref,
+                    status=it.status,
+                    bucket=bucket,
+                    bucket_label=_cl.BUCKET_LABEL.get(bucket, bucket),
+                    note=it.note,
+                    finding_id=it.finding_id,
+                    finding_title=finding_titles.get(it.finding_id),
+                )
+            )
+        out.append(
+            ChecklistCtx(
+                id=ec.id,
+                name=ec.name,
+                kind=ec.kind.value if hasattr(ec.kind, "value") else str(ec.kind),
+                rollup=_cl.rollup(ec.items),
+                total=len(ec.items),
+                items=items,
+            )
+        )
+    return out
+
+
 def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     """Assemble a ``ReportContext`` from a loaded ``Engagement`` (with relationships available).
 
@@ -310,6 +377,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         end_date=engagement.end_date.isoformat() if engagement.end_date else None,
         groups=groups_out,
         rollup=rollup,
+        checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
     )

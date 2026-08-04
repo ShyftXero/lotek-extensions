@@ -195,5 +195,18 @@
   .fraction-readonly-note { font-style: italic; }
 </style>
 
+<section class="ckp card" id="checklist-panel"
+         data-engagement-id="{{ engagement.id }}"
+         data-scope="{{ engagement.scope_type or '' }}"
+         data-templates-url="{{ url_for('fraction_api.list_checklist_templates') }}">
+  <div class="ckp-head">
+    <h2>Coverage</h2>
+    <button type="button" class="btn" id="ckp-assign-btn">+ Assign checklist</button>
+  </div>
+  <div id="ckp-assign-tray" class="ckp-tray" hidden></div>
+  <div id="ckp-body"><p class="muted">Loading checklists…</p></div>
+</section>
+
 <script src="{{ url_for('fraction.static', filename='board.js') }}"></script>
+<script src="{{ url_for('fraction.static', filename='checklists.js') }}"></script>
 {% endblock %}

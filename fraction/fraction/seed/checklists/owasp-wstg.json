@@ -1,0 +1,69 @@
+{
+  "slug": "owasp-wstg",
+  "name": "OWASP WSTG",
+  "description": "A pragmatic pass over the OWASP Web Security Testing Guide categories.",
+  "kind": "coverage",
+  "category": "web-app",
+  "items": [
+    {
+      "section": "WSTG",
+      "text": "Information Gathering",
+      "guidance": "Fingerprint the server, enumerate content and entry points, review metafiles and comments."
+    },
+    {
+      "section": "WSTG",
+      "text": "Configuration and Deployment",
+      "guidance": "Test TLS config, HTTP methods, admin interfaces, and default/backup files."
+    },
+    {
+      "section": "WSTG",
+      "text": "Identity Management",
+      "guidance": "Review roles, registration, and account provisioning/de-provisioning."
+    },
+    {
+      "section": "WSTG",
+      "text": "Authentication",
+      "guidance": "Credential transport, default/weak credentials, lockout, and remember-me handling."
+    },
+    {
+      "section": "WSTG",
+      "text": "Authorization",
+      "guidance": "Directory traversal, privilege escalation, and IDOR."
+    },
+    {
+      "section": "WSTG",
+      "text": "Session Management",
+      "guidance": "Cookie flags, session fixation, CSRF, and logout/timeout handling."
+    },
+    {
+      "section": "WSTG",
+      "text": "Input Validation",
+      "guidance": "XSS, SQL/NoSQL/OS/LDAP injection, SSRF, and host-header injection."
+    },
+    {
+      "section": "WSTG",
+      "text": "Error Handling",
+      "guidance": "Verbose errors and stack traces that disclose internals."
+    },
+    {
+      "section": "WSTG",
+      "text": "Cryptography",
+      "guidance": "Weak transport crypto, padding-oracle, and sensitive data in transit."
+    },
+    {
+      "section": "WSTG",
+      "text": "Business Logic",
+      "guidance": "Workflow bypasses, request tampering, and function-abuse cases."
+    },
+    {
+      "section": "WSTG",
+      "text": "Client-Side",
+      "guidance": "DOM XSS, client-side redirects, postMessage, CORS, and clickjacking."
+    },
+    {
+      "section": "WSTG",
+      "text": "API Testing",
+      "guidance": "GraphQL/REST authorization, mass assignment, and rate limiting."
+    }
+  ]
+}
