@@ -1,0 +1,71 @@
+{% extends scribble_base %}
+{% block title %}New Engagement — Scribble{% endblock %}
+{% block content %}
+<div class="card scribble-form-card">
+  <h2>New engagement</h2>
+  {% if error %}<p class="scribble-form-error">{{ error }}</p>{% endif %}
+  {% if scribble_can_write %}
+  <form method="post" class="scribble-stack-form">
+    <label>Name
+      <input type="text" name="name" placeholder="Acme Q3 External Assessment" required autofocus />
+    </label>
+
+    <div class="scribble-form-row">
+      <label>Client (existing)
+        <select name="client_id">
+          <option value="">— none / create below —</option>
+          {% for c in clients %}
+          <option value="{{ c.id }}">{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Or a new client name
+        <input type="text" name="new_client_name" placeholder="Acme Corp" />
+      </label>
+    </div>
+
+    <div class="scribble-form-row">
+      <label>Company name <span class="muted">({{ '{{COMPANY_NAME}}' }})</span>
+        <input type="text" name="company_name" placeholder="Defaults to the client name" />
+      </label>
+      <label>Scope type
+        <input type="text" name="scope_type" value="external" />
+      </label>
+    </div>
+
+    <div class="scribble-form-row">
+      <label>Start date
+        <input type="date" name="start_date" />
+      </label>
+      <label>End date
+        <input type="date" name="end_date" />
+      </label>
+    </div>
+
+    <div>
+      <button class="btn btn-primary" type="submit">Create engagement</button>
+      <a class="btn" href="{{ url_for('scribble.engagements') }}">Cancel</a>
+    </div>
+  </form>
+  <p class="muted">Multiple concurrent engagements are fine, including several for the same client.</p>
+  {% else %}
+  <p class="muted scribble-readonly-note">You have read-only access — you can't create engagements.</p>
+  <a class="btn" href="{{ url_for('scribble.engagements') }}">Back to engagements</a>
+  {% endif %}
+</div>
+
+<style>
+  .scribble-form-card { max-width: 640px; }
+  .scribble-form-error { color: var(--danger); }
+  .scribble-stack-form { display: flex; flex-direction: column; gap: 14px; }
+  .scribble-stack-form label {
+    display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted);
+  }
+  .scribble-stack-form input, .scribble-stack-form select {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 7px 10px; font: inherit;
+  }
+  .scribble-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .scribble-readonly-note { font-style: italic; }
+</style>
+{% endblock %}

@@ -1,0 +1,31 @@
+<!doctype html>
+<html data-theme="dark" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Scribble{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('scribble.static', filename='scribble.css') }}" />
+</head>
+<body class="app-shell">
+  <aside class="sidebar">
+    <div class="brand mono">scribble</div>
+    <nav class="sidebar-nav">
+      <a href="{{ url_for('scribble.dashboard') }}">▚ Dashboard</a>
+      <a href="{{ url_for('scribble.library') }}">▤ Vuln Library</a>
+      <a href="{{ url_for('scribble.checklists_library') }}">☑ Checklists</a>
+      <a href="{{ url_for('scribble.engagements') }}">◆ Engagements</a>
+      <a href="{{ url_for('scribble.assessment_types') }}">⚙ Assessment Types</a>
+    </nav>
+    <div class="sidebar-foot mono">v{{ scribble_version }}</div>
+  </aside>
+  <main class="main">
+    <header class="appbar">
+      <h1 class="appbar-title">{% block appbar_title %}{{ self.title() }}{% endblock %}</h1>
+      <div class="appbar-actions">{% block appbar_actions %}{% endblock %}</div>
+    </header>
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</body>
+</html>
