@@ -1,0 +1,63 @@
+# What Fraction exposes to a host (e.g. lotek) beyond the basics. Consumed at vendor time by the host's
+# scripts/stage-extension.sh and appended to the generated extensions/fraction/extension.toml, so the
+# host renders exactly the sidebar entries the extension declares here. `path` is relative to the
+# extension's url_prefix; `icon` is an optional glyph. Order here is the sidebar order.
+[[nav]]
+label = "Fraction"
+path = "/"
+icon = "◈"
+
+[[nav]]
+label = "Report Boards"
+path = "/engagements"
+icon = "◆"
+
+[[nav]]
+label = "Vuln Library"
+path = "/library"
+icon = "▤"
+
+[[nav]]
+label = "Assessment Types"
+path = "/assessment-types"
+icon = "⚙"
+
+# What this Fraction checkout supports, for a host that FEATURE-DETECTS instead of hard-assuming
+# (lotek: app.extensions.extension_supports). Declaring this table makes it AUTHORITATIVE — the host
+# stops introspecting the mounted model class and trusts exactly what's listed here. Keep in sync with
+# fraction/models.py: only list a field once its column actually exists on the named model, and only
+# list a feature once the behavior it names is actually implemented.
+[capabilities]
+# Optional columns on fraction.models.Engagement beyond the always-present base schema.
+engagement_fields = ["owner_id"]
+# Optional columns on fraction.models.EngagementFinding beyond the always-present base schema.
+finding_fields = ["source_finding_id", "parent_id", "target_host", "template_id"]
+# Behaviors (not tied to one column) a host can conditionally build on.
+features = ["nested_findings", "vuln_template"]
+
+# How this extension plugs into generic HOST surfaces. A NEW top-level table on purpose: the staging
+# script already emits its own [extension] table before appending this file, and TOML forbids a
+# duplicate table — an [extension] header here would make tomllib raise and silently un-discover the
+# whole extension.
+[host]
+# Path (relative to url_prefix) of this extension's PAT/Bearer MACHINE api. The host treats it as a
+# machine surface: skipped by the cookie/session dashboard gate and CSRF-exempt, exactly like
+# lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
+# cookie-authed browser JSON api at <url_prefix>/api.
+machine_prefix = "/machine"
+# Table in the shared DB whose rows soft-reference a host Client (client_id). The host's client-delete
+# guard counts these generically so deleting a client can't orphan them.
+client_ref_table = "fraction_engagements"
+client_ref_label = "engagement"
+# Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
+docs = "docs/FRACTION.md"
+docs_title = "Fraction (reporting)"
+
+# Tables this extension OWNS, for a host that manages extension schema (lotek: app/extension_schema.py).
+# `base` is a declarative Base — the authoritative table list AND real DDL, used only while this extension
+# is ENABLED (importing it runs its module code, so a disabled extension is never imported). `table_prefix`
+# is the attribution fallback for when this code is NOT importable (disabled/uninstalled), which is exactly
+# the state a host cleans up in. A host that does not manage schema ignores this table.
+[db]
+base = "fraction.models:Base"   # the module whose IMPORT registers the tables (db.py alone yields an empty Base)
+table_prefix = "fraction_"

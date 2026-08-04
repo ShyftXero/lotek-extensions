@@ -1,0 +1,13 @@
+# What CREAM exposes to a host (lotek). Consumed at vendor time by scripts/stage-extension.sh and
+# appended verbatim to the generated extensions/cream/extension.toml, so the host renders exactly the
+# sidebar entries declared here. `path` is relative to the extension's url_prefix.
+[[nav]]
+label = "CREAM"
+path = "/"
+icon = "$"
+
+# Tables this extension OWNS: the host may carry them through a migration, attribute them for
+# drop/truncate, and never touch a table nobody claims. tests/test_extension_schema.py requires this.
+[db]
+base = "cream.models:Base"   # the module whose IMPORT registers the tables
+table_prefix = "cream_"

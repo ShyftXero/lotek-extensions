@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
+<title>{% block title %}REGISTRAR{% endblock %}</title>
+<style>
+  :root{color-scheme:dark}
+  html,body{margin:0;background:#0a0f14;color:#dfe9f0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  a{color:#37c9d6}
+  .cr-appbar{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid #1c2a35;background:#0e151c}
+  .cr-appbar .brand{font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#3ad29a}
+  .cr-appbar .brand a{color:inherit;text-decoration:none}
+</style>
+{% block head_extra %}{% endblock %}
+</head>
+<body>
+  <div class="cr-appbar">
+    <span class="brand"><a href="{{ url_for('registrar.dashboard') }}">$ REGISTRAR</a></span>
+    <span>{% block appbar_title %}{% endblock %}</span>
+  </div>
+  {% block content %}{% endblock %}
+{% block body_extra %}{% endblock %}
+</body>
+</html>

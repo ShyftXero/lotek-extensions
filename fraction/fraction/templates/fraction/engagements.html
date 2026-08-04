@@ -1,0 +1,43 @@
+{% extends fraction_base %}
+{% block title %}Fraction — Engagements{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="fraction-list-head">
+    <h2>Engagements <span class="muted">({{ engagements|length }})</span></h2>
+    <a class="btn btn-primary" href="{{ url_for('fraction.engagement_new') }}">+ New engagement</a>
+  </div>
+  {% if engagements %}
+  <table class="table">
+    <thead><tr><th>Name</th><th>Client</th><th>Scope</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for e in engagements %}
+      <tr>
+        <td><a href="{{ url_for('fraction.engagement_board', engagement_id=e.id) }}">{{ e.name }}</a></td>
+        <td>{{ client_names.get(e.id, '—') }}</td>
+        <td><span class="pill">{{ e.scope_type }}</span></td>
+        <td>{{ e.status }}</td>
+        <td class="fraction-engagements-actions">
+          {% if fraction_can_write %}
+          <a class="btn" href="{{ url_for('fraction.engagement_edit_page', engagement_id=e.id) }}">Edit</a>
+          <form method="post" action="{{ url_for('fraction.engagement_delete', engagement_id=e.id) }}"
+                data-confirm-name="{{ e.name }}"
+                onsubmit="return confirm('Delete engagement \'' + this.dataset.confirmName + '\' and its findings? This cannot be undone.');">
+            <button type="submit" class="btn">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No engagements yet. Create one to start the finding board.</p>
+  {% endif %}
+</div>
+
+<style>
+  .fraction-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .fraction-engagements-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .fraction-engagements-actions form { display: inline; }
+</style>
+{% endblock %}

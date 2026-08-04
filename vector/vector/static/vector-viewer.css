@@ -1,0 +1,151 @@
+/* Vector attack-path viewer runtime — styles.
+ * Everything is scoped under `.vap` so the runtime can be embedded inside a host shell (lotek's
+ * base.html) or the editor's preview pane without its selectors leaking out (or theirs leaking in).
+ * Colors that vary per edge-kind / node-state / role are set INLINE by vector-viewer.js from the style
+ * catalogs; this sheet owns layout, typography, chrome, and animation only.
+ */
+.vap{
+  --vap-bg:#0a0f14; --vap-bg2:#0e151c; --vap-panel:#111a22; --vap-panel2:#0c141b;
+  --vap-line:#1c2a35; --vap-line2:#2a3d4c;
+  --vap-txt:#dfe9f0; --vap-dim:#7f93a3; --vap-faint:#4a5b69;
+  --vap-red:#ff4d5e; --vap-orange:#ff9548; --vap-cyan:#37c9d6; --vap-amber:#f4b740;
+  --vap-mono:ui-monospace,'SF Mono','JetBrains Mono','Cascadia Code',Menlo,Consolas,monospace;
+  --vap-sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  color:var(--vap-txt); font-family:var(--vap-sans); -webkit-font-smoothing:antialiased;
+}
+.vap *{box-sizing:border-box}
+.vap-root{
+  min-height:100%; height:100%;
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(255,77,94,.06), transparent 60%),
+    radial-gradient(1000px 700px at 100% 120%, rgba(244,183,64,.05), transparent 55%),
+    var(--vap-bg);
+}
+.vap .app{display:flex;flex-direction:column;min-height:100%;height:100%}
+
+/* header */
+.vap .top{padding:14px 20px 10px;border-bottom:1px solid var(--vap-line);background:linear-gradient(180deg,rgba(255,255,255,.02),transparent)}
+.vap .top-row{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.vap .brand{font-family:var(--vap-mono);font-size:15px;letter-spacing:.14em;font-weight:600;text-transform:uppercase}
+.vap .brand b{color:var(--vap-red)}
+.vap .sub{font-family:var(--vap-mono);font-size:11px;letter-spacing:.08em;color:var(--vap-dim)}
+.vap .chip-demo{margin-left:auto;font-family:var(--vap-mono);font-size:10px;letter-spacing:.18em;color:var(--vap-amber);
+  border:1px solid #7d5c14;border-radius:3px;padding:3px 8px;text-transform:uppercase;white-space:nowrap}
+.vap .rail{display:flex;gap:3px;margin-top:12px}
+.vap .seg{flex:1;height:6px;border-radius:2px;background:#16212b;border:1px solid var(--vap-line);cursor:pointer;transition:background .2s,box-shadow .2s;position:relative}
+.vap .seg:hover{border-color:var(--vap-line2)}
+.vap .seg.done{background:#8f2a34}
+.vap .seg.cur{background:var(--vap-red);box-shadow:0 0 10px rgba(255,77,94,.6)}
+.vap .rail-labels{display:flex;justify-content:space-between;margin-top:5px;font-family:var(--vap-mono);font-size:9.5px;letter-spacing:.06em;color:var(--vap-faint)}
+
+/* layout */
+.vap .grid{display:grid;grid-template-columns:1fr 360px;gap:0;flex:1;min-height:0}
+.vap .stage{padding:8px 8px 4px;overflow:auto;background:
+  linear-gradient(rgba(255,255,255,.012) 1px,transparent 1px) 0 0/100% 26px, var(--vap-bg2)}
+.vap svg.map{width:100%;height:auto;display:block;min-width:760px}
+
+/* svg node/edge base styling */
+.vap .band{fill:rgba(255,255,255,.014);stroke:var(--vap-line);stroke-width:1}
+.vap .band-title{fill:var(--vap-txt);font-family:var(--vap-mono);font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
+.vap .band-cidr{fill:var(--vap-dim);font-family:var(--vap-mono);font-size:9.5px;letter-spacing:.04em}
+.vap .fw-line{stroke:var(--vap-line2);stroke-width:1;stroke-dasharray:2 5}
+.vap .fw-chip{fill:#0d151c;stroke:var(--vap-line2);stroke-width:1}
+.vap .fw-label{fill:var(--vap-dim);font-family:var(--vap-mono);font-size:8.5px;letter-spacing:.02em}
+.vap .fw-ico{fill:var(--vap-faint);font-family:var(--vap-mono);font-size:10px}
+
+.vap .node rect.box{fill:#0f1922;stroke:var(--vap-line2);stroke-width:1.2;transition:stroke .25s,fill .25s}
+.vap .node .nm{fill:var(--vap-txt);font-family:var(--vap-mono);font-size:11px;font-weight:600}
+.vap .node .ip{fill:var(--vap-dim);font-family:var(--vap-mono);font-size:9px}
+.vap .node .dom{fill:var(--vap-cyan);font-family:var(--vap-mono);font-size:8.5px;opacity:.85}
+.vap .node .stt{font-family:var(--vap-mono);font-size:8.5px;letter-spacing:.05em;fill:var(--vap-faint)}
+.vap .node.ctx rect.box{fill:#0c141b;stroke:#182531;stroke-dasharray:3 3}
+.vap .node.ctx .nm{fill:#5f7180}.vap .node.ctx .ip{fill:#42525f}
+.vap .node.idle rect.box{stroke-dasharray:4 4;opacity:.9}
+.vap .node.is-new rect.box{animation:vap-pop .6s ease-out}
+.vap .node{transform-box:fill-box;transform-origin:center}
+@keyframes vap-pop{0%{transform:scale(.96)}55%{transform:scale(1.035)}100%{transform:scale(1)}}
+
+.vap .beacon-ring{fill:none;stroke-width:1.4}
+@keyframes vap-ring{0%{r:3;opacity:.9}100%{r:12;opacity:0}}
+.vap .pulse-ring{animation:vap-ring 1.6s ease-out infinite}
+
+.vap .edge{fill:none;stroke-linecap:round}
+.vap .edge.dim{opacity:.32}
+.vap .edge.flow{animation:vap-flow 1s linear infinite}
+@keyframes vap-flow{to{stroke-dashoffset:-24}}
+.vap .edge.hot{filter:drop-shadow(0 0 5px currentColor)}
+.vap .edge.draw{stroke-dasharray:1000;stroke-dashoffset:1000;animation:vap-draw .7s ease-out forwards}
+@keyframes vap-draw{to{stroke-dashoffset:0}}
+.vap .elabel-bg{fill:#0a1016;stroke:var(--vap-line2)}
+.vap .elabel{font-family:var(--vap-mono);font-size:9.5px;letter-spacing:.02em}
+
+/* brief panel */
+.vap .brief{background:var(--vap-panel);border-left:1px solid var(--vap-line);display:flex;flex-direction:column;min-height:0}
+.vap .brief-scroll{padding:20px;overflow:auto;flex:1}
+.vap .eyebrow{font-family:var(--vap-mono);font-size:11px;letter-spacing:.18em;color:var(--vap-dim);text-transform:uppercase}
+.vap .eyebrow b{color:var(--vap-red)}
+.vap .ph-title{font-size:23px;line-height:1.12;font-weight:700;margin:8px 0 12px;letter-spacing:-.01em}
+.vap .tacs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.vap .tac{font-family:var(--vap-mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:3px;border:1px solid}
+.vap .mitre{font-family:var(--vap-mono);font-size:10px;color:var(--vap-faint);margin:2px 0 14px;letter-spacing:.03em}
+.vap .desc{font-size:14px;line-height:1.55;color:#c7d3dc;margin:0 0 16px;white-space:pre-wrap}
+.vap .blk{border-top:1px solid var(--vap-line);padding-top:12px;margin-top:4px}
+.vap .blk-h{font-family:var(--vap-mono);font-size:10px;letter-spacing:.14em;color:var(--vap-dim);text-transform:uppercase;margin-bottom:8px}
+.vap .tgt{display:flex;align-items:baseline;gap:8px;font-family:var(--vap-mono);font-size:12px;margin-bottom:5px}
+.vap .tgt .dot{width:7px;height:7px;border-radius:2px;flex:none;position:relative;top:1px}
+.vap .tgt .thn{color:var(--vap-txt)}.vap .tgt .tip{color:var(--vap-dim);font-size:10.5px}
+.vap .tgt .tz{color:var(--vap-faint);font-size:9.5px;margin-left:auto}
+.vap .watch{font-size:12.5px;line-height:1.5;color:var(--vap-dim);white-space:pre-wrap}
+.vap .watch b{color:var(--vap-txt);font-weight:600}
+.vap .note{margin-top:14px;font-size:11.5px;line-height:1.5;color:var(--vap-amber);border:1px solid #7d5c14;border-radius:5px;padding:9px 11px;background:rgba(244,183,64,.04);white-space:pre-wrap}
+
+.vap .intro-obj{font-size:14px;line-height:1.6;color:#c7d3dc;white-space:pre-wrap}
+.vap .intro-obj strong{color:var(--vap-txt)}
+
+/* controls */
+.vap .controls{border-top:1px solid var(--vap-line);padding:12px 20px;display:flex;gap:8px;align-items:center;background:var(--vap-panel2)}
+.vap button.vap-btn{font-family:var(--vap-mono);font-size:12px;letter-spacing:.04em;color:var(--vap-txt);background:#131e27;border:1px solid var(--vap-line2);
+  border-radius:5px;padding:9px 12px;cursor:pointer;transition:background .15s,border-color .15s}
+.vap button.vap-btn:hover:not(:disabled){background:#1a2833;border-color:#365062}
+.vap button.vap-btn:disabled{opacity:.35;cursor:not-allowed}
+.vap button.vap-btn.primary{background:#8f2a34;border-color:var(--vap-red)}
+.vap button.vap-btn.primary:hover{background:#a8323d}
+.vap .spacer{flex:1}
+.vap .play.on{color:var(--vap-amber);border-color:#7d5c14}
+
+/* legend */
+.vap .legend{display:flex;flex-wrap:wrap;gap:12px 18px;padding:8px 10px 4px;font-family:var(--vap-mono);font-size:10px;color:var(--vap-dim)}
+.vap .lg{display:flex;align-items:center;gap:6px}
+.vap .lg .sw{width:22px;height:0;border-top-width:2px;border-top-style:solid}
+.vap .lg .swd{width:22px;height:0;border-top:2px dashed}
+.vap .lg .bx{width:11px;height:11px;border-radius:2px;border:1.4px solid}
+
+/* red / blue detail tabs */
+.vap .detail-tabs{display:flex;gap:4px;margin:0 0 10px;border-bottom:1px solid var(--vap-line)}
+.vap .detail-tab{font-family:var(--vap-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;
+  background:transparent;border:none;border-bottom:2px solid transparent;color:var(--vap-faint);padding:4px 10px 7px;cursor:pointer}
+.vap .detail-tab:hover{color:var(--vap-dim)}
+.vap .detail-tab.active{color:var(--vap-red);border-bottom-color:var(--vap-red)}
+.vap .detail-tab[data-tab="blue"].active{color:var(--vap-cyan);border-bottom-color:var(--vap-cyan)}
+.vap .tab-pane{display:none}.vap .tab-pane.active{display:block}
+.vap .blue-tool{display:inline-flex;align-items:center;gap:6px;font-family:var(--vap-mono);font-size:10.5px;font-weight:700;
+  color:var(--vap-cyan);background:rgba(55,201,214,.08);border:1px solid #1c5b62;border-radius:4px;padding:4px 8px;margin-bottom:8px;line-height:1.35}
+.vap .blue-tool.gap{color:var(--vap-amber);background:rgba(244,183,64,.06);border-color:#7d5c14}
+.vap .blue-signal{font-family:var(--vap-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--vap-dim);margin:10px 0 4px}
+.vap .blue-query{font-family:var(--vap-mono);font-size:10.5px;line-height:1.45;color:#5eead4;white-space:pre-wrap;word-break:break-word;
+  background:#0a1018;border:1px solid var(--vap-line);border-radius:5px;padding:8px 10px;margin:0 0 8px;max-height:26vh;overflow:auto}
+.vap .blue-seen,.vap .blue-note{font-size:12.5px;line-height:1.5;color:var(--vap-dim);margin-top:6px;white-space:pre-wrap}
+.vap .blue-seen b,.vap .blue-note b{color:var(--vap-txt);font-weight:600}
+.vap .blue-note{border-left:2px solid var(--vap-line2);padding-left:8px}
+.vap .blue-note.gap-note{border-left-color:var(--vap-amber);color:var(--vap-amber)}
+
+.vap .empty{padding:40px 20px;color:var(--vap-faint);font-family:var(--vap-mono);font-size:12px;text-align:center}
+
+@media (max-width:940px){
+  .vap .grid{grid-template-columns:1fr}
+  .vap .brief{border-left:none;border-top:1px solid var(--vap-line)}
+}
+@media (prefers-reduced-motion:reduce){
+  .vap .edge.flow,.vap .edge.draw,.vap .node.is-new rect.box,.vap .pulse-ring{animation:none!important}
+  .vap .edge.draw{stroke-dashoffset:0}
+}

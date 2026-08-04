@@ -1,0 +1,30 @@
+<!doctype html>
+<html data-theme="dark" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Fraction{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('fraction.static', filename='fraction.css') }}" />
+</head>
+<body class="app-shell">
+  <aside class="sidebar">
+    <div class="brand mono">fraction</div>
+    <nav class="sidebar-nav">
+      <a href="{{ url_for('fraction.dashboard') }}">▚ Dashboard</a>
+      <a href="{{ url_for('fraction.library') }}">▤ Vuln Library</a>
+      <a href="{{ url_for('fraction.engagements') }}">◆ Engagements</a>
+      <a href="{{ url_for('fraction.assessment_types') }}">⚙ Assessment Types</a>
+    </nav>
+    <div class="sidebar-foot mono">v{{ fraction_version }}</div>
+  </aside>
+  <main class="main">
+    <header class="appbar">
+      <h1 class="appbar-title">{% block appbar_title %}{{ self.title() }}{% endblock %}</h1>
+      <div class="appbar-actions">{% block appbar_actions %}{% endblock %}</div>
+    </header>
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</body>
+</html>

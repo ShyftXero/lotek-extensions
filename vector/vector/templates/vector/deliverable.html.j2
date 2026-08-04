@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="vector.attackpath">
+<title>{{ title }}</title>
+<style>
+html,body{margin:0;height:100%;background:#0a0f14}
+{{ css }}
+</style>
+</head>
+<body>
+<div id="vap"></div>
+<script type="application/json" id="vap-model">{{ model_json }}</script>
+<script>
+  try { window.__VECTOR_MODEL__ = JSON.parse(document.getElementById('vap-model').textContent); }
+  catch (e) { window.__VECTOR_MODEL__ = { schema: "vector.attackpath/v1", meta: { title: "Parse error" }, zones: [], nodes: [], edges: [], phases: [] }; }
+</script>
+<script>{{ js }}</script>
+</body>
+</html>

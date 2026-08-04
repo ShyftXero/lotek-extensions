@@ -1,0 +1,79 @@
+/* Vector editor chrome — the authoring UI around the shared viewer preview.
+ *
+ * Chrome colors adopt the HOST theme tokens via `var(--token, <fallback>)`: mounted in lotek the editor
+ * follows lotek's dark / light / h4x themes and its green accent; standalone (no host tokens) the
+ * fallbacks reproduce Vector's original palette, so nothing changes there. Only the CHROME (tabs, form,
+ * buttons, panels, toasts) is themed — the diagram PREVIEW keeps its own dark semantic palette
+ * (exploit-red / C2-orange / tunnel-cyan / OT-amber), which lives in vector-viewer.css and is meaningful,
+ * so the preview pane (.ved-right) stays dark like a map surface regardless of host theme. */
+.ved{display:grid;grid-template-columns:minmax(360px,44%) 1fr;gap:0;flex:1;min-height:0;height:100%}
+.ved-left{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line,#1c2a35);background:var(--card,#0c141b)}
+.ved-right{display:flex;flex-direction:column;min-height:0;background:#0a0f14}
+
+.ved-tabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line,#1c2a35);flex-wrap:wrap}
+.ved-tab{font:700 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;
+  background:transparent;color:var(--muted,#4a5b69);border:none;border-bottom:2px solid transparent;padding:8px 12px;cursor:pointer}
+.ved-tab:hover{color:var(--ink,#7f93a3)}
+.ved-tab.active{color:var(--accent,#37c9d6);border-bottom-color:var(--accent,#37c9d6)}
+.ved-panel{flex:1;min-height:0;overflow:auto;padding:14px}
+
+/* preview bar sits atop the dark diagram surface — kept dark to match the viewer, not the host theme */
+.ved-right .ved-preview-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid #1c2a35;background:#0e151c}
+.ved-scrub-lbl{font:600 12px/1 ui-monospace,monospace;color:#7f93a3;white-space:nowrap}
+.ved-scrub-lbl span{color:#dfe9f0}
+.ved-scrub{flex:1;accent-color:#ff4d5e}
+.ved-preview-note{font:11px/1 ui-monospace,monospace;color:#4a5b69}
+.ved-preview{flex:1;min-height:0;overflow:hidden}
+.ved-preview .vap-root{height:100%;overflow:auto}
+
+/* appbar controls (rendered into base appbar_actions — inside the host appbar, so they follow its theme) */
+.ved-name-input{font:600 13px/1 system-ui;background:var(--field-bg,#0c141b);color:var(--ink,#dfe9f0);border:1px solid var(--field-border,#2a3d4c);border-radius:6px;padding:8px 10px;min-width:220px}
+.ved-abtn{font:600 12px/1 system-ui;color:var(--btn-ink,#dfe9f0);background:var(--btn-bg,#131e27);border:1px solid var(--btn-border,#2a3d4c);border-radius:6px;padding:8px 11px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
+.ved-abtn:hover{background:color-mix(in srgb, var(--btn-bg,#131e27) 86%, var(--ink,#dfe9f0) 14%);border-color:var(--line-strong,#365062)}
+.ved-abtn.primary{background:var(--btn-primary-bg,#8f2a34);color:var(--btn-primary-ink,#dfe9f0);border-color:var(--accent,#ff4d5e)}
+.ved-abtn.saved{background:color-mix(in srgb, var(--accent,#37c9d6) 22%, transparent);border-color:var(--accent,#37c9d6)}
+
+/* forms */
+.ved-field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.ved-field label{font:600 10px/1.2 ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;color:var(--muted,#7f93a3)}
+.ved-field input,.ved-field select,.ved-field textarea{
+  font:13px/1.4 system-ui;background:var(--field-bg,#0a1018);color:var(--ink,#dfe9f0);border:1px solid var(--field-border,#22323f);border-radius:5px;padding:7px 9px}
+.ved-field input:focus,.ved-field select:focus,.ved-field textarea:focus{outline:none;border-color:var(--accent,#37c9d6)}
+.ved-field textarea{resize:vertical;min-height:52px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.ved-field.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ved-inline{display:flex;gap:8px;flex-wrap:wrap}
+.ved-inline .ved-field{flex:1;min-width:90px}
+.ved-check{flex-direction:row;align-items:center;gap:8px}
+.ved-check input{width:auto}
+
+.ved-card{border:1px solid var(--line,#1c2a35);border-radius:8px;background:var(--field-bg,#0a1018);margin-bottom:12px;overflow:hidden}
+.ved-card>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;align-items:center;gap:8px;font:600 13px/1 system-ui;background:color-mix(in srgb, var(--card,#0e161d) 92%, var(--ink,#dfe9f0) 6%)}
+.ved-card>summary::-webkit-details-marker{display:none}
+.ved-card>summary .tagdot{width:9px;height:9px;border-radius:2px;flex:none}
+.ved-card>summary .grow{flex:1;color:var(--ink,#dfe9f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ved-card>summary .sub{color:var(--muted,#4a5b69);font-weight:400;font-size:11px}
+.ved-card .ved-card-body{padding:12px}
+
+.ved-mini{border:1px dashed var(--field-border,#22323f);border-radius:6px;padding:8px;margin-bottom:8px;background:color-mix(in srgb, var(--card,#080d13) 82%, #000 18%)}
+.ved-mini .ved-inline{margin:0}
+.ved-mini-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.ved-mini-head span{font:700 9px/1 ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted,#4a5b69)}
+
+.ved-btn{font:600 12px/1 system-ui;color:var(--btn-ink,#dfe9f0);background:var(--btn-bg,#131e27);border:1px solid var(--btn-border,#2a3d4c);border-radius:6px;padding:7px 11px;cursor:pointer}
+.ved-btn:hover{background:color-mix(in srgb, var(--btn-bg,#131e27) 86%, var(--ink,#dfe9f0) 14%);border-color:var(--line-strong,#365062)}
+.ved-btn.sm{padding:4px 8px;font-size:11px}
+.ved-btn.danger{color:var(--danger,#ff8f98);border-color:color-mix(in srgb, var(--danger,#5a2730) 45%, transparent);background:transparent}
+.ved-btn.add{width:100%;border-style:dashed;color:var(--accent,#37c9d6);border-color:color-mix(in srgb, var(--accent,#1c5b62) 45%, transparent);background:transparent;margin-top:4px}
+.ved-btn.add:hover{background:color-mix(in srgb, var(--accent,#37c9d6) 8%, transparent)}
+.ved-row-tools{display:flex;gap:6px;margin-left:auto}
+
+.ved-hint{font:11px/1.5 system-ui;color:var(--muted,#4a5b69);margin:0 0 12px}
+.ved-section-h{font:700 11px/1 ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--muted,#7f93a3);margin:16px 0 8px}
+.ved-json{width:100%;min-height:260px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;background:var(--field-bg,#0a1018);color:var(--accent,#9fe);border:1px solid var(--field-border,#22323f);border-radius:6px;padding:10px}
+.ved-json.bad{border-color:var(--danger,#8f2a34)}
+.ved-ro{font:11px/1.5 ui-monospace,monospace;color:var(--muted,#4a5b69);white-space:pre-wrap;background:color-mix(in srgb, var(--card,#080d13) 82%, #000 18%);border:1px solid var(--line,#14202a);border-radius:6px;padding:10px;max-height:200px;overflow:auto}
+.ved-toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--card,#111a22);border:1px solid var(--line,#2a3d4c);color:var(--ink,#dfe9f0);
+  padding:10px 16px;border-radius:8px;font:13px system-ui;z-index:50;box-shadow:0 8px 30px var(--shadow,rgba(0,0,0,.5));opacity:0;transition:opacity .2s}
+.ved-toast.show{opacity:1}
+.ved-toast.err{border-color:var(--danger,#8f2a34);color:var(--danger,#ffb4bb)}
+@media (max-width:900px){.ved{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}

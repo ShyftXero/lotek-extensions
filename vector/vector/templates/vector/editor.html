@@ -1,0 +1,45 @@
+{% extends vector_base %}
+{% block title %}Vector — Editor{% endblock %}
+{% block appbar_title %}Editor{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('vector.static', filename='vector-viewer.css') }}">
+<link rel="stylesheet" href="{{ url_for('vector.static', filename='vector-editor.css') }}">
+{% endblock %}
+{% block appbar_actions %}
+  <input id="ved-name" class="ved-name-input" type="text" value="{{ diagram_name }}" placeholder="Diagram name" {{ 'disabled' if not vector_can_write else '' }}>
+  {% if vector_can_write %}<button class="ved-abtn primary" id="ved-save">Save</button>{% endif %}
+  <button class="ved-abtn" id="ved-export-json">Export JSON</button>
+  <button class="ved-abtn" id="ved-export-html">Export HTML</button>
+  <a class="ved-abtn" href="{{ url_for('vector.dashboard') }}">Close</a>
+{% endblock %}
+{% block content %}
+<div class="ved"
+     data-diagram-id="{{ diagram_id }}"
+     data-api-base="{{ api_base }}"
+     data-can-write="{{ '1' if vector_can_write else '0' }}"
+     data-dashboard="{{ url_for('vector.dashboard') }}"
+     data-export-html-base="{{ export_html_base }}">
+  <div class="ved-left">
+    <div class="ved-tabs" role="tablist">
+      <button class="ved-tab active" data-tab="meta">Meta</button>
+      <button class="ved-tab" data-tab="zones">Zones</button>
+      <button class="ved-tab" data-tab="nodes">Nodes</button>
+      <button class="ved-tab" data-tab="edges">Edges</button>
+      <button class="ved-tab" data-tab="phases">Phases</button>
+      <button class="ved-tab" data-tab="style">Style</button>
+    </div>
+    <div class="ved-panel" data-panel></div>
+  </div>
+  <div class="ved-right">
+    <div class="ved-preview-bar">
+      <label class="ved-scrub-lbl">Phase <span data-phase-num>0</span></label>
+      <input type="range" class="ved-scrub" data-scrub min="0" max="0" value="0">
+      <span class="ved-preview-note" data-preview-note></span>
+    </div>
+    <div class="ved-preview" data-preview></div>
+  </div>
+</div>
+<script type="application/json" id="ved-model">{{ model_json }}</script>
+<script src="{{ url_for('vector.static', filename='vector-viewer.js') }}"></script>
+<script src="{{ url_for('vector.static', filename='vector-editor.js') }}"></script>
+{% endblock %}

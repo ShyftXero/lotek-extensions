@@ -1,0 +1,10 @@
+# What Registrar exposes to a host (lotek). Appended verbatim to the generated extension.toml.
+[[nav]]
+label = "Registrar"
+path = "/"
+icon = "⌘"
+
+# Tables this extension OWNS. tests/test_extension_schema.py requires this block.
+[db]
+base = "registrar.models:Base"   # the module whose IMPORT registers the tables
+table_prefix = "registrar_"

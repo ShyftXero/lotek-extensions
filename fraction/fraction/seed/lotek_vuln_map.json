@@ -1,0 +1,13 @@
+[
+  {"name": "Kerberoasting", "dedupe_prefix": "kerberoast:"},
+  {"name": "AS-REP Roasting", "dedupe_prefix": "asreproast:"},
+  {"name": "AD CS - Vulnerable Certificate Template or CA (ESC)", "dedupe_prefix": "certipy:"},
+  {"name": "DCSync - Domain Credential Database Extraction", "dedupe_prefix": "secretsdump:"},
+  {"name": "LLMNR / NBT-NS / mDNS Poisoning", "source": "responder"},
+  {"name": "SMB Null Session Allowed", "source": "enum4linux", "title_pattern": "SMB null session allowed"},
+  {"name": "SMB Signing Not Required", "source": "enum4linux", "title_pattern": "SMB signing not required"},
+  {"name": "SMBv1 Enabled", "source": "enum4linux", "title_pattern": "SMBv1*enabled"},
+  {"name": "Weak or Guessable Credentials", "source": "brutus"},
+  {"name": "Cross-Site Scripting (XSS)", "source": "dalfox"},
+  {"name": "Kubernetes Security Misconfiguration", "source": "kubescape"}
+]

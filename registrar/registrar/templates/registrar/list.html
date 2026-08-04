@@ -1,0 +1,58 @@
+{% extends registrar_base %}
+{% block title %}Registrar — Infrastructure{% endblock %}
+{% block appbar_title %}Infrastructure{% endblock %}
+{% block content %}
+<div style="max-width:1000px;margin:0 auto;padding:28px 20px;width:100%">
+  <h1 style="font-size:20px;margin:0 0 4px">Offensive infrastructure</h1>
+  <p style="color:#7f93a3;margin:0 0 20px;font-size:13px">
+    Servers, domains, and DNS used during engagements — provider-agnostic (driver backends). Outward
+    actions (create/destroy/register/send) are confirm-tier and audited; an agent may stage, never fire.
+  </p>
+
+  <h2 style="font-size:15px;margin:18px 0 6px">Servers</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
+      <th style="padding:6px">Name</th><th style="padding:6px">Kind</th><th style="padding:6px">State</th>
+      <th style="padding:6px">Provider</th><th style="padding:6px">IP</th><th style="padding:6px">Role</th></tr></thead>
+    <tbody>
+    {% for s in servers %}
+      <tr style="border-bottom:1px solid #16222b">
+        <td style="padding:6px">{{ s.name }}</td><td style="padding:6px">{{ s.kind }}</td>
+        <td style="padding:6px">{{ s.state }}</td><td style="padding:6px">{{ s.provider }}</td>
+        <td style="padding:6px">{{ s.ip }}</td><td style="padding:6px">{{ s.role }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" style="padding:12px 6px;color:#7f93a3">No servers tracked.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2 style="font-size:15px;margin:22px 0 6px">Domains</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
+      <th style="padding:6px">Domain</th><th style="padding:6px">Provider</th><th style="padding:6px">Registered</th></tr></thead>
+    <tbody>
+    {% for d in domains %}
+      <tr style="border-bottom:1px solid #16222b">
+        <td style="padding:6px">{{ d.name }}</td><td style="padding:6px">{{ d.provider }}</td>
+        <td style="padding:6px">{{ 'yes' if d.registered else 'no' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" style="padding:12px 6px;color:#7f93a3">No domains tracked.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2 style="font-size:15px;margin:22px 0 6px">Recent actions</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:12px;color:#9fb2c0">
+    <tbody>
+    {% for a in audit %}
+      <tr><td style="padding:4px 6px">{{ a.at }}</td><td style="padding:4px 6px">{{ a.verb }}</td>
+        <td style="padding:4px 6px">{{ a.tier }}</td><td style="padding:4px 6px">{{ a.result }}</td></tr>
+    {% else %}
+      <tr><td style="padding:8px 6px;color:#7f93a3">No actions yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

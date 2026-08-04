@@ -1,0 +1,132 @@
+{#
+  fraction/_gallery.html — reusable artifact/evidence gallery partial (WS5).
+
+  Include from any page that owns a finding (the finding editor / board, WS3) with:
+
+    {% include "fraction/_gallery.html" %}
+
+  after setting these context variables (e.g. via `{% set %}` right before the include, or by passing
+  them into a `{% include ... %}` that inherits the calling template's context, which Jinja does by
+  default):
+
+    gallery_finding_id      (int)   required — which finding's artifacts this gallery shows/reorders
+    gallery_engagement_id   (int)   required — engagement scope stamped on new uploads
+    gallery_artifacts       (list)  required — ordered (by order_index) Artifact rows, each exposing
+                                     .id .filename .caption .kind (enum or str) .content_type
+                                     .include_in_report
+    gallery_upload_enabled  (bool)  optional, default true — show the attach-evidence form
+
+  Drag-to-reorder uses plain HTML5 drag-and-drop events (no external sortable lib — Lotek is
+  CSP-strict, no CDN scripts allowed). All calls go through fraction/static/artifacts.js, which is safe
+  to load more than once on a page (e.g. several galleries, one per finding).
+#}
+<style>
+  .fraction-gallery-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .fraction-gallery-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .fraction-gallery-upload input[type="text"] {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
+  }
+  .fraction-gallery-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .fraction-gallery-item {
+    display: flex; align-items: center; gap: 12px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--field-bg);
+  }
+  .fraction-gallery-item.is-excluded { opacity: .5; }
+  .fraction-gallery-item.is-dragging { opacity: .3; border-style: dashed; }
+  .fraction-gallery-item.is-pending { border-style: dashed; opacity: .85; }
+  .fraction-gallery-item.is-failed { border-color: var(--danger); }
+  .fraction-gallery-pending-status { font-size: 12px; color: var(--muted); }
+  .fraction-gallery-item.is-failed .fraction-gallery-pending-status { color: var(--danger); }
+  .fraction-gallery-retry { padding: 2px 8px; font-size: 12px; }
+  .fraction-gallery-handle { cursor: grab; color: var(--muted); user-select: none; }
+  .fraction-gallery-thumb { display: block; flex: 0 0 auto; }
+  .fraction-gallery-thumb img {
+    width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line);
+  }
+  .fraction-gallery-file-icon { flex: 0 0 auto; }
+  .fraction-gallery-meta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .fraction-gallery-filename { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fraction-gallery-caption {
+    width: 100%; background: transparent; color: var(--ink); border: 1px solid transparent;
+    border-radius: 6px; padding: 4px 6px; font: inherit;
+  }
+  .fraction-gallery-caption:hover, .fraction-gallery-caption:focus { border-color: var(--line-strong); outline: none; }
+  .fraction-gallery-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .fraction-gallery-delete { flex: 0 0 auto; color: var(--danger); }
+  .fraction-gallery-empty { margin-top: 10px; }
+</style>
+<div
+  class="fraction-gallery card"
+  data-finding-id="{{ gallery_finding_id }}"
+  data-list-url="{{ url_for('fraction_api.list_finding_artifacts', finding_id=gallery_finding_id) }}"
+  data-reorder-url="{{ url_for('fraction_api.reorder_artifacts', finding_id=gallery_finding_id) }}"
+  data-create-url="{{ url_for('fraction_api.create_artifact') }}"
+>
+  <div class="fraction-gallery-head">
+    <h3>Evidence</h3>
+    {% if gallery_upload_enabled | default(true) %}
+    <form class="fraction-gallery-upload" data-engagement-id="{{ gallery_engagement_id }}">
+      <input type="file" name="file" class="fraction-gallery-file" required />
+      <input
+        type="text"
+        name="caption"
+        class="fraction-gallery-caption-input"
+        placeholder="Caption (optional)"
+      />
+      <button type="submit" class="btn btn-primary">Attach</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <ul class="fraction-gallery-list" id="fraction-gallery-list-{{ gallery_finding_id }}">
+    {% for a in gallery_artifacts %}
+    {% set kind_value = a.kind.value if a.kind is defined and a.kind is not string else a.kind %}
+    {% set raw_url = url_for('fraction_api.artifact_raw', artifact_id=a.id) %}
+    <li
+      class="fraction-gallery-item{% if not a.include_in_report %} is-excluded{% endif %}"
+      draggable="true"
+      data-id="{{ a.id }}"
+      data-update-url="{{ url_for('fraction_api.update_artifact', artifact_id=a.id) }}"
+      data-delete-url="{{ url_for('fraction_api.delete_artifact', artifact_id=a.id) }}"
+      data-raw-url="{{ raw_url }}"
+    >
+      <span class="fraction-gallery-handle mono" title="Drag to reorder">&#x2837;</span>
+      {% if kind_value == 'screenshot' or (a.content_type and a.content_type.startswith('image/')) %}
+      <a href="{{ raw_url }}" target="_blank" rel="noopener" class="fraction-gallery-thumb">
+        <img src="{{ raw_url }}" alt="{{ a.caption or a.filename }}" loading="lazy" />
+      </a>
+      {% else %}
+      <a href="{{ raw_url }}" target="_blank" rel="noopener" class="fraction-gallery-file-icon pill">
+        {{ kind_value }}
+      </a>
+      {% endif %}
+      <div class="fraction-gallery-meta">
+        <div class="fraction-gallery-filename mono">{{ a.filename }}</div>
+        <input
+          type="text"
+          class="fraction-gallery-caption"
+          value="{{ a.caption or '' }}"
+          placeholder="Caption"
+        />
+      </div>
+      <label class="fraction-gallery-toggle">
+        <input type="checkbox" class="fraction-gallery-include" {% if a.include_in_report %}checked{% endif %} />
+        include
+      </label>
+      <button type="button" class="btn fraction-gallery-delete" title="Delete artifact">&times;</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if not gallery_artifacts %}
+  <p class="muted fraction-gallery-empty">No evidence attached yet.</p>
+  {% endif %}
+</div>
+{#
+  outbox.js (WS14, PLAN.md §19) must run before artifacts.js: it defines window.FractionOutbox, which
+  artifacts.js's own top-level `if (window.FractionOutbox) {...}` wiring reads at script-load time. Both
+  tags are safe to include once per gallery on a page with several galleries -- each script guards
+  itself against double-initialization (window.FractionOutbox / window.__fractionArtifactsInit).
+#}
+<script src="{{ url_for('fraction.static', filename='outbox.js') }}"></script>
+<script src="{{ url_for('fraction.static', filename='artifacts.js') }}" defer></script>

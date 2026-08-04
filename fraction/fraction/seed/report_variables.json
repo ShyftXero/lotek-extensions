@@ -1,0 +1,50 @@
+[
+  {
+    "key": "AFFECTED", "label": "Affected items", "scope": "finding",
+    "from_facts": [
+      {"fact": "accounts", "shape": "list"},
+      {"fact": "objects", "shape": "list"},
+      {"fact": "accounts_extracted", "shape": "count", "template": "{value} domain accounts"},
+      {"fact": "shares", "shape": "list"},
+      {"fact": "param", "shape": "scalar", "template": "parameter '{value}'"},
+      {"fact": "control_id", "shape": "scalar"},
+      {"fact": "url", "shape": "scalar"},
+      {"field": "target_host", "shape": "host"}
+    ]
+  },
+  {
+    "key": "DOMAIN", "label": "Domain", "scope": "finding",
+    "from_facts": [
+      {"fact": "domain", "shape": "scalar"},
+      {"fact": "tenant", "shape": "scalar"},
+      {"field": "target_host", "shape": "parent_domain"}
+    ]
+  },
+  {
+    "key": "TARGET_URL", "label": "Target URL", "scope": "finding", "target_column": "target_url",
+    "from_facts": [{"fact": "url", "shape": "scalar"}]
+  },
+  {
+    "key": "TARGET_HOST", "label": "Target host", "scope": "finding", "target_column": "target_host",
+    "from_facts": [{"field": "target_host", "shape": "host"}, {"fact": "host", "shape": "host"}]
+  },
+  {
+    "key": "MAX_SEVERITY", "label": "Highest severity", "scope": "finding",
+    "from_facts": [{"field": "severity", "shape": "severity"}]
+  },
+  {
+    "key": "AFFECTED_COUNT", "label": "Affected count", "scope": "finding",
+    "from_facts": [
+      {"fact": "accounts", "shape": "count"}, {"fact": "objects", "shape": "count"},
+      {"fact": "accounts_extracted", "shape": "count"}
+    ]
+  },
+  {
+    "key": "ACCOUNTS", "label": "Accounts", "scope": "finding",
+    "from_facts": [{"fact": "accounts", "shape": "list"}]
+  },
+  {
+    "key": "OBJECTS", "label": "Objects", "scope": "finding",
+    "from_facts": [{"fact": "objects", "shape": "list"}]
+  }
+]

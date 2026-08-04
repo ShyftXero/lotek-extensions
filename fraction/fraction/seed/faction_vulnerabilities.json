@@ -1,0 +1,442 @@
+[
+  {
+    "Name": "Using EDR - Microsoft Defender for Endpoint",
+    "CategoryName": "Endpoint Detection and Response (EDR) Assessment",
+    "Description": "# Description\n<p>As part of the engagement, NemesisGroup found that CLIENT had an EDR configured and running on all endpoints. Microsoft Defender for Endpoint were found to be correctly configured and running on all endpoints, this offers greater protection against threats. Microsoft defender for endpoint is able to mitigate the risk of a successful attack by actively looking for signs of malicious behaviour and known threats.</p>\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "At Least One Member of an Admin Group Is Vulnerable to the Kerberoast Attack",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that an admin account was kerberoastable. The account had their SPN populated which means that it was vulnerable to a kerberoasting attack, this attack involved the attacker asking the domain controller for a ticket encrypted witht he password for the account, this ticket can the be cracked offline in an attempt to retrive the original password, this is a threat to user accounts as often their passwords are weaker than the passwords of service/machine accounts.</p>\n<p>To execute a kerberoasting attack the followingbuilt-in mechanics are abused:</p>\n<ul>\n<li>To access a service using Kerberos, a user requests a ticket (named TGS) to the DC specific to the service.</li>\n<li>This ticket is encrypted using a derivative of the service password, but can be brute-forced to retrieve the original password.</li>\n<li>Any account having the attribute SPN populated is considered as a service account.</li>\n<li>Given that any user can request a ticket for a service account, these accounts can have their password retrieved.</li>\n<li>In addition, services are known to have their password not changed at a regular basis and to use well-known words.</li>\n</ul>\n<p>Please note that this program ignores service accounts that had their password changed in the last 40 days ago to support using password rotation as a mitigation.</p>\n<p><br /></p>\n<p>This is an issue as this leaves the credentials of highly priveleged accounts exposed.</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Complete enviornment compromise</p>\n\n# Replication Steps\n<p>To replicate this finding, check your AD for accounts which have a set SPN, thsi can be done in multiple ways, below are tow PowerShell based examples:</p>\n<p>Using the Active Directory powershell module, we can use the Get-ADUser cmdlet:</p>\n<pre class=\"language-markup\"><code>get-aduser -filter {AdminCount -eq 1} -prop * | select name,created,passwordlastset,lastlogondate</code></pre>\n<p>We can also use PowerView's Get-NetUser cmdlet:</p>\n<pre class=\"language-markup\"><code>Get-NetUser -AdminCount | Select name,whencreated,pwdlastset,lastlogon</code></pre>",
+    "Recommendation": "<p>To mitigate the chances of a successful kerberoasting attack NemesisGroup recommends the following:</p>\n<ul>\n<li>Enable AES Kerberos encryption (or another stronger encryption algorithm), rather than RC4, where possible.</li>\n<li>Consider using Group Managed Service Accounts rather than service accounts with static passwords</li>\n<li>Consider upgrading to an Active Directory Domain or forest level which supports advanced Kerberos armoring.</li>\n<li>Ensure all of your service accounts have randomly generated 25+ character passwords</li>\n</ul>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "Excessive Use of Domain/Enterprise Administrator Group",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that the CLIENT had a large number of Domain/Enterprise Administrators.</p>\n<p>Domain Admins (DA) is a built-in group that have administrative access to the domain and therefore members of this group have full control of the domain. By default, this group is a member of the administrators group on all domain controllers, all domain workstations, and all domain member servers at the time they are joined to the domain. By default, the administrator account on the domain controller is a member of this group.</p>\n<p>Enterprise Admins is a built-in group that by default has administrative access to all domains in a forest (a forest is the top most container in an AD containing all domains, users etc.) . Enterprise Admins is a member of the Administrators group in all domains in a forest. There are very few tasks that require the use of an Enterprise Admin account. The tasks that require this level of access are forest-wide and are executed very rarely over the life of an AD forest.</p>\n<p>Having a large amount of Enterprise admins of DA's increases the likelyhood of compromise of the entire domain as this widens the attack sorface of an attacker.</p>\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "<p>The use of Domain adminstrators should be limited since normally only a subset of tasks needs this level of access, and most if not all non IT administrative tasks can be performed with a lower level of privileges.</p>\n<p>The enterprise admins group shoudl be empty, and if this role is needed it is likely because of misconfigurations in the domain that should be remedied instead of using eccessive priveleges to acomplish the task.</p>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "Lacking Cyber Hygene",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>In general during the assessment, NemesisGroup found that CLIENT had a low level of cyber security awareness and hygene. This manifested in the format of poor passwords, lack of locking of computers when going for breaks, and all in all many other smaller issues. The use of weak passwords was wide spread both for employees of M.J. Eriksson and their thirdparty IT provider.</p>\n\n# Impact\n<p>Total enviornment compromise</p>\n\n# Replication Steps\n<p>N/A</p>",
+    "Recommendation": "<p>Increase general awareness, if possible try to make a general change to the cybersecurity culture of the organization. Enforce propper password policies and have employees change their passwords on a regular basis.</p>\n<p>In general ensure that a security focused mindset is adopted accros the organization, and is required by third parties.</p>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "No Password Policy",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that there were no password policy enforced on the Domain. A password policy sets the rules that passwords for a service or user must meet, such as length and type of characters allowed and disallowed. Additionally, the password policy might specify that an entry is disallowed if the term is in a dictionary of unwanted terms.</p>\n<p>A password policy ensures that a user password is strong and is changed in a periodic manner so that it becomes highly impossible for an attacker to crack the password.<br />To ensure a high level of security for user accounts in the Active Directory domain, an administrator must configure and implement a domain password policy. The password policy should provide sufficient complexity, password length, and the frequency of changing user and service account passwords. Thus, you can make it hard for an attacker to brute-force or capture user passwords when sending over a network.</p>\n<p><br /></p>\n<p>The lack of a password policy, including lockout policy means that passwords are likely to be weak, and the lack of lockout policy means that an attacker can try as many different passwords for a given user as they want. This essentially means that all users with weak and easily guessable passwords are at a hgih risk of compromise, and in a relative compromise an attacker could potentially compromise all these users.</p>\n<p>{{.pass_pol}}</p>\n\n# Impact\n<p>Increased attack surface</p>\n\n# Replication Steps\n<p>The finding can be verified by checking the current AD password policy, example below using PowerShell:</p>\n<pre class=\"language-markup\"><code>Get-ADDefaultDomainPasswordPolicy</code></pre>",
+    "Recommendation": "<p>For all users ensure that a secure password policy is enabled, the following reccomendations should be enforced for all users, thsi can be done by forcing change of password uppon next login. Password reccomendations:</p>\n<ul>\n<li>If the account does not support long passwords, which is the case with legacy systems - Password should be as long as is supported</li>\n<li>If the account has an SPN set (is kerberoastable) - Super long password (32+ chars)</li>\n<li>If the account has DONT_REQ_PREAUTH (ASREPRoastable) set - Super long password (32+ chars)</li>\n<li>If the account is a service account - Super long password (32+ chars)</li>\n<li>If the account is an administrative account - Very long password (20+ chars)</li>\n<li>All other accounts - Long passwords (16+ chars)</li>\n</ul>\n<p>In addition it is recomended that additional security controls be enforced:</p>\n<ul>\n<li>Blakclist of leaked passwords like the ones present in the password list 'rockyou'</li>\n<li>Blacklist easily guessable words like the company name, seasson etc.</li>\n</ul>\n<p>Lastly ensure that a good lockout policy is also in place, such as locking out users after 10 login failures.</p>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "Password Reuse on Admin Accounts",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment NemesisGroup found that 'pitsupport' and 'ext-pitsupport' shared passwords.</p>\n<p>This was abused as the credentials for the 'pitsupport' account was cached on the local endpoint where the attacker had administrative access over. After the attacker gained access to this account the attacker was able to use the credentials to authenticate to the domain and gain control over the 'ext-pitsupport' via a 'pass-the-hash' attack, this gained domain administrative access over the domain.</p>\n<p>{{.pwd_reuse_0}}</p>\n<p>{{.pwd_reuse_1}}</p>\n\n# Impact\n<p>Total enviornment compromise</p>\n\n# Replication Steps\n<p>N/A</p>",
+    "Recommendation": "<p>Ensure that no accounts share passwords.</p>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "Sensitive Files in Exposed Shares",
+    "CategoryName": "Network Configuration Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup was able to view various fileshares and gain access to the files stored there. By doing this NemesisGroup was able to gain access to various information including &lt;credentials, sensitive informaiton, GDRP data, etc.&gt;.</p>\n<p>This is an issue as these files are accessable for all employees at &lt;client&gt;, most of which have no business need to access this informaiton.</p>\n<p>&lt;THIS WAS USED TO&gt;</p>\n\n# Impact\n<p>Information Disclosure</p>\n\n# Replication Steps",
+    "Recommendation": "<p>In general, it is almost impossible to keep sensitive information out of shares, but NemesisGroup recommends implementing strong network segmentation and segregation to limit access, and also to go through these shares using tolls and manual audits to ensure that files containing sensitive information are either removed or that they have access restricted.</p>",
+    "SeverityId": 5,
+    "ImpactId": 5,
+    "LikelihoodId": 5,
+    "Active": true
+  },
+  {
+    "Name": "No Local Administrator Password Solution (LAPS)",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that CLIENT did not make use or Microsoft Local Administrator Password Solution (LAPS) or similar solution for managing passwords for local administrators.</p>\n<p>From Microsoft:</p>\n<blockquote class=\"blockquote\">The \"Local Administrator Password Solution\" (LAPS) provides management of local account passwords of domain joined computers. Passwords are stored in Active Directory (AD) and protected by ACL, so only eligible users can read it or request its reset.<br /><br />For environments in which users are required to log on to computers without domain credentials, password management can become a complex issue. Such environments greatly increase the risk of a Pass-the-Hash (PtH) credential replay attack. The Local Administrator Password Solution (LAPS) provides a solution to this issue of using a common local account with an identical password on every computer in a domain. LAPS resolves this issue by setting a different, random password for the common local administrator account on every computer in the domain. Domain administrators using the solution can determine which users, such as helpdesk administrators, are authorized to read passwords.<br /><br />LAPS simplifies password management while helping customers implement recommended defenses against cyberattacks. In particular, the solution mitigates the risk of lateral escalation that results when customers use the same administrative local account and password combination on their computers. LAPS stores the password for each computer's local administrator account in Active Directory, secured in a confidential attribute in the computer's corresponding Active Directory object. The computer is allowed to update its own password data in Active Directory, and domain administrators can grant read access to authorized users or groups, such as workstation helpdesk administrators.<br /><br />Use LAPS to automatically manage local administrator passwords on domain joined computers so that passwords are unique on each managed computer, randomly generated, and securely stored in Active Directory infrastructure. The solution is built on Active Directory infrastructure and does not require other supporting technologies. LAPS uses a Group Policy client-side extension (CSE) that you install on managed computers to perform all management tasks. The solution's management tools provide easy configuration and administration.</blockquote>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Local enviornment compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>If you don't have any provisioning process or password solution to manage local administrators, you should install the LAPS solution. If you mitigate the risk differently, you should see this finding as an exception, as the risk is covered.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Number of Accounts Which Has Never-Expiring Passwords: 53",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>Some accounts have passwords which never expire. Should an attacker compromise one of these accounts, he would be able to maintain long-term access to the Active Directory domain.</p>\n<p><span class=\"bold\">PingCastle Note: </span>This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Account compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>In order to make Active Directory enforce periodic password change, accounts must not have the \"Password never expires\" flag set in the \"Account\" tab of the user properties. Their passwords should then be rolled immediately.</p>\n<p>For services accounts, Windows provide the \"managed service accounts\" and \"group managed service accounts\" features to facilitate the automatic change of passwords.</p>\n<p>Please note that there is a document in the section below which references solutions for service accounts of well known products.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Number of Admins Not in Protected Users",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>As part of the security assessment, NemesisGroup found that a high number of admin accounts were not in the protected users' group. This is an issue as this potentially leaves the credentials of highly privileged users exposed on servers and endpoints. Please refer to a PingCastle report to see the full list of admins not in protected users.</p>\n<p>The Protected User group is a special security group which automatically applies protections to minimize credential exposure. starting with Windows 8.1. Older Operating Systems must be updated to take this protection into account such as the Windows 7 KB2871997 patch.</p>\n<p>For admins, it:</p>\n<ul>\n<li>Disables NTLM authentication</li>\n<li>Reduces Kerberos ticket lifetime</li>\n<li>Mandates strong encryption algorithms, such as AES</li>\n<li>Prevents password caching on workstations</li>\n<li>Prevents any type of Kerberos delegation</li>\n</ul>\n<p>Please also note that a few links (see below) recommend that at least one account is kept outside of the group Protected Users in case there is a permission problem.</p>\n<p><span class=\"bold\">PingCastle Note: </span>This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Account Exposure</p>\n\n# Replication Steps",
+    "Recommendation": "<p>After having reviewed the potential impact of adding users to this group, add the missing privileged accounts to this group.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Number of Admin With a Password Older Than 3 Years: 16",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that there were multiple administrators which had passwords older than 3 years. Having old or never changing passwords is a security risk as if at any time passwords of these accounts are compromised an attacker is likely to have persistent access to this account. This means that in the event of total enviornment compromise an attacker would have persistent priveleges in the enviornment, even if the original source of compromise is identified and the attacker is kicked out of the enviornment, if they were to gain access once more they would retain the privileges obtained.</p>\n<p><br /></p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Enviornment compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Ensure that administrative passwords are changed on a regular basis.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Presence of Accounts With Non Expiring Passwords in the Domain Admin Group",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>Some administrative accounts have passwords which never expire. Should an attacker compromise one of these accounts, he would be able to maintain long-term access to the Active Directory domain.</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Enviornment compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>In order to make Active Directory enforce periodic password change, accounts must not have the \"Password never expires\" flag set in the \"Account\" tab of the user properties. Their passwords should then be rolled immediately.</p>\n<p>For services accounts, Windows provide the \"managed service accounts\" and \"group managed service accounts\" features to facilite the automatic change of passwords.</p>\n<p>Please note that there is a document in the section below which references solutions for service accounts of well known products.<br />Also Linux servers should be configured with automatic machine account change.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Presence of Admin Accounts Which Do Not Have the Flag \"This Account Is Sensitive and Cannot Be Delegated\"",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that there were several administrative users which were misconfigured by not having the configuration flag \"this account is sensitive and cannot be delegated\" (and are not member of the built-in group \"Protected Users\" when your domain functional level is at least Windows Server 2012 R2).</p>\n<p>Without the flag \"This account is sensitive and cannot be delegated\" any account can be impersonated by some service account. It is a best practice to enforce this flag on administrators accounts.</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Enviornment compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>To correct the situation, you should make sure that all your Administrator Accounts has the check-box \"This account is sensitive and cannot be delegated\" active or add your Administrator Accounts to the built-in group \"Protected Users\" if your domain functional level is at least Windows Server 2012 R2 (some functionalities may not work properly afterwards, you should check the official documentation).</p>\n<p><br />If you want to enable the check-box \"This account is sensitive and cannot be delegated\" but this is not possible because the box is not present (typically for GMSA account), you can add the flag manually by adding the number 1048576 to the attribute useraccountcontrol of the account.<br />Please note that there is a section below in this report named \"Admin Groups\" which give more information.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "EDR Whitelisting",
+    "CategoryName": "Endpoint Detection and Response (EDR) Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that whitelisting for the EDR solution was present. Whitelisting in the context of AV and EDR means that the solution will not scan or interact with the items whitelisted, this can range from individual files to folders etc. This is a risk as it allows an attacker to successfully hide their malware and tools in whitelisted folders of using whitelisted file names and extensitons, this slows down detection, and in some cases completely avoids detection.</p>\n\n# Impact\n<p>Reduced detection capabilities</p>\n\n# Replication Steps",
+    "Recommendation": "",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Missing MS Security Baselines",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup fount that the systems tested were not configured to use Microsoft security baselines, despite a deployment method which supports these were used. Even though Windows and Windows Server are designed to be secure out-of-the-box, many organizations still want more granular control over their security configurations. To navigate the large number of controls, organizations need guidance on configuring various security features. Microsoft provides this guidance in the form of security baselines.</p>\n<p>We recommend that you implement an industry-standard configuration that is broadly known and well-tested, such as Microsoft security baselines, as opposed to creating a baseline yourself. This industry-standard configuration helps increase flexibility and reduce costs.</p>\n<p>What are security baselines? Every organization faces security threats. However, the types of security threats that are of most concern to one organization can be different from another organization. For example, an e-commerce company may focus on protecting its internet-facing web apps, while a hospital may focus on protecting confidential patient information. The one thing that all organizations have in common is a need to keep their apps and devices secure. These devices must be compliant with the security standards (or security baselines) defined by the organization.</p>\n<p>A security baseline is a group of Microsoft-recommended configuration settings that explains their security implication. These settings are based on feedback from Microsoft security engineering teams, product groups, partners, and customers.</p>\n<p>.</p>\n\n# Impact\n<p>Increased attack surface</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Implement Security baselines via the deployment solution used: intune, sccm etc.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Azure: Missing MFA for Administrators",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that administrative users in CLIENTS's Azure tenant are not required to use multi-factor authentication.</p>\n<p>This is an issue as these are the most critical to protect and not using MFA leaves them at risk of brute force attacks and other password-based attacks. Multi-factor authentication (MFA) is an important security measure that adds an extra layer of protection to your account by requiring more than just a username and password. It requires the user to provide two or more pieces of evidence (factors) to authenticate their identity.</p>\n<p>This can include a password, a security code sent to a mobile device, a biometric scan, or a physical token. MFA is important because it greatly reduces the risk of compromise as it is much more difficult for an attacker to gain access to an account if they are required to provide multiple pieces of evidence to authenticate their identity. This helps protect both the user and the company from malicious actors.<br /><br /></p>\n<p>{{.azure_no_mfa_admin}}</p>\n\n# Impact\n<p>Total enviornment compromise</p>\n\n# Replication Steps\n<p>To replicate this finding check the azure portal</p>",
+    "Recommendation": "<p>Enable MFA on all user's administrative accounts.</p>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Missing DMARC",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the assessment it was found that CLIENT did not have DMARC configured for their domain. This means that the domain could be used by criminals to spread malicious emails. DMARC is a key anti-spoofing control. Without a strong DMARC policy in place, criminals can send fake emails pretending to come from CLIENT</p>\n<p><span class=\"bold\">What is anti-spoofing?</span></p>\n<p>Anti-spoofing is about making it difficult for fake emails to be sent from your organisation's email address. DMARC is the key anti-spoofing control that organisations should implement. It is implemented alongside the standards SPF and DKIM.How does it work?</p>\n<p>Effective anti-spoofing controls on your domains involve implementing the following:Sender Policy Framework (SPF) allows you to publish IP addresses which should be trusted for your domain.</p>\n<p>Domain Keys Identified Mail (DKIM) allows you to cryptographically sign email you send to show it's from your domain.</p>\n<p>Domain-based Message Authentication, Reporting and Conformance (DMARC) allows you to set a policy for how receiving email servers should handle email which doesn't pass either SPF or DKIM checks. This includes untrusted emails, which should be discarded. DMARC also generates reports, which you can use to understand how your email is being handled.<br /><br /></p>\n<p>{{.no_dmarc}}</p>\n\n# Impact\n<p>Impersonation and trust abuse</p>\n\n# Replication Steps\n<p>To replicate the tests done and verify the remediation the following online tool can be used: https://emailsecuritycheck.service.ncsc.gov.uk</p>",
+    "Recommendation": "<p>Although a DMARC policy is quick to set up, this should be done carefully and over time to ensure that all legitimate emails continue to be delivered.</p>\n<p>It is the responsibility of the domain owner to set up a DMARC policy. You may need to speak to your email provider to find out how to do this.</p>\n<p>Read our guidance on Email Security and Anti-Spoofing which covers everything you need to know including:</p>\n<ol>\n<li><span class=\"bold\">Signing up to a DMARC tool</span> - A range of tools are available to help you set up and manage your DMARC policy. You can sign up for the full NCSC Mail Check service if your organisation is in the UK public sector, or a charity, University, college or school. If not, commercial alternatives are available.</li>\n<li><span class=\"bold\">How to establish a basic DMARC policy</span> - This should be a simple and safe policy that won't affect delivery of your email but will allow you to see exactly what's happening with your email delivery.</li>\n<li><span class=\"bold\">Configuring each of your email sending systems so that they are trusted</span> - How to identify and configure each of you email sending systems with standards like SPF an DKIM which allow recipients to know they are trusted senders.</li>\n<li><span class=\"bold\">Moving to a strong DMARC policy</span> - How and when to change your policy to a strong policy that will quarantine or reject untrusted emails.</li>\n</ol>",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Lacking Vulnerability Management",
+    "CategoryName": "Patch and Vulnerability Management Assessment",
+    "Description": "# Description\n<p>During the assessment NemesisGroup found that</p>\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "",
+    "SeverityId": 4,
+    "ImpactId": 4,
+    "LikelihoodId": 4,
+    "Active": true
+  },
+  {
+    "Name": "Last change of the Kerberos password: 1922 day(s) ago",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>As part of the security assessment, NemesisGroup conducted an analysis of the domain and noticed that the Kerberos tgt password has not been changed in 688 days, in later talks NemesisGroup also found out that no one knew if this has been changed any time before that. This is an issue as an old Kerberos password means that if the domain had previously been compromised an attacker might still have access as the password needs to be changed twice for the change to be effective.<br /><span class=\"bold\">PingCastle Note: </span>This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Total environment compromise</p>\n\n# Replication Steps\n<p>To reproduce this finding run an AD audit tool like PingCastle to verify that it has been fixed correctly.</p>",
+    "Recommendation": "<p><span class=\"bold\">Important: please do this together with your IT provider or anyone who has done this before as errors might lose you access to the Kerberos account.</span><br />The password of the krbtgt account should be changed twice to invalidate the golden ticket attack.<br /><span class=\"bold\">Beware: two changes of the krbtgt password not replicated to domain controllers can break these domain controllers You should wait at least 10 hours between each krbtgt password change (this is the duration of a ticket life).</span></p>\n<p>There are several possibilities to change the krbtgt password.</p>\n<ul>\n<li>First, a Microsoft script can be run in order to guarantee the correct replication of these secrets.</li>\n<li>Second, a more manual way is to essentially reset the password manually once, then wait 3 days (this is a replication safety delay), and then reset it again. This is the safest way as it ensures the password is no longer usable by the Golden ticket attack.</li>\n</ul>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Passwords in User Description",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that there were users in the Active Directory (AD) which had passwords in their descriptions, this is an issue as this exposes sensitive information and credentials. Even if the user has already changed their password this is still an issues as this reveals information about how passwords are structured and provides an attacker insight into how they might compromise future accounts based of known operating patterns. Furthermore, the password may be reused by other users thereby leading to the compromise of these.</p>\n<p>{{.pass_in_desc}}</p>\n\n# Impact\n<p>Account compromise</p>\n\n# Replication Steps\n<p>Check user descriptions either using a tool like AD Explorer, BloodHound, or PowerShell.</p>",
+    "Recommendation": "<p>Review the descriptions of accounts in the AD and ensure that no passwords or sensitive information is present in these.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "SMBv1 Activated on DC(s)",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment NemesisGroup found that several Domain Controllers have SMBv1 enabled.</p>\n<p>&lt;WHY&gt;</p>\n<p>If SMBv1 is needed then it is recommended that an alternate solution for this is found as having SMBv1 enabled might make domain controllers vulnerable to downgrade attacks. The SMB downgrade attack is used to obtain credentials or execute commands on behalf of a user by using SMB v1 as protocol. Because SMB v1 supports old authentication protocol, the integrity can in cases be bypassed.</p>\n<p>&lt;WAS IT USED&gt;</p>\n<p><span class=\"bold\">Affected Resources:</span></p>\n<p>&lt;LIST OF AFFECTED RESOURCES&gt;</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Environment Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>It is highly recommended by Microsoft to disable SMB v1 whenever it is possible on both the client and server sides. Do note that if you are still not following best practices regarding the usage of deprecated OS (Windows 2000, 2003, XP, CE), regarding Network printer using SMBv1 scan2shares functionalities, or regarding software accessing Windows share with a custom implementation relying on SMB v1, you should consider fixing these issues before disabling SMB v1, as it will generate additional errors.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "The Audit Policy on Domain Controllers Does Not Collect Key Events",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>To detect, mitigate, and recover from a cyber attack, the right set of events need to be collected. If these are not collected this increases difficulties with recovery and detection. Note that an EDR solution does collect key events where it is installed, however in case of an incident these might not be sufficient or compatable with the responders workflows and expertise, thereby hindering the response effort.</p>\n<p>The audit policy is a compromise between too much and too few events to collect.</p>\n<p>To solve this problem, the suggested audit policy from adsecurity.org is checked against the audit policy in place, see references below.</p>\n\n# Impact\n<p>Reduced DFIR effectiveness</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Check with your incident response provider or cyber security department that the events collected is sufficient for an effective response in case of an incident. Else identify the Audit settings to apply and fix them. Be aware that there are two places for audit settings.</p>\n<ul>\n<li>For \"Simple\" audit configuration:<br />in Computer Configuration -&gt; Policies -&gt; Windows Settings -&gt; Security Settings -&gt; Local Policies -&gt; Audit Policies</li>\n<li>For \"Advanced\" audit configuration:<br />in Computer Configuration -&gt; Policies -&gt; Windows Settings -&gt; Security Settings -&gt; Advanced Audit Policy Configuration</li>\n</ul>\n<p>Also be sure that the audit GPO is applied to all domain controllers, as the underlying object may be in a OU where the GPO is not applied.</p>\n<p>For more please refer to the links below</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "The spooler service is remotely accessible from 1 DC",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Unsupported OS",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that the AD of &lt;CLIENT&gt; had several objects from endpoints with Operating systems that are end-of-life and no longer supported, not that this does not mean that the servers are all still on the network. After speaking with &lt;CLIENT&gt; and doing some network reconnaissance it was clear that some outdated windows servers were still on the network.</p>\n<p><br /><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report. The findings will have the name 'Presence of $WINDOWS_VERSION' where $WINDOWS_VERSION is the version like 'Windows XP'.</p>\n\n# Impact\n<p>Environment Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>It is recommended that all inactive objects in the AD be removed and that all old servers be upgraded, if possible, if not possible it is recommended that appropriate security controls be set in place.</p>\n<p><br />Do note that you can get the full details regarding the OS used with the following PowerShell command: </p>\n<pre class=\"language-csharp\"><code>Get-ADComputer -Filter { operatingsystem -like \"*Windows XP*\" } -Property * | Format-Table Name,OperatingSystem,OperatingSystemServicePack,OperatingSystemVersion -Wrap -Auto</code></pre>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "WSUS is Configured with HTTP Instead of HTTPS",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment NemesisGroup found that WSUS at &lt;CLIENT&gt; was configured to use HTTP instead of HTTPS, this means that the server is vulnerable to a downgrade attack where an attacker could potentially gain access to a server using WSUS.</p>\n<p>WSUS is the component used on the intranet to deliver Windows updates. The recommendation of Microsoft is to use HTTPS for transport but for convenience or tests, HTTP can be configured. The HTTP protocol can be intercepted on the network with tools such as wsuxploit or WSuspicious (see below for links) and malicious updates can be delivered.</p>\n<p><br /><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Environment Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>WSUS needs to be configured with HTTPS. See this guide for more information: https://docs.microsoft.com/en-us/windows-server/administration/windows-server-update-services/deploy/2-configure-wsus#23-secure-wsus-with-the-secure-sockets-layer-protocol</p>\n<p>Then all GPO which reference the HTTP path should be changed to the HTTPS path. This program is looking at the settings defined in \"Set the intranet update service for detecting updates\" and \"Set the alternate download server\" in GPO Computer Configuration\\Policies\\Administrative Templates\\Windows Components\\Windows Update\\Specify intranet Microsoft update service location (refers to the registry key HKLM\\Software\\Policies\\Microsoft\\Windows\\WindowsUpdate\\WUServer and HKLM\\Software\\Policies\\Microsoft\\Windows\\WindowsUpdate\\UpdateServiceUrlAlternate)</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Missing Regular Backup Restore Tests",
+    "CategoryName": "Backup Policy and Procedure Review",
+    "Description": "# Description\n<p>As part of the analysis, NemesisGroup discovered that there has never been a backup restore test, and the only restoration of data has been on a file level. This is an issue as it means that there likely are no procedures or experience with backing up servers and networks. This means that if &lt;CLIENT&gt; is hit by an incident the confidence that they would be able to successfully restore their systems is highly unlikely and if possible, the process would likely be drawn out and expensive. This is mitigated by the fact that &lt;CLIENT&gt; uses &lt;THIRD PARTY&gt; as a provider and &lt;THIRD PARTY&gt; is assumed to have the skills and personnel to assist &lt;CLIENT&gt; in a restore if they are compromised.</p>\n\n# Impact\n<p>Increased friction when restore needed</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Include backup restore tests in your IT planning so that a restore test is done at least yearly where critical servers are restored in a separate network (segment) with no connection to the main IT infrastructure, this backup should include at least a domain controller, and key business servers.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Cached Credentials",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that both servers and laptops had the &lt;<span class=\"bold\">default&gt;</span> amount of cached credentials. This is an issue as it potentially exposes credentials if an attacker were to gain administrative access to the system.</p>\n<p>Cached credentials are stored in the Security Accounts Manager (SAM) database and can allow a user to log onto a workstation they have previously logged onto even if the domain is not available. Whilst this functionality may be desirable from an availability of services perspective, this functionality can be abused by an adversary who can retrieve these cached credentials (potentially Domain Administrator credentials in a worst-case scenario). To reduce this risk, cached credentials should be limited to only one previous logon.</p>\n<p><br /><span class=\"bold\">&lt;FIGURE WITH CACHED CREDENTIALS COUNT&gt;</span></p>\n<p><span class=\"bold\">&lt;How was this used in the assignment&gt;</span></p>\n\n# Impact\n<p>Account Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>It is recommended that the number of credentials cached on a given system be limited as much as possible, as often no need for 10 cached credentials as these are only used if the server is not able to reach the domain controller, see below for more:<br /><br /></p>\n<ul>\n<li>Servers\n<ul>\n<li>Recommended credential cache size: 0-1</li>\n<li>A server shouldn't cache credentials as it is never unable to reach the domain controller (servers in isolated networks like IoT and production might have different needs)</li>\n</ul>\n</li>\n<li>Workstations\n<ul>\n<li>Recommended credential cache size: 2</li>\n<li>Usually, a machine for employee use will have a single designated user, thus limiting the need for multiple cached credentials.<br /><br /></li>\n</ul>\n</li>\n<li>Meeting room systems\n<ul>\n<li>Recommended credential cache size: 0-1</li>\n<li>These systems are exposed to many different employees and thus might prove a big risk. Also, as they are usually stationary and in a fixed room the need for credentials will be limited</li>\n</ul>\n</li>\n</ul>\n<p>For more see: https://www.cyber.gov.au/acsc/view-all-content/publications/hardening-microsoft-windows-10-version-21h1-workstations</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Missing Attack Surface Reduction Rules (ASR)",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that Microsoft Attack Surface Reduction (ASR) rules were not found to be enabled on workstations. This is an issue as the rules helt reduce the organizaitons attack surface.</p>\n<p>Your organization's attack surface includes all the places where an attacker could compromise your organization's devices or networks. Reducing your attack surface means protecting your organization's devices and network, which leaves attackers with fewer ways to perform attacks. Configuring attack surface reduction rules in Microsoft Defender for Endpoint can help!</p>\n<p>Attack surface reduction rules target certain software behaviors, such as:</p>\n<ul>\n<li>Launching executable files and scripts that attempt to download or run files</li>\n<li>Running obfuscated or otherwise suspicious scripts</li>\n<li>Performing behaviors that apps don't usually initiate during normal day-to-day work</li>\n</ul>\n<p><br />Such software behaviors are sometimes seen in legitimate applications. However, these behaviors are often considered risky because they are commonly abused by attackers through malware. Attack surface reduction rules can constrain software-based risky behaviors and help keep your organization safe.</p>\n\n# Impact\n<p>Increased attack surface</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Enable Attack Surface Reduction (ASR) rules in the deployment method used e.g. intune, SCCM, etc.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Missing Key Windows Event Logs",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the engagement NemesisGroup found that</p>\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "PowerShell Version 2",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the assessment, it was found that laptops and servers are running old and outdated versions of PowerShell. This is an issue because the older versions of PowerShell lack integration with modern EDR components like AMSI, thus these versions are not scanned and protected against common attacks, and hence these attacks are not detected. The Anti Malware scan Interface or AMSI is the API used by MS Defender and other EDR products to scan PowerShell for malicious contents, this is done continually. The issue is that this is as mentioned above only supported in newer versions of PowerShell. When PowerShell version 2 is enabled, the threat actor can do almost anything on the device unnoticed. The risk here is the general lack of awareness and the decreased effectiveness of the EDR installed. Especially for laptops, this risk is compounded by the popularity of PowerShell-based malware.</p>\n\n# Impact\n<p>Reduced Detection Capabilities</p>\n\n# Replication Steps",
+    "Recommendation": "<p>If there is no business purpose for old versions of PowerShell being used it is recommended that these be removed/uninstalled wherever possible. Please note that this might affect some scripts and programs.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Users Are Local Administrators",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>As part of the engagement NemesisGroup found that all users at the CLIENT were local administrators on their respective machines. Being part of the lcoal administrators group means that the user has complete control over the machine and can access almost all system funcitonality, these priveleges can allow a user to gain access to credentials stored on the endpoint, bypass and eliminate defences, as welll as additional attacks like installing key loggers and persistance mechanisms on the local machine.</p>\n<p>Being part of the local administrators group does however not give the user any other additional privileges in a domain. However, being a local administrator is still a risk as it increases an attackers capabilities if they were to gain a foothold on the machine.</p>\n\n# Impact\n<p>Increased attack surface</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Remove users from the local administrators group and use a solution like LAPS to manage local administrative access.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Azure AD: The Password Used in Azure AD SSO Has Not Been Changed for at Least One Year",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that the AzureAD SSOpassword is old and has not been changed in at least a year.</p>\n<p>AzureAD SSO is performed using a gateway. This gateway converts a kerbros TGS ticket to SAML ticket. In short, a connection to the computer account AZUREADSSOACC and the secret of this user account is used as a shared secret with AzureAD.</p>\n<p><br />Despite the fact that computer account should have its password automatically changed every 30 days, this computer account does not have its password changed automatically.</p>\n<p><br />That means that an extraction of its password (using DCSync for example) can lead to an AzureAD compromise.</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Attacker persistence</p>\n\n# Replication Steps\n<p>Run PingCastle and verify that the finding has been fixed.</p>",
+    "Recommendation": "<p>Run the script referenced in the documentation below to change the password of the account AZUREADSSOACC.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Azure: Insecure Consent Grant Setup",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that the current azure consent setup of CLIENT is insecure. The current setup allows users to consent to which ever application they desire, this is an issue as this potentially allows an attacker to gain persistent access tot he orgnaizations Azure tenant as that user in an attack known as 'illicit consent grant'.</p>\n<blockquote class=\"blockquote\">In an illicit consent grant attack, the attacker creates an Azure-registered application that requests access to data such as contact information, email, or documents. The attacker then tricks an end user into granting that application consent to access their data either through a phishing attack, or by injecting illicit code into a trusted website. After the illicit application has been granted consent, it has account-level access to data without the need for an organizational account. Normal remediation steps, like resetting passwords for breached accounts or requiring Multi-Factor Authentication (MFA) on accounts, are not effective against this type of attack, since these are third-party applications and are external to the organization.</blockquote>\n<p>The current settings of the tenant are:</p>\n<p>{{.consent_grant}}</p>\n\n# Impact\n<p>Tenant compromise</p>\n\n# Replication Steps\n<p>In the azure portal, check the consent grant settings under 'consent and permissions'.</p>",
+    "Recommendation": "<p>Ensure that the strictest possible settings for consent are chosen.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Azure: Never Expering Paswords",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that there were issues with user passwords in Azure which never expeirs. The lack of password experery increases the chance of compromise as this gives attackers additional time to attempt to compromise the password and thereby the account.</p>\n<blockquote class=\"blockquote\">Research has found that when periodic password resets are enforced, passwords become less secure. Users tend to pick a weaker password and vary it slightly for each reset. If a user creates a strong password (long, complex and without any pragmatic words present) it should remain just as strong in the future as it is today. It is Microsoft's official security position to not expire passwords periodically without a specific reason, and recommends that cloud-only tenants set the password policy to never expire.</blockquote>\n<p><br /></p>\n\n# Impact\n<p>Increased chance of compromise</p>\n\n# Replication Steps\n<p>To replicate this finding inspect the 'Identity Secure Score' in the azure portal</p>",
+    "Recommendation": "<p>Ensure that users have to change their passwords. For this follow the Microsoft recommended actions in the azure portal.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Azure: Not Using Least Privileged Administrative Roles",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that the CLIENT's administrators in azure were not following the principle of least privilege, and therefore had to many administrative rights in the tenant. This is an issue as this increases the potential damage the compromise of an admin account can lead to.</p>\n<blockquote class=\"blockquote\">Ensure that your administrators can accomplish their work with the least amount of privilege assigned to their account. Assigning users roles like Password Administrator or Exchange Online Administrator, instead of Global Administrator, reduces the likelihood of a global administrative privileged account being breached.</blockquote>\n\n# Impact\n<p>Increased risk of compromise</p>\n\n# Replication Steps\n<p>To replicate this finding please refer to the 'Identity Security Score' int the azure portal</p>",
+    "Recommendation": "<p>Follow Microsoft recomendations from azure portal</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Lacking Network Segmentation and Segregation",
+    "CategoryName": "Network Configuration Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that although &lt;CLIENT&gt; was using different VLANs and IP ranges for their different sites, there was a general lack of segmentation therein, meaning that NemesisGroup was able to freely reach different servers and endpoints on the network. There was however some segregation between the office networks and production and R&amp;D. The issue here is that the potential attack surface for an attacker is greatly increased, and potentially sensitive information and systems might be exposed and vulnerable to exploitation.</p>\n\n# Impact\n<p>Widened Attack Surface</p>\n\n# Replication Steps",
+    "Recommendation": "<p>NemesisGroup recommends that network segregation between the different sites and regions be created only allowing business-critical communication between networks with a focus on ports used for lateral movement (SMB, WMI, RDP).</p>\n<p><br />NemesisGroup also recommends creating network segregation that mirrors the AD tiering done. This means that servers and workstations are separated and to interact with a higher-tier system a jump host needs to be used.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "Vulnerable Network Infrastructure",
+    "CategoryName": "Network Configuration Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that there were several pices of network infrastructure on the CLINET's network which were vulnerable, and some which even had public exploits available. This is an issue as this potentially could allow an attacker to deny internet access on the coorporate network.</p>\n\n# Impact\n<p>Denial of Service</p>\n\n# Replication Steps\n<p>To replicate and check the remediations of these findings use a vulenrability sacnner like Nessus, Qualys or nmap. Please note that if a public exploit is available thsi means that the barrier to exploitaiotn is very low.</p>",
+    "Recommendation": "<p>Ensure that all software and firmware is up to date and patched. If the systems are no longer supported and not reciving security updates ensure that a plan is in place to replace these assets.</p>",
+    "SeverityId": 3,
+    "ImpactId": 3,
+    "LikelihoodId": 3,
+    "Active": true
+  },
+  {
+    "Name": "A LDAP Authentication Without Signature Enforcement Was Allowed",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that LDAP signing is not enforced. If the the request for signature of each LDAP request is not enforced, a man in the middle can be performed on an LDAP connection, for example to add a user to the admin group.</p>\n<p>This test is made by ignoring the local computer security policies. Signature enforcement is done by setting the flag ISC_REQ_INTEGRITY when initializig the Negotiate / NTLM / Kerberos authentication. The opposite test is made with the flag ISC_REQ_NO_INTEGRITY set.</p>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Enviornment Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>You have to make sure that ALL LDAP clients are compatible with LDAP signature. All supported Windows since Windows XP this into account and also most of the Unix clients.</p>\n<p>You have to follow the Microsoft article quoted in reference to enable LDAP signing, this includes auditing the clients which are not compatible and how to enforce this policy.</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "No Mitigation for CVE 2021-42291",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment, NemesisGroup found that DsHeuristics has not been set to enable the mitigation for CVE-2021-42291, this is an issue as this combined with the fact that users are allowed to add up to 10 computer objects to the domain, means that {{client}} might potentially be vulnerable to attacks like NoPAC, which could lead to domain takeover. This is because The way an Active Directory behaves can be controlled via the attribute <span class=\"italic\">DsHeuristics of CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration.</span><br /><br />A parameter stored in its attribute and whose value is <span class=\"italic\">LDAPAddAutZVerifications</span> and <span class=\"italic\">LDAPOwnerModify</span> can be set to modify the mitigation of CVE-2021-42291.<br /><br />The KB5008383 has introduced changes to the default security descriptor of Computer containers to add audit and limit computer creation without being an admin. Indeed, it is recommended to not let anyone create computer accounts as they can be used to abuse kerberos or to perform relay attacks.<br />Mitigations in CVE-2021-42291 consist of 3 choices to be set on 2 settings.<br /><br />They are named LDAPAddAutZVerifications and LDAPOwnerModify and are respectively the 28th and 29th character of this string.<br />For the expected values:</p>\n<ul>\n<li>With the value 0 (the default), it enables an additional audit mechanism</li>\n<li>With the value 1 (recommended), it enforces new security permissions, especially to require an action of the domain admin when unusual actions are performed</li>\n<li>With the value 2 (not recommended), it disables the audit mechanism that has been added by default and does not enable the new security permissions</li>\n</ul>\n<p><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Environment Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>The easiest and fastest way to correct this issue is to replace the <span class=\"bold\">28th and 29th character of the DsHeuristics attribute.</span><br />The value of LDAPAddAutZVerifications and LDAPOwnerModify should be set to 1.</p>\n<p>Open the procedure embedded into the KB5008383 to apply this mitigation and change the DsHeuristics value.</p>\n<p>Note: you have to pay attention that there are control characters at the 10th and 20th position to avoid undesired changes in the DsHeuristics attribute.<br />Typically if the DsHeuristics is empty, the expected new value is 00000000010000000002000000011</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "No Service Account Password Policy",
+    "CategoryName": "Active Directory Assessment",
+    "Description": "# Description\n<p>During the assessment it was found that &lt;CLIENT&gt; does not have a password policy in place for Service Accounts, having a policy is the best practice for the Service Accounts since it ensures that the passwords are created in a secure fashion if set up correctly. Indeed, having a 20+ characters password for this account greatly helps reduce the risk behind credential attacks like Kerberoasting (offline cracking of the TGS tickets).</p>\n<p><br />Note: PSO (Password Settings Objects) will be visible only if the user who collected the information has permission to view it.</p>\n<p><br /><span class=\"bold\">PingCastle Note:</span> This finding is present in your PingCastle report, therefore, to ensure that the issue has been resolved please refer to a newly generated report.</p>\n\n# Impact\n<p>Account Compromise</p>\n\n# Replication Steps",
+    "Recommendation": "<p>The recommended way to handle service accounts is to use \"Managed service accounts\" introduced since Windows 2008 R2 (search for \"msDS-ManagedServiceAccount\").</p>\n<p><br />To solve the anomaly, you should implement a PSO or GPO password guaranteeing a 20+ length password.</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "No System Level Backup of Laptops",
+    "CategoryName": "Backup Policy and Procedure Review",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found, through interviews with Progressive, that M.J. Eriksson did not have a bakcup solution to do full system level backups of their laptops and worksations, this is a security risk as it potentially leaves data exposed which is, in case of a cyber attack or other incident, non recoverable. This is mitigated by the fact that the main workflows of the organization relies on cloud based storage like OneDrive etc.</p>\n\n# Impact\n<p>Data loss</p>\n\n# Replication Steps",
+    "Recommendation": "<p>Ensure that either backups are taken on a system level or that all business critical data is stored in a directory where it is part of regular backup operations.</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "PowerShell FullLanguage",
+    "CategoryName": "Endpoint Hardening Assessment",
+    "Description": "# Description\n<p>During the assessment it was found that laptops had PowerShell running in full language mode meaning that the scripting language has all functionality available, this is a potential issue as the lack of a more restricted language mode lowers the potential barrier to entry and gives the attacker access to a wider variety of attack techniques.</p>\n<p>PowerShell Constrained Language is designed to work with application whitelisting solutions in order to restrict what can be accessed in an interactive PowerShell session with policy enforcement. You configure which scripts are allowed full system access through the whitelisting solution policy. In contrast, JEA is a sandboxed PowerShell remote session that restricts an interactive session to specific commands based on user role.</p>\n<p>The impact on security is that using a not 'FullLanguage' mode ensures that regular users have their code excecution options limited greatly adding another line of defense.</p>\n\n# Impact\n<p>Unconstrained code execution</p>\n\n# Replication Steps\n<p>Use the following PowerShell command to check the language mode of the host:</p>\n<p><code></code></p>\n<pre class=\"language-csharp\"><code>$ExecutionContext.SessionState.LanguageMode</code></pre>",
+    "Recommendation": "<p>It is recommended that the language mode is restricted for endpoints of regular users with no business needs involving PowerShell, this can be done either as part of the enrollment and setup phase or via GPOs.</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "Azure: Legacy Authentication Allowed",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>During the engagement, NemesisGroup found that the azure tenant of CLIENT allows for the use of legacy authentication. This is an issue as older authentication protocols often suffers from known weaknesses and may compromise the security of the authentication process if using these. Likewise these outdated authentication protocols often don't support the use of MFA.</p>\n<blockquote class=\"blockquote\">Today, most compromising sign-in attempts come from legacy authentication. Older office clients such as Office 2010 don't support modern authentication and use legacy protocols such as IMAP, SMTP, and POP3. Legacy authentication does not support multifactor authentication (MFA). Even if an MFA policy is configured in your environment, bad actors can bypass these enforcements through legacy protocols.</blockquote>\n\n# Impact\n<p>Account compromise/information disclosure</p>\n\n# Replication Steps\n<p>To replicate this finding please check the azure portal under 'Identity Security Score'</p>",
+    "Recommendation": "<p>Follow Microsoft recomended actions in the azure portal under 'Identity Security Score'</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  },
+  {
+    "Name": "Missing MTA-STS",
+    "CategoryName": "External Exposure Assessment",
+    "Description": "# Description\n<p>The domain of CLIENT does not have MTA-STS configured. This means that your email privacy (using TLS) is vulnerable to downgrade, allowing an attacker to read the contents of your emails.</p>\n<p>Emails crossing the internet use secure connections encrypted using Transport Layer Security (TLS). However, there remain vulnerabilities in this method of protecting the confidentiality of emails, whereby a person-in-the-middle can trick incoming connections to send to another server and/or send information in the clear. MTA-STS is a standard designed to address these vulnerabilities and is set out in the internet standard IETF RFC 8461.</p>\n<p>The objectives of MTA-STS are to:</p>\n<p>make it harder for an attacker to get emails sent to an alternative location<br />make sure that TLS encryption is always used; to prevent attackers downgrading email encryption on emails to clear text.<br />To achieve this, MTA-STS works in the following ways:</p>\n<p>your organisation can advertise the mail server hostname on a separate secure web page, which means an attacker cannot just subvert your DNS entry (specifically your MX record, which is the record that tells the internet where to send your email).<br />your organisation can publish an 'MTA-STS enforce policy', which tells any server sending you emails to always send with TLS encryption, and to not allow connections to be downgraded. If there is a failure to establish a secure TLS connection, emails will not be delivered. Note that when your organisation sets up MTA-STS, you are securing inbound connections only.</p>\n\n# Impact\n\n\n# Replication Steps",
+    "Recommendation": "<p>1. Use a tool to guide you</p>\n<p>2. Identify all domains and subdomains that you want to protect</p>\n<p>3. Check all of your mail servers for TLS 1.2 and valid certificates</p>\n<p>4. Create and publish your initial MTA-STS policy - in testing mode</p>\n<p>5. Create your MTA-STS policy discovery record</p>\n<p>6. Set up TLS Reporting (TLS-RPT) and start monitoring</p>\n<p>7. Upgrade your MTA-STS policy to 'enforce'</p>\n<p>https://www.ncsc.gov.uk/collection/email-security-and-anti-spoofing/using-mta-sts-to-protect-the-privacy-of-your-emails</p>",
+    "SeverityId": 2,
+    "ImpactId": 2,
+    "LikelihoodId": 2,
+    "Active": true
+  }
+]

@@ -1,0 +1,176 @@
+{% extends fraction_base %}
+{% block title %}{{ finding.title }} — Fraction{% endblock %}
+{% block content %}
+<p>
+  <a href="{{ url_for('fraction.engagement_board', engagement_id=finding.engagement_id) }}">
+    &larr; Back to {{ finding.engagement.name }} board
+  </a>
+</p>
+
+<div class="card">
+  <h2>{{ finding.title }}</h2>
+  <p class="muted">
+    {% if finding.template %}From template: {{ finding.template.name }} · {% endif %}
+    Status: {{ finding.status.value }}
+  </p>
+  {% if not fraction_can_write %}
+  <p class="muted fraction-readonly-note">You have read-only access — editing is disabled below.</p>
+  {% endif %}
+  <form method="post" class="fraction-finding-meta-form">
+    <fieldset class="fraction-finding-meta-fieldset" {% if not fraction_can_write %}disabled{% endif %}>
+      <div class="fraction-finding-meta-grid">
+        <label>Title
+          <input type="text" name="title" value="{{ finding.title }}" required />
+        </label>
+        <label>Category
+          <input type="text" name="category" value="{{ finding.category or '' }}" />
+        </label>
+        <label>Severity
+          <select name="severity">
+            {% for s in severities %}
+            <option value="{{ s.value }}" {% if finding.severity == s %}selected{% endif %}>{{ s.value }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Confidence
+          <select name="confidence">
+            {% for c in confidences %}
+            <option value="{{ c.value }}" {% if finding.confidence == c %}selected{% endif %}>{{ c.value }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Status
+          <select name="status">
+            {% for st in statuses %}
+            <option value="{{ st.value }}" {% if finding.status == st %}selected{% endif %}>{{ st.value }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>CVSS score
+          <input type="number" step="0.1" min="0" max="10" name="cvss_score"
+                 value="{{ finding.cvss_score if finding.cvss_score is not none else '' }}" />
+        </label>
+        <label>CVSS vector
+          <input type="text" name="cvss_vector" value="{{ finding.cvss_vector or '' }}" />
+        </label>
+        <label>Target host
+          <input type="text" name="target_host" value="{{ finding.target_host or '' }}" />
+        </label>
+        <label>Target port
+          <input type="text" name="target_port" value="{{ finding.target_port or '' }}" />
+        </label>
+        <label>Target URL
+          <input type="text" name="target_url" value="{{ finding.target_url or '' }}" />
+        </label>
+      </div>
+      <label class="fraction-finding-meta-toggle">
+        <input type="checkbox" name="include_in_report" {% if finding.include_in_report %}checked{% endif %} />
+        Include in report
+      </label>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </fieldset>
+  </form>
+  {% if fraction_can_write %}
+  <form method="post" class="fraction-finding-delete-form"
+        action="{{ url_for('fraction.delete_finding', engagement_id=finding.engagement_id, finding_id=finding.id) }}"
+        onsubmit="return confirm('Delete this finding? This also deletes its artifacts and cannot be undone.');">
+    <button type="submit" class="btn fraction-finding-delete">Delete finding</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Preview with variables resolved</h3>
+  <p class="muted">Resolves {{ '{{VARIABLE}}' }} placeholders against this engagement/finding's values.</p>
+  <button type="button" class="btn" id="fraction-finding-preview-btn"
+          data-preview-url="{{ url_for('fraction_api.templating_preview') }}"
+          data-engagement-id="{{ finding.engagement_id }}" data-finding-id="{{ finding.id }}">
+    Preview
+  </button>
+  <div id="fraction-finding-preview-output" class="fraction-finding-preview muted" hidden></div>
+</div>
+
+{% for block_name in blocks %}
+<div class="card{% if not fraction_can_write %} fraction-block-readonly{% endif %}">
+  <h3>{{ block_name | capitalize }}</h3>
+  {% set block = block_name %}
+  {% include "fraction/_editor.html" %}
+</div>
+{% endfor %}
+
+<div class="card">
+  {% include "fraction/_gallery.html" %}
+</div>
+
+<style>
+  .fraction-finding-meta-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px;
+  }
+  .fraction-finding-meta-grid label, .fraction-finding-meta-toggle {
+    display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted);
+  }
+  .fraction-finding-meta-toggle { flex-direction: row; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .fraction-finding-meta-grid input, .fraction-finding-meta-grid select {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
+  }
+  .fraction-finding-meta-fieldset { border: none; margin: 0; padding: 0; }
+  .fraction-finding-meta-fieldset[disabled] { opacity: .7; }
+  .fraction-finding-delete-form { margin-top: 10px; }
+  .fraction-finding-delete { color: var(--danger); }
+  .fraction-readonly-note { font-style: italic; }
+  .fraction-finding-preview { margin-top: 10px; }
+  .fraction-finding-preview h4 { margin: 12px 0 4px; text-transform: capitalize; }
+  /* Viewer read-only nudge (docs/LOTEK_ADOPTION.md §4.1): the block editor has no explicit save
+     button (autosave-on-input via fraction/static/editor.js) and no built-in read-only mode, so
+     rather than teaching the fallback editor a new mode, dim + disable pointer interaction on the
+     surface and toolbar here -- content stays visible ("read-only"), but nothing is clickable/typeable
+     to trigger the autosave POST the host would refuse anyway. */
+  .fraction-block-readonly .fr-editor-surface,
+  .fraction-block-readonly .fr-editor-toolbar,
+  .fraction-block-readonly .fr-editor-varpicker {
+    pointer-events: none; opacity: .65;
+  }
+</style>
+
+<script>
+  (function () {
+    var btn = document.getElementById("fraction-finding-preview-btn");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var out = document.getElementById("fraction-finding-preview-output");
+      out.hidden = false;
+      out.textContent = "Loading…";
+      fetch(btn.dataset.previewUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          engagement_id: parseInt(btn.dataset.engagementId, 10),
+          finding_id: parseInt(btn.dataset.findingId, 10),
+        }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.error) {
+            out.hidden = false;
+            out.textContent = "Preview failed: " + data.error;
+            return;
+          }
+          var html = "";
+          var resolved = data.resolved || {};
+          Object.keys(resolved).forEach(function (block) {
+            html += "<h4>" + block + "</h4>" + (resolved[block] || "<p><em>(empty)</em></p>");
+          });
+          if (data.warnings && data.warnings.length) {
+            html += "<p><strong>Unresolved variables:</strong> " + data.warnings.join(", ") + "</p>";
+          }
+          out.innerHTML = html || "<p><em>Nothing to preview.</em></p>";
+        })
+        .catch(function () {
+          out.hidden = false;
+          out.textContent = "Preview failed.";
+        });
+    });
+  })();
+</script>
+{% endblock %}

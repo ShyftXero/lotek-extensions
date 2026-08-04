@@ -1,0 +1,15 @@
+{% extends cream_base %}
+{% block title %}CREAM — Document{% endblock %}
+{% block appbar_title %}Document{% endblock %}
+{% block content %}
+<div style="max-width:840px;margin:0 auto;padding:24px 20px;width:100%">
+  <div style="margin-bottom:14px">
+    <a href="{{ url_for('cream.dashboard') }}" style="font-size:13px">&larr; All documents</a>
+    &nbsp;·&nbsp;
+    <a href="{{ url_for('cream.export_html', doc_id=doc_id) }}" style="font-size:13px">Export HTML</a>
+  </div>
+  <div style="background:#fff;color:#111;border-radius:8px;padding:8px 20px">
+    {{ doc_html|safe }}
+  </div>
+</div>
+{% endblock %}

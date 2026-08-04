@@ -1,0 +1,312 @@
+"""fraction/promote.py — promote lotek scan findings into a Fraction engagement.
+
+Ported from the deleted lotek ``app/api_v1_fraction.py`` (``fraction_promote_job`` /
+``fraction_add_finding`` / ``_resolve_vuln_template`` / ``_get_or_create_parent``), rewired to the host
+contract (CONTRACT.md §1, CONTRACT-FACTS.md §4): every scan finding this module sees is a
+``host_contract.FindingDTO``-shaped object — duck-typed, this module never imports lotek — and the vuln-
+DB mapping table is Fraction's OWN ``FractionVulnMap`` (a real foreign key: Fraction always has its own
+``fraction_vuln_templates``, so unlike the deleted core-side ``VulnMap`` there is no capability gating
+here at all — ``parent_id``/``source_finding_id``/``target_host`` are unconditional columns).
+
+Report-variable values (``{{AFFECTED}}``, ``{{DOMAIN}}``, …) are computed per finding via
+``fraction.facts.resolve_variables``/``synthesize_parent_variables`` against the DB-declared
+``TemplateVariable.from_facts`` rules (CONTRACT-FACTS.md §4.1/§4.2) and stored on
+``EngagementFinding.variables`` — plus, for a ``target_column``-declared key (``TARGET_HOST``/
+``TARGET_URL``/…), onto the matching column itself. Nothing in this file names a tool or branches on
+``dto.source`` — the only source-shaped thing here is ``FractionVulnMap``, which is a DATA lookup an
+operator curates, not a Python branch.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+from typing import Any
+
+from sqlalchemy import select
+
+from fraction.facts import resolve_variables, synthesize_parent_variables
+from fraction.models import EngagementFinding, FractionVulnMap, TemplateVariable, VulnerabilityTemplate
+
+# Columns a declaration may ALSO write directly onto the created row (besides ``variables``). Mirrors
+# ``TemplateVariable.target_column``'s own allowlist (models.py) -- enforced again here, at the one place
+# that actually performs the write, so a hand-edited row can never steer a write at an arbitrary column.
+_ALLOWED_TARGET_COLUMNS = frozenset({"target_host", "target_port", "target_url"})
+
+
+def _match_title(pattern: str, title: str) -> bool:
+    """Case-insensitive glob match of a ``FractionVulnMap.title_pattern`` against a finding's title."""
+    return fnmatch.fnmatchcase(title.lower(), pattern.lower())
+
+
+def resolve_vuln_template(
+    db: Any, *, source: str | None, title: str | None, dedupe_key: str | None
+) -> int | None:
+    """Resolve a scan finding to a ``FractionVulnMap.template_id``, most-specific-first: ``dedupe_prefix``
+    (longest match wins, ties broken by lowest id) > ``source`` + glob ``title_pattern`` > ``source``
+    alone. ``None`` when nothing matches. Does NOT re-check the resolved template is still active/exists
+    -- callers that need the row (this module's own ``_matched_template``, and
+    ``fraction/api_pat.py::fraction_resolve_template``) re-check themselves, since a stale mapping should
+    resolve to "no template" rather than raise.
+    """
+    if dedupe_key:
+        rows = (
+            db.execute(
+                select(FractionVulnMap)
+                .where(FractionVulnMap.dedupe_prefix.isnot(None))
+                .order_by(FractionVulnMap.id)
+            )
+            .scalars()
+            .all()
+        )
+        best = None
+        for m in rows:
+            if dedupe_key.startswith(m.dedupe_prefix) and (
+                best is None or len(m.dedupe_prefix) > len(best.dedupe_prefix)
+            ):
+                best = m
+        if best is not None:
+            return best.template_id
+    if source and title:
+        rows = (
+            db.execute(
+                select(FractionVulnMap).where(
+                    FractionVulnMap.source == source, FractionVulnMap.title_pattern.isnot(None)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for m in rows:
+            if _match_title(m.title_pattern, title):
+                return m.template_id
+    if source:
+        m = db.execute(
+            select(FractionVulnMap).where(
+                FractionVulnMap.source == source,
+                FractionVulnMap.title_pattern.is_(None),
+                FractionVulnMap.dedupe_prefix.is_(None),
+            )
+        ).scalars().first()
+        if m is not None:
+            return m.template_id
+    return None
+
+
+def _matched_template(db: Any, dto: Any) -> VulnerabilityTemplate | None:
+    """The active ``VulnerabilityTemplate`` this finding resolves to, or ``None`` (no mapping, a mapping
+    to a deleted/retired template, or no source/title/dedupe_key to match on at all)."""
+    template_id = resolve_vuln_template(
+        db,
+        source=getattr(dto, "source", None),
+        title=getattr(dto, "title", None),
+        dedupe_key=getattr(dto, "dedupe_key", None),
+    )
+    if template_id is None:
+        return None
+    template = db.get(VulnerabilityTemplate, template_id)
+    return template if template is not None and template.active else None
+
+
+def _load_declarations(db: Any) -> list[tuple[str, str | None, list]]:
+    """The ``fraction_variables`` fact-mapping registry, read fresh for this promote call: one
+    ``(key, target_column, rules)`` tuple per row that declares at least one rule. Best effort: a row
+    whose ``from_facts`` isn't a JSON list contributes no rules (dropped, never raises); a
+    ``target_column`` outside the allowlist is dropped too (kept as ``None``, so the key's ``variables``
+    entry is still computed, just never written onto a column).
+    """
+    rows = db.execute(
+        select(TemplateVariable.key, TemplateVariable.target_column, TemplateVariable.from_facts)
+    ).all()
+    out: list[tuple[str, str | None, list]] = []
+    for key, target_column, from_facts in rows:
+        rules = from_facts if isinstance(from_facts, list) else []
+        if not rules:
+            continue
+        col = target_column if target_column in _ALLOWED_TARGET_COLUMNS else None
+        out.append((str(key), col, rules))
+    return out
+
+
+def _target_overrides(
+    variables: dict[str, str], declarations: list[tuple[str, str | None, list]]
+) -> dict[str, str]:
+    """The subset of ``variables`` that a declaration also wants written onto a real
+    ``EngagementFinding`` column (``target_host``/``target_port``/``target_url``), keyed by that column
+    name so it can be splatted straight into the constructor ``overrides``."""
+    overrides: dict[str, str] = {}
+    for key, target_column, _rules in declarations:
+        if not target_column:
+            continue
+        value = variables.get(key)
+        if value:
+            overrides[target_column] = value
+    return overrides
+
+
+def _get_or_create_parent(
+    db: Any, *, engagement_id: int, template: VulnerabilityTemplate, actor: str | None, order_index: int
+) -> tuple[EngagementFinding, bool]:
+    """Find-or-create the ONE parent ``EngagementFinding`` this template's matched instances nest under.
+
+    Idempotency key: ``(engagement_id, template_id, parent_id IS NULL, source_finding_id IS NULL,
+    title == template.name)`` -- the null parent_id/source_finding_id pair is exactly what distinguishes
+    a parent WE created here from an ordinary child/flat row (every row promoted from a real scan finding
+    always stamps ``source_finding_id``). Returns ``(parent, created_bool)``.
+    """
+    existing = (
+        db.execute(
+            select(EngagementFinding)
+            .where(
+                EngagementFinding.engagement_id == engagement_id,
+                EngagementFinding.template_id == template.id,
+                EngagementFinding.parent_id.is_(None),
+                EngagementFinding.source_finding_id.is_(None),
+                EngagementFinding.title == template.name,
+            )
+            .order_by(EngagementFinding.id)
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        return existing, False
+    parent = EngagementFinding.from_template(
+        template,
+        engagement_id=engagement_id,
+        group_id=None,
+        parent_id=None,
+        order_index=order_index,
+        created_by=actor,
+    )
+    db.add(parent)
+    db.flush()  # assign parent.id so children can set parent_id in the same transaction
+    return parent, True
+
+
+def promote_one(
+    db: Any, *, engagement: Any, group: Any, dto: Any, actor_username: str | None, order_index: int
+):
+    """Promote ONE lotek scan finding (``dto``) into ``engagement`` -- always FLAT (attached to ``group``,
+    or top-level when ``group`` is ``None``); parent/child nesting only ever happens in bulk
+    ``promote_job``. Resolves a library template via ``FractionVulnMap``; falls back to bridging the raw
+    finding verbatim (``from_lotek_finding``) when nothing matches. Report-variable values are computed
+    from ``dto.facts``/attributes via the DB-declared mapping and stored on
+    ``EngagementFinding.variables`` -- plus, for any ``target_column``-declared key, onto the matching
+    column. Adds the created row to ``db`` (a caller may ``db.add`` it again defensively -- a harmless
+    no-op on an already-pending object).
+
+    Dedup is the CALLER's job (``fraction/api_pat.py::fraction_add_finding`` checks
+    ``source_finding_id`` before ever calling this) -- this function does not re-check.
+    """
+    declarations = _load_declarations(db)
+    variables = resolve_variables(dto, declarations)
+    overrides: dict[str, Any] = {
+        "engagement_id": engagement.id,
+        "group_id": group.id if group is not None else None,
+        "order_index": order_index,
+        "created_by": actor_username,
+        "source_finding_id": getattr(dto, "id", None),
+        "variables": variables,
+    }
+    overrides.update(_target_overrides(variables, declarations))
+
+    template = _matched_template(db, dto)
+    finding = (
+        EngagementFinding.from_template(template, **overrides)
+        if template is not None
+        else EngagementFinding.from_lotek_finding(dto, **overrides)
+    )
+    db.add(finding)
+    return finding
+
+
+def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str | None) -> dict:
+    """Bulk-promote a lotek scan job's findings (host ``FindingDTO``s) into ``engagement``.
+
+    Findings that resolve to the SAME library template are grouped under ONE parent
+    ``EngagementFinding`` (the vuln-DB write-up, built from the template) with each scan finding becoming
+    a CHILD (``parent_id`` set; its own ``target_host``/``variables`` derived from its OWN facts, so the
+    per-host rows in a report show real per-host evidence, never a copy of the parent). A finding that
+    matches no template is bridged verbatim (``from_lotek_finding``) and stays flat/ungrouped -- there is
+    no reliable signature to group unmapped findings by.
+
+    Idempotent: re-running skips any finding already promoted into this engagement (precise
+    ``source_finding_id`` dedup, plus a legacy title fallback for rows promoted before that column
+    existed). Never touches the lotek ``Job`` -- recording the promotion is the host contract's own write
+    (``host.mark_job_promoted``, called by ``fraction/api_pat.py`` in a separate transaction after this
+    one commits).
+
+    Returns ``{"promoted": int, "skipped": int, "parents": int}``.
+    """
+    declarations = _load_declarations(db)
+
+    promoted_source_ids = {
+        f.source_finding_id for f in engagement.findings if f.source_finding_id is not None
+    }
+    # Legacy fallback: rows promoted before ``source_finding_id`` existed carry NULL there, so the
+    # precise dedup above can't see them -- guard those by title instead (scoped to null-source rows,
+    # which is also where a PARENT row itself always lives).
+    legacy_titles = {f.title for f in engagement.findings if f.source_finding_id is None}
+    siblings = [f for f in engagement.findings if f.group_id is None]
+
+    order_index = len(siblings)
+    parents_by_template: dict[int, EngagementFinding] = {}
+    parent_children: dict[int, list[Any]] = {}
+    promoted = 0
+    skipped = 0
+    parents_created = 0
+
+    for dto in findings:
+        title = getattr(dto, "title", None) or "Untitled"
+        dto_id = getattr(dto, "id", None)
+        if dto_id in promoted_source_ids or title in legacy_titles:
+            skipped += 1
+            continue
+
+        variables = resolve_variables(dto, declarations)
+        overrides: dict[str, Any] = {
+            "engagement_id": engagement.id,
+            "group_id": None,
+            "order_index": order_index,
+            "created_by": actor_username,
+            "source_finding_id": dto_id,
+            "variables": variables,
+        }
+        overrides.update(_target_overrides(variables, declarations))
+
+        template = _matched_template(db, dto)
+        if template is not None:
+            parent = parents_by_template.get(template.id)
+            if parent is None:
+                parent, created = _get_or_create_parent(
+                    db,
+                    engagement_id=engagement.id,
+                    template=template,
+                    actor=actor_username,
+                    order_index=order_index,
+                )
+                order_index += 1
+                parents_by_template[template.id] = parent
+                parent_children[template.id] = []
+                if created:
+                    parents_created += 1
+            overrides["parent_id"] = parent.id
+            overrides["order_index"] = order_index
+            finding = EngagementFinding.from_template(template, **overrides)
+            parent_children[template.id].append(dto)
+        else:
+            finding = EngagementFinding.from_lotek_finding(dto, **overrides)
+
+        order_index += 1
+        db.add(finding)
+        if dto_id is not None:
+            promoted_source_ids.add(dto_id)
+        promoted += 1
+
+    # One deterministic synthesis pass per parent, once every one of its children is known.
+    for template_id, parent in parents_by_template.items():
+        children = parent_children.get(template_id) or []
+        if children:
+            parent.variables = synthesize_parent_variables(children, declarations)
+
+    return {"promoted": promoted, "skipped": skipped, "parents": parents_created}

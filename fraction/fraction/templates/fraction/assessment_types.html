@@ -1,0 +1,192 @@
+{#
+  fraction/assessment_types.html — AssessmentType admin list (WS13).
+
+  Edit-in-place, like the library detail page: each row's Save button POSTs the whole row back to
+  `POST /assessment-types/<id>` (fraction/assessment_types_ui.py) and never creates a new row. The
+  "New assessment type" form above the table is the only thing that creates a row. Delete is refused
+  server-side while any FindingGroup still references a type (see the module docstring) — the button
+  is disabled client-side as a hint, but the real enforcement is the 400 from the API.
+#}
+{% extends fraction_base %}
+{% block title %}Fraction — Assessment Types{% endblock %}
+{% block appbar_actions %}
+<a class="btn" href="{{ url_for('fraction.dashboard') }}">Back to dashboard</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>New assessment type</h2>
+  <form id="fr-at-new-form" class="fr-at-form">
+    <label>Name<br/><input type="text" name="name" required autofocus placeholder="e.g. Cloud" /></label>
+    <label>Slug<br/><input type="text" name="slug" placeholder="auto from name" /></label>
+    <label>Color<br/><input type="color" name="color" value="#7c3aed" /></label>
+    <label>Order<br/><input type="number" name="default_order" value="0" style="width:80px" /></label>
+    <div class="fr-at-actions">
+      <button type="submit" class="btn btn-primary">Add</button>
+    </div>
+  </form>
+  <div id="fr-at-new-status" class="muted"></div>
+</div>
+
+<div class="card">
+  <h2>Assessment types <span class="muted">({{ rows|length }})</span></h2>
+  {% if rows %}
+  <div class="table-scroll">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Color</th><th>Name</th><th>Slug</th><th>Order</th><th>Finding groups</th><th>Active</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t, count in rows %}
+      <tr class="fr-at-row{% if not t.active %} fr-at-row-inactive{% endif %}" data-at-id="{{ t.id }}">
+        <td><input type="color" data-field="color" value="{{ t.color or '#888888' }}" /></td>
+        <td>
+          <input type="text" data-field="name" value="{{ t.name }}" />
+          {% if not t.active %}<span class="pill">inactive</span>{% endif %}
+        </td>
+        <td><input type="text" data-field="slug" value="{{ t.slug }}" /></td>
+        <td><input type="number" data-field="default_order" value="{{ t.default_order }}" style="width:70px" /></td>
+        <td>
+          {{ count }}
+          {% if count %}<span class="pill" title="Referenced by {{ count }} finding group(s) — delete disabled">in use</span>{% endif %}
+        </td>
+        <td>
+          <label class="fr-at-active-toggle">
+            <input type="checkbox" data-field="active" {% if t.active %}checked{% endif %} />
+          </label>
+        </td>
+        <td class="fr-at-row-actions">
+          <button type="button" class="btn btn-primary fr-at-save" data-at-id="{{ t.id }}">Save</button>
+          <button
+            type="button"
+            class="btn fr-at-delete"
+            data-at-id="{{ t.id }}"
+            data-at-name="{{ t.name }}"
+            {% if count %}disabled title="In use by {{ count }} finding group(s) — deactivate instead"{% endif %}
+          >Delete</button>
+        </td>
+      </tr>
+      <tr class="fr-at-status-row" data-at-status-row="{{ t.id }}">
+        <td colspan="7"><div class="muted fr-at-status" data-at-status="{{ t.id }}"></div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No assessment types yet. Add one above.</p>
+  {% endif %}
+</div>
+
+<style>
+  .fr-at-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .fr-at-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .fr-at-form input {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 7px 10px; font: inherit;
+  }
+  .fr-at-actions { display: flex; gap: 8px; align-items: center; }
+  .fr-at-row input[type="text"], .fr-at-row input[type="number"] {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 5px 8px; font: inherit; width: 100%;
+  }
+  .fr-at-row input[type="color"] { width: 36px; height: 30px; padding: 0; border-radius: 6px; }
+  .fr-at-row-inactive { opacity: .55; }
+  .fr-at-active-toggle { display: flex; align-items: center; justify-content: center; }
+  .fr-at-row-actions { display: flex; gap: 6px; white-space: nowrap; }
+  .fr-at-status-row td { border-bottom: 1px solid var(--line); padding-top: 0; }
+  .fr-at-status-row .fr-at-status:empty { display: none; }
+</style>
+
+<script>
+(function () {
+  var API = "{{ fraction_api_prefix | default('/fraction/api') }}";
+
+  function setStatus(id, msg, isError) {
+    var el = document.querySelector('[data-at-status="' + id + '"]');
+    if (el) {
+      el.textContent = msg;
+      el.style.color = isError ? 'var(--sev-high)' : '';
+    }
+  }
+
+  function postJSON(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    });
+  }
+
+  var newForm = document.getElementById('fr-at-new-form');
+  var newStatus = document.getElementById('fr-at-new-status');
+  newForm.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var fd = new FormData(newForm);
+    newStatus.textContent = 'creating…';
+    newStatus.style.color = '';
+    postJSON(API + '/assessment-types', {
+      name: fd.get('name'),
+      slug: fd.get('slug'),
+      color: fd.get('color'),
+      default_order: fd.get('default_order'),
+    })
+      .then(function (result) {
+        if (!result.ok || !result.data.ok) {
+          throw new Error((result.data && result.data.error) || 'create failed');
+        }
+        window.location.reload();
+      })
+      .catch(function (err) {
+        newStatus.textContent = 'error: ' + err.message;
+        newStatus.style.color = 'var(--sev-high)';
+      });
+  });
+
+  document.querySelectorAll('.fr-at-save').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.getAttribute('data-at-id');
+      var row = btn.closest('tr');
+      var payload = {
+        name: row.querySelector('[data-field="name"]').value,
+        slug: row.querySelector('[data-field="slug"]').value,
+        color: row.querySelector('[data-field="color"]').value,
+        default_order: row.querySelector('[data-field="default_order"]').value,
+        active: row.querySelector('[data-field="active"]').checked,
+      };
+      setStatus(id, 'saving…', false);
+      postJSON(API + '/assessment-types/' + id, payload)
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) {
+            throw new Error((result.data && result.data.error) || 'save failed');
+          }
+          window.location.reload();
+        })
+        .catch(function (err) { setStatus(id, 'error: ' + err.message, true); });
+    });
+  });
+
+  document.querySelectorAll('.fr-at-delete').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (btn.disabled) return;
+      var id = btn.getAttribute('data-at-id');
+      var name = btn.getAttribute('data-at-name') || 'this assessment type';
+      if (!window.confirm('Delete "' + name + '"? This cannot be undone.')) return;
+      setStatus(id, 'deleting…', false);
+      postJSON(API + '/assessment-types/' + id + '/delete', {})
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) {
+            throw new Error((result.data && result.data.error) || 'delete failed');
+          }
+          window.location.reload();
+        })
+        .catch(function (err) { setStatus(id, 'error: ' + err.message, true); });
+    });
+  });
+})();
+</script>
+{% endblock %}

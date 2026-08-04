@@ -1,0 +1,85 @@
+{% extends fraction_base %}
+{% block title %}Fraction — New Template{% endblock %}
+{% block appbar_actions %}
+<a class="btn" href="{{ url_for('fraction.library') }}">Back to library</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>New vulnerability template</h2>
+  <form id="fr-lib-new-form" class="fr-lib-form">
+    <label>Name<br/><input type="text" name="name" required autofocus /></label>
+    <label>Category<br/><input type="text" name="category" /></label>
+    <label>Default severity<br/>
+      <select name="default_severity">
+        {% for s in severities %}
+        <option value="{{ s.value }}" {% if s.value == "medium" %}selected{% endif %}>{{ s.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>CVSS score<br/><input type="number" step="0.1" min="0" max="10" name="cvss_score" /></label>
+    <label>CVSS vector<br/><input type="text" name="cvss_vector" placeholder="CVSS:3.1/AV:N/AC:L/..." /></label>
+    <label>References (one per line)<br/><textarea name="references" rows="3"></textarea></label>
+    <label>Tags (comma-separated)<br/>
+      <input type="text" name="tags" list="fr-lib-tag-options" placeholder="web, injection" />
+      <datalist id="fr-lib-tag-options">
+        {% for t in all_tags %}<option value="{{ t.name }}">{% endfor %}
+      </datalist>
+    </label>
+    <div class="fr-lib-actions">
+      <button type="submit" class="btn btn-primary">Create</button>
+    </div>
+    <div id="fr-lib-new-status" class="muted"></div>
+  </form>
+</div>
+
+<style>
+  .fr-lib-form { display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
+  .fr-lib-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .fr-lib-form input, .fr-lib-form select, .fr-lib-form textarea {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 7px 10px; font: inherit;
+  }
+  .fr-lib-actions { display: flex; gap: 8px; align-items: center; }
+</style>
+
+<script>
+(function () {
+  var API = "{{ fraction_api_prefix | default('/fraction/api') }}";
+  var form = document.getElementById("fr-lib-new-form");
+  var status = document.getElementById("fr-lib-new-status");
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var fd = new FormData(form);
+    var payload = {
+      name: fd.get("name"),
+      category: fd.get("category"),
+      default_severity: fd.get("default_severity"),
+      cvss_score: fd.get("cvss_score") || null,
+      cvss_vector: fd.get("cvss_vector"),
+      references: (fd.get("references") || "").split("\n"),
+      tags: (fd.get("tags") || "").split(","),
+    };
+    status.textContent = "creating…";
+    fetch(API + "/templates", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok || !result.data.ok) {
+          throw new Error((result.data && result.data.error) || "create failed");
+        }
+        window.location.href = result.data.redirect;
+      })
+      .catch(function (err) {
+        status.textContent = "error: " + err.message;
+      });
+  });
+})();
+</script>
+{% endblock %}

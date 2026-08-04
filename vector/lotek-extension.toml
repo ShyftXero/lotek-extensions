@@ -1,0 +1,19 @@
+# What Vector exposes to a host (e.g. lotek). Consumed at vendor time by the host's
+# scripts/stage-extension.sh and appended verbatim to the generated extensions/vector/extension.toml,
+# so the host renders exactly the sidebar entries declared here. `path` is relative to the extension's
+# url_prefix; `icon` is an optional glyph. Order here is the sidebar order.
+#
+# ONE sidebar entry only. The `/` (list) and `/diagrams` routes render the SAME view
+# (blueprint.dashboard carries both decorators), so a second "Attack Paths" nav link was a duplicate
+# of this one — it pointed operators at the identical page. `/diagrams` remains a live route (for
+# existing links/bookmarks); it just no longer gets its own sidebar entry.
+[[nav]]
+label = "Vector"
+path = "/"
+icon = "◭"
+
+# Tables this extension OWNS (see the equivalent block in Fraction): the host may carry them through a
+# database migration, attribute them for drop/truncate, and never touch a table nobody claims.
+[db]
+base = "vector.models:Base"   # the module whose IMPORT registers the tables (db.py alone yields an empty Base)
+table_prefix = "vector_"

@@ -1,0 +1,106 @@
+{% extends vector_base %}
+{% block title %}Vector — Attack Paths{% endblock %}
+{% block appbar_title %}Attack Paths{% endblock %}
+{% block content %}
+<style>
+  .vec-list{max-width:1000px;margin:0 auto;padding:28px 20px;width:100%}
+  .vec-list h1{font-size:20px;margin:0 0 4px}
+  .vec-list .lead{color:#7f93a3;margin:0 0 20px;font-size:13px}
+  .vec-toolbar{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
+  .vec-btn{font:600 13px/1 system-ui;color:#dfe9f0;background:#131e27;border:1px solid #2a3d4c;border-radius:6px;padding:9px 13px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+  .vec-btn:hover{background:#1a2833;border-color:#365062}
+  .vec-btn.primary{background:#8f2a34;border-color:#ff4d5e}
+  .vec-btn.danger{color:#ff8f98;border-color:#5a2730}
+  .vec-btn.sm{padding:5px 9px;font-size:12px}
+  table.vec-tbl{width:100%;border-collapse:collapse;font-size:13px}
+  table.vec-tbl th{text-align:left;color:#7f93a3;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:8px 10px;border-bottom:1px solid #1c2a35}
+  table.vec-tbl td{padding:10px;border-bottom:1px solid #14202a;vertical-align:middle}
+  table.vec-tbl tr:hover td{background:#0e161d}
+  .vec-name{font-weight:600}
+  .vec-name a{color:#dfe9f0;text-decoration:none}
+  .vec-name a:hover{color:#37c9d6}
+  .vec-badge{font:700 9px/1 ui-monospace,monospace;letter-spacing:.1em;text-transform:uppercase;color:#f4b740;border:1px solid #7d5c14;border-radius:3px;padding:2px 5px;margin-left:8px}
+  .vec-row-actions{display:flex;gap:6px;justify-content:flex-end}
+  .vec-empty{padding:40px;text-align:center;color:#4a5b69}
+  .vec-muted{color:#7f93a3}
+</style>
+<div class="vec-list">
+  <h1>Attack Path Diagrams</h1>
+  <p class="lead">Author interactive kill-chain diagrams, then export a self-contained HTML deliverable.</p>
+  <div class="vec-toolbar">
+    {% if vector_can_write %}
+    <a class="vec-btn primary" href="{{ url_for('vector.new_diagram') }}">＋ New diagram</a>
+    <button class="vec-btn" id="vec-import-btn">⇪ Import JSON</button>
+    <input type="file" id="vec-import-file" accept="application/json,.json" style="display:none">
+    {% endif %}
+  </div>
+  {% if diagrams %}
+  <table class="vec-tbl">
+    <thead><tr><th>Name</th><th>Phases</th><th>Nodes</th><th>Updated</th><th></th></tr></thead>
+    <tbody>
+      {% for d in diagrams %}
+      <tr data-id="{{ d.id }}">
+        <td class="vec-name"><a href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">{{ d.name }}</a>{% if d.builtin %}<span class="vec-badge">example</span>{% endif %}</td>
+        <td class="vec-muted">{{ d.phase_count }}</td>
+        <td class="vec-muted">{{ d.node_count }}</td>
+        <td class="vec-muted">{{ d.updated }}</td>
+        <td>
+          <div class="vec-row-actions">
+            <a class="vec-btn sm" href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">Open</a>
+            <a class="vec-btn sm" href="{{ url_for('vector.api_export_html', diagram_id=d.id) }}">HTML</a>
+            <a class="vec-btn sm" href="{{ url_for('vector.api_export_json', diagram_id=d.id) }}">JSON</a>
+            {% if vector_can_write %}
+            <button class="vec-btn sm" data-dup="{{ d.id }}">Duplicate</button>
+            {% if not d.builtin %}<button class="vec-btn sm danger" data-del="{{ d.id }}">Delete</button>{% endif %}
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="vec-empty">No diagrams yet.{% if vector_can_write %} Create one, or import a JSON model.{% endif %}</div>
+  {% endif %}
+</div>
+<script>
+(function () {
+  var token = (document.querySelector('meta[name=csrf-token]') || {}).content || "";
+  var apiBase = {{ api_base | tojson }};
+  function headers(json) { var h = { "X-CSRFToken": token }; if (json) h["Content-Type"] = "application/json"; return h; }
+
+  document.querySelectorAll("[data-del]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var id = b.getAttribute("data-del");
+      if (!confirm("Delete this diagram? This cannot be undone.")) return;
+      fetch(apiBase + "/diagrams/" + id, { method: "DELETE", headers: headers(false) })
+        .then(function (r) { if (r.ok) location.reload(); else alert("Delete failed."); });
+    });
+  });
+  document.querySelectorAll("[data-dup]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var id = b.getAttribute("data-dup");
+      fetch(apiBase + "/diagrams/" + id + "/duplicate", { method: "POST", headers: headers(false) })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { if (j && j.id) location.href = "{{ url_for('vector.dashboard') }}"; else alert("Duplicate failed."); });
+    });
+  });
+  var impBtn = document.getElementById("vec-import-btn"), impFile = document.getElementById("vec-import-file");
+  if (impBtn && impFile) {
+    impBtn.addEventListener("click", function () { impFile.click(); });
+    impFile.addEventListener("change", function () {
+      var f = impFile.files[0]; if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () {
+        var model;
+        try { model = JSON.parse(reader.result); } catch (e) { alert("Not valid JSON."); return; }
+        fetch(apiBase + "/import", { method: "POST", headers: headers(true), body: JSON.stringify({ name: f.name.replace(/\.json$/i, ""), model: model }) })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) { if (j && j.id) location.href = "{{ url_for('vector.dashboard') }}"; else alert("Import failed."); });
+      };
+      reader.readAsText(f);
+    });
+  }
+})();
+</script>
+{% endblock %}
