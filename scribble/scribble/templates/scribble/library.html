@@ -1,0 +1,77 @@
+{% extends scribble_base %}
+{% block title %}Scribble — Vuln Library{% endblock %}
+{% block appbar_actions %}
+<a class="btn btn-primary" href="{{ url_for('scribble.library_new') }}">+ New template</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <form class="fr-lib-filters" method="get" action="{{ url_for('scribble.library') }}">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search name…" />
+    <select name="category">
+      <option value="">All categories</option>
+      {% for c in categories %}
+      <option value="{{ c }}" {% if c == category %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    <select name="severity">
+      <option value="">All severities</option>
+      {% for s in severities %}
+      <option value="{{ s.value }}" {% if s.value == severity %}selected{% endif %}>{{ s.value }}</option>
+      {% endfor %}
+    </select>
+    <select name="tag">
+      <option value="">All tags</option>
+      {% for t in all_tags %}
+      <option value="{{ t.name }}" {% if t.name == tag %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+    <label class="fr-lib-inactive-toggle">
+      <input type="checkbox" name="inactive" value="1" {% if show_inactive %}checked{% endif %} />
+      show deactivated
+    </label>
+    <button type="submit" class="btn">Filter</button>
+    {% if q or category or severity or tag or show_inactive %}
+    <a class="btn" href="{{ url_for('scribble.library') }}">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+<div class="card">
+  <h2>Vulnerability templates <span class="muted">({{ templates|length }})</span></h2>
+  {% if templates %}
+  <div class="table-scroll">
+  <table class="table">
+    <thead><tr><th>Name</th><th>Category</th><th>Severity</th><th>Tags</th><th></th></tr></thead>
+    <tbody>
+      {% for t in templates %}
+      <tr{% if not t.active %} class="fr-lib-row-inactive"{% endif %}>
+        <td>
+          <a href="{{ url_for('scribble.library_detail', template_id=t.id) }}">{{ t.name }}</a>
+          {% if not t.active %}<span class="pill">deactivated</span>{% endif %}
+        </td>
+        <td>{{ t.category or '—' }}</td>
+        <td><span class="sev sev-{{ t.default_severity.value }}">{{ t.default_severity.value }}</span></td>
+        <td>
+          {% for tg in t.tags %}<span class="pill">{{ tg.name }}</span>{% endfor %}
+        </td>
+        <td><a class="btn" href="{{ url_for('scribble.library_detail', template_id=t.id) }}">Edit</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No templates match. Seed imports FACTION's default vulnerabilities on first boot.</p>
+  {% endif %}
+</div>
+
+<style>
+  .fr-lib-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .fr-lib-filters input[type="text"], .fr-lib-filters select {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
+  }
+  .fr-lib-inactive-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .fr-lib-row-inactive { opacity: .55; }
+</style>
+{% endblock %}

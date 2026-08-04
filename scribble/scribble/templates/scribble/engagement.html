@@ -1,0 +1,212 @@
+{% extends scribble_base %}
+{% block title %}{{ engagement.name }} — Scribble{% endblock %}
+{% block appbar_actions %}
+<a class="btn" href="{{ url_for('scribble.dashboard') }}">Dashboard</a>
+<a class="btn" href="{{ url_for('scribble.engagement_report', engagement_id=engagement.id) }}"
+   target="_blank" rel="noopener">View Report</a>
+{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>{{ engagement.name }}</h2>
+  <p class="muted">
+    Client: {{ client_name or '—' }} ·
+    Scope: {{ engagement.scope_type }} · Status: {{ engagement.status }}
+    {% if engagement.start_date or engagement.end_date %}
+    · {{ engagement.start_date.isoformat() if engagement.start_date else '?' }}
+      → {{ engagement.end_date.isoformat() if engagement.end_date else '?' }}
+    {% endif %}
+  </p>
+</div>
+
+{% if not scribble_can_write %}
+<p class="muted scribble-readonly-note">You have read-only access — editing controls are hidden.</p>
+{% endif %}
+
+{% if scribble_can_write %}
+<div class="card scribble-board-toolbar">
+  <div class="scribble-board-toolbar-section">
+    <h3>Add a group</h3>
+    <form method="post" action="{{ url_for('scribble.create_group', engagement_id=engagement.id) }}"
+          class="scribble-inline-form">
+      <input type="text" name="name" placeholder="Group name (e.g. Internal)" required />
+      <select name="assessment_type_id">
+        <option value="">No assessment type</option>
+        {% for at in assessment_types %}
+        <option value="{{ at.id }}">{{ at.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" type="submit">Add group</button>
+    </form>
+  </div>
+  <div class="scribble-board-toolbar-section">
+    <h3>Add a finding from the template library</h3>
+    {% if templates %}
+    <form method="post" action="{{ url_for('scribble.add_finding', engagement_id=engagement.id) }}"
+          class="scribble-inline-form">
+      <select name="template_id" required>
+        <option value="" disabled selected>Choose a template…</option>
+        {% for t in templates %}
+        <option value="{{ t.id }}">{{ t.name }} ({{ t.default_severity.value }})</option>
+        {% endfor %}
+      </select>
+      <select name="group_id">
+        <option value="">Ungrouped</option>
+        {% for g in engagement.groups %}
+        <option value="{{ g.id }}">{{ g.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-primary" type="submit">Add finding</button>
+    </form>
+    {% else %}
+    <p class="muted">No active templates in the library yet — add some from the Vuln Library.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="scribble-board" data-board
+     data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}">
+
+  {% if not board_groups and not ungrouped %}
+  <div class="card"><p class="muted">No groups yet. Add one above to start organizing findings.</p></div>
+  {% endif %}
+
+  {% for entry in board_groups %}
+  {% set group = entry.group %}
+  <div class="scribble-board-group card" draggable="true" data-group-id="{{ group.id }}"
+       data-update-url="{{ url_for('scribble_api.update_group', group_id=group.id) }}">
+    <div class="scribble-board-group-head">
+      <span class="scribble-board-handle mono" title="Drag to reorder this section">&#x2837;</span>
+      <input type="text" class="scribble-board-group-name" value="{{ group.name }}"
+             aria-label="Group name" />
+      {% if group.assessment_type %}<span class="pill">{{ group.assessment_type.name }}</span>{% endif %}
+      <span class="pill scribble-board-group-mode">{{ group.order_mode.value }}</span>
+      <button type="button" class="btn scribble-board-group-rerank"
+              {% if group.order_mode.value == 'auto_severity' %}disabled{% endif %}
+              title="Reset to worst-first severity ordering">
+        Re-rank by severity
+      </button>
+      <label class="scribble-board-group-toggle">
+        <input type="checkbox" class="scribble-board-group-include"
+               {% if group.include_in_report %}checked{% endif %} />
+        include in report
+      </label>
+      {% if scribble_can_write %}
+      <form method="post"
+            action="{{ url_for('scribble.delete_group', engagement_id=engagement.id, group_id=group.id) }}"
+            onsubmit="return confirm('Delete this group? Its findings become ungrouped, not deleted.');">
+        <button type="submit" class="btn scribble-board-group-delete">Delete</button>
+      </form>
+      {% endif %}
+    </div>
+    <ul class="scribble-board-findings" data-group-id="{{ group.id }}">
+      {% for f in entry.findings %}
+      <li class="scribble-board-finding{% if not f.include_in_report %} is-excluded{% endif %}"
+          draggable="true" data-finding-id="{{ f.id }}"
+          data-move-url="{{ url_for('scribble_api.move_finding', finding_id=f.id) }}">
+        <span class="scribble-board-handle mono">&#x2837;</span>
+        <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
+        <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
+        {% if not f.include_in_report %}<span class="muted">(excluded)</span>{% endif %}
+        {% if scribble_can_write %}
+        <form method="post" class="scribble-board-finding-delete-form"
+              action="{{ url_for('scribble.delete_finding', engagement_id=engagement.id, finding_id=f.id) }}"
+              onsubmit="return confirm('Delete this finding? This also deletes its artifacts and cannot be undone.');">
+          <button type="submit" class="btn scribble-board-finding-delete" title="Delete finding">&times;</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+      {% if not entry.findings %}
+      <li class="scribble-board-findings-empty muted">Drop findings here.</li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endfor %}
+
+  {% if ungrouped %}
+  <div class="scribble-board-group scribble-board-group-ungrouped card" data-group-id="">
+    <div class="scribble-board-group-head">
+      <span class="pill">Ungrouped</span>
+      <span class="muted">
+        Not yet assigned to a report section — always severity-ordered (no manual order here).
+        Drag a finding into a group above to place it.
+      </span>
+    </div>
+    <ul class="scribble-board-findings" data-group-id="">
+      {% for f in ungrouped %}
+      <li class="scribble-board-finding{% if not f.include_in_report %} is-excluded{% endif %}"
+          draggable="true" data-finding-id="{{ f.id }}"
+          data-move-url="{{ url_for('scribble_api.move_finding', finding_id=f.id) }}">
+        <span class="scribble-board-handle mono">&#x2837;</span>
+        <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
+        <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
+        {% if not f.include_in_report %}<span class="muted">(excluded)</span>{% endif %}
+        {% if scribble_can_write %}
+        <form method="post" class="scribble-board-finding-delete-form"
+              action="{{ url_for('scribble.delete_finding', engagement_id=engagement.id, finding_id=f.id) }}"
+              onsubmit="return confirm('Delete this finding? This also deletes its artifacts and cannot be undone.');">
+          <button type="submit" class="btn scribble-board-finding-delete" title="Delete finding">&times;</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+
+<style>
+  .scribble-board-toolbar { display: flex; flex-wrap: wrap; gap: 24px; }
+  .scribble-board-toolbar-section { flex: 1 1 320px; min-width: 280px; }
+  .scribble-inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .scribble-inline-form input[type="text"], .scribble-inline-form select {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
+  }
+
+  .scribble-board { display: flex; flex-direction: column; gap: 14px; }
+  .scribble-board-group.is-dragging { opacity: .4; border-style: dashed; }
+  .scribble-board-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .scribble-board-handle { cursor: grab; color: var(--muted); user-select: none; }
+  .scribble-board-group-name {
+    background: transparent; color: var(--ink); border: 1px solid transparent; border-radius: 6px;
+    padding: 4px 6px; font: inherit; font-weight: 600; min-width: 140px;
+  }
+  .scribble-board-group-name:hover, .scribble-board-group-name:focus { border-color: var(--line-strong); outline: none; }
+  .scribble-board-group-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .scribble-board-group-delete { margin: 0; }
+  .scribble-board-findings {
+    list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-height: 40px;
+  }
+  .scribble-board-finding {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--field-bg);
+  }
+  .scribble-board-finding.is-dragging { opacity: .3; border-style: dashed; }
+  .scribble-board-finding.is-excluded { opacity: .6; }
+  .scribble-board-finding-delete-form { margin: 0 0 0 auto; }
+  .scribble-board-finding-delete {
+    padding: 2px 9px; line-height: 1; font-size: 14px; color: var(--muted);
+  }
+  .scribble-board-finding-delete:hover { color: var(--danger); }
+  .scribble-board-findings-empty { padding: 10px; border: 1px dashed var(--line); border-radius: 8px; }
+  .scribble-board-group-ungrouped { border-style: dashed; }
+  .scribble-readonly-note { font-style: italic; }
+</style>
+
+<section class="ckp card" id="checklist-panel"
+         data-engagement-id="{{ engagement.id }}"
+         data-scope="{{ engagement.scope_type or '' }}"
+         data-templates-url="{{ url_for('scribble_api.list_checklist_templates') }}">
+  <div class="ckp-head">
+    <h2>Coverage</h2>
+    <button type="button" class="btn" id="ckp-assign-btn">+ Assign checklist</button>
+  </div>
+  <div id="ckp-assign-tray" class="ckp-tray" hidden></div>
+  <div id="ckp-body"><p class="muted">Loading checklists…</p></div>
+</section>
+
+<script src="{{ url_for('scribble.static', filename='board.js') }}"></script>
+<script src="{{ url_for('scribble.static', filename='checklists.js') }}"></script>
+{% endblock %}
