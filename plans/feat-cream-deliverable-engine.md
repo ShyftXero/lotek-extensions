@@ -1,8 +1,8 @@
 # Plan: feat/cream-deliverable-engine
 
 - **Branch:** `feat/cream-deliverable-engine`  (worktree: `.claude/worktrees/cream`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟢 ready to merge — all five tiers landed, 111 tests green
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/5
+- **Status:** 🟢 ready to merge — all five tiers landed, 112 tests green
 
 ## Purpose
 
@@ -21,7 +21,7 @@ Five tiers, in dependency order:
 
 ## Done
 
-All five tiers. 111 tests (`cream/tests/`, where the extension had none), `ruff` clean, and the suite is
+All five tiers. 112 tests (`cream/tests/`, where the extension had none), `ruff` clean, and the suite is
 green both with and without the optional `weasyprint` dependency.
 
 ### Tier 1 — real document
