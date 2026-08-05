@@ -189,10 +189,33 @@ class StubHost:
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
+        # Clients this NON-ADMIN actor may read. Mirrors the host's real rule
+        # (`app/access.py::user_can_view_client`): admin reads any client, a non-admin reads a client it
+        # owns a job under, and a NULL client_id is admin-only. Held as a set here because the stub has
+        # no jobs table to derive it from -- but the SHAPE of the answer is production's, deliberately:
+        # a stub that granted engagement-OWNER reads would be kinder than the host and would hide the
+        # very defect this capability exists to fix.
+        self.viewable_client_ids: set[int] = set()
 
     def mark_job_promoted(self, job_id: str, actor: StubActor | None, *, extension: str, ref_id: int) -> bool:
         self.promoted_calls.append((job_id, actor, extension, ref_id))
         return True
+
+    def can_view_client(self, client_id: int | None, actor: Any | None = None) -> bool:
+        """The host's client-scoped read gate (`app/extensions.py` injects the real one).
+
+        Absent this key the extension `abort(404)`s by design -- which is exactly what shipped before
+        the host provided it: every mounted report 404'd for every actor, admin included.
+        """
+        user = actor if actor is not None else self.current_user
+        if user is None:
+            return False
+        role = getattr(user, "role", None)
+        if role is not None and role.is_admin():
+            return True
+        if client_id is None:
+            return False  # nothing to attribute -> admin-only, mirroring the host's NULL default
+        return client_id in self.viewable_client_ids
 
 
 def _wire_stub_host(cfg, stub: StubHost) -> None:
@@ -230,6 +253,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["pat_actor"] = pat_actor
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
+    cfg.extras["can_view_client"] = stub.can_view_client
 
 
 @pytest.fixture
