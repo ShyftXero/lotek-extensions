@@ -1,0 +1,88 @@
+{# Shared chrome for every CREAM page.
+
+   It lives in an include rather than the base template because CREAM's base is only used STANDALONE —
+   when mounted in lotek the host's `base.html` is the parent, and anything CREAM needs on the page has
+   to travel with the page itself. #}
+<style>
+  .cr-wrap{max-width:1180px;margin:0 auto;padding:24px 20px;width:100%}
+  .cr-wrap.narrow{max-width:760px}
+  .cr-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:18px}
+  .cr-head h1{font-size:20px;margin:0 0 4px}
+  .cr-head p{color:#7f93a3;margin:0;font-size:13px;max-width:70ch}
+  .cr-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .cr-btn{display:inline-block;padding:7px 13px;border-radius:6px;border:1px solid #24333f;
+    background:#16222b;color:#dfe9f0;font-size:13px;cursor:pointer;text-decoration:none;line-height:1.3}
+  .cr-btn:hover{border-color:#37c9d6}
+  .cr-btn.primary{background:#0f766e;border-color:#0f766e;color:#fff}
+  .cr-btn.danger{border-color:#7f1d1d;color:#fca5a5}
+  .cr-btn[disabled]{opacity:.45;cursor:not-allowed}
+  .cr-table{width:100%;border-collapse:collapse;font-size:13px}
+  .cr-table thead th{text-align:left;color:#7f93a3;border-bottom:1px solid #24333f;padding:8px 6px;
+    font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  .cr-table td{padding:9px 6px;border-bottom:1px solid #16222b;vertical-align:top}
+  .cr-pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:10px;
+    text-transform:uppercase;letter-spacing:.09em;background:#24333f;color:#b9cbd8}
+  .cr-pill.draft{background:#78350f;color:#fde68a}
+  .cr-pill.issued{background:#0f766e;color:#d1fae5}
+  .cr-pill.sent{background:#1e40af;color:#dbeafe}
+  .cr-pill.accepted{background:#166534;color:#dcfce7}
+  .cr-pill.void{background:#7f1d1d;color:#fecaca}
+  .cr-field{display:block;margin-bottom:12px}
+  .cr-field > span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    color:#7f93a3;margin-bottom:4px}
+  .cr-field input,.cr-field textarea,.cr-field select{width:100%;box-sizing:border-box;padding:7px 9px;
+    border-radius:6px;border:1px solid #24333f;background:#0e151c;color:#dfe9f0;font:inherit;font-size:13px}
+  .cr-field textarea{min-height:70px;resize:vertical}
+  .cr-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+  .cr-card{border:1px solid #1c2a35;border-radius:10px;padding:16px;margin-bottom:16px;background:#0e151c}
+  .cr-card > h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#7f93a3;
+    margin:0 0 12px}
+  .cr-note{font-size:12px;color:#7f93a3;margin:6px 0 0}
+  .cr-toast{position:fixed;right:18px;bottom:18px;padding:10px 15px;border-radius:8px;
+    background:#0f766e;color:#fff;font-size:13px;opacity:0;transform:translateY(8px);
+    transition:.18s;pointer-events:none;z-index:50;max-width:44ch}
+  .cr-toast.show{opacity:1;transform:none}
+  .cr-toast.err{background:#7f1d1d}
+</style>
+<div class="cr-toast" id="cr-toast"></div>
+<script>
+(function () {
+  // lotek's base.html emits <meta name="csrf-token">, and so does CREAM's own — but relying on the
+  // host's meta name would make the whole editor dead on a host that names it differently, with the
+  // only symptom a 400 on save. So take the token from Jinja directly when the app has CSRF, and fall
+  // back to the meta tag. Empty means no CSRF is configured (standalone), which is not an error.
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  window.CREAM_CSRF = {{ (csrf_token() if csrf_token is defined else '')|tojson }}
+                      || (meta && meta.content) || '';
+
+  window.crToast = function (message, isError) {
+    const el = document.getElementById('cr-toast');
+    if (!el) return;
+    el.textContent = message;
+    el.className = 'cr-toast show' + (isError ? ' err' : '');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.className = 'cr-toast'; }, 3200);
+  };
+
+  // Every API call goes through here so one place owns the CSRF header and the error shape. A failed
+  // call REJECTS with the server's message — silently swallowing it is how an editor ends up showing a
+  // preview of a save that never happened.
+  window.crApi = async function (method, url, body) {
+    const headers = { 'Accept': 'application/json' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (window.CREAM_CSRF) headers['X-CSRFToken'] = window.CREAM_CSRF;
+    const res = await fetch(url, {
+      method, headers, credentials: 'same-origin',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+    if (!res.ok) {
+      const detail = (data && (data.message || data.error || data.description)) || res.statusText;
+      throw new Error(detail || ('HTTP ' + res.status));
+    }
+    return data;
+  };
+}());
+</script>

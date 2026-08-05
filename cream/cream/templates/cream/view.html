@@ -2,14 +2,76 @@
 {% block title %}CREAM — Document{% endblock %}
 {% block appbar_title %}Document{% endblock %}
 {% block content %}
-<div style="max-width:840px;margin:0 auto;padding:24px 20px;width:100%">
-  <div style="margin-bottom:14px">
-    <a href="{{ url_for('cream.dashboard') }}" style="font-size:13px">&larr; All documents</a>
-    &nbsp;·&nbsp;
-    <a href="{{ url_for('cream.export_html', doc_id=doc_id) }}" style="font-size:13px">Export HTML</a>
+{% include "cream/_ui.html" %}
+<div class="cr-wrap" style="max-width:900px">
+  <div class="cr-head">
+    <div>
+      <h1>{{ meta.kind|capitalize }} {{ meta.number or '(draft)' }}</h1>
+      <p>
+        <span class="cr-pill {{ meta.status }}">{{ meta.status }}</span>
+        {% if not meta.editable %}
+        &nbsp;Rendered from the snapshot frozen at issue — this is exactly the client's copy, even if
+        branding or rates have moved on since.
+        {% endif %}
+      </p>
+    </div>
+    <div class="cr-actions">
+      <a class="cr-btn" href="{{ url_for('cream.dashboard') }}">All documents</a>
+      {% if meta.editable and cream_can_write %}
+      <a class="cr-btn" href="{{ url_for('cream.edit_document', doc_id=doc_id) }}">Edit</a>
+      {% endif %}
+      <a class="cr-btn" href="{{ url_for('cream.export_html', doc_id=doc_id) }}">HTML</a>
+      <a class="cr-btn primary" href="{{ url_for('cream.export_pdf', doc_id=doc_id) }}">PDF</a>
+    </div>
   </div>
-  <div style="background:#fff;color:#111;border-radius:8px;padding:8px 20px">
+
+  {% if cream_can_write %}
+  <div class="cr-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    {% if meta.editable %}
+      <button class="cr-btn" data-act="issue">Issue &amp; freeze</button>
+    {% else %}
+      <button class="cr-btn" data-act="mark-sent">Mark sent</button>
+      {% if meta.kind == 'quote' %}
+        <button class="cr-btn" data-act="accept">Client accepted</button>
+        <button class="cr-btn primary" data-act="convert">Convert to invoice</button>
+      {% endif %}
+    {% endif %}
+    <button class="cr-btn danger" data-act="void">Void</button>
+    <span class="cr-note" style="margin-left:auto">Issued documents are voided, never deleted.</span>
+  </div>
+  {% endif %}
+
+  <div style="background:#fff;color:#111;border-radius:10px;padding:10px 24px 26px">
     {{ doc_html|safe }}
   </div>
 </div>
+<script>
+(function () {
+  const api = "{{ api_base }}";
+  const docId = "{{ doc_id }}";
+  const CONFIRM = {
+    'issue': 'Issue this document? It is numbered and frozen — no further edits, only void.',
+    'void': 'Void this document? It stays on record but is cancelled.',
+    'convert': 'Create a new invoice draft from this quote? The quote itself is left untouched.',
+  };
+  document.querySelectorAll('[data-act]').forEach((btn) => {
+    btn.addEventListener('click', async function () {
+      const act = this.dataset.act;
+      if (CONFIRM[act] && !window.confirm(CONFIRM[act])) return;
+      this.disabled = true;
+      try {
+        const out = await crApi('POST', api + '/documents/' + docId + '/' + act);
+        if (act === 'convert') {
+          window.location = "{{ url_for('cream.dashboard') }}" + 'documents/' + out.id + '/edit';
+          return;
+        }
+        window.location.reload();
+      } catch (err) {
+        crToast(err.message, true);
+        this.disabled = false;
+      }
+    });
+  });
+}());
+</script>
 {% endblock %}

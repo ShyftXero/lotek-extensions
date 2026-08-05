@@ -12,6 +12,7 @@
   .cr-appbar{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid #1c2a35;background:#0e151c}
   .cr-appbar .brand{font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#3ad29a}
   .cr-appbar .brand a{color:inherit;text-decoration:none}
+  .cr-appbar nav{margin-left:auto;display:flex;gap:16px;font-size:13px}
 </style>
 {% block head_extra %}{% endblock %}
 </head>
@@ -19,6 +20,10 @@
   <div class="cr-appbar">
     <span class="brand"><a href="{{ url_for('cream.dashboard') }}">$ CREAM</a></span>
     <span>{% block appbar_title %}{% endblock %}</span>
+    <nav>
+      <a href="{{ url_for('cream.dashboard') }}">Documents</a>
+      <a href="{{ url_for('cream.brand_settings') }}">Branding</a>
+    </nav>
   </div>
   {% block content %}{% endblock %}
 {% block body_extra %}{% endblock %}

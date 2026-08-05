@@ -6,6 +6,11 @@ label = "CREAM"
 path = "/"
 icon = "$"
 
+[[nav]]
+label = "CREAM branding"
+path = "/brand"
+icon = "*"
+
 # Tables this extension OWNS: the host may carry them through a migration, attribute them for
 # drop/truncate, and never touch a table nobody claims. tests/test_extension_schema.py requires this.
 [db]

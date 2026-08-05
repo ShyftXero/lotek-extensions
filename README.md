@@ -7,7 +7,7 @@ top of the [lotek](https://github.com/ShyftXero/lotek) framework. One repo, one 
 |---|---|---|
 | **cream** | `/cream` | Client quoting + invoicing (SOW/quotes + invoices; no payment processing) |
 | **registrar** | `/registrar` | Offensive-infra inventory + control (servers/domains/DNS, provider-agnostic) |
-| **fraction** | `/fraction` | Pentest reporting + the vuln-enrichment proposal seam |
+| **scribble** | `/scribble` | Pentest reporting + the vuln-enrichment proposal seam |
 | **vector** | `/vector` | Attack-path (kill-chain) diagram editor + HTML deliverable |
 
 ## Layout
@@ -19,7 +19,7 @@ Each extension is a **self-contained subdirectory** — its own package, `pyproj
 lotek-extensions/
   cream/       pyproject.toml · lotek-extension.toml · README.md · cream/        (the package)
   registrar/   …               · …                    · …         · registrar/
-  fraction/    …
+  scribble/    …
   vector/      …
 ```
 

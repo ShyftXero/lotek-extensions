@@ -1,21 +1,34 @@
-"""Human-facing UI blueprint — the document list + a single-document view/export.
+"""Human-facing UI blueprint — the document list, the editor, and the export surfaces.
 
 Route names are a stable contract used by templates and the host nav: ``cream.dashboard``,
-``cream.view_document``, ``cream.export_html``.
+``cream.new_document``, ``cream.edit_document``, ``cream.view_document``, ``cream.export_html``,
+``cream.export_pdf``, ``cream.brand_settings``.
+
+Read gating mirrors the API: a document outside the actor's visible engagements 404s rather than 403s,
+so the UI cannot be used to probe for the existence of another tenant's documents.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from flask import Blueprint, Response, abort, render_template
 from sqlalchemy import select
 
 from cream._version import __version__
-from cream.deps import get_config, host_can_write, host_visible_engagement_ids
+from cream.deps import (
+    current_actor_is_admin,
+    get_config,
+    host_can_write,
+    host_visible_engagement_ids,
+)
+from cream.enums import COMMON_UNITS, DocStatus
 from cream.models import Document
-from cream.render import render_document_html
-from cream.service import totals
+from cream.money import as_json, money, pct
+from cream.render import render_document_html, render_document_pdf
+from cream.service import get_brand, totals
+from cream.viewmodel import view_for
 
 bp = Blueprint("cream", __name__, template_folder="templates")
 
@@ -27,7 +40,71 @@ def _inject_base():
         "cream_base": cfg.base_template,
         "cream_version": __version__,
         "cream_can_write": host_can_write(),
+        # Branding sets the remit-to block on every document, so its form is admin-only — matching the
+        # gate on `PUT /api/brand`. The template hiding the button is a courtesy; the API is the control.
+        "cream_is_admin": current_actor_is_admin(),
+        "cream_units": COMMON_UNITS,
         "api_base": cfg.url_prefix.rstrip("/") + "/api",
+    }
+
+
+def _load(db, doc_id: uuid.UUID) -> Document:
+    doc = db.get(Document, doc_id)
+    if doc is None:
+        abort(404)
+    vis = host_visible_engagement_ids()
+    if vis is not None and doc.engagement_id not in vis:
+        abort(404)  # not in the actor's engagements — 404, don't disclose existence
+    return doc
+
+
+def _editor_payload(doc: Document) -> dict:
+    """The document as the editor's JavaScript wants it — money as numbers, dates as ``YYYY-MM-DD``
+    for ``<input type=date>``, everything else a plain string."""
+    scope: list[str] = []
+    if doc.scope_json:
+        try:
+            parsed = json.loads(doc.scope_json)
+            scope = [str(s) for s in parsed] if isinstance(parsed, list) else []
+        except ValueError:
+            scope = []
+    return {
+        "id": str(doc.id),
+        "kind": doc.kind.value,
+        "status": doc.status.value,
+        "scope": scope,
+        "title": doc.title or "",
+        "currency": doc.currency or "USD",
+        "reference": doc.reference or "",
+        "bill_to_name": doc.bill_to_name or "",
+        "bill_to_attn": doc.bill_to_attn or "",
+        "bill_to_address": doc.bill_to_address or "",
+        "bill_to_email": doc.bill_to_email or "",
+        "valid_until": doc.valid_until.isoformat() if doc.valid_until else "",
+        "due_date": doc.due_date.isoformat() if doc.due_date else "",
+        "window_start": doc.window_start.isoformat() if doc.window_start else "",
+        "window_end": doc.window_end.isoformat() if doc.window_end else "",
+        "discount_pct": as_json(pct(doc.discount_pct)),
+        "discount_amount": as_json(None if doc.discount_amount is None else money(doc.discount_amount)),
+        "discount_label": doc.discount_label or "",
+        "tax_label": doc.tax_label or "",
+        "tax_pct": as_json(pct(doc.tax_pct)),
+        "notes": doc.notes or "",
+        "authorization_required": bool(doc.authorization_required),
+        "signatory_name": doc.signatory_name or "",
+        "signatory_title": doc.signatory_title or "",
+        "roe_terms": doc.roe_terms or "",
+        "line_items": [
+            {
+                "description": li.description or "",
+                "detail": li.detail or "",
+                "qty": as_json(money(li.qty)),
+                "unit": li.unit or "project",
+                "unit_price": as_json(money(li.unit_price)),
+                "source": li.source or "manual",
+            }
+            for li in doc.line_items
+        ],
     }
 
 
@@ -43,36 +120,103 @@ def dashboard():
             rows.append({
                 "id": str(d.id), "kind": d.kind.value, "status": d.status.value,
                 "number": d.number or "—", "title": d.title,
-                "total": totals(d)["total"], "currency": d.currency,
+                "client": d.bill_to_name or "—",
+                "editable": d.status is DocStatus.draft,
+                "total": totals(d).total, "currency": d.currency,
             })
     return render_template("cream/list.html", documents=rows)
+
+
+@bp.get("/documents/new")
+def new_document():
+    """The create form. A document must name the engagement it bills, so the form asks for it up front
+    rather than letting a document exist unattached."""
+    return render_template("cream/new.html")
 
 
 @bp.get("/documents/<uuid:doc_id>")
 def view_document(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
-        doc = db.get(Document, doc_id)
-        if doc is None:
-            abort(404)
-        vis = host_visible_engagement_ids()
-        if vis is not None and doc.engagement_id not in vis:
-            abort(404)
-        html = render_document_html(doc)
-    return render_template("cream/view.html", doc_html=html, doc_id=str(doc_id))
+        doc = _load(db, doc_id)
+        brand = get_brand(db)
+        db.commit()  # get_brand may have created the singleton on first ever view
+        html = render_document_html(view_for(doc, brand))
+        meta = {"kind": doc.kind.value, "status": doc.status.value, "number": doc.number,
+                "editable": doc.status is DocStatus.draft}
+    return render_template("cream/view.html", doc_html=html, doc_id=str(doc_id), meta=meta)
+
+
+@bp.get("/documents/<uuid:doc_id>/edit")
+def edit_document(doc_id: uuid.UUID):
+    """Form on the left, live server-rendered preview on the right."""
+    cfg = get_config()
+    with cfg.session_factory() as db:
+        doc = _load(db, doc_id)
+        brand = get_brand(db)
+        db.commit()
+        if doc.status is not DocStatus.draft:
+            # Nothing to edit — send the reader to the frozen view rather than showing dead inputs.
+            html = render_document_html(view_for(doc, brand))
+            meta = {"kind": doc.kind.value, "status": doc.status.value, "number": doc.number,
+                    "editable": False}
+            return render_template("cream/view.html", doc_html=html, doc_id=str(doc_id), meta=meta)
+        payload = _editor_payload(doc)
+        initial = render_document_html(view_for(doc, brand))
+    return render_template("cream/edit.html", doc=payload, doc_id=str(doc_id), initial_html=initial)
 
 
 @bp.get("/documents/<uuid:doc_id>/export.html")
 def export_html(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
-        doc = db.get(Document, doc_id)
-        if doc is None:
-            abort(404)
-        vis = host_visible_engagement_ids()
-        if vis is not None and doc.engagement_id not in vis:
-            abort(404)
-        html = render_document_html(doc, standalone=True)
+        doc = _load(db, doc_id)
+        brand = get_brand(db)
+        db.commit()
+        html = render_document_html(view_for(doc, brand), standalone=True)
         name = (doc.number or "document") + ".html"
     return Response(html, mimetype="text/html",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@bp.get("/documents/<uuid:doc_id>/export.pdf")
+def export_pdf(doc_id: uuid.UUID):
+    """The PDF. 503 when weasyprint is absent — a clear "this install cannot print" beats a 500 or,
+    worse, silently handing back HTML with a ``.pdf`` filename."""
+    cfg = get_config()
+    with cfg.session_factory() as db:
+        doc = _load(db, doc_id)
+        brand = get_brand(db)
+        db.commit()
+        pdf = render_document_pdf(view_for(doc, brand))
+        name = (doc.number or "document") + ".pdf"
+    if pdf is None:
+        return Response(
+            "PDF rendering is not available on this install: the optional `weasyprint` dependency is "
+            "not installed (`pip install 'cream[pdf]'`). The HTML export is unaffected.",
+            status=503, mimetype="text/plain",
+        )
+    return Response(pdf, mimetype="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@bp.get("/brand")
+def brand_settings():
+    """Issuer identity + house style — the letterhead every document is rendered with."""
+    cfg = get_config()
+    with cfg.session_factory() as db:
+        brand = get_brand(db)
+        db.commit()
+        data = {
+            "company_name": brand.company_name or "", "address": brand.address or "",
+            "email": brand.email or "", "phone": brand.phone or "", "website": brand.website or "",
+            "tax_id": brand.tax_id or "", "logo_data_uri": brand.logo_data_uri or "",
+            "accent_color": brand.accent_color or "#0f766e", "font_stack": brand.font_stack or "",
+            "default_currency": brand.default_currency or "USD",
+            "default_tax_label": brand.default_tax_label or "",
+            "default_tax_pct": as_json(pct(brand.default_tax_pct)),
+            "payment_instructions": brand.payment_instructions or "",
+            "footer_terms": brand.footer_terms or "",
+            "default_roe_terms": brand.default_roe_terms or "",
+        }
+    return render_template("cream/brand.html", brand=data)

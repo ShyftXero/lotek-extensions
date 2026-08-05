@@ -1,0 +1,389 @@
+{% extends cream_base %}
+{% block title %}CREAM — Edit document{% endblock %}
+{% block appbar_title %}Edit draft{% endblock %}
+{% block content %}
+{% include "cream/_ui.html" %}
+<style>
+  .cr-split{display:grid;grid-template-columns:minmax(430px,1fr) minmax(430px,1fr);gap:22px;
+    align-items:start}
+  @media (max-width:1080px){.cr-split{grid-template-columns:1fr}}
+  .cr-preview{position:sticky;top:16px;background:#fff;border-radius:10px;padding:22px 24px;
+    max-height:calc(100vh - 40px);overflow:auto}
+  .cr-preview.stale{opacity:.55}
+  .cr-lines{width:100%;border-collapse:collapse;font-size:12.5px}
+  .cr-lines th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+    color:#7f93a3;padding:0 4px 6px}
+  .cr-lines td{padding:3px 4px;vertical-align:top}
+  .cr-lines input,.cr-lines textarea,.cr-lines select{width:100%;box-sizing:border-box;padding:6px 7px;
+    border-radius:5px;border:1px solid #24333f;background:#0e151c;color:#dfe9f0;font:inherit;
+    font-size:12.5px}
+  .cr-lines textarea{min-height:34px;resize:vertical}
+  .cr-lines .drop{border:none;background:none;color:#fca5a5;cursor:pointer;font-size:15px;padding:4px}
+  .cr-amt{text-align:right;color:#7f93a3;font-variant-numeric:tabular-nums;padding-top:12px}
+  .cr-scope-list{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;color:#b9cbd8;
+    max-height:130px;overflow:auto;margin:0;padding-left:18px}
+</style>
+<div class="cr-wrap">
+  <div class="cr-head">
+    <div>
+      <h1>{{ doc.kind|capitalize }} draft</h1>
+      <p>The preview on the right is rendered by the server, through the same code that produces the
+         PDF — what you see is what prints. Nothing is saved until you press Save.</p>
+    </div>
+    <div class="cr-actions">
+      <button class="cr-btn" id="a-save">Save</button>
+      <button class="cr-btn" id="a-issue">Issue &amp; freeze</button>
+      <a class="cr-btn" href="{{ url_for('cream.view_document', doc_id=doc_id) }}">View</a>
+    </div>
+  </div>
+
+  <div class="cr-split">
+    <div>
+      <div class="cr-card">
+        <h2>Document</h2>
+        <label class="cr-field"><span>Title</span><input data-f="title"></label>
+        <div class="cr-grid">
+          <label class="cr-field"><span>Currency</span><input data-f="currency" maxlength="8"></label>
+          <label class="cr-field"><span>Client reference / PO</span><input data-f="reference"></label>
+        </div>
+      </div>
+
+      <div class="cr-card">
+        <h2>Bill to</h2>
+        <div class="cr-grid">
+          <label class="cr-field"><span>Name</span><input data-f="bill_to_name"></label>
+          <label class="cr-field"><span>Attn</span><input data-f="bill_to_attn"></label>
+        </div>
+        <label class="cr-field"><span>Address</span><textarea data-f="bill_to_address"></textarea></label>
+        <label class="cr-field"><span>Email</span><input data-f="bill_to_email"></label>
+      </div>
+
+      <div class="cr-card">
+        <h2>Dates</h2>
+        <div class="cr-grid">
+          <label class="cr-field"><span>Execution window — start</span>
+            <input type="date" data-f="window_start"></label>
+          <label class="cr-field"><span>Execution window — end</span>
+            <input type="date" data-f="window_end"></label>
+          <label class="cr-field"><span>Quote valid until</span>
+            <input type="date" data-f="valid_until"></label>
+          <label class="cr-field"><span>Payment due</span>
+            <input type="date" data-f="due_date"></label>
+        </div>
+        <p class="cr-note">The execution window is what the client agrees to and what the blue team gets
+           told to expect. It prints on the document and heads Appendix A.</p>
+      </div>
+
+      <div class="cr-card">
+        <h2>Line items</h2>
+        <table class="cr-lines">
+          <thead><tr>
+            <th style="width:46%">Description</th><th style="width:13%">Qty</th>
+            <th style="width:15%">Unit</th><th style="width:16%">Unit price</th>
+            <th style="width:10%;text-align:right">Amount</th><th></th>
+          </tr></thead>
+          <tbody id="lines"></tbody>
+        </table>
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="cr-btn" id="a-addline">Add line</button>
+          <button class="cr-btn" id="a-suggest">Suggest from rate card</button>
+        </div>
+        <p class="cr-note">Flat rate is <code>1 × project</code>; hourly is <code>16 × hr</code> — same
+           two fields, no mode switch. The detail box under a description takes bullets
+           (<code>- </code>), <code>**bold**</code> and <code>`code`</code>.</p>
+      </div>
+
+      <div class="cr-card">
+        <h2>Adjustments</h2>
+        <div class="cr-grid">
+          <label class="cr-field"><span>Discount label</span><input data-f="discount_label"></label>
+          <label class="cr-field"><span>Discount %</span>
+            <input type="number" step="0.01" min="0" max="100" data-f="discount_pct"></label>
+          <label class="cr-field"><span>…or fixed discount</span>
+            <input type="number" step="0.01" min="0" data-f="discount_amount"></label>
+          <label class="cr-field"><span>Tax label</span>
+            <input data-f="tax_label" placeholder="VAT 20% / AR Sales Tax"></label>
+          <label class="cr-field"><span>Tax %</span>
+            <input type="number" step="0.01" min="0" max="100" data-f="tax_pct"></label>
+        </div>
+        <p class="cr-note">Tax is a label plus a rate — a text string, not a jurisdiction engine. A fixed
+           discount overrides the percentage, and neither can push the total below zero.</p>
+      </div>
+
+      <div class="cr-card">
+        <h2>Scope &amp; authorization</h2>
+        <label class="cr-field" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" data-f="authorization_required" style="width:auto">
+          <span style="margin:0;text-transform:none;letter-spacing:0;font-size:13px;color:#dfe9f0">
+            Print the authorization-to-test block</span>
+        </label>
+        <div class="cr-grid">
+          <label class="cr-field"><span>Signatory name</span><input data-f="signatory_name"></label>
+          <label class="cr-field"><span>Signatory title</span><input data-f="signatory_title"></label>
+        </div>
+        <label class="cr-field"><span>Rules of engagement</span><textarea data-f="roe_terms"></textarea></label>
+        <div style="margin:4px 0 10px"><button class="cr-btn" id="a-scope">Pull scope from
+          engagement</button></div>
+        <ul class="cr-scope-list" id="scope-list"></ul>
+        <p class="cr-note" id="scope-note">Appendix A is pulled from the engagement's real targets, so the
+           signed document and the scanner's target list have one source. Frozen at issue.</p>
+      </div>
+
+      <div class="cr-card">
+        <h2>Notes</h2>
+        <label class="cr-field"><textarea data-f="notes"></textarea></label>
+      </div>
+
+      <div class="cr-card">
+        <h2>Quoted vs executed</h2>
+        <div id="burn">Loading…</div>
+        <p class="cr-note">Advisory only, and never printed on the client's document — measured
+           execution is evidence for a human deciding what to bill, not a billing feed.</p>
+      </div>
+    </div>
+
+    <div class="cr-preview" id="preview">{{ initial_html|safe }}</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const api = "{{ api_base }}";
+  const docId = "{{ doc_id }}";
+  const UNITS = {{ cream_units|list|tojson }};
+  const state = {{ doc|tojson }};
+
+  const preview = document.getElementById('preview');
+  const linesBody = document.getElementById('lines');
+
+  // --- form binding ------------------------------------------------------------------------------
+  const fields = Array.from(document.querySelectorAll('[data-f]'));
+  function readField(el) {
+    if (el.type === 'checkbox') return el.checked;
+    if (el.type === 'number') return el.value === '' ? null : Number(el.value);
+    return el.value;
+  }
+  function paintFields() {
+    fields.forEach((el) => {
+      const key = el.dataset.f;
+      const value = state[key];
+      if (el.type === 'checkbox') el.checked = !!value;
+      else el.value = (value === null || value === undefined) ? '' : value;
+    });
+  }
+  fields.forEach((el) => {
+    el.addEventListener('input', () => { state[el.dataset.f] = readField(el); schedule(); });
+    el.addEventListener('change', () => { state[el.dataset.f] = readField(el); schedule(); });
+  });
+
+  // --- line items --------------------------------------------------------------------------------
+  function money(n) { return (Number(n) || 0).toFixed(2); }
+
+  function paintLines() {
+    linesBody.textContent = '';
+    state.line_items.forEach((line, index) => {
+      const tr = document.createElement('tr');
+
+      const tdDesc = document.createElement('td');
+      const desc = document.createElement('input');
+      desc.value = line.description || '';
+      desc.placeholder = 'Web application assessment';
+      desc.addEventListener('input', () => { line.description = desc.value; schedule(); });
+      const detail = document.createElement('textarea');
+      detail.value = line.detail || '';
+      detail.placeholder = 'Scope detail — targets, inclusions, exclusions';
+      detail.addEventListener('input', () => { line.detail = detail.value; schedule(); });
+      tdDesc.append(desc, detail);
+
+      const tdQty = document.createElement('td');
+      const qty = document.createElement('input');
+      qty.type = 'number'; qty.step = '0.01'; qty.min = '0'; qty.value = line.qty;
+      qty.addEventListener('input', () => {
+        line.qty = qty.value === '' ? 0 : Number(qty.value); repaintAmounts(); schedule();
+      });
+      tdQty.append(qty);
+
+      const tdUnit = document.createElement('td');
+      const unit = document.createElement('select');
+      const known = UNITS.slice();
+      if (line.unit && known.indexOf(line.unit) === -1) known.unshift(line.unit);
+      known.forEach((u) => {
+        const opt = document.createElement('option');
+        opt.value = u; opt.textContent = u;
+        if (u === line.unit) opt.selected = true;
+        unit.append(opt);
+      });
+      unit.addEventListener('change', () => { line.unit = unit.value; schedule(); });
+      tdUnit.append(unit);
+
+      const tdPrice = document.createElement('td');
+      const price = document.createElement('input');
+      price.type = 'number'; price.step = '0.01'; price.value = line.unit_price;
+      price.addEventListener('input', () => {
+        line.unit_price = price.value === '' ? 0 : Number(price.value); repaintAmounts(); schedule();
+      });
+      tdPrice.append(price);
+
+      const tdAmt = document.createElement('td');
+      tdAmt.className = 'cr-amt';
+      tdAmt.dataset.amt = String(index);
+
+      const tdDrop = document.createElement('td');
+      const drop = document.createElement('button');
+      drop.className = 'drop'; drop.title = 'Remove line'; drop.textContent = '×';
+      drop.addEventListener('click', () => {
+        state.line_items.splice(index, 1); paintLines(); schedule();
+      });
+      tdDrop.append(drop);
+
+      tr.append(tdDesc, tdQty, tdUnit, tdPrice, tdAmt, tdDrop);
+      linesBody.append(tr);
+    });
+    repaintAmounts();
+  }
+
+  function repaintAmounts() {
+    // A local echo so the row total tracks typing; the AUTHORITATIVE numbers are the ones the server
+    // returns with the preview. Nothing here is ever sent back as a price.
+    state.line_items.forEach((line, index) => {
+      const cell = linesBody.querySelector('[data-amt="' + index + '"]');
+      if (cell) cell.textContent = money((Number(line.qty) || 0) * (Number(line.unit_price) || 0));
+    });
+  }
+
+  document.getElementById('a-addline').addEventListener('click', () => {
+    state.line_items.push({ description: '', detail: '', qty: 1, unit: 'project',
+                            unit_price: 0, source: 'manual' });
+    paintLines();
+  });
+
+  // --- preview -----------------------------------------------------------------------------------
+  let timer = null;
+  let inflight = 0;
+
+  function schedule() {
+    preview.classList.add('stale');
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 250);
+  }
+
+  async function refresh() {
+    const seq = ++inflight;
+    try {
+      const out = await crApi('POST', api + '/documents/' + docId + '/preview', state);
+      // Drop a response that a newer keystroke has already superseded, or the pane flickers backwards.
+      if (seq !== inflight) return;
+      preview.innerHTML = out.html;
+      preview.classList.remove('stale');
+    } catch (err) {
+      if (seq === inflight) crToast('Preview failed: ' + err.message, true);
+    }
+  }
+
+  // --- actions -----------------------------------------------------------------------------------
+  document.getElementById('a-save').addEventListener('click', async function () {
+    this.disabled = true;
+    try {
+      await crApi('PUT', api + '/documents/' + docId, state);
+      crToast('Saved.');
+    } catch (err) { crToast('Save failed: ' + err.message, true); }
+    this.disabled = false;
+  });
+
+  document.getElementById('a-issue').addEventListener('click', async function () {
+    if (!window.confirm('Issue this document? It is assigned a number and frozen — it cannot be '
+                        + 'edited afterwards, only voided.')) return;
+    this.disabled = true;
+    try {
+      await crApi('PUT', api + '/documents/' + docId, state);   // never freeze unsaved edits
+      const out = await crApi('POST', api + '/documents/' + docId + '/issue');
+      crToast('Issued as ' + out.number + '.');
+      window.location = "{{ url_for('cream.view_document', doc_id=doc_id) }}";
+    } catch (err) {
+      crToast('Issue failed: ' + err.message, true);
+      this.disabled = false;
+    }
+  });
+
+  document.getElementById('a-suggest').addEventListener('click', async function () {
+    this.disabled = true;
+    try {
+      const out = await crApi('POST', api + '/documents/' + docId + '/sync', {});
+      if (!out.suggestions.length) { crToast('Nothing new to suggest.'); }
+      out.suggestions.forEach((s) => {
+        state.line_items.push({ description: s.label, detail: '', qty: 1, unit: s.unit,
+                                unit_price: s.unit_price, source: s.unit_key });
+      });
+      if (out.suggestions.length) {
+        paintLines(); schedule();
+        crToast('Added ' + out.suggestions.length + ' suggested line(s) — review before saving.');
+      }
+    } catch (err) { crToast('Sync failed: ' + err.message, true); }
+    this.disabled = false;
+  });
+
+  document.getElementById('a-scope').addEventListener('click', async function () {
+    this.disabled = true;
+    try {
+      const out = await crApi('POST', api + '/documents/' + docId + '/scope-sync');
+      paintScope(out.scope);
+      crToast(out.count ? ('Pulled ' + out.count + ' target(s).')
+                        : 'The host reported no targets for this engagement.');
+      refresh();
+    } catch (err) { crToast('Scope sync failed: ' + err.message, true); }
+    this.disabled = false;
+  });
+
+  function paintScope(targets) {
+    const list = document.getElementById('scope-list');
+    list.textContent = '';
+    (targets || []).forEach((t) => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      list.append(li);
+    });
+  }
+
+  async function loadBurn() {
+    const host = document.getElementById('burn');
+    try {
+      const out = await crApi('GET', api + '/documents/' + docId + '/burn');
+      if (!out.available) {
+        host.textContent = 'The host reports no measured execution for this engagement yet.';
+        return;
+      }
+      host.textContent = '';
+      const table = document.createElement('table');
+      table.className = 'cr-table';
+      const head = document.createElement('thead');
+      head.innerHTML = '<tr><th>Line</th><th>Quoted</th><th>Executed</th><th>Delta</th></tr>';
+      const body = document.createElement('tbody');
+      out.rows.forEach((r) => {
+        const tr = document.createElement('tr');
+        const cells = [
+          r.description,
+          money(r.quoted_qty) + ' ' + r.unit,
+          r.executed_qty === null ? 'not measured' : money(r.executed_qty) + ' ' + r.unit,
+          r.delta === null ? '—' : (r.delta > 0 ? '+' : '') + money(r.delta),
+        ];
+        cells.forEach((text) => {
+          const td = document.createElement('td');
+          td.textContent = text;
+          tr.append(td);
+        });
+        body.append(tr);
+      });
+      table.append(head, body);
+      host.append(table);
+    } catch (err) {
+      host.textContent = 'Could not load burn data: ' + err.message;
+    }
+  }
+
+  paintFields();
+  paintLines();
+  paintScope(state.scope || []);
+  loadBurn();
+}());
+</script>
+{% endblock %}

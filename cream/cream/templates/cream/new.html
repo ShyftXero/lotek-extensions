@@ -1,0 +1,60 @@
+{% extends cream_base %}
+{% block title %}CREAM — New document{% endblock %}
+{% block appbar_title %}New document{% endblock %}
+{% block content %}
+{% include "cream/_ui.html" %}
+<div class="cr-wrap narrow">
+  <div class="cr-head">
+    <div>
+      <h1>New document</h1>
+      <p>A document bills exactly one engagement, so it needs the engagement id up front — that is also
+         the key the host uses to decide who may read it. Everything else is editable afterwards.</p>
+    </div>
+  </div>
+  <div class="cr-card">
+    <label class="cr-field"><span>Kind</span>
+      <select id="f-kind">
+        <option value="quote">Quote / SOW</option>
+        <option value="invoice" selected>Invoice</option>
+      </select>
+    </label>
+    <label class="cr-field"><span>Engagement id (UUID)</span>
+      <input id="f-engagement" placeholder="0198e2c1-…" autocomplete="off"></label>
+    <label class="cr-field"><span>Title</span>
+      <input id="f-title" placeholder="External network penetration test"></label>
+    <div class="cr-grid">
+      <label class="cr-field"><span>Bill to</span>
+        <input id="f-billto" placeholder="Acme Corp"></label>
+      <label class="cr-field"><span>Currency</span>
+        <input id="f-currency" value="USD" maxlength="8"></label>
+    </div>
+    <button class="cr-btn primary" id="f-create">Create draft</button>
+    <a class="cr-btn" href="{{ url_for('cream.dashboard') }}">Cancel</a>
+    <p class="cr-note">A quote is created with the authorization-to-test block enabled; an invoice is
+       not. Both can be changed in the editor.</p>
+  </div>
+</div>
+<script>
+(function () {
+  const api = "{{ api_base }}";
+  document.getElementById('f-create').addEventListener('click', async function () {
+    const engagement = document.getElementById('f-engagement').value.trim();
+    if (!engagement) { crToast('An engagement id is required.', true); return; }
+    this.disabled = true;
+    try {
+      const doc = await crApi('POST', api + '/documents', {
+        kind: document.getElementById('f-kind').value,
+        engagement_id: engagement,
+        title: document.getElementById('f-title').value.trim() || 'Untitled',
+        bill_to_name: document.getElementById('f-billto').value.trim(),
+        currency: document.getElementById('f-currency').value.trim() || 'USD',
+      });
+      window.location = "{{ url_for('cream.dashboard') }}" + 'documents/' + doc.id + '/edit';
+    } catch (err) {
+      crToast(err.message, true);
+      this.disabled = false;
+    }
+  });
+}());
+</script>
+{% endblock %}

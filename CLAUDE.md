@@ -5,7 +5,7 @@ framework's flow and processes. The essentials:
 
 ## One monorepo, self-contained subdirectories
 
-Each extension lives in its own subdir (`cream/`, `registrar/`, `fraction/`, `vector/`), carrying its own
+Each extension lives in its own subdir (`cream/`, `registrar/`, `scribble/`, `vector/`), carrying its own
 `pyproject.toml`, `lotek-extension.toml`, and package. A change touches ONE extension's subdir unless it
 is a cross-cutting repo change (this file, CI, the plan template). Keep extensions independent — an
 extension reaches lotek only through the injected host contract, never by importing lotek or another

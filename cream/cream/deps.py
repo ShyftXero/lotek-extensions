@@ -140,3 +140,57 @@ def host_visible_engagement_ids():
         return hook()
     except Exception:  # noqa: BLE001
         return frozenset()
+
+
+def host_engagement_scope(engagement_id: uuid.UUID) -> list[str]:
+    """The engagement's real targets — CIDRs, hosts, URLs, AD domains — via the optional
+    ``extras['engagement_scope']`` hook.
+
+    This is what lets a quote's Appendix A be the scope-of-record instead of a hand-typed list that
+    drifts from what the scanner was actually pointed at. Absent (standalone) or raising -> ``[]``: an
+    empty appendix is a visibly incomplete document, whereas a partial one would look authoritative.
+    """
+    hook = _extras().get("engagement_scope")
+    if hook is None:
+        return []
+    try:
+        return [str(t) for t in (hook(engagement_id) or [])]
+    except Exception:  # noqa: BLE001 - a host that cannot answer yields no scope, never a 500
+        logging.getLogger("cream").warning("engagement_scope hook failed for %s", engagement_id)
+        return []
+
+
+def host_engagement_units(engagement_id: uuid.UUID) -> list[str]:
+    """The billable ``unit_key``s the engagement currently contains (run types, phases, scope bands),
+    via the optional ``extras['engagement_units']`` hook. Absent/raising -> ``[]``.
+
+    Without this the rate-card sync is only callable by something that already knows the engagement's
+    shape — which the browser does not. The hook is what makes "suggest what is not yet billed" a button
+    a human can press rather than an API for the host to drive.
+    """
+    hook = _extras().get("engagement_units")
+    if hook is None:
+        return []
+    try:
+        return [str(k) for k in (hook(engagement_id) or [])]
+    except Exception:  # noqa: BLE001
+        logging.getLogger("cream").warning("engagement_units hook failed for %s", engagement_id)
+        return []
+
+
+def host_engagement_burn(engagement_id: uuid.UUID) -> dict:
+    """Measured execution per billable unit — ``{unit_key: quantity}`` — via the optional
+    ``extras['engagement_burn']`` hook. Absent/raising -> ``{}``.
+
+    Advisory input to the quoted-vs-executed view in the editor. It never reaches a client-facing
+    document and never changes a price; the host's numbers are evidence for a human, not a billing feed.
+    """
+    hook = _extras().get("engagement_burn")
+    if hook is None:
+        return {}
+    try:
+        got = hook(engagement_id)
+        return dict(got) if got else {}
+    except Exception:  # noqa: BLE001
+        logging.getLogger("cream").warning("engagement_burn hook failed for %s", engagement_id)
+        return {}
