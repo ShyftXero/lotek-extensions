@@ -2,28 +2,45 @@
 {% block title %}CREAM — Quotes &amp; Invoices{% endblock %}
 {% block appbar_title %}Quotes &amp; Invoices{% endblock %}
 {% block content %}
-<div style="max-width:1000px;margin:0 auto;padding:28px 20px;width:100%">
-  <h1 style="font-size:20px;margin:0 0 4px">Quotes &amp; Invoices</h1>
-  <p style="color:#7f93a3;margin:0 0 20px;font-size:13px">
-    SOW/quotes and invoices. Drafts track their engagement; issuing freezes an immutable numbered
-    snapshot. No payment processing — collection happens off-platform.
-  </p>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
-      <th style="padding:8px 6px">Number</th><th style="padding:8px 6px">Kind</th>
-      <th style="padding:8px 6px">Title</th><th style="padding:8px 6px">Status</th>
-      <th style="padding:8px 6px;text-align:right">Total</th></tr></thead>
+{% include "cream/_ui.html" %}
+<div class="cr-wrap">
+  <div class="cr-head">
+    <div>
+      <h1>Quotes &amp; Invoices</h1>
+      <p>Drafts track their engagement; issuing freezes an immutable numbered snapshot rendered from
+         frozen data, so the client's copy never changes underneath them. No payment processing —
+         collection happens off-platform.</p>
+    </div>
+    <div class="cr-actions">
+      {% if cream_can_write %}
+      <a class="cr-btn primary" href="{{ url_for('cream.new_document') }}">New document</a>
+      {% endif %}
+    </div>
+  </div>
+  <table class="cr-table">
+    <thead><tr>
+      <th>Number</th><th>Kind</th><th>Title</th><th>Bill to</th><th>Status</th>
+      <th style="text-align:right">Total</th><th></th>
+    </tr></thead>
     <tbody>
     {% for d in documents %}
-      <tr style="border-bottom:1px solid #16222b">
-        <td style="padding:8px 6px"><a href="{{ url_for('cream.view_document', doc_id=d.id) }}">{{ d.number }}</a></td>
-        <td style="padding:8px 6px">{{ d.kind }}</td>
-        <td style="padding:8px 6px">{{ d.title }}</td>
-        <td style="padding:8px 6px">{{ d.status }}</td>
-        <td style="padding:8px 6px;text-align:right">{{ '%.2f'|format(d.total) }} {{ d.currency }}</td>
+      <tr>
+        <td><a href="{{ url_for('cream.view_document', doc_id=d.id) }}">{{ d.number }}</a></td>
+        <td>{{ d.kind }}</td>
+        <td>{{ d.title }}</td>
+        <td>{{ d.client }}</td>
+        <td><span class="cr-pill {{ d.status }}">{{ d.status }}</span></td>
+        <td style="text-align:right">{{ '%.2f'|format(d.total) }} {{ d.currency }}</td>
+        <td style="text-align:right">
+          {% if d.editable and cream_can_write %}
+            <a href="{{ url_for('cream.edit_document', doc_id=d.id) }}">Edit</a>
+          {% else %}
+            <a href="{{ url_for('cream.export_pdf', doc_id=d.id) }}">PDF</a>
+          {% endif %}
+        </td>
       </tr>
     {% else %}
-      <tr><td colspan="5" style="padding:16px 6px;color:#7f93a3">No documents yet.</td></tr>
+      <tr><td colspan="7" style="padding:16px 6px;color:#7f93a3">No documents yet.</td></tr>
     {% endfor %}
     </tbody>
   </table>

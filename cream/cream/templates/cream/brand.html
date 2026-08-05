@@ -1,0 +1,134 @@
+{% extends cream_base %}
+{% block title %}CREAM — Branding{% endblock %}
+{% block appbar_title %}Branding{% endblock %}
+{% block content %}
+{% include "cream/_ui.html" %}
+<div class="cr-wrap narrow">
+  <div class="cr-head">
+    <div>
+      <h1>Issuer identity</h1>
+      <p>The letterhead every document is rendered with — and snapshotted into each one at issue, so
+         changing it here never rewrites a document already in a client's hands.</p>
+    </div>
+    <div class="cr-actions">
+      {% if cream_can_write and cream_is_admin %}
+      <button class="cr-btn primary" id="a-save">Save</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="cr-card">
+    <h2>Firm</h2>
+    <label class="cr-field"><span>Company name</span><input data-b="company_name"></label>
+    <label class="cr-field"><span>Address</span><textarea data-b="address"></textarea></label>
+    <div class="cr-grid">
+      <label class="cr-field"><span>Email</span><input data-b="email"></label>
+      <label class="cr-field"><span>Phone</span><input data-b="phone"></label>
+      <label class="cr-field"><span>Website</span><input data-b="website"></label>
+      <label class="cr-field"><span>Tax ID / VAT reg</span><input data-b="tax_id"></label>
+    </div>
+  </div>
+
+  <div class="cr-card">
+    <h2>House style</h2>
+    <div class="cr-grid">
+      <label class="cr-field"><span>Accent colour</span><input type="color" data-b="accent_color"></label>
+      <label class="cr-field"><span>Font stack</span><input data-b="font_stack"></label>
+    </div>
+    <label class="cr-field"><span>Logo (PNG / JPEG / GIF / WebP, ≤ 1 MB)</span>
+      <input type="file" id="logo-file" accept="image/png,image/jpeg,image/gif,image/webp"></label>
+    <div id="logo-preview" style="margin-bottom:8px"></div>
+    <button class="cr-btn" id="logo-clear">Remove logo</button>
+    <p class="cr-note">The logo is stored inline as a data URI, never as a link. A remote URL would make
+       "render this invoice" fetch an attacker-chosen host from the server, so remote images are rejected
+       rather than loaded. SVG is excluded for the same class of reason.</p>
+  </div>
+
+  <div class="cr-card">
+    <h2>Defaults for new documents</h2>
+    <div class="cr-grid">
+      <label class="cr-field"><span>Currency</span><input data-b="default_currency" maxlength="8"></label>
+      <label class="cr-field"><span>Tax label</span><input data-b="default_tax_label"></label>
+      <label class="cr-field"><span>Tax %</span>
+        <input type="number" step="0.01" min="0" max="100" data-b="default_tax_pct"></label>
+    </div>
+    <label class="cr-field"><span>Rules of engagement (pre-filled into new quotes)</span>
+      <textarea data-b="default_roe_terms"></textarea></label>
+  </div>
+
+  <div class="cr-card">
+    <h2>Footer</h2>
+    <label class="cr-field"><span>Payment instructions</span>
+      <textarea data-b="payment_instructions"
+        placeholder="Remit by ACH to … / Square invoice sent separately"></textarea></label>
+    <label class="cr-field"><span>Footer terms</span><textarea data-b="footer_terms"></textarea></label>
+    <p class="cr-note">CREAM processes no payments. These blocks are how a client is told where the money
+       goes; collection happens off-platform.</p>
+  </div>
+</div>
+<script>
+(function () {
+  const api = "{{ api_base }}";
+  const state = {{ brand|tojson }};
+  const MAX_BYTES = 1024 * 1024;
+
+  const fields = Array.from(document.querySelectorAll('[data-b]'));
+  fields.forEach((el) => {
+    const key = el.dataset.b;
+    const value = state[key];
+    if (el.type === 'color') el.value = /^#[0-9a-fA-F]{6}$/.test(value || '') ? value : '#0f766e';
+    else el.value = (value === null || value === undefined) ? '' : value;
+    el.addEventListener('input', () => {
+      state[key] = el.type === 'number' ? (el.value === '' ? 0 : Number(el.value)) : el.value;
+    });
+  });
+
+  function paintLogo() {
+    const host = document.getElementById('logo-preview');
+    host.textContent = '';
+    if (!state.logo_data_uri) { host.textContent = 'No logo set.'; return; }
+    const img = document.createElement('img');
+    img.src = state.logo_data_uri;
+    img.style.maxHeight = '64px';
+    img.style.maxWidth = '220px';
+    img.style.background = '#fff';
+    img.style.padding = '6px';
+    img.style.borderRadius = '6px';
+    host.append(img);
+  }
+
+  document.getElementById('logo-file').addEventListener('change', function () {
+    const file = this.files && this.files[0];
+    if (!file) return;
+    if (file.size > MAX_BYTES) { crToast('That image is over 1 MB.', true); this.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = () => { state.logo_data_uri = String(reader.result); paintLogo(); };
+    reader.readAsDataURL(file);
+  });
+
+  document.getElementById('logo-clear').addEventListener('click', () => {
+    state.logo_data_uri = '';
+    document.getElementById('logo-file').value = '';
+    paintLogo();
+  });
+
+  const save = document.getElementById('a-save');
+  if (save) {
+    save.addEventListener('click', async function () {
+      this.disabled = true;
+      try {
+        const out = await crApi('PUT', api + '/brand', state);
+        state.logo_data_uri = out.logo_data_uri || '';
+        paintLogo();
+        // The server drops a logo it will not vouch for; say so rather than let the page keep showing
+        // a preview of something that was never stored.
+        crToast(out.logo_data_uri ? 'Saved.' : 'Saved (no logo stored).');
+      } catch (err) { crToast('Save failed: ' + err.message, true); }
+      this.disabled = false;
+    });
+  }
+
+  paintLogo();
+}());
+</script>
+{% endblock %}
