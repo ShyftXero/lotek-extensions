@@ -119,6 +119,29 @@ def test_snapshot_keeps_money_exact_across_the_round_trip(session_factory, engag
         assert view.lines[0].qty_display == "16 hr"
 
 
+def test_a_fractional_quantity_bills_the_decimal_cent_through_the_model(session_factory,
+                                                                        engagement_id):
+    """Pins ``LineItem.amount`` itself, not just ``cream.money``.
+
+    2.5 hr at $150.07 is exactly 375.175 — half-up to 375.18. A float multiply lands just under the
+    half-cent and gives 375.17. The earlier round-trip test used 16 × 249.99, which quantizes the same
+    either way, so it stayed green against a deliberate float-multiply regression and was pinning
+    nothing. This one goes red.
+    """
+    with session_factory() as db:
+        doc = Document(engagement_id=engagement_id, title="Hourly")
+        db.add(doc)
+        db.flush()
+        add_line_item(db, doc, description="Testing", qty="2.5", unit="hr", unit_price="150.07")
+        assert doc.line_items[0].amount == Decimal("375.18")
+        issue(db, doc)
+        db.commit()
+        doc_id = doc.id
+
+    with session_factory() as db:
+        assert view_for(db.get(Document, doc_id)).totals.total == Decimal("375.18")
+
+
 def test_status_keeps_moving_after_the_snapshot_is_taken(session_factory, engagement_id):
     """A snapshot freezes the *content*, not the lifecycle: 'sent' must still show as sent."""
     from cream.service import mark_sent

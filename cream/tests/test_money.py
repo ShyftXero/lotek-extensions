@@ -28,6 +28,20 @@ def test_hourly_line_does_not_drift():
     assert money(money("16") * money("249.99")) == Decimal("3999.84")
 
 
+def test_a_half_cent_product_rounds_up_where_a_float_multiply_rounds_down():
+    """The case that actually distinguishes Decimal from float — and the reason this test exists.
+
+    An earlier version of the suite "covered" the Decimal migration with 16 × 249.99, which quantizes to
+    the same cent either way: the guard was green against a deliberate float-multiply regression, so it
+    was pinning nothing. 2.5 hr at $150.07 is exactly 375.175, which rounds half-up to 375.18; the same
+    multiplication in binary floating point lands a hair below the half-cent and truncates to 375.17.
+    One cent per line, silently, on every invoice with a fractional quantity.
+    """
+    qty, rate = money("2.5"), money("150.07")
+    assert money(qty * rate) == Decimal("375.18")
+    assert money(Decimal(str(float(qty) * float(rate)))) == Decimal("375.17")  # the float path
+
+
 def test_junk_degrades_to_the_default_rather_than_raising():
     for junk in (None, "", "  ", "abc", object(), float("nan"), float("inf")):
         assert money(junk) == Decimal("0.00")
