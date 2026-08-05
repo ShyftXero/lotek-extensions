@@ -12,7 +12,7 @@ minimal driver abstraction. Mounts into lotek under `/registrar`, or runs standa
 - Tables `registrar_*`: `registrar_servers`, `registrar_domains`, `registrar_dns_records`,
   `registrar_audit`.
 
-## Drivers (minimal, like fraction/vector)
+## Drivers (minimal, like scribble/vector)
 
 `ComputeDriver` / `DnsDriver` / `SmsDriver` ABCs. The MVP ships one **in-memory `null` backend** per axis
 so the gate/audit machinery runs with **no egress and no credentials**; real backends (libcloud
