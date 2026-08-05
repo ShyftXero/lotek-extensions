@@ -47,10 +47,13 @@
 <div class="cr-toast" id="cr-toast"></div>
 <script>
 (function () {
+  // lotek's base.html emits <meta name="csrf-token">, and so does CREAM's own — but relying on the
+  // host's meta name would make the whole editor dead on a host that names it differently, with the
+  // only symptom a 400 on save. So take the token from Jinja directly when the app has CSRF, and fall
+  // back to the meta tag. Empty means no CSRF is configured (standalone), which is not an error.
   const meta = document.querySelector('meta[name="csrf-token"]');
-  // The host may render its CSRF token under a different meta name; fall back to the one CREAM's own
-  // base template emits, and send nothing when neither exists (standalone, CSRF disabled).
-  window.CREAM_CSRF = (meta && meta.content) || '';
+  window.CREAM_CSRF = {{ (csrf_token() if csrf_token is defined else '')|tojson }}
+                      || (meta && meta.content) || '';
 
   window.crToast = function (message, isError) {
     const el = document.getElementById('cr-toast');

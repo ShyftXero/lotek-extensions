@@ -79,3 +79,14 @@ def test_a_document_outside_the_visible_set_is_404_in_the_ui_too(client, make_do
 def test_new_document_form_asks_for_the_engagement(client):
     body = client.get("/cream/documents/new").get_data(as_text=True)
     assert 'id="f-engagement"' in body
+
+
+def test_every_page_ships_the_csrf_plumbing(client, make_doc):
+    """Mounted in lotek every mutating call is CSRF-protected. If the editor stopped sending the header
+    the only symptom would be a 400 on save, so pin that the plumbing is on the page."""
+    doc = make_doc()
+    for path in ("/cream/", "/cream/brand", "/cream/documents/new",
+                 f"/cream/documents/{doc['id']}/edit"):
+        body = client.get(path).get_data(as_text=True)
+        assert "window.CREAM_CSRF" in body, path
+        assert "X-CSRFToken" in body, path

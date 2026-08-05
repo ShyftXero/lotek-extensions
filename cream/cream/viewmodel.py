@@ -35,10 +35,6 @@ def _fmt_date(value: date | datetime | None) -> str:
     return f"{value:%b} {value.day}, {value.year}"
 
 
-def _iso(value: date | datetime | None) -> str | None:
-    return None if value is None else value.isoformat()
-
-
 @dataclass
 class LineView:
     description: str = ""

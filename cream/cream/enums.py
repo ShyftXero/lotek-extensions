@@ -18,11 +18,6 @@ class DocStatus(enum.Enum):
     void = "void"          # cancelled (issued docs are never deleted, only voided)
 
 
-#: Statuses a document can never be edited out of. ``draft`` is the only mutable state; everything past
-#: issue is a financial record. Kept here (not derived at each call site) so ``service`` and the API agree
-#: by construction rather than by both remembering the same list.
-FROZEN_STATUSES = frozenset({DocStatus.issued, DocStatus.sent, DocStatus.accepted, DocStatus.void})
-
 #: Units of measure a line item can be billed in. Deliberately a suggestion list backing a free-text
 #: column, not a DB enum: flat-rate vs hourly is ``qty`` + ``unit``, not two code paths, and a firm that
 #: bills per-endpoint or per-repo should not need a schema migration to say so.
