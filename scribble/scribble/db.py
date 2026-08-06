@@ -64,6 +64,80 @@ def _rename_from_fraction(engine) -> None:
                 conn.execute(text(f'ALTER TABLE "{old}" RENAME TO "{new}"'))
 
 
+def _remap_standalone_client_ids(engine) -> None:
+    """One-shot, idempotent remap of ``scribble_engagements.client_id`` from standalone
+    ``scribble_clients`` ids to the HOST client table's ids — closing a report-authz IDOR.
+    ``Engagement.client_id`` is a *soft* int reference that carries no id-space, so a scribble-space id
+    in a standalone->mounted DB is misread as a host ``clients.id`` and can collide with a real host
+    client an attacker owns a job under (both are small sequential ints), exposing that client's report.
+
+    Runs at the END of ``create_all`` (tables exist). Guards fire it ONLY on the reachable case and make
+    it safe + idempotent everywhere else — the load-bearing insight is that **in mounted mode Scribble
+    writes the HOST client table, never ``scribble_clients``**, so rows in ``scribble_clients`` ⟺ the DB
+    carries standalone history whose ``client_id``s are scribble-space:
+
+    * STANDALONE (``client_model()`` is Scribble's own ``Client``) -> return: ``scribble_clients`` IS the
+      real store; nothing to remap.
+    * MOUNTED + ``scribble_clients`` empty -> return: fresh mounted install; never touch valid host ids.
+    * MOUNTED + ``scribble_clients`` has rows -> remap each engagement whose ``client_id`` matches a
+      ``scribble_clients`` row to the host client of the SAME NAME (or NULL if no name match -> admin-only
+      report, the secure default), then rename ``scribble_clients`` away so the next boot's create_all
+      recreates it empty and this no-ops (idempotent). ``scribble_clients`` has no FK dependents (the ref
+      is a soft int), so the rename is safe.
+
+    Residual (documented): if mounted engagements were added BEFORE this first ran, a host-space
+    ``client_id`` coincidentally equal to a ``scribble_clients`` row id is falsely remapped — bounded,
+    one-time, and absent on a normal cutover (mount -> first boot remaps -> then add engagements). v2's
+    per-engagement membership replaces this whole path and should delete it.
+    """
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    from scribble import models
+    from scribble.deps import client_model
+
+    host_model = client_model()
+    if host_model is models.Client:
+        return  # standalone: scribble_clients is the real client store
+    existing = set(inspect(engine).get_table_names())
+    if "scribble_clients" not in existing or "scribble_engagements" not in existing:
+        return
+    host_table = host_model.__tablename__
+    with engine.begin() as conn:
+        scribble_rows = conn.execute(text("SELECT id, name FROM scribble_clients")).fetchall()
+        if not scribble_rows:
+            return  # fresh mounted DB — scribble_clients was never written; nothing to remap
+        smap = {r[0]: r[1] for r in scribble_rows}
+        name_to_host = {r[1]: r[0] for r in conn.execute(text(f'SELECT id, name FROM "{host_table}"'))}
+        remapped = nulled = 0
+        for eid, cid in conn.execute(
+            text("SELECT id, client_id FROM scribble_engagements WHERE client_id IS NOT NULL")
+        ).fetchall():
+            if cid not in smap:
+                continue  # not a known scribble-space id -> leave (host-space, or already remapped)
+            new_id = name_to_host.get(smap[cid])
+            conn.execute(
+                text("UPDATE scribble_engagements SET client_id = :n WHERE id = :e"),
+                {"n": new_id, "e": eid},
+            )
+            nulled += new_id is None
+            remapped += new_id is not None
+        # Retire scribble_clients so this is idempotent (next boot's create_all recreates it empty ->
+        # the empty-guard above returns). Keep it as a backup unless one already exists.
+        if "scribble_clients_pre_mount_remap" not in existing:
+            conn.execute(text("ALTER TABLE scribble_clients RENAME TO scribble_clients_pre_mount_remap"))
+        else:
+            conn.execute(text("DROP TABLE scribble_clients"))
+    logging.getLogger("scribble").warning(
+        "scribble: remapped %d engagement client refs to host client ids (%d had no host client of the "
+        "same name -> admin-only report until re-linked); scribble_clients retired to "
+        "scribble_clients_pre_mount_remap",
+        remapped,
+        nulled,
+    )
+
+
 def create_all(engine) -> None:
     """Create Scribble's tables, then additively add any new columns (and their indexes) to
     pre-existing tables.
@@ -114,3 +188,7 @@ def create_all(engine) -> None:
                 for index in table.indexes:
                     if all(c.name in have for c in index.columns):
                         index.create(bind=conn, checkfirst=True)
+
+    # Last: close the report-authz IDOR by remapping any standalone-space client_ids to host space.
+    # After the tables exist, so it can read/rewrite scribble_engagements + retire scribble_clients.
+    _remap_standalone_client_ids(engine)
