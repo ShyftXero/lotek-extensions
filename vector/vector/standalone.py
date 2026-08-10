@@ -4,7 +4,7 @@
     VECTOR_PORT=8080 python -m vector
 
 The same package mounts into a host (lotek) via :func:`vector.register`; this module is only the
-standalone harness (its own engine + base template + CSRF), mirroring Fraction's standalone app.
+standalone harness (its own engine + base template + CSRF), mirroring Scribble's standalone app.
 """
 
 from __future__ import annotations

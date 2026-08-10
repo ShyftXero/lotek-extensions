@@ -13,8 +13,8 @@ runtime**, matching Lotek's CSP-strict hosting requirement. All three are MIT-li
 
 ## What's here and why
 
-- `yjs.mjs` — the real, official Yjs CRDT core (the same JS implementation `pycrdt`, Fraction's *server*
-  CRDT, is a Rust/Python port of — `fraction/collab/crdt.py` speaks the exact wire protocol these two
+- `yjs.mjs` — the real, official Yjs CRDT core (the same JS implementation `pycrdt`, Scribble's *server*
+  CRDT, is a Rust/Python port of — `scribble/collab/crdt.py` speaks the exact wire protocol these two
   implement). Unmodified except for the import rewrite below.
 - `lib0/*.js` — the transitive closure of `lib0` submodules `yjs.mjs` (and `y-protocols`) actually import
   (29 files: `array`, `binary`, `buffer`, `conditions`, `decoding`, `dom`, `encoding`, `environment`,
@@ -24,10 +24,10 @@ runtime**, matching Lotek's CSP-strict hosting requirement. All three are MIT-li
   imports between its submodules, so nothing needed rewriting there.
 - `y-protocols/sync.js`, `y-protocols/awareness.js` — the reference implementation of the Yjs sync and
   awareness wire protocols (message framing, `readSyncMessage`, `Awareness` class). `pycrdt`'s
-  `handle_sync_message`/`create_sync_message`/`Awareness` (used by `fraction/collab/crdt.py`) are a
-  faithful port of these exact modules, so a client built on these vendored files and Fraction's Python
+  `handle_sync_message`/`create_sync_message`/`Awareness` (used by `scribble/collab/crdt.py`) are a
+  faithful port of these exact modules, so a client built on these vendored files and Scribble's Python
   server are talking the *same* protocol, not two independent implementations that happen to agree.
-  `y-protocols/auth.js` was **not** vendored — Fraction doesn't use protocol-level auth (the websocket
+  `y-protocols/auth.js` was **not** vendored — Scribble doesn't use protocol-level auth (the websocket
   route inherits whatever session/CSRF the host app puts in front of it).
 
 ## The one rewrite: bare specifiers -> relative paths
@@ -56,11 +56,11 @@ module resolution) to prove it actually runs standalone and interoperates with t
 2. `y-protocols/awareness.js`'s `Awareness` class propagated a local state update to a second instance.
 3. **Cross-language interop, both directions**: `Y.encodeStateAsUpdate()` bytes produced by *this vendored
    JS bundle* were applied by Python's `pycrdt.Doc.apply_update()` and rendered correctly via
-   `fraction/collab/pm_yjs.ydoc_to_doc()`; and bytes produced by the Python server
-   (`fraction.collab.pm_yjs.doc_to_ydoc` + `Doc.get_update()`) were applied cleanly by this vendored JS
+   `scribble/collab/pm_yjs.ydoc_to_doc()`; and bytes produced by the Python server
+   (`scribble.collab.pm_yjs.doc_to_ydoc` + `Doc.get_update()`) were applied cleanly by this vendored JS
    bundle. Same result confirmed against the full `tests/test_collab.py::SAMPLE_DOC` fixture (every node
    type in the frozen content schema) -- the JS-side ProseMirror<->YXmlFragment mapping in
-   `fraction/static/collab.js` was independently written to mirror `fraction/collab/pm_yjs.py` and
+   `scribble/static/collab.js` was independently written to mirror `scribble/collab/pm_yjs.py` and
    produces a byte-identical rendered document for that fixture.
 
 These checks were run ad hoc with a local Node.js during development (not part of the `pytest` gate,
@@ -72,9 +72,9 @@ re-verify after touching either mapping.
 This vendors Yjs's **core CRDT + sync/awareness protocol** only. `y-prosemirror` and
 `@tiptap/extension-collaboration` (which would give real per-keystroke collaborative cursors inside the
 rich-text editor) were deliberately **not** vendored: both require a genuine ProseMirror `EditorView`
-instance to bind to, and `fraction/static/editor.js` — owned by WS4, out of scope for this workstream —
+instance to bind to, and `scribble/static/editor.js` — owned by WS4, out of scope for this workstream —
 is a hand-rolled `contenteditable` fallback (PLAN.md §16 flagged this as needing a small bundling step
-that was never scoped). `fraction/static/collab.js` bridges the gap honestly: it gets real CRDT sync,
+that was never scoped). `scribble/static/collab.js` bridges the gap honestly: it gets real CRDT sync,
 persistence, and presence, at whole-document-per-debounce granularity, not per-keystroke merge. See the
 docstring at the top of `collab.js` for the exact limitation and the upgrade path once a real
 TipTap/ProseMirror bundle replaces `editor.js`.

@@ -6,7 +6,7 @@ host engine/session factory and simply creates Vector's tables in the shared dat
 
 ``create_all`` additionally runs a minimal, additive, idempotent migration (ADD COLUMN + CREATE INDEX IF
 NOT EXISTS) so a model that gains a nullable/defaulted column keeps working on a database that already
-had the table. This mirrors Fraction's ``create_all`` and lotek's ``migrate_sqlite``.
+had the table. This mirrors Scribble's ``create_all`` and lotek's ``migrate_sqlite``.
 """
 
 from __future__ import annotations

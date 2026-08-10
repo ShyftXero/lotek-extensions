@@ -1,4 +1,4 @@
-"""Minimal provider-driver abstraction — the third pluggability axis (like fraction/vector are minimal).
+"""Minimal provider-driver abstraction — the third pluggability axis (like scribble/vector are minimal).
 
 A driver is an ABC; concrete backends implement it. The MVP ships one **in-memory** backend per axis
 (``null``) so the whole gate/audit/staging machinery is exercised without any egress or credentials;

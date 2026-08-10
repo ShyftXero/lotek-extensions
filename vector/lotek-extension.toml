@@ -12,7 +12,7 @@ label = "Vector"
 path = "/"
 icon = "◭"
 
-# Tables this extension OWNS (see the equivalent block in Fraction): the host may carry them through a
+# Tables this extension OWNS (see the equivalent block in Scribble): the host may carry them through a
 # database migration, attribute them for drop/truncate, and never touch a table nobody claims.
 [db]
 base = "vector.models:Base"   # the module whose IMPORT registers the tables (db.py alone yields an empty Base)

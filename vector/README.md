@@ -3,7 +3,7 @@
 Author interactive kill-chain / attack-path diagrams **entirely in the browser**, persist them, import
 and export the JSON model, and export a **self-contained interactive HTML** file as the deliverable.
 
-Vector runs two ways from one codebase (the Fraction pattern):
+Vector runs two ways from one codebase (the Scribble pattern):
 
 - **Standalone** — a minimal Flask app with its own SQLite database:
   ```sh
