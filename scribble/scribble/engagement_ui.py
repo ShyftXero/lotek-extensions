@@ -59,6 +59,7 @@ exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 from flask import abort, jsonify, redirect, render_template, request, url_for
@@ -95,6 +96,26 @@ def _as_int(value) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _as_id(value) -> int | uuid.UUID | None:
+    """Parse a form-submitted ``client_id`` tolerantly: EITHER host id shape ``Engagement.client_id``
+    (``scribble.models.SoftHostId``) can hold -- a plain int (standalone Scribble / legacy hosts) or a
+    UUID (Lotek v2's UUIDv7 client PKs). Unlike ``_as_int``, a UUID string is not silently dropped: it
+    parses to a real ``uuid.UUID`` (never a bare string -- see SoftHostId's docstring for why a raw
+    string crashes a lookup against a UUID-typed host PK). Anything that is neither -> ``None``, same
+    fail-safe posture as ``_as_int`` (an unparseable/empty value must not 500, just fall through to the
+    new-client-by-name branch or leave the engagement unlinked)."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
         return None
 
 
@@ -154,7 +175,7 @@ def _apply_engagement_form(engagement: Engagement, form, db) -> None:
 
     ClientModel = client_model()
     client = None
-    client_id = _as_int(form.get("client_id"))
+    client_id = _as_id(form.get("client_id"))
     new_client_name = (form.get("new_client_name") or "").strip()
     if client_id is not None:
         client = db.get(ClientModel, client_id)
@@ -201,7 +222,7 @@ def register(api_bp, bp) -> None:
                     )
 
                 client = None
-                client_id = _as_int(request.form.get("client_id"))
+                client_id = _as_id(request.form.get("client_id"))
                 new_client_name = (request.form.get("new_client_name") or "").strip()
                 if client_id is not None:
                     client = db.get(ClientModel, client_id)

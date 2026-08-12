@@ -10,6 +10,7 @@ Content-bearing columns (``content_json``) hold ProseMirror/TipTap JSON keyed by
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 from sqlalchemy import (
@@ -26,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from scribble.db import Base, TimestampMixin
+from scribble.db import Base, SoftHostId, TimestampMixin
 from scribble.enums import (
     ArtifactKind,
     ArtifactPlacement,
@@ -79,7 +80,11 @@ class Engagement(Base, TimestampMixin):
     # created database picks up the new (FK-less) column. There is no migration framework in this repo
     # (no alembic, no ``scribble/migrations.py``) to retrofit an existing file automatically -- drop/
     # recreate the local dev DB (e.g. ``instance/scribble.db``) if you hit a stale constraint.
-    client_id: Mapped[int | None] = mapped_column(Integer)
+    #
+    # ``SoftHostId`` (scribble.db), not a plain ``Integer``: the host id this points at may be a sequential
+    # int (standalone/legacy) or a ``uuid.UUID`` (Lotek v2's UUIDv7 PKs) -- see SoftHostId's docstring for
+    # the round-trip + Postgres-retrofit caveat.
+    client_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId)
     name: Mapped[str] = mapped_column(String(255))
     scope_type: Mapped[str] = mapped_column(String(64), default="external")
     company_name: Mapped[str | None] = mapped_column(String(255))  # {{COMPANY_NAME}} default
@@ -92,8 +97,9 @@ class Engagement(Base, TimestampMixin):
     # Ownership attribution: the host user id who created this engagement (SOFT ref to the host's users
     # table — no FK; None standalone). Tracked for admin oversight/attribution ONLY — engagements stay
     # team-shared (every operator can view/edit/collaborate), so this is NOT an access gate. See
-    # docs/LOTEK_ADOPTION.md §4.
-    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # docs/LOTEK_ADOPTION.md §4. ``SoftHostId``, not ``Integer`` -- same int-or-UUID host id shape as
+    # ``client_id`` above.
+    owner_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"

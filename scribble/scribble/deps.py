@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from contextlib import contextmanager
 
 from flask import current_app
@@ -71,12 +72,18 @@ def current_actor():
         return None
 
 
-def current_actor_id() -> int | None:
+def current_actor_id() -> int | uuid.UUID | None:
     """The logged-in host user's id (for ``Engagement.owner_id`` attribution), or ``None``. Same
     optional ``extras['current_actor']`` hook + fail-safe contract as :func:`current_actor_username`
     (standalone Scribble always gets ``None``). Ownership is attribution + admin oversight, NEVER an
     access gate — engagements stay team-shared so live collaboration keeps working — so a misbehaving
     hook must never break the write it decorates.
+
+    Accepts either host id shape ``Engagement.owner_id``/``scribble.models.SoftHostId`` can store: a
+    plain ``int`` (legacy/standalone-style host ids) or a ``uuid.UUID`` (Lotek v2's UUIDv7 surrogate
+    PKs). Anything else (a raising hook, a hook returning something with no ``.id``, or an ``.id`` of
+    some other type) resolves to ``None`` -- a bad/foreign id shape must degrade to "no attribution",
+    never a write-time crash or, worse, a wrong id silently written.
     """
     try:
         cfg = get_config()
@@ -90,7 +97,7 @@ def current_actor_id() -> int | None:
     except Exception:  # noqa: BLE001
         return None
     ident = getattr(actor, "id", None)
-    return ident if isinstance(ident, int) else None
+    return ident if isinstance(ident, (int, uuid.UUID)) else None
 
 
 def client_model():

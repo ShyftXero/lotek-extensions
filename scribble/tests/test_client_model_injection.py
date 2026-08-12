@@ -12,11 +12,12 @@ tests build a tiny stand-in "host" client model + table on the SAME engine (mirr
 from __future__ import annotations
 
 import enum
+import uuid
 from types import SimpleNamespace
 
 import pytest
 from flask import Flask
-from sqlalchemy import Integer, String, create_engine, func, select
+from sqlalchemy import Integer, String, Uuid, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import scribble
@@ -39,6 +40,18 @@ class HostClient(_HostBase):
     __tablename__ = "host_clients"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+
+
+class HostClientUuid(_HostBase):
+    """Stand-in for a Lotek v2 host's ``Client`` model: a UUIDv7 surrogate PK, not a sequential int (see
+    plans/v2-rearchitecture-decision.md). Same shared-engine setup as ``HostClient`` above -- this is the
+    exact shape that made ``Engagement.client_id``'s old ``Integer`` column and ``engagement_ui._as_int``
+    silently drop a v2 host's client link (they assumed every host client id is an int)."""
+
+    __tablename__ = "host_clients_uuid"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), unique=True)
 
 
@@ -153,6 +166,62 @@ def test_engagement_create_reuses_existing_injected_host_client_by_id(client, se
             assert db.scalar(select(func.count()).select_from(HostClient)) == 1
     finally:
         cfg.client_model = None
+
+
+def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(client, session_factory, app):
+    """Lotek v2 host client ids are UUIDs, not ints (see plans/v2-rearchitecture-decision.md). The old
+    ``engagement_ui._as_int(form.get("client_id"))`` parsed a UUID string to ``None`` -- a valid,
+    intentionally-selected client link silently dropped on create. This proves the create form's
+    ``client_id`` field now round-trips a UUID AND that the link is real -- ``resolve_client`` actually
+    resolves the HostClientUuid row, not just an id sitting unresolved in the column."""
+    cfg = app.extensions["scribble"]
+    cfg.client_model = HostClientUuid
+    try:
+        with session_factory() as db:
+            existing = HostClientUuid(name="Hosted Co (v2)")
+            db.add(existing)
+            db.commit()
+            existing_id = existing.id
+        assert isinstance(existing_id, uuid.UUID)
+
+        resp = client.post(
+            f"{UI}/engagements/new",
+            data={"name": "Hosted Co v2 Pentest", "client_id": str(existing_id)},
+        )
+        assert resp.status_code == 302
+
+        with app.app_context(), session_factory() as db:
+            eng = db.query(Engagement).filter_by(name="Hosted Co v2 Pentest").one()
+            assert eng.client_id == existing_id, "the UUID client link must NOT be dropped"
+            assert isinstance(eng.client_id, uuid.UUID)
+            resolved = eng.resolve_client(db)
+            assert isinstance(resolved, HostClientUuid)
+            assert resolved.name == "Hosted Co (v2)"
+    finally:
+        cfg.client_model = None
+
+
+def test_engagement_create_persists_uuid_owner_id_when_mounted_host_uses_uuid_ids(
+    client, session_factory, app
+):
+    """The other half of the same bug: ``scribble.deps.current_actor_id()`` fed ``Engagement.owner_id``
+    attribution. Its old ``isinstance(ident, int)`` check silently turned a v2 host's UUID actor id into
+    ``None`` -- ``owner_id`` NULL on every mounted create, no error, attribution just gone. Proves it now
+    persists as the real UUID, not None."""
+    cfg = app.extensions["scribble"]
+    actor_id = uuid.uuid4()
+    cfg.extras["current_actor"] = lambda: SimpleNamespace(id=actor_id, username="v2.operator")
+    try:
+        resp = client.post(f"{UI}/engagements/new", data={"name": "Attributed v2 Pentest"})
+        assert resp.status_code == 302
+
+        with session_factory() as db:
+            eng = db.query(Engagement).filter_by(name="Attributed v2 Pentest").one()
+            assert eng.owner_id is not None, "owner_id must not be silently dropped for a UUID actor id"
+            assert eng.owner_id == actor_id
+            assert isinstance(eng.owner_id, uuid.UUID)
+    finally:
+        cfg.extras.pop("current_actor", None)
 
 
 def test_dashboard_and_health_client_counts_reflect_injected_host_model(client, session_factory, app):
