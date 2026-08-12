@@ -53,6 +53,14 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
     ):
         hook(api_bp, bp)
 
+    # Blueprint-wide fail-closed tenancy gate (scribble/authz.py) — covers every OTHER engagement-scoped
+    # route the feature hooks above just added (only the report routes called the tenancy check
+    # directly before this existed). Registered here, after every route is on the blueprint but before
+    # the first ``app.register_blueprint`` call, same timing constraint as the routes themselves.
+    from scribble.authz import register_gate
+
+    register_gate(api_bp, bp)
+
     # PAT/Bearer machine API (scribble/api_pat.py) — its OWN blueprint, its own hook signature (no
     # ``api_bp``/``bp`` argument: it never touches the cookie-authed surfaces those two carry).
     from scribble.api_pat import register as _api_pat

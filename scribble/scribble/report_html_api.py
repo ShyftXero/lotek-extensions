@@ -20,45 +20,15 @@ from pathlib import Path
 
 from flask import Response, abort, request, url_for
 
-from scribble.deps import current_actor, get_config, open_session
+from scribble.authz import authorize_engagement_view
+from scribble.deps import get_config, open_session
 from scribble.models import Engagement
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
 
-
-def _authorize_engagement_view(engagement: Engagement) -> None:
-    """Audit CRIT-4: the report + its export embed a client's findings and evidence artifacts, so this
-    route must not serve one to a reader the host would not serve it to.
-
-    **This function no longer decides anything. It asks the host.** It used to carry a hand-copy of
-    lotek's predicate — *"mirroring lotek app/access.py user_can_view_job: admins see everything; a
-    non-admin sees only engagements it OWNS"*. Every clause of that sentence became false when the
-    host moved to per-engagement memberships: there is no admin bypass any more (an admin holds no
-    implicit view of engagement data and must self-grant, audited), and ownership was never the axis.
-    A stale copy of an access rule does not merely drift — this one **inverted**, granting every
-    admin full read plus the creator a read on a client it may hold no membership under. That is the
-    argument against copying a predicate, and the host now exposes ``can_view_client`` so there is
-    nothing left to copy.
-
-    Note the trap that makes the copy so easy to write: Scribble's ``Engagement.owner_id`` is
-    ATTRIBUTION only (engagements are team-shared — see the model), whereas the host's
-    ``Job.owner_id`` used to be the gate. The host has now inverted its own column to match
-    Scribble's meaning. Neither is an authorization key; do not reintroduce either as one.
-
-    Standalone Scribble (no host bundle) has no host authorization model, so nothing is enforced
-    there — unchanged. With a host wired, this fails CLOSED (404, never 403: do not confirm that the
-    engagement id exists to someone who may not read it).
-    """
-    cfg = get_config()
-    if not cfg.extras.get("host"):
-        return  # standalone Scribble — no host authorization model to apply
-    can_view_client = cfg.extras.get("can_view_client")
-    if can_view_client is None:
-        # A host bundle that predates the contract. Refuse rather than fall back to a local rule:
-        # the whole point is that this module holds no policy of its own to fall back TO.
-        abort(404)
-    if not can_view_client(getattr(engagement, "client_id", None), current_actor()):
-        abort(404)
+# CRIT-4's tenancy predicate now lives in ``scribble/authz.py`` (it's also the primitive the
+# blueprint-wide ``before_request`` gate uses — see that module's docstring for the full history).
+# ``report_docx_api.py`` imports it from there directly, not from this module.
 
 
 def _make_artifact_bytes(artifact_root: Path) -> Callable[[str], bytes | None]:
@@ -113,7 +83,7 @@ def register(api_bp, bp) -> None:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
-            _authorize_engagement_view(engagement)
+            authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             html_doc = render_report_html(
                 ctx,
@@ -132,7 +102,7 @@ def register(api_bp, bp) -> None:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
-            _authorize_engagement_view(engagement)
+            authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             artifact_bytes = _make_artifact_bytes(cfg.artifact_root)
             slug = _slugify(engagement.name)
