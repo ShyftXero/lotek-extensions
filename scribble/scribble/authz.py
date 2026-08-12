@@ -138,6 +138,11 @@ _CHILD_RESOLVERS: dict[str, object] = {
     "iid": _via_checklist_item,
 }
 
+# Precomputed once at import time -- lets `_gate` check "is this request even POTENTIALLY scoped"
+# (a pure dict/set membership check, no DB) before paying for an `open_session()`, since most routes on
+# `bp`/`api_bp` are library-wide or dashboard/list/create and never carry any of these names.
+_RECOGNIZED_VIEW_ARG_NAMES: frozenset[str] = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
+
 
 def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
     """Resolve the engagement a request's view args target, using the id-name map above.
@@ -168,10 +173,13 @@ def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
 
 
 def _gate() -> None:
+    view_args = request.view_args or {}
+    if not (view_args.keys() & _RECOGNIZED_VIEW_ARG_NAMES):
+        return  # not engagement-scoped by this route's URL shape — skip the DB round trip entirely
     with open_session() as db:
-        is_scoped, engagement = resolve_engagement(db, request.view_args or {})
+        is_scoped, engagement = resolve_engagement(db, view_args)
         if not is_scoped:
-            return
+            return  # pragma: no cover - unreachable given the pre-check above; kept for safety
         if engagement is None:
             abort(404)  # a recognized id that doesn't resolve — no existence oracle either
         authorize_engagement_view(engagement)

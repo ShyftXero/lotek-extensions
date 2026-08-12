@@ -247,6 +247,7 @@ def test_every_scoped_route_allows_a_member(app, stub_host, session_factory):
     stub_host.current_user = StubUser(id=1, username="admin-member", role=_StubRole("admin"))
 
     overblocked = []
+    server_errors = []
     for rule in _scribble_rules(app):
         if rule.endpoint in _NON_SCOPED_ENDPOINTS or rule.endpoint in _UNTESTABLE_VIA_HTTP:
             continue
@@ -261,8 +262,15 @@ def test_every_scoped_route_allows_a_member(app, stub_host, session_factory):
             resp = client.open(url, method=method, json={})
             if resp.status_code == 404:
                 overblocked.append((rule.endpoint, method, url))
+            elif resp.status_code >= 500:
+                # Flask's test client (TESTING not set on this app) turns an unhandled view exception
+                # into a 500 response rather than propagating it -- an assertion that only checked for
+                # 404 would silently pass through a masked crash here. Surfaced as its own category so
+                # a future regression can't hide behind "well, it wasn't a 404".
+                server_errors.append((rule.endpoint, method, url, resp.status_code))
 
     assert overblocked == [], f"authorized member was WRONGLY denied (404) on: {overblocked}"
+    assert server_errors == [], f"authorized member hit a server error (not a gate failure): {server_errors}"
 
 
 # ── explicit per-class DENY/ALLOW tests (the named routes from the audit) ───────────────────────────
