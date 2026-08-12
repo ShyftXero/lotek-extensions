@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import uuid
 
+from flask import url_for
+
 import scribble.models as fm
 from tests.conftest import StubActor
 
@@ -60,6 +62,30 @@ def _machine_rules(app):
         (r for r in app.url_map.iter_rules() if r.endpoint.startswith("scribble_machine.")),
         key=lambda r: r.endpoint,
     )
+
+
+def _build_url(app, rule, *, engagement_id: int, job_id: str) -> str:
+    """Build a real URL for a machine rule via `url_for`.
+
+    Deliberately NOT string substitution on `rule.rule`: an unsubstituted placeholder (the day a
+    converter changes to `<uuid:engagement_id>`, say) would 404 at Werkzeug's routing layer, and a
+    denial sweep asserting 404 would keep passing while testing nothing at all. `url_for` raises
+    instead, and `_http_methods`' companion ALLOW sweep would fail too.
+    """
+    values = {}
+    for arg in rule.arguments:
+        if arg == "engagement_id":
+            values[arg] = engagement_id
+        elif arg == "job_id":
+            values[arg] = job_id
+        else:  # pragma: no cover - fails loudly rather than guessing a value
+            raise AssertionError(f"{rule.endpoint} has an unrecognized view arg {arg!r}")
+    with app.test_request_context():
+        return url_for(rule.endpoint, **values)
+
+
+def _http_methods(rule) -> list[str]:
+    return sorted((rule.methods or set()) - {"HEAD", "OPTIONS"})
 
 
 def _foreign_token(stub_host) -> None:
@@ -121,13 +147,37 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
     for rule in _machine_rules(app):
         if rule.endpoint in _TENANT_FREE_ENDPOINTS:
             continue
-        url = rule.rule.replace("<int:engagement_id>", str(eid)).replace("<job_id>", "job-1")
-        for method in sorted((rule.methods or set()) - {"HEAD", "OPTIONS"}):
+        url = _build_url(app, rule, engagement_id=eid, job_id="job-1")
+        for method in _http_methods(rule):
             resp = client.open(url, method=method, json={})
             if resp.status_code != 404:
                 allowed.append((rule.endpoint, method, url, resp.status_code))
 
     assert allowed == [], f"a token for another client was NOT denied on: {allowed}"
+
+
+def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_host, session_factory):
+    """The companion positive, and the reason the sweep above can be trusted: the SAME urls, with a
+    token that does hold the grant, must never come back 404. Without this, a sweep asserting "404
+    everywhere" would also pass if every url were malformed, or if the machine blueprint stopped being
+    mounted at all — the classic way a denial test decays into a test of nothing."""
+    _granted_token(stub_host)
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[])
+    eid = _engagement(session_factory, client_id=ACME)
+    client = app.test_client()
+
+    denied = []
+    for rule in _machine_rules(app):
+        if rule.endpoint in _TENANT_FREE_ENDPOINTS:
+            continue
+        url = _build_url(app, rule, engagement_id=eid, job_id="job-1")
+        for method in _http_methods(rule):
+            # An empty body is a business 400 on add-finding; only 404 (the tenancy refusal) is a failure.
+            resp = client.open(url, method=method, json={})
+            if resp.status_code == 404:
+                denied.append((rule.endpoint, method, url))
+
+    assert denied == [], f"a granted token was WRONGLY denied on: {denied}"
 
 
 # ── 3. add-finding ───────────────────────────────────────────────────────────────────────────────────

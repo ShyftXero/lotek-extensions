@@ -2,7 +2,7 @@
 
 - **Branch:** `fix/scribble-machine-tenancy`  (worktree: `.claude/worktrees/scribble-machine-tenancy`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 
@@ -95,11 +95,44 @@ caller's grant covers that client.* It has three shapes, and the previous branch
       and `test_scribble_tenancy_gate.py`'s edit case to keep naming its client. The `_NON_SCOPED_ENDPOINTS`
       comment now says what that list does and does not claim — misreading it is what left these open.
 
+- [x] Red→green proven for every new guard, by disabling the code they guard:
+      - machine checks removed (`can_view_engagement` ×2 + the create-route `client_id` block) →
+        **7 fail** in `test_scribble_machine_tenancy.py` (the route sweep, all three `add_finding` denial
+        cases, `promote_job`'s, and both create denials); restored → **14 pass**.
+      - list filtering + `_resolve_client`'s mounted branch removed → **8 fail** in
+        `test_scribble_list_tenancy.py` (both lists, the counts, all three create rules, both edit-move
+        cases); restored → **12 pass**.
+      - all five tenancy files together after restore: green (`test_scribble_list_tenancy`,
+        `test_scribble_machine_tenancy`, `test_scribble_tenancy_gate`, `test_scribble_report_authz`,
+        `test_report_docx_authz`).
+- [x] `uvx ruff check scribble tests` clean; `pyrefly check` clean on every changed file (0 errors).
+- [x] Full suite: **526 tests, 506 passed, 9 failed, 11 skipped**. All 9 are `tests/test_skill.py` and
+      pre-existing: the `skill/` directory does not exist anywhere in this repo, so they fail identically
+      on `main` (documented in `plans/fix-scribble-docx-report-tenancy.md`).
+
 ## Remaining
 
-- [ ] Red→green transcript for every new guard.
-- [ ] `uv run ruff check` + `uv run pyrefly check` + full suite (final).
-- [ ] Re-vendor into lotek (`scripts/stage-extension.sh`) — after merge.
+- [ ] Re-vendor into lotek (`scripts/stage-extension.sh`) — after merge. The mounted-side proof
+      (`lotek/tests/test_scribble_extension.py`) can only run once the snapshot is in lotek's tree.
+- [ ] Host-side follow-up: a `visible_client_ids` hook would let both list routes scope in SQL instead of
+      filtering in Python (see the adversarial-review note below).
+
+## Adversarial review (2026-08-12) — verdict CONCERNS, one fix applied
+
+- **FIXED (warning).** The machine denial sweep built its urls by substituting `<int:engagement_id>` into
+  `rule.rule`. A converter change — the pending UUID PK migration, say — would leave the placeholder in
+  the url, Werkzeug would 404 at the routing layer, and a sweep asserting 404 would keep passing while
+  exercising nothing. Now built with `url_for`, plus the companion ALLOW sweep that was missing: a
+  denial-only sweep also passes if every url is malformed or the blueprint stops being mounted.
+- **ACCEPTED (warning).** `dashboard` was `LIMIT 10`; it now reads every engagement row to filter and to
+  derive the counts. The seam gives a per-client PREDICATE (`can_view_client`), not an enumerable set, so
+  the scoping cannot be pushed into SQL — one host answer per DISTINCT client (cached per call), but a
+  full engagement scan per dashboard load. The fix is host-side: a `visible_client_ids` hook (cream
+  already gets `visible_engagement_ids`), which would turn both list routes into a `WHERE client_id IN`.
+- **NOTE.** The dashboard's Clients tile changed meaning: clients you hold engagements under, not rows in
+  the client table. Deliberate — the old number told a single-client member how many clients exist.
+- **NOTE.** `_resolve_client` refuses two ways: `abort(404)` for a foreign client id (no existence
+  oracle) and a returned message for the two form-level rules (which re-render with an explanation).
 
 ## Notes / gotchas
 
