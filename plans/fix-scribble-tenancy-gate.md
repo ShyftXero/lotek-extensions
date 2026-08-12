@@ -1,7 +1,7 @@
 # Plan: fix/scribble-tenancy-gate
 
 - **Branch:** `fix/scribble-tenancy-gate`  (worktree: `.claude/worktrees/scribble-tenancy-gate`, off `main`)
-- **PR:** opening now
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/11
 - **Status:** 🟢 done, ready for merge
 
 ## Purpose
