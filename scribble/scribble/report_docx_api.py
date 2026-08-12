@@ -12,9 +12,9 @@ One route:
   rendered, editable ``.docx`` attachment.
 
 The route embeds a client's findings and evidence, so — like its ``/report`` HTML sibling in
-``report_html_api.py`` — it is gated by that module's host-delegated
-``_authorize_engagement_view`` before anything is built or streamed. See CRIT-4's docstring there for
-why the check lives in one place rather than being copied.
+``report_html_api.py`` — it is gated by the shared host-delegated
+``scribble.authz.authorize_engagement_view`` before anything is built or streamed. See that module's
+docstring for why the check lives in one place rather than being copied.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from pathlib import Path
 
 from flask import Response, abort
 
+from scribble.authz import authorize_engagement_view
 from scribble.deps import get_config, open_session
 from scribble.models import Engagement
-from scribble.report_html_api import _authorize_engagement_view
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
 
@@ -101,7 +101,7 @@ def register(api_bp, bp) -> None:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
-            _authorize_engagement_view(engagement)
+            authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             artifact_bytes = _make_artifact_bytes(cfg.artifact_root)
             payload = render_report_docx(ctx, artifact_bytes=artifact_bytes)

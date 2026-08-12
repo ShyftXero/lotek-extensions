@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from scribble.authz import authorize_engagement_view
 from scribble.content.render_html import render_block
 from scribble.deps import open_session
 from scribble.models import Engagement, EngagementFinding
@@ -45,9 +46,15 @@ from scribble.templating import (
     resolve_text,
 )
 
-# Tracks which Blueprint instances already had `/preview` added, so `register()` stays idempotent
-# without monkey-patching an attribute onto the (frozen-contract) Blueprint object itself.
-_REGISTERED: set[int] = set()
+# Tracks which Blueprint instances already had `/preview` added, so `register()` stays idempotent.
+# An attribute ON the blueprint object (mirrors `artifacts_api.py`'s `_REGISTERED_ATTR` /
+# `report_docx_api.py`'s `_ws8_docx_registered`) rather than a module-level `set[id(api_bp)]`: an
+# `id()`-keyed set is a real hazard here, not a theoretical one -- a throwaway `Blueprint()` built and
+# discarded by one test (e.g. `tests/test_templating.py`'s `preview_client` fixture) can be garbage
+# collected and have its address reused by a LATER test's throwaway blueprint across a long full-suite
+# run, which made `register()` silently skip attaching `/preview` to that later, unrelated blueprint
+# (observed as an intermittent `test_templating.py` flake under the full suite, never in isolation).
+_REGISTERED_ATTR = "_scribble_templating_registered"
 
 
 def register(api_bp, bp) -> None:
@@ -61,9 +68,9 @@ def register(api_bp, bp) -> None:
     """
     del bp  # unused: WS6 has no UI routes; kept for the shared register(api_bp, bp) convention.
 
-    if id(api_bp) in _REGISTERED:
+    if getattr(api_bp, _REGISTERED_ATTR, False):
         return
-    _REGISTERED.add(id(api_bp))
+    setattr(api_bp, _REGISTERED_ATTR, True)
 
     @api_bp.post("/preview")
     def templating_preview():
@@ -76,6 +83,11 @@ def register(api_bp, bp) -> None:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 return jsonify(error=f"engagement {engagement_id} not found"), 404
+            # Tenancy: ``engagement_id`` is a body field, not a URL view arg, so the blueprint-wide
+            # before_request gate (scribble/authz.py) can't reach this route -- it resolves purely off
+            # view args. Without this, any authenticated actor could render (and read back) another
+            # client's finding content/variables just by naming its engagement id in the preview body.
+            authorize_engagement_view(engagement)
 
             finding = None
             finding_id = payload.get("finding_id")

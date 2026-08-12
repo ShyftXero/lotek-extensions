@@ -44,9 +44,10 @@ import binascii
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import delete_file, guess_content_type, resolve_path, save_bytes
+from scribble.authz import authorize_engagement_view
 from scribble.deps import current_actor_username, get_config, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
-from scribble.models import Artifact
+from scribble.models import Artifact, Engagement
 
 _REGISTERED_ATTR = "_scribble_artifacts_registered"
 
@@ -147,6 +148,18 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             return jsonify(error="engagement_id is required"), 400
         if not data:
             return jsonify(error="empty upload"), 400
+
+        # Tenancy (read the target BEFORE writing anything): unlike every other engagement-scoped
+        # route in this package, ``engagement_id`` here comes from the request BODY, not the URL, so
+        # the blueprint-wide before_request gate (scribble/authz.py, keyed on view args) structurally
+        # cannot reach it. Without this, any authenticated actor could attach evidence to another
+        # client's engagement just by naming its id in the upload. Checked before ``save_bytes`` writes
+        # a single byte to disk.
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                return jsonify(error="engagement not found"), 404
+            authorize_engagement_view(engagement)
 
         # Idempotency guard (PLAN.md §19 offline upload-outbox): fall back to the request header when no
         # form/JSON field was given. Checked BEFORE save_bytes() writes anything to disk, so a retried
