@@ -1,7 +1,7 @@
 # Plan: fix/scribble-uuid-attribution
 
 - **Branch:** `fix/scribble-uuid-attribution` (worktree: `.claude/worktrees/uuid-attrib`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/9
 - **Status:** 🟢 ready to merge
 
 ## Purpose
@@ -78,7 +78,7 @@ follow-up.
       none of this branch's changes applied). Zero regressions, zero new failures.
 
 ## Remaining
-- [ ] PR (bot token) + release comment.
+- [x] PR (bot token) + release comment — https://github.com/ShyftXero/lotek-extensions/pull/9
 - [ ] Re-vendor into lotek (`scripts/stage-extension.sh`) — separate follow-up task, not this branch.
 
 ## Notes / gotchas
