@@ -18,6 +18,7 @@ rather than a hook function, so these resolvers just return ``cfg.client_model o
 from __future__ import annotations
 
 import enum
+import uuid
 from types import SimpleNamespace
 
 from scribble.deps import (
@@ -72,6 +73,23 @@ def test_current_actor_id_none_when_id_not_int(app):
     try:
         with app.app_context():
             assert current_actor_id() is None
+    finally:
+        cfg.extras.pop("current_actor", None)
+
+
+def test_current_actor_id_reads_hook_uuid_id(app):
+    """Lotek v2's host user id is a ``uuid.UUID``, not an int -- this is the exact data-attribution bug
+    (deps.py's old ``isinstance(ident, int)`` check silently turned a UUID actor into ``None``, so every
+    v2-mounted engagement/report create wrote ``owner_id = NULL`` with no error). A UUID host id must
+    resolve the SAME as an int one: returned, not swallowed."""
+    actor_id = uuid.uuid4()
+    cfg = app.extensions["scribble"]
+    cfg.extras["current_actor"] = lambda: SimpleNamespace(id=actor_id, username="j.analyst")
+    try:
+        with app.app_context():
+            resolved = current_actor_id()
+            assert resolved == actor_id
+            assert isinstance(resolved, uuid.UUID)
     finally:
         cfg.extras.pop("current_actor", None)
 

@@ -66,9 +66,18 @@ def _seed_standalone(engine, host_model):
 
 
 def _client_ids(engine):
+    """Raw-SQL read of ``client_id``, coerced back to int where possible.
+
+    ``client_id`` is ``scribble.db.SoftHostId`` (TEXT-backed, since v2 widened it to also hold a UUID
+    host id) -- a raw SQL fetch bypasses the ORM's type decoder, so SQLite's TEXT-affinity storage hands
+    back e.g. ``'5'`` for what was written as the plain int ``5``. This test operates at the raw-SQL
+    level deliberately (see module docstring), but the ids it's asserting on are genuinely int-shaped in
+    every case here (a legacy standalone->mounted int host) -- coerce back to what any real ORM read
+    (``Engagement.client_id``) would hand back, rather than asserting on SQLite's storage class.
+    """
     with engine.begin() as conn:
         rows = conn.execute(text("SELECT id, client_id FROM scribble_engagements ORDER BY id")).fetchall()
-    return dict(rows)
+    return {eid: (int(cid) if cid is not None else None) for eid, cid in rows}
 
 
 def test_remap_resolves_collision_by_name_and_nulls_unmatched():

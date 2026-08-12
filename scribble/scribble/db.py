@@ -8,9 +8,10 @@ port-checkpoint concern, deliberately out of scope here.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, String, TypeDecorator
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -20,6 +21,57 @@ def utcnow() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+class SoftHostId(TypeDecorator):
+    """A HOST soft-ref id (``Engagement.owner_id`` / ``.client_id``) that must hold either shape the host
+    may use: a plain sequential int (standalone Scribble's own tables, and any pre-v2/legacy mounted
+    host) OR a ``uuid.UUID`` (Lotek v2's UUIDv7 surrogate PKs) -- see docs/LOTEK_ADOPTION.md §3.1/§4.
+    There is no FK (the referenced table isn't known until mount time -- ``scribble.deps.client_model``),
+    so the column only needs to store + faithfully round-trip whatever id shape the host actually uses.
+
+    Stored as TEXT (portable across SQLite/Postgres); ``process_result_value`` reconstructs the ORIGINAL
+    Python type on read (int for a digit string, ``uuid.UUID`` for a UUID-shaped one) rather than always
+    handing back a string. That round-trip is load-bearing, not cosmetic: a plain string passed to
+    ``session.get()``/``.in_()`` against a ``sqlalchemy.Uuid``-typed host PK raises (the Uuid type expects
+    a real ``uuid.UUID`` object), so returning a string here would silently break ``Engagement.
+    resolve_client`` and ``scribble.deps.client_names`` for a UUID host even though the id itself
+    "persisted" -- and returning a string instead of the original int would just as silently break every
+    existing int-id equality check (``engagement.owner_id == some_user.id``).
+
+    Schema-history caveat (mirrors ``Engagement.client_id``'s FK-removal note above): ``scribble.db.
+    create_all`` only ADDS columns to a pre-existing table, it never retrofits an existing column's
+    declared type. A table created before this change has ``owner_id``/``client_id`` as a native INTEGER
+    column; on SQLite that's harmless (no real type enforcement, so a UUID string still stores), but on
+    Postgres inserting a UUID string into an INTEGER column raises. A pre-existing Postgres-backed mount
+    needs a one-time manual ``ALTER TABLE scribble_engagements ALTER COLUMN owner_id/client_id TYPE
+    VARCHAR(64)`` before mounting under a UUID host -- there is no migration framework here to do it
+    automatically. A freshly created database (the common case, and every test) needs nothing.
+    """
+
+    impl = String(64)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        # Try int() rather than `value.isdigit()`: isdigit() is False for a leading '-', so a negative
+        # id (a host's "system"/sentinel actor, e.g. id=-1) would silently round-trip as the STRING
+        # "-1" instead of the int -1 -- the exact silent-attribution-loss bug this type exists to fix,
+        # reintroduced at the edge (`owner_id == -1` would just quietly stop matching).
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return value  # opaque id shape we don't recognize -- hand it back as-is rather than raise
 
 
 class TimestampMixin:
@@ -114,9 +166,19 @@ def _remap_standalone_client_ids(engine) -> None:
         for eid, cid in conn.execute(
             text("SELECT id, client_id FROM scribble_engagements WHERE client_id IS NOT NULL")
         ).fetchall():
-            if cid not in smap:
+            # client_id is now `SoftHostId` (TEXT-backed, to also hold a v2 UUID host id) -- a raw SQL
+            # fetch (bypassing the ORM's type decoder) hands back whatever the driver's storage/affinity
+            # gives it, which for a plain int written earlier may come back as a str. `smap`'s keys are
+            # always genuine ints (scribble_clients.id is its own unrelated Integer PK), so normalize
+            # before comparing; a real UUID-shaped cid just fails int() and correctly falls through as
+            # "not a known scribble-space id" (a UUID can never collide with a scribble-space int).
+            try:
+                cid_key = int(cid)
+            except (TypeError, ValueError):
+                cid_key = cid
+            if cid_key not in smap:
                 continue  # not a known scribble-space id -> leave (host-space, or already remapped)
-            new_id = name_to_host.get(smap[cid])
+            new_id = name_to_host.get(smap[cid_key])
             conn.execute(
                 text("UPDATE scribble_engagements SET client_id = :n WHERE id = :e"),
                 {"n": new_id, "e": eid},
