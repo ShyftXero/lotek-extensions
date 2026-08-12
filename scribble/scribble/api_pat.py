@@ -5,7 +5,7 @@ rather than through the cookie-authed browser API. Moved out of the host's core 
 reporting-decoupling refactor: the host now owns only scan data, tenancy, and the Bearer scheme, all
 reached through ``scribble.host`` (injected ``extras``), never by importing host modules.
 
-SECURITY (three layers, all fail-closed):
+SECURITY (four layers, all fail-closed):
   1. ``machine_bp.before_request = scribble.host.authenticate`` — every route on this blueprint needs a
      valid token even if a route forgets the decorator below. 503 when unmounted/no host.
   2. ``@host.require_scope("read"|"write")`` per route — scope + "a write token can't out-rank a
@@ -13,6 +13,22 @@ SECURITY (three layers, all fail-closed):
   3. Job-level TENANCY is decided by the HOST (``host.findings.get_job``/``get_finding`` apply
      ``user_can_view_job`` internally and return None for both missing and unauthorized). This module
      never sees, and cannot widen, that decision — it just 404s on None.
+  4. ENGAGEMENT-level tenancy: ``scribble.authz.can_view_engagement(engagement, host.actor())`` on every
+     route that touches one, and ``can_view_client_id`` on the create route's body-supplied ``client_id``.
+
+Layer 4 was MISSING until 2026-08-12, and its absence is worth stating plainly because layer 3 is what
+disguised it: ``promote-job`` carefully asked the host whether the caller could read the SOURCE job, then
+wrote the result into whatever engagement id the URL named. A ``write``-scoped token could author findings
+into any client's report (`add_finding`), bulk-copy its own scan results into a report it cannot read
+(`promote-job` — data crossing outward, the worse half), or create an engagement under any client id it
+cared to name (`create_engagement`). "The job is authorized" is not "the destination is authorized"; a
+route that moves data between two tenancy domains must check BOTH ends.
+
+``authorize_engagement_view`` (the cookie blueprints' aborting wrapper, and the ``before_request`` gate
+built on it) can't be reused here: both resolve the principal via ``deps.current_actor()`` — the browser
+session user — which is None on a PAT request, so a shared gate would 404 every machine route. The
+PREDICATE is shared; only the actor lookup differs, and the host's ``can_view_client`` is duck-typed on
+``.id`` so it takes a ``PatActor`` just as happily as a session ``User``.
 
 CSRF: the host exempts this prefix because the manifest declares it as a machine surface
 ([host] machine_prefix). That exemption is ONLY sound because these routes accept no ambient session
@@ -27,12 +43,14 @@ functions that need it, so this module still imports cleanly even before that fi
 from __future__ import annotations
 
 import fnmatch
+import uuid
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 from sqlalchemy import select
 
 from scribble import host
+from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
 from scribble.deps import open_session, severity_enum  # noqa: F401
 from scribble.models import (
     Engagement,
@@ -69,6 +87,39 @@ def _opt_int(data: dict, key: str):
         return None, (jsonify({"error": "bad_request", "detail": f"{key} must be an integer"}), 400)
 
 
+def _opt_host_id(data: dict, key: str):
+    """Validate an OPTIONAL HOST id field (``client_id``) -> (value_or_None, error_response_or_None).
+
+    A host id is whatever the mounted host's PKs are: an ``int`` standalone/legacy, a ``uuid.UUID`` under
+    lotek v2 — the two shapes ``models.SoftHostId`` stores. ``_opt_int`` was used here, which meant a v2
+    caller could not pass a client at all (``int("0198…")`` -> 400), so every machine-created engagement
+    was necessarily client-less — i.e. one nobody could open, since a NULL client denies everyone. Gating
+    a field that cannot be set would have been a route that can only fail; hence this.
+    """
+    v = data.get(key)
+    if v is None:
+        return None, None
+    bad = (jsonify({"error": "bad_request", "detail": f"{key} must be an integer or a UUID"}), 400)
+    if isinstance(v, bool) or not isinstance(v, (int, str)):
+        return None, bad
+    if isinstance(v, int):
+        return v, None
+    text = v.strip()
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text), None
+    try:
+        return uuid.UUID(text), None
+    except (ValueError, AttributeError):
+        return None, bad
+
+
+def _engagement_not_found():
+    """The ONE refusal a machine caller gets for an engagement it may not touch — byte-identical to the
+    one for an engagement that does not exist. 404, never 403: a distinguishable refusal is an existence
+    oracle over the whole id space (same posture as ``scribble.authz``'s abort(404))."""
+    return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+
+
 def _opt_str(data: dict, key: str):
     """Validate an OPTIONAL string JSON field -> (stripped_value_or_None, error_response_or_None). A
     non-string (list/dict/number) yields a clean 400 instead of an AttributeError on .strip()."""
@@ -97,10 +148,34 @@ def scribble_create_engagement():
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "bad_request", "detail": "name is required"}), 400
-    client_id, err = _opt_int(data, "client_id")
+    client_id, err = _opt_host_id(data, "client_id")
     if err:
         return err
     actor = host.actor()
+
+    # The client an engagement is created under IS its tenancy, and it arrives in the request body — so
+    # no id-shaped gate can reach it; it is checked here, before the row exists.
+    #
+    # Mounted, the client is REQUIRED. The host answers False for a NULL client (see
+    # host_contract.make_can_view_client), so a client-less engagement is unreadable and unwritable by
+    # everyone, its creator included — creating one is a success response for work that produced nothing
+    # usable. Refusing is the honest answer; standalone (no host bundle) keeps the old behaviour, since
+    # there it is a perfectly ordinary engagement.
+    if host_is_mounted():
+        if client_id is None:
+            return (
+                jsonify({
+                    "error": "bad_request",
+                    "detail": "client_id is required: a mounted engagement is scoped by its client, and "
+                              "one with no client is readable by nobody",
+                }),
+                400,
+            )
+        if not can_view_client_id(client_id, actor):
+            # 404 on the CLIENT for the same reason as on an engagement: do not confirm which client ids
+            # exist to a token holding no grant under them.
+            return jsonify({"error": "not_found", "detail": "client not found"}), 404
+
     with open_session() as db:
         eng = Engagement(
             name=name,
@@ -179,28 +254,36 @@ def scribble_get_template(template_id: int):
 @machine_bp.post("/engagements/<int:engagement_id>/findings")
 @host.require_scope("write")
 def scribble_add_finding(engagement_id: int):
-    data = request.get_json(silent=True) or {}
-    template_id, err = _opt_int(data, "template_id")
-    if err:
-        return err
-    lotek_finding_id, err = _opt_int(data, "lotek_finding_id")
-    if err:
-        return err
-    group_id, err = _opt_int(data, "group_id")
-    if err:
-        return err
-    if not template_id and not lotek_finding_id:
-        return (
-            jsonify({"error": "bad_request", "detail": "template_id or lotek_finding_id is required"}),
-            400,
-        )
-
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
+        # DESTINATION tenancy FIRST — before the body is even parsed. Authorizing ahead of validation
+        # keeps the refusal for a foreign engagement identical no matter what the body says, so a caller
+        # can't map the id space by diffing 400s against 404s.
         engagement = db.get(Engagement, engagement_id)
         if engagement is None:
-            return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+            return _engagement_not_found()
+        if not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+
+        data = request.get_json(silent=True) or {}
+        template_id, err = _opt_int(data, "template_id")
+        if err:
+            return err
+        lotek_finding_id, err = _opt_int(data, "lotek_finding_id")
+        if err:
+            return err
+        group_id, err = _opt_int(data, "group_id")
+        if err:
+            return err
+        if not template_id and not lotek_finding_id:
+            return (
+                jsonify({
+                    "error": "bad_request",
+                    "detail": "template_id or lotek_finding_id is required",
+                }),
+                400,
+            )
 
         # Resolve the target group; never attach to another engagement's group (defensive).
         group = db.get(FindingGroup, group_id) if group_id else None
@@ -373,18 +456,26 @@ def scribble_resolve_template():
 def scribble_promote_job(engagement_id: int, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
 
-    Tenancy is decided entirely by the HOST (``host.findings().get_job``/``list_findings`` apply
-    ``user_can_view_job`` internally): unknown job, or one the caller can't view, is 404 (no existence
-    leak) — the only authz check in this route. Aggregation (resolving each finding to a library
-    template, nesting matches under one shared parent, everything else bridged verbatim) is
-    ``scribble.promote.promote_job``'s concern, not this module's.
+    This route spans TWO tenancy domains and must check both, which is exactly what it failed to do until
+    2026-08-12:
+      * the SOURCE job — decided entirely by the HOST (``host.findings().get_job``/``list_findings``
+        apply ``user_can_view_job`` internally): unknown job, or one the caller can't view, is 404, no
+        existence leak.
+      * the DESTINATION engagement — ``can_view_engagement``. Without it a ``write`` token could pour its
+        own findings into any client's report: a write into a tenant it holds nothing under, AND its own
+        scan data handed to whoever reads that report.
+
+    Aggregation (resolving each finding to a library template, nesting matches under one shared parent,
+    everything else bridged verbatim) is ``scribble.promote.promote_job``'s concern, not this module's.
     """
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
         engagement = db.get(Engagement, engagement_id)
         if engagement is None:
-            return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+            return _engagement_not_found()
+        if not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
 
         findings_ns = host.findings()
         job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None

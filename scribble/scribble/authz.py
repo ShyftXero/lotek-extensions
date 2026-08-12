@@ -3,15 +3,29 @@
 Two things live here, deliberately together (one is the primitive, one is what makes the primitive
 actually apply everywhere):
 
-1. :func:`authorize_engagement_view` — the single tenancy predicate. Originally written for (and still
-   used directly by) the report routes (``report_html_api.py``/``report_docx_api.py``, audit CRIT-4:
-   the report + its export embed a client's findings and evidence). Moved out of ``report_html_api.py``
-   into its own module so the blueprint-wide gate below can import it without every other route module
-   reaching into a report-rendering file for an authorization primitive.
+1. :func:`can_view_client_id` — the single tenancy predicate (and its wrappers
+   :func:`can_view_engagement`, :func:`filter_visible_engagements`, and the aborting
+   :func:`authorize_engagement_view`). Originally written for (and still used directly by) the report
+   routes (``report_html_api.py``/``report_docx_api.py``, audit CRIT-4: the report + its export embed a
+   client's findings and evidence). Moved out of ``report_html_api.py`` into its own module so the
+   blueprint-wide gate below can import it without every other route module reaching into a
+   report-rendering file for an authorization primitive.
 
-2. :func:`register_gate` — a fail-closed ``before_request`` hook attached to ``bp`` AND ``api_bp`` (NOT
-   ``machine_bp``, which authenticates PAT requests through its own, separate ``host.authenticate`` gate
-   and has its own tenancy story — see its module docstring). Before this gate existed, the report routes
+   The predicate is exposed in BOTH forms on purpose. ``authorize_engagement_view`` (aborting, implicit
+   ``current_actor()``) fits a cookie-authed view that wants to stop right there; the plain predicates
+   fit the two callers it cannot serve:
+     * ``api_pat.py``'s machine routes, whose principal is the PAT actor (``extras['pat_actor']``), not
+       the browser-session user — a machine request has no session, so an implicit ``current_actor()``
+       would resolve to None and 404 every machine route. The host's ``can_view_client`` is duck-typed
+       on ``.id`` precisely so it can take either principal shape.
+     * list routes, which must FILTER rather than abort: aborting on the first foreign row would turn a
+       dashboard into a 404 for anyone whose database contains another tenant's engagement.
+
+2. :func:`register_gate` — a fail-closed ``before_request`` hook attached to ``bp`` AND ``api_bp``, and
+   deliberately NOT to ``machine_bp``: the gate resolves the actor via ``current_actor()``, which is None
+   on a PAT request, so attaching it there would 404 every machine route. ``machine_bp`` calls the same
+   predicate with its own principal, per route — see ``api_pat.py``'s SECURITY banner. Before this gate
+   existed, the report routes
    were the ONLY callers of :func:`authorize_engagement_view`: every other engagement-scoped route
    (``engagement_ui.py``'s board/edit/delete/add-finding/reorder, ``artifacts_api.py``'s artifact CRUD,
    ``checklists_api.py``'s assignment routes, ``autosave_api.py``/``collab/*``'s per-block routes, …) did
@@ -54,6 +68,79 @@ from scribble.models import (
 )
 
 
+def host_is_mounted() -> bool:
+    """Whether a host bundle was injected (``cfg.extras['host']``).
+
+    Standalone Scribble has no host authorization model at all, so every tenancy check below degrades to
+    "allowed" — the same fail-OPEN-when-unmounted posture the report routes have always had. Callers that
+    need to REQUIRE something only meaningful under a host (``api_pat``/``engagement_ui``: an engagement
+    must name a client the actor can see) branch on this rather than inferring it from a False predicate,
+    which would be indistinguishable from "denied".
+    """
+    return bool(get_config().extras.get("host"))
+
+
+def can_view_client_id(client_id, actor) -> bool:
+    """*May this actor read data belonging to this client?* — asked of the HOST, never decided here.
+
+    The non-aborting core of :func:`authorize_engagement_view`; see that function's docstring for the
+    history (a hand-copied predicate that inverted) and this module's for why both forms exist.
+
+    ``actor`` is passed EXPLICITLY — a browser-session user for a cookie route, a ``PatActor`` for a
+    machine route. Nothing here reads anything off it; it is handed straight to the host.
+
+    Fails CLOSED (False) when a host is mounted but exposes no ``can_view_client``: a host bundle that
+    predates the contract gets a refusal, not a fallback to a local rule — the whole point is that this
+    module holds no policy of its own to fall back TO. Returns True only when there is no host at all.
+    """
+    cfg = get_config()
+    if not cfg.extras.get("host"):
+        return True  # standalone Scribble — no host authorization model to apply
+    can_view_client = cfg.extras.get("can_view_client")
+    if can_view_client is None:
+        return False
+    return bool(can_view_client(client_id, actor))
+
+
+def can_view_engagement(engagement: Engagement, actor) -> bool:
+    """:func:`can_view_client_id` applied to an engagement's ``client_id``.
+
+    Note the consequence for a CLIENT-LESS engagement (``client_id is None``): the host's contract
+    answers False for it, so it is invisible to everyone, its creator included. That is not this
+    module's choice and not a bug to work around here — an engagement with no client has no tenancy
+    anchor, and inventing one (owner? creator?) is exactly the copied-predicate mistake documented in
+    :func:`authorize_engagement_view`. The right fix is upstream, at the two CREATE paths, which now
+    refuse to make such an engagement while a host is mounted rather than silently making one nobody can
+    ever open (``api_pat.scribble_create_engagement`` / ``engagement_ui.engagement_new``).
+    """
+    return can_view_client_id(getattr(engagement, "client_id", None), actor)
+
+
+def filter_visible_engagements(engagements, actor) -> list:
+    """The list-route form: drop every engagement whose client the actor holds no grant under.
+
+    A list route is the third shape of the same tenancy defect and the one with no id to gate on — the
+    dashboard and the engagement list enumerated EVERY tenant's engagements (names, client names,
+    counts), which needs no id-guessing at all. They can't call an aborting check (one foreign row would
+    404 the whole page), so they filter.
+
+    The host answer is cached per distinct ``client_id`` for the duration of the call: the real
+    ``can_view_client`` opens a session and resolves memberships on every invocation, and a list is
+    typically many engagements over few clients.
+    """
+    if not host_is_mounted():
+        return list(engagements)  # standalone — nothing to scope against
+    seen: dict[object, bool] = {}
+    visible = []
+    for engagement in engagements:
+        client_id = getattr(engagement, "client_id", None)
+        if client_id not in seen:
+            seen[client_id] = can_view_client_id(client_id, actor)
+        if seen[client_id]:
+            visible.append(engagement)
+    return visible
+
+
 def authorize_engagement_view(engagement: Engagement) -> None:
     """Audit CRIT-4 (originally): a client's findings/evidence must not be readable or writable by a
     reader/writer the host would not grant that client to.
@@ -75,16 +162,11 @@ def authorize_engagement_view(engagement: Engagement) -> None:
     Standalone Scribble (no host bundle) has no host authorization model, so nothing is enforced there —
     unchanged. With a host wired, this fails CLOSED (404, never 403: do not confirm that the engagement
     id exists to someone who may not read it).
+
+    The COOKIE-route form: implicit ``current_actor()`` (the browser session user) + abort. A machine
+    route has no session and must pass its PAT actor to :func:`can_view_engagement` explicitly.
     """
-    cfg = get_config()
-    if not cfg.extras.get("host"):
-        return  # standalone Scribble — no host authorization model to apply
-    can_view_client = cfg.extras.get("can_view_client")
-    if can_view_client is None:
-        # A host bundle that predates the contract. Refuse rather than fall back to a local rule: the
-        # whole point is that this module holds no policy of its own to fall back TO.
-        abort(404)
-    if not can_view_client(getattr(engagement, "client_id", None), current_actor()):
+    if not can_view_engagement(engagement, current_actor()):
         abort(404)
 
 

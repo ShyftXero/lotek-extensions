@@ -71,20 +71,34 @@ caller's grant covers that client.* It has three shapes, and the previous branch
 ## Done
 
 - [x] Full sweep of the reporting framework (table above).
+- [x] `scribble/authz.py`: `host_is_mounted` / `can_view_client_id` / `can_view_engagement` (non-aborting
+      predicates, explicit actor) + `filter_visible_engagements` (per-call cache keyed on `client_id`, so
+      a list costs one host answer per distinct client rather than per row). `authorize_engagement_view`
+      is now the thin aborting wrapper over the same predicate — one policy, three call shapes.
+- [x] `scribble/api_pat.py`: `add_finding` + `promote-job` check `can_view_engagement(engagement,
+      host.actor())`; `create_engagement` checks the body's `client_id` and requires one when mounted.
+      `_opt_host_id` replaces `_opt_int` for `client_id` (int OR UUID). `add_finding` now authorizes
+      BEFORE parsing the body, so the refusal is identical whatever the body says.
+- [x] `scribble/blueprint.py`: the dashboard list AND its stat tiles derive from the visible set.
+- [x] `scribble/engagement_ui.py`: the engagement list filters; `_resolve_client` (shared by create and
+      edit) enforces the three client rules; `_viewable_clients` scopes the form's client `<select>`,
+      which was rendering the host's entire client table. Both form templates drop the "new client name"
+      field when mounted (`scribble_host_mounted`), since the server now refuses it.
+- [x] `tests/conftest.py`: the stub `can_view_client` takes either principal shape — it would have
+      `AttributeError`d on `StubActor.role` (a plain string) the first time a machine route asked it.
+- [x] Tests: `tests/test_scribble_machine_tenancy.py` (13) — a `machine_bp` route-classification guard, a
+      real-request denial sweep over every engagement-scoped machine route, per-route DENY→ALLOW with
+      "and nothing was written" assertions, and the four create-route client cases including the UUID one.
+      `tests/test_scribble_list_tenancy.py` (12) — list/dashboard/counts scoping, the client picker, the
+      create rules, the edit MOVE case, and standalone-unchanged.
+- [x] Existing machine tests updated to create under a granted client (`_engagement(client, stub_host)`),
+      and `test_scribble_tenancy_gate.py`'s edit case to keep naming its client. The `_NON_SCOPED_ENDPOINTS`
+      comment now says what that list does and does not claim — misreading it is what left these open.
 
 ## Remaining
 
-- [ ] `scribble/authz.py`: `can_view_client_id` / `can_view_engagement` (non-aborting predicates) +
-      `filter_visible_engagements`; `authorize_engagement_view` becomes the aborting wrapper.
-- [ ] `scribble/api_pat.py`: the three routes + `_opt_host_id`.
-- [ ] `scribble/blueprint.py` + `scribble/engagement_ui.py`: the three cookie-side instances.
-- [ ] `tests/conftest.py`: the stub `can_view_client` must accept a PAT actor (`StubActor.role` is a
-      string, not a `_StubRole`) — today it would `AttributeError`.
-- [ ] Tests: machine-route DENY→ALLOW per route + a `machine_bp` route-classification guard (the same
-      "a new route can't slip through unclassified" property the cookie blueprints already have);
-      list/dashboard scoping; create/edit client-grant checks.
 - [ ] Red→green transcript for every new guard.
-- [ ] `uv run ruff check` + `uv run pyrefly check` + full suite.
+- [ ] `uv run ruff check` + `uv run pyrefly check` + full suite (final).
 - [ ] Re-vendor into lotek (`scripts/stage-extension.sh`) — after merge.
 
 ## Notes / gotchas
