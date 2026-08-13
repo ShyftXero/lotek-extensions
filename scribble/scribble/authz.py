@@ -123,6 +123,46 @@ def can_view_engagement(engagement: Engagement, actor) -> bool:
     return can_view_client_id(getattr(engagement, "client_id", None), actor)
 
 
+def host_visible_client_ids():
+    """The host's scoped SET of client ids for this request, or ``None`` when there isn't one.
+
+    ``None`` means "no set available" — standalone Scribble (no host), or a host bundle predating the
+    hook — and is deliberately distinct from an EMPTY set, which means "this actor holds nothing" and
+    must scope everything away. Conflating the two is how a fail-closed check turns into a fail-open one.
+
+    Named after cream's ``host_visible_engagement_ids`` convention, and prefixed ``host_`` so it cannot
+    be mistaken for (or collide with) the seam function itself — this module holds no policy, it asks.
+    """
+    cfg = get_config()
+    if not cfg.extras.get("host"):
+        return None
+    hook = cfg.extras.get("visible_client_ids")
+    if hook is None:
+        return None
+    return frozenset(hook())
+
+
+def visible_engagements(db, stmt, actor) -> list:
+    """Run ``stmt`` (a ``select(Engagement)``) scoped to what ``actor`` may see, preferring SQL.
+
+    Two paths, and the difference is the point of the host's ``visible_client_ids`` hook:
+
+    * **the set is available** — narrow in SQL (``WHERE client_id IN (…)``), so the database returns
+      only rows this actor may see. One host call, regardless of how many engagements exist.
+    * **it isn't** (standalone, or an older host bundle) — fall back to reading the rows and filtering
+      them through the per-client predicate, which is what shipped with the tenancy fix.
+
+    The fallback is why this is a helper rather than an inline ``where``: a route must not have to
+    choose, and must not silently skip scoping when the newer hook is missing.
+    """
+    client_ids = host_visible_client_ids()
+    if client_ids is None:
+        return filter_visible_engagements(db.scalars(stmt).all(), actor)
+    if not client_ids:
+        return []  # holds no client -> sees no engagement (empty set is NOT "unscoped")
+    return list(db.scalars(stmt.where(Engagement.client_id.in_(client_ids))).all())
+
+
 def filter_visible_engagements(engagements, actor) -> list:
     """The list-route form: drop every engagement whose client the actor holds no grant under.
 
