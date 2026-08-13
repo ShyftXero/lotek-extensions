@@ -17,8 +17,22 @@ from tests.conftest import FakeFindingDTO, StubActor
 M = "/scribble/machine"
 
 
-def _engagement(client) -> int:
-    return client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+ACME = 501  # the client every machine-created engagement in this file belongs to
+
+
+def _engagement(client, stub_host, name: str = "E") -> int:
+    """Create the engagement under test — under a client THIS TOKEN can see.
+
+    A machine engagement must now name a client the caller holds a grant under
+    (`api_pat.scribble_create_engagement`, 2026-08-12). The client-less engagement these tests used to
+    create is refused when mounted, because the host answers `can_view_client(None, actor) -> False`:
+    it was readable and writable by nobody, including the tool that made it. The grant is set here
+    rather than per test because it is a property of the fixture host, not of what any test asserts.
+    """
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
+    assert resp.status_code == 201, resp.get_json()
+    return resp.get_json()["id"]
 
 
 def _first_template_id(client) -> int:
@@ -51,7 +65,7 @@ def test_promote_groups_same_template_into_one_parent_with_host_attributed_child
             ),
         ],
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200
@@ -90,7 +104,7 @@ def test_promote_rerun_does_not_duplicate_parent_or_children(
             ),
         ],
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r1 = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r1.get_json()["parents"] == 1
@@ -127,7 +141,7 @@ def test_promote_different_templates_get_separate_parents(
             ),
         ],
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     body = r.get_json()
@@ -147,7 +161,7 @@ def test_promote_unmapped_findings_stay_flat_ungrouped(client, stub_host, sessio
     stub_host.findings.add_job(
         "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="Untitled scan hit", source="autorecon")]
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     body = r.get_json()
@@ -176,7 +190,7 @@ def test_promote_still_respects_job_tenancy_with_aggregation(
             )
         ],
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     stub_host.actor = StubActor(id=8, username="opB", role="operator")
     r_b = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
@@ -216,7 +230,7 @@ def test_promote_attributes_internal_host_without_global_asset(
             ),
         ],
     )
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200 and r.get_json()["parents"] == 1

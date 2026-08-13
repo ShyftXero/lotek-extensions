@@ -206,12 +206,19 @@ class StubHost:
 
         Absent this key the extension `abort(404)`s by design -- which is exactly what shipped before
         the host provided it: every mounted report 404'd for every actor, admin included.
+
+        Takes EITHER principal shape, because the real one does (`make_can_view_client` is duck-typed on
+        `.id` for exactly this reason): a `StubUser` from `current_actor()` carries a `_StubRole`, while a
+        `StubActor` from `pat_actor()` carries a plain role STRING. A stub that only understood the
+        session shape would `AttributeError` the moment a machine route asked it a tenancy question --
+        i.e. it would have made the machine-route fix untestable rather than proving it.
         """
         user = actor if actor is not None else self.current_user
         if user is None:
             return False
         role = getattr(user, "role", None)
-        if role is not None and role.is_admin():
+        is_admin = role.is_admin() if hasattr(role, "is_admin") else str(role) == "admin"
+        if is_admin:
             return True
         if client_id is None:
             return False  # nothing to attribute -> admin-only, mirroring the host's NULL default

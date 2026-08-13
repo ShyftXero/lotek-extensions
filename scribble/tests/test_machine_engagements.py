@@ -18,6 +18,24 @@ from tests.conftest import FakeFindingDTO, StubActor
 M = "/scribble/machine"
 
 
+ACME = 501  # the client every machine-created engagement in this file belongs to
+
+
+def _engagement(client, stub_host, name: str = "E") -> int:
+    """Create the engagement under test — under a client THIS TOKEN can see.
+
+    A machine engagement must now name a client the caller holds a grant under
+    (`api_pat.scribble_create_engagement`, 2026-08-12). The client-less engagement these tests used to
+    create is refused when mounted, because the host answers `can_view_client(None, actor) -> False`:
+    it was readable and writable by nobody, including the tool that made it. The grant is set here
+    rather than per test because it is a property of the fixture host, not of what any test asserts.
+    """
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
+    assert resp.status_code == 201, resp.get_json()
+    return resp.get_json()["id"]
+
+
 # ── fail-closed: no mounting host at all ─────────────────────────────────────────────────────────
 
 
@@ -34,9 +52,15 @@ def test_machine_route_503_with_no_host_mounted(client):
 
 def test_create_engagement_sets_created_by_and_owner_id(client, stub_host, session_factory):
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    stub_host.viewable_client_ids = {ACME}
     resp = client.post(
         f"{M}/engagements",
-        json={"name": "Acme external", "scope_type": "external", "company_name": "Acme"},
+        json={
+            "name": "Acme external",
+            "scope_type": "external",
+            "company_name": "Acme",
+            "client_id": ACME,
+        },
     )
     assert resp.status_code == 201
     eid = resp.get_json()["id"]
@@ -107,7 +131,7 @@ def test_get_template_and_404(client, stub_host):
 
 
 def test_add_finding_from_template(client, stub_host, session_factory):
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
     tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
     resp = client.post(
         f"{M}/engagements/{eid}/findings",
@@ -122,13 +146,13 @@ def test_add_finding_from_template(client, stub_host, session_factory):
 
 
 def test_add_finding_requires_a_source(client, stub_host):
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
     resp = client.post(f"{M}/engagements/{eid}/findings", json={})
     assert resp.status_code == 400
 
 
 def test_add_finding_rejects_deactivated_template(client, stub_host, session_factory):
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
     tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
     with session_factory() as db:
         db.get(fm.VulnerabilityTemplate, tid).active = False
@@ -138,7 +162,7 @@ def test_add_finding_rejects_deactivated_template(client, stub_host, session_fac
 
 
 def test_add_finding_rejects_non_integer_ids(client, stub_host):
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
     for bad in ({"template_id": []}, {"lotek_finding_id": {}}, {"group_id": [1], "template_id": 1}):
         resp = client.post(f"{M}/engagements/{eid}/findings", json=bad)
         assert resp.status_code == 400, bad
@@ -161,7 +185,7 @@ def test_promote_lotek_finding_respects_job_tenancy(client, stub_host, session_f
 
     def _promote(actor):
         stub_host.actor = actor
-        eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+        eid = _engagement(client, stub_host)
         return client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": 101})
 
     # opB (id=8) does not own the finding's job -> refused as 404 (no existence leak)
@@ -180,7 +204,7 @@ def test_promote_finding_with_missing_job_fails_closed(client, stub_host):
     must NOT be promotable by anyone, including an admin -- fail CLOSED, not skip the check because
     there's no job to check against. Identical 404 shape to the unauthorized case above."""
     stub_host.actor = StubActor(id=1, username="admin", role="admin")  # even admin can't promote a dangler
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
     resp = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": 999999})
     assert resp.status_code == 404
     assert resp.get_json()["detail"] == "lotek finding not found"
@@ -192,7 +216,7 @@ def test_promote_lotek_finding_dedups_on_source_finding_id(client, stub_host, se
     dto = FakeFindingDTO(id=202, title="RCE via upload")
     stub_host.findings.add_job("job-2", owner_id=7, dtos=[dto])
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
-    eid = client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+    eid = _engagement(client, stub_host)
 
     r1 = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": 202})
     assert r1.status_code == 201

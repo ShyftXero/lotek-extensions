@@ -59,12 +59,20 @@ OTHER_CLIENT = 502  # a client the actor holds no grant under
 # Derived from the gate itself (not duplicated by hand) -- see scribble/authz.py.
 _RECOGNIZED_KEYS = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
 
-# Routes that are NOT engagement-scoped by design: dashboards/lists/creates, and every route on a
-# library-wide table shared across all tenants (VulnerabilityTemplate/ChecklistTemplate/AssessmentType)
-# rather than one engagement's data. Also the two BODY-scoped routes fixed with a direct
-# `authorize_engagement_view` call instead of this gate (the view-arg gate structurally can't reach a
-# body field) -- see `test_artifact_upload_to_foreign_engagement_denied` /
-# `test_templating_preview_denies_foreign_engagement` below for their own coverage.
+# Routes this GATE does not scope, because they carry no engagement id in their URL. Read the list
+# carefully: "no engagement view arg" is a fact about the URL, NOT a claim that the route touches no
+# engagement data, and conflating the two is precisely how `dashboard`/`engagements`/`engagement_new`
+# sat here while enumerating every tenant's engagements and accepting any client id from the form. They
+# are still gate-exempt (nothing for a view-arg resolver to resolve) and are now scoped by their own
+# means -- `authz.filter_visible_engagements` and `engagement_ui._resolve_client`, proven in
+# `tests/test_scribble_list_tenancy.py`.
+#
+# The rest are genuinely tenant-free: every route on a library-wide table shared across all tenants
+# (VulnerabilityTemplate/ChecklistTemplate/AssessmentType) rather than one engagement's data. Plus the
+# two BODY-scoped routes fixed with a direct `authorize_engagement_view` call instead of this gate (the
+# view-arg gate structurally can't reach a body field) -- see
+# `test_artifact_upload_to_foreign_engagement_denied` /`test_templating_preview_denies_foreign_engagement`
+# below for their own coverage.
 _NON_SCOPED_ENDPOINTS = frozenset(
     {
         "scribble.static",
@@ -309,7 +317,11 @@ def test_engagement_edit_denied_then_allowed(client, stub_host, session_factory)
     assert client.post(f"{UI}/engagements/{eid}/edit", data={"name": "x"}).status_code == 404
     _member(stub_host)
     assert client.get(f"{UI}/engagements/{eid}/edit").status_code == 200
-    assert client.post(f"{UI}/engagements/{eid}/edit", data={"name": "Renamed"}).status_code == 302
+    # The form must keep naming a client the member holds: an edit that drops it would leave the
+    # engagement openable by nobody, and one that names a foreign client is a hand-off to another tenant
+    # -- both refused by `engagement_ui._resolve_client` (see tests/test_scribble_list_tenancy.py).
+    edit = client.post(f"{UI}/engagements/{eid}/edit", data={"name": "Renamed", "client_id": str(ACME)})
+    assert edit.status_code == 302
 
 
 def test_engagement_delete_denied_then_allowed(client, stub_host, session_factory):

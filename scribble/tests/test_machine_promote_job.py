@@ -15,8 +15,22 @@ from tests.conftest import FakeFindingDTO, StubActor
 M = "/scribble/machine"
 
 
-def _engagement(client) -> int:
-    return client.post(f"{M}/engagements", json={"name": "E"}).get_json()["id"]
+ACME = 501  # the client every machine-created engagement in this file belongs to
+
+
+def _engagement(client, stub_host, name: str = "E") -> int:
+    """Create the engagement under test — under a client THIS TOKEN can see.
+
+    A machine engagement must now name a client the caller holds a grant under
+    (`api_pat.scribble_create_engagement`, 2026-08-12). The client-less engagement these tests used to
+    create is refused when mounted, because the host answers `can_view_client(None, actor) -> False`:
+    it was readable and writable by nobody, including the tool that made it. The grant is set here
+    rather than per test because it is a property of the fixture host, not of what any test asserts.
+    """
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
+    assert resp.status_code == 201, resp.get_json()
+    return resp.get_json()["id"]
 
 
 def test_promote_job_creates_findings_and_records_host_assignment(client, stub_host, session_factory):
@@ -24,7 +38,7 @@ def test_promote_job_creates_findings_and_records_host_assignment(client, stub_h
         "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi"), FakeFindingDTO(id=2, title="XSS")]
     )
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200
@@ -45,7 +59,7 @@ def test_promote_is_deduped_on_rerun(client, stub_host):
         "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi"), FakeFindingDTO(id=2, title="XSS")]
     )
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     r2 = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r2.get_json() == {"engagement_id": eid, "promoted": 0, "skipped": 2, "parents": 0}
@@ -56,7 +70,7 @@ def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean
         "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="nuclei hit", source="nuclei")]
     )
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
     tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
     client.post(f"{M}/vuln-map", json={"source": "nuclei", "template_id": tid})
 
@@ -68,7 +82,7 @@ def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean
 
 def test_promote_respects_job_tenancy(client, stub_host):
     stub_host.findings.add_job("job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")])
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
 
     stub_host.actor = StubActor(id=8, username="opB", role="operator")  # doesn't own the job
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").status_code == 404
@@ -80,6 +94,6 @@ def test_promote_respects_job_tenancy(client, stub_host):
 def test_promote_unknown_job_and_engagement_404(client, stub_host):
     stub_host.findings.add_job("job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="X")])
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
-    eid = _engagement(client)
+    eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/nope").status_code == 404
     assert client.post(f"{M}/engagements/999999/promote-job/job-1").status_code == 404

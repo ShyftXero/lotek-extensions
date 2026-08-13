@@ -66,10 +66,12 @@ from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
 from scribble.artifacts_storage import delete_file
+from scribble.authz import can_view_client_id, filter_visible_engagements, host_is_mounted
 from scribble.content import schema
 from scribble.deps import (
     client_model,
     client_names,
+    current_actor,
     current_actor_id,
     current_actor_username,
     get_config,
@@ -157,35 +159,96 @@ def _reindex(items) -> None:
         item.order_index = index
 
 
-def _apply_engagement_form(engagement: Engagement, form, db) -> None:
-    """Shared field-setting for the edit route (port of lotek's ``routes/engagements.py::
-    _apply_engagement_form``). Unlike ``engagement_new`` above -- which never touches ``status`` and
-    leaves it at the model default ("in_progress") -- this ALSO sets ``status``, since edit is the first
-    place a user can change it after creation.
+def _viewable_clients(db) -> list:
+    """The clients this actor may attach an engagement to, for the create/edit form's ``<select>``.
 
-    Client resolution mirrors ``engagement_new``'s select-existing-or-create-by-name convention (rather
-    than lotek's simpler client_id-only parse), so editing behaves the same way creating does.
+    Both forms rendered the mounted host's ENTIRE client table -- every client's name and id, to anyone
+    with a Scribble login. That is the engagement-list leak one table over: the client roster IS tenancy
+    data. Standalone (``scribble_clients``, no host) is unfiltered, there being nothing to filter by.
     """
-    engagement.name = (form.get("name") or "").strip()
-    engagement.scope_type = (form.get("scope_type") or "external").strip() or "external"
-    engagement.company_name = (form.get("company_name") or "").strip() or None
-    engagement.status = (form.get("status") or "in_progress").strip() or "in_progress"
-    engagement.start_date = _parse_date(form.get("start_date"))
-    engagement.end_date = _parse_date(form.get("end_date"))
-
     ClientModel = client_model()
-    client = None
+    rows = list(db.scalars(select(ClientModel).order_by(ClientModel.name)).all())
+    if not host_is_mounted():
+        return rows
+    actor = current_actor()
+    return [c for c in rows if can_view_client_id(c.id, actor)]
+
+
+def _resolve_client(db, form):
+    """Resolve the client an engagement is created under / moved to -> ``(client_id, error_message)``.
+
+    The client field IS the engagement's tenancy, and it arrives in the request body, so no id-shaped gate
+    can reach it: unchecked, this creates an engagement under someone else's client, or (edit) MOVES an
+    engagement you legitimately hold onto a client you don't -- planting readable data in another tenant,
+    or pushing your own out of your reach.
+
+    Three rules, all only when a host is mounted (standalone keeps the original behaviour verbatim):
+
+    * a named ``client_id`` must be one the actor may view -> otherwise ``abort(404)``, matching the rest
+      of the module's no-existence-oracle posture rather than a 403 that confirms the id is real;
+    * ``new_client_name`` is refused. ``client_model()`` resolves to the HOST's own client table when
+      mounted, so this form was creating rows in lotek's tenancy data from an extension form, under no
+      membership of the creator's -- the resulting engagement would be unopenable by the person who just
+      made it. Clients are the host's to create;
+    * the client is REQUIRED, because ``can_view_client(None, actor)`` is False by the host's contract: a
+      client-less engagement 404s for everyone, so creating one is a success response for nothing.
+
+    Mounted, the granted id is returned WITHOUT looking the row up: ``Engagement.client_id`` is a soft
+    reference (docs/LOTEK_ADOPTION.md §3.1) and the host has just been asked the only question that
+    matters about it. Requiring a resolvable row here would add a second, weaker source of truth about
+    which clients are real. The standalone branch keeps its original select-existing-or-create-by-name
+    behaviour verbatim, rows and all — there is no host to own the client table there.
+    """
+    ClientModel = client_model()
     client_id = _as_id(form.get("client_id"))
     new_client_name = (form.get("new_client_name") or "").strip()
-    if client_id is not None:
-        client = db.get(ClientModel, client_id)
+
+    if host_is_mounted():
+        if client_id is not None:
+            if not can_view_client_id(client_id, current_actor()):
+                abort(404)
+            return client_id, None
+        if new_client_name:
+            return None, (
+                "Clients are managed by the host — pick an existing one. (A client created here would "
+                "land in the host's client table with no membership of yours, and the engagement would "
+                "open for nobody.)"
+            )
+        return None, "A client is required — an engagement with no client can be opened by nobody."
+
+    client = db.get(ClientModel, client_id) if client_id is not None else None
     if client is None and new_client_name:
         client = db.scalar(select(ClientModel).where(ClientModel.name == new_client_name))
         if client is None:
             client = ClientModel(name=new_client_name)
             db.add(client)
             db.flush()
-    engagement.client_id = client.id if client is not None else None
+    return (client.id if client is not None else None), None
+
+
+def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
+    """Shared field-setting for the edit route (port of lotek's ``routes/engagements.py::
+    _apply_engagement_form``). Unlike ``engagement_new`` above -- which never touches ``status`` and
+    leaves it at the model default ("in_progress") -- this ALSO sets ``status``, since edit is the first
+    place a user can change it after creation.
+
+    Client resolution mirrors ``engagement_new``'s select-existing-or-create-by-name convention (rather
+    than lotek's simpler client_id-only parse), so editing behaves the same way creating does -- INCLUDING
+    the tenancy rules in :func:`_resolve_client`, whose refusal message this returns (``None`` = applied).
+    The client is resolved FIRST so a refusal leaves the row untouched rather than half-updated.
+    """
+    client_id, error = _resolve_client(db, form)
+    if error is not None:
+        return error
+
+    engagement.name = (form.get("name") or "").strip()
+    engagement.scope_type = (form.get("scope_type") or "external").strip() or "external"
+    engagement.company_name = (form.get("company_name") or "").strip() or None
+    engagement.status = (form.get("status") or "in_progress").strip() or "in_progress"
+    engagement.start_date = _parse_date(form.get("start_date"))
+    engagement.end_date = _parse_date(form.get("end_date"))
+    engagement.client_id = client_id
+    return None
 
 
 def register(api_bp, bp) -> None:
@@ -198,44 +261,52 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements", endpoint="engagements")
     def engagements():
+        """The engagement list, scoped to the viewer's own clients.
+
+        It listed every engagement in the database, for every client -- the same cross-tenant read the
+        by-id gate closes, minus the need to guess an id. See `scribble.authz.filter_visible_engagements`
+        and `blueprint.dashboard`, which is the same fix on the same data.
+        """
         with open_session() as db:
             rows = db.scalars(select(Engagement).order_by(Engagement.created_at.desc())).all()
+            visible = filter_visible_engagements(rows, current_actor())
             return render_template(
-                "scribble/engagements.html", engagements=rows, client_names=client_names(db, rows)
+                "scribble/engagements.html",
+                engagements=visible,
+                client_names=client_names(db, visible),
             )
 
     @bp.route("/engagements/new", methods=["GET", "POST"], endpoint="engagement_new")
     def engagement_new():
-        ClientModel = client_model()
         with open_session() as db:
             if request.method == "POST":
                 name = (request.form.get("name") or "").strip()
                 if not name:
-                    clients = db.scalars(select(ClientModel).order_by(ClientModel.name)).all()
                     return (
                         render_template(
                             "scribble/engagement_new.html",
-                            clients=clients,
+                            clients=_viewable_clients(db),
                             error="Name is required.",
                         ),
                         400,
                     )
 
-                client = None
-                client_id = _as_id(request.form.get("client_id"))
-                new_client_name = (request.form.get("new_client_name") or "").strip()
-                if client_id is not None:
-                    client = db.get(ClientModel, client_id)
-                if client is None and new_client_name:
-                    client = db.scalar(select(ClientModel).where(ClientModel.name == new_client_name))
-                    if client is None:
-                        client = ClientModel(name=new_client_name)
-                        db.add(client)
-                        db.flush()
+                # Tenancy: the client comes from the form, so no id-shaped gate reaches it -- see
+                # `_resolve_client` for the three rules and why each exists.
+                client_id, error = _resolve_client(db, request.form)
+                if error is not None:
+                    return (
+                        render_template(
+                            "scribble/engagement_new.html",
+                            clients=_viewable_clients(db),
+                            error=error,
+                        ),
+                        400,
+                    )
 
                 engagement = Engagement(
                     name=name,
-                    client_id=(client.id if client is not None else None),
+                    client_id=client_id,
                     scope_type=(request.form.get("scope_type") or "external").strip() or "external",
                     company_name=(request.form.get("company_name") or "").strip() or None,
                     start_date=_parse_date(request.form.get("start_date")),
@@ -247,43 +318,55 @@ def register(api_bp, bp) -> None:
                 db.commit()
                 return redirect(url_for("scribble.engagement_board", engagement_id=engagement.id))
 
-            clients = db.scalars(select(ClientModel).order_by(ClientModel.name)).all()
-            return render_template("scribble/engagement_new.html", clients=clients, error=None)
+            return render_template(
+                "scribble/engagement_new.html", clients=_viewable_clients(db), error=None
+            )
 
     # =============================================================================== UI: edit / delete
 
     @bp.get("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit_page")
     def engagement_edit_page(engagement_id: int):
-        ClientModel = client_model()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
-            clients = db.scalars(select(ClientModel).order_by(ClientModel.name)).all()
             return render_template(
-                "scribble/engagement_edit.html", engagement=engagement, clients=clients, error=None
+                "scribble/engagement_edit.html",
+                engagement=engagement,
+                clients=_viewable_clients(db),
+                error=None,
             )
 
     @bp.post("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit")
     def engagement_edit(engagement_id: int):
-        ClientModel = client_model()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
             if not name:
-                clients = db.scalars(select(ClientModel).order_by(ClientModel.name)).all()
                 return (
                     render_template(
                         "scribble/engagement_edit.html",
                         engagement=engagement,
-                        clients=clients,
+                        clients=_viewable_clients(db),
                         error="Name is required.",
                     ),
                     400,
                 )
-            _apply_engagement_form(engagement, request.form, db)
+            # A refusal here means the form named a client this actor may not move the engagement to
+            # (or none at all, while mounted) -- nothing is committed, so the row is untouched.
+            error = _apply_engagement_form(engagement, request.form, db)
+            if error is not None:
+                return (
+                    render_template(
+                        "scribble/engagement_edit.html",
+                        engagement=engagement,
+                        clients=_viewable_clients(db),
+                        error=error,
+                    ),
+                    400,
+                )
             db.commit()
         return redirect(url_for("scribble.engagements"))
 

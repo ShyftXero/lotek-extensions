@@ -11,17 +11,19 @@
     </label>
 
     <div class="scribble-form-row">
-      <label>Client (existing)
+      <label>Client{% if not scribble_host_mounted %} (existing){% endif %}
         <select name="client_id">
-          <option value="">— none / create below —</option>
+          <option value="">{% if scribble_host_mounted %}— select a client —{% else %}— none / create below —{% endif %}</option>
           {% for c in clients %}
           <option value="{{ c.id }}">{{ c.name }}</option>
           {% endfor %}
         </select>
       </label>
+      {% if not scribble_host_mounted %}
       <label>Or a new client name
         <input type="text" name="new_client_name" placeholder="Acme Corp" />
       </label>
+      {% endif %}
     </div>
 
     <div class="scribble-form-row">
