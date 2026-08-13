@@ -1,7 +1,7 @@
 # Plan: feat/registrar-machine-api
 
 - **Branch:** `feat/registrar-machine-api`  (worktree: `.claude/worktrees/registrar-machine`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/20
 - **Status:** 🟢 ready to merge
 
 ## Purpose
