@@ -17,6 +17,7 @@ import functools
 import os
 import tempfile
 from dataclasses import dataclass, field
+import uuid
 
 import pytest
 from flask import jsonify
@@ -32,7 +33,7 @@ class FakeRole:
 
 
 class FakeUser:
-    def __init__(self, uid: int, username: str, role: str = "operator"):
+    def __init__(self, uid: uuid.UUID, username: str, role: str = "operator"):
         self.id = uid
         self.username = username
         self.role = FakeRole(role)

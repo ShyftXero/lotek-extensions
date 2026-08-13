@@ -11,6 +11,7 @@ examples are read-only (duplicate, don't edit).
 from __future__ import annotations
 
 import json
+import uuid
 
 from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import select
@@ -77,8 +78,8 @@ def list_diagrams():
         )
 
 
-@api_bp.get("/diagrams/<int:diagram_id>")
-def get_diagram(diagram_id: int):
+@api_bp.get("/diagrams/<uuid:diagram_id>")
+def get_diagram(diagram_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         d = load_visible_or_404(db, diagram_id)
@@ -88,7 +89,7 @@ def get_diagram(diagram_id: int):
         )
 
 
-def _create(db, name: str, model, *, source_job_id: str | None = None) -> Diagram:
+def _create(db, name: str, model, *, source_job_id: uuid.UUID | None = None) -> Diagram:
     doc = normalize(model)
     row = Diagram(
         name=name,
@@ -113,8 +114,8 @@ def create_diagram():
         return jsonify(id=row.id, name=row.name), 201
 
 
-@api_bp.put("/diagrams/<int:diagram_id>")
-def update_diagram(diagram_id: int):
+@api_bp.put("/diagrams/<uuid:diagram_id>")
+def update_diagram(diagram_id: uuid.UUID):
     _require_write()
     body = _body()
     cfg = get_config()
@@ -129,8 +130,8 @@ def update_diagram(diagram_id: int):
         return jsonify(id=d.id, name=d.name)
 
 
-@api_bp.delete("/diagrams/<int:diagram_id>")
-def delete_diagram(diagram_id: int):
+@api_bp.delete("/diagrams/<uuid:diagram_id>")
+def delete_diagram(diagram_id: uuid.UUID):
     _require_write()
     cfg = get_config()
     with cfg.session_factory() as db:
@@ -138,11 +139,11 @@ def delete_diagram(diagram_id: int):
         _require_owner(d)
         db.delete(d)
         db.commit()
-        return jsonify(deleted=diagram_id)
+        return jsonify(deleted=str(diagram_id))
 
 
-@api_bp.post("/diagrams/<int:diagram_id>/duplicate")
-def duplicate_diagram(diagram_id: int):
+@api_bp.post("/diagrams/<uuid:diagram_id>/duplicate")
+def duplicate_diagram(diagram_id: uuid.UUID):
     _require_write()
     cfg = get_config()
     with cfg.session_factory() as db:
