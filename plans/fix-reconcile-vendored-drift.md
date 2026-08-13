@@ -1,7 +1,7 @@
 # Plan: fix/reconcile-vendored-drift
 
 - **Branch:** `fix/reconcile-vendored-drift`  (worktree: `.claude/worktrees/reconcile-drift`, off `main`)
-- **PR:** <opened in this step — see PR link>
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/18
 - **Status:** 🟢 ready to merge
 
 ## Purpose
