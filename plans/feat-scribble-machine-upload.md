@@ -1,7 +1,7 @@
 # Plan: feat/scribble-machine-upload
 
 - **Branch:** `feat/scribble-machine-upload`  (worktree: `.claude/worktrees/scribble-upload`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/22
 - **Status:** 🟢 ready to merge
 
 ## Purpose
