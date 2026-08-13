@@ -20,6 +20,12 @@ from flask import jsonify
 
 from scribble.deps import get_config
 
+# Cross-cutting HOST convention (documented in app/api_schemas.py): the host's OpenAPI generator treats a
+# route as a PAT-drivable machine endpoint iff its registered view carries this attribute, and reads the
+# required scope from it. `require_scope` stamps it. Spelled as a literal because an extension must not
+# import a host module.
+SCOPE_ATTR = "__lotek_scope__"
+
 
 def host_hook(name: str) -> Any | None:
     """One injected host capability by name, or None. Never raises (no app ctx / no host -> None)."""
@@ -46,7 +52,8 @@ def authenticate():
 
 
 def require_scope(scope: str):
-    """Per-route decorator: delegate to the host's ``require_pat_scope(scope)`` at REQUEST time."""
+    """Per-route decorator: delegate to the host's ``require_pat_scope(scope)`` at REQUEST time, and stamp
+    the scope on the wrapper for the host's OpenAPI generator."""
 
     def decorator(fn):
         @functools.wraps(fn)
@@ -56,6 +63,7 @@ def require_scope(scope: str):
                 return _no_host()
             return gate(scope)(fn)(*args, **kwargs)
 
+        setattr(wrapper, SCOPE_ATTR, scope)
         return wrapper
 
     return decorator

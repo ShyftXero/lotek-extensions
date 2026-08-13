@@ -42,6 +42,8 @@ functions that need it, so this module still imports cleanly even before that fi
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import uuid
 from typing import Any
@@ -50,9 +52,19 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import select
 
 from scribble import host
+from scribble.api_schemas import (
+    AddFindingRequest,
+    CreateEngagementRequest,
+    UploadArtifactRequest,
+    request_body,
+)
+from scribble.artifacts_api import _as_int, artifact_url
+from scribble.artifacts_storage import guess_content_type, save_bytes
 from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
-from scribble.deps import open_session, severity_enum  # noqa: F401
+from scribble.deps import get_config, open_session, severity_enum  # noqa: F401
+from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.models import (
+    Artifact,
     Engagement,
     EngagementFinding,
     FindingGroup,
@@ -62,6 +74,11 @@ from scribble.models import (
 
 machine_bp = Blueprint("scribble_machine", __name__)
 machine_bp.before_request(host.authenticate)
+
+# Upper bound on a single uploaded evidence artifact (see scribble_upload_artifact) — evidence is
+# screenshots/captures/small docs, so 25 MiB is generous while stopping a write token from exhausting
+# memory/disk with one giant payload.
+_MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
 
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
@@ -143,6 +160,7 @@ def _match_title(pattern: str, title: str) -> bool:
 
 @machine_bp.post("/engagements")
 @host.require_scope("write")
+@request_body(CreateEngagementRequest)
 def scribble_create_engagement():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
@@ -253,6 +271,7 @@ def scribble_get_template(template_id: int):
 
 @machine_bp.post("/engagements/<int:engagement_id>/findings")
 @host.require_scope("write")
+@request_body(AddFindingRequest)
 def scribble_add_finding(engagement_id: int):
     actor = host.actor()
     actor_username = actor.username if actor else None
@@ -502,6 +521,137 @@ def scribble_promote_job(engagement_id: int, job_id: str):
             "parents": result.get("parents", 0),
         }
     )
+
+
+# ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────
+
+
+@machine_bp.post("/engagements/<int:engagement_id>/artifacts")
+@host.require_scope("write")
+@request_body(UploadArtifactRequest)
+def scribble_upload_artifact(engagement_id: int):
+    """Attach an evidence file (screenshot, capture, document) to an engagement — the PAT counterpart of
+    the cookie ``POST <url_prefix>/api/artifacts``, so an agent can supply report evidence.
+
+    Accepts either a ``multipart/form-data`` upload (``file`` field) or a JSON body with base64 content
+    (``content_base64``/``data_base64``/``data``). The engagement is taken from the URL (not the body),
+    and TENANCY is the same predicate the rest of this module uses — ``can_view_engagement(engagement,
+    host.actor())`` — checked BEFORE a single byte is written; missing and not-visible are the same 404
+    (no existence oracle). ``idempotency_key`` (body or ``Idempotency-Key`` header) makes a retry return
+    the original artifact (200) rather than a duplicate.
+    """
+    actor = host.actor()
+
+    upload = request.files.get("file")
+    if upload is not None:
+        caption = request.form.get("caption")
+        kind_raw = request.form.get("kind")
+        placement_raw = request.form.get("placement")
+        idempotency_key = request.form.get("idempotency_key")
+        fid = _as_int(request.form.get("finding_id"))
+        filename = upload.filename or "artifact"
+        data = upload.read(_MAX_ARTIFACT_BYTES + 1)  # bound the read; the len() check below rejects >max
+    elif request.is_json:
+        payload = request.get_json(silent=True) or {}
+        caption = payload.get("caption")
+        kind_raw = payload.get("kind")
+        placement_raw = payload.get("placement")
+        idempotency_key = payload.get("idempotency_key")
+        fid = _as_int(payload.get("finding_id"))
+        filename = payload.get("filename") or "artifact"
+        content_b64 = payload.get("content_base64") or payload.get("data_base64") or payload.get("data")
+        if not content_b64:
+            return jsonify({"error": "bad_request", "detail": "content_base64 is required"}), 400
+        if not isinstance(content_b64, str):
+            return jsonify({"error": "bad_request", "detail": "content_base64 must be a base64 string"}), 400
+        # Preflight size cap: avoid decoding a huge base64 blob into memory only to reject it later.
+        max_b64_len = ((_MAX_ARTIFACT_BYTES + 2) // 3) * 4 + 4  # allow padding/newlines
+        if len(content_b64) > max_b64_len:
+            return jsonify({
+                "error": "payload_too_large",
+                "detail": f"artifact exceeds the {_MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB limit",
+            }), 413
+        try:
+            data = base64.b64decode(content_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return jsonify({"error": "bad_request", "detail": "invalid base64 content"}), 400
+    else:
+        return jsonify({"error": "bad_request", "detail": "expected a multipart file or a JSON body"}), 400
+
+    if not data:
+        return jsonify({"error": "bad_request", "detail": "empty upload"}), 400
+    # Bound the artifact so one authenticated write token can't exhaust memory/disk with a giant blob.
+    # Evidence is screenshots/captures/small docs; 25 MiB is generous. Checked after decode (the base64
+    # string is ~1.33x, so an oversized payload is caught here rather than buffered to disk).
+    if len(data) > _MAX_ARTIFACT_BYTES:
+        return jsonify({
+            "error": "payload_too_large",
+            "detail": f"artifact exceeds the {_MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB limit",
+        }), 413
+
+    # Tenancy: read the target BEFORE writing anything. The engagement arrives in the URL, but the
+    # blueprint has no id-shaped gate for it, so check the SAME predicate scribble's other machine routes
+    # use, against the PAT actor. Missing and not-visible return an identical 404 (no existence oracle).
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+
+    idempotency_key = (idempotency_key or request.headers.get("Idempotency-Key") or None)
+    if idempotency_key:
+        with open_session() as db:
+            existing = (
+                db.query(Artifact)
+                .filter(Artifact.engagement_id == engagement_id, Artifact.idempotency_key == idempotency_key)
+                .first()
+            )
+            if existing is not None:
+                return jsonify({
+                    "id": existing.id, "url": artifact_url(existing.id),
+                    "kind": existing.kind.value, "filename": existing.filename,
+                }), 200
+
+    content_type = guess_content_type(filename, data)
+    if kind_raw:
+        try:
+            kind = ArtifactKind(kind_raw)
+        except ValueError:
+            return jsonify({"error": "bad_request", "detail": f"invalid kind {kind_raw!r}"}), 400
+    else:
+        kind = ArtifactKind.screenshot if content_type.startswith("image/") else (
+            ArtifactKind.text if content_type.startswith("text/") else ArtifactKind.file
+        )
+    if placement_raw:
+        try:
+            placement = ArtifactPlacement(placement_raw)
+        except ValueError:
+            return jsonify({"error": "bad_request", "detail": f"invalid placement {placement_raw!r}"}), 400
+    else:
+        placement = ArtifactPlacement.attached
+
+    storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)
+    with open_session() as db:
+        artifact = Artifact(
+            engagement_id=engagement_id,
+            finding_id=fid,
+            kind=kind,
+            placement=placement,
+            filename=filename,
+            content_type=content_type,
+            storage_path=storage_path,
+            byte_size=byte_size,
+            sha256=sha256,
+            caption=caption,
+            include_in_report=True,
+            created_by=actor.username if actor else None,
+            idempotency_key=idempotency_key,
+        )
+        db.add(artifact)
+        db.commit()
+        return jsonify({
+            "id": artifact.id, "url": artifact_url(artifact.id),
+            "kind": artifact.kind.value, "filename": artifact.filename,
+        }), 201
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────
