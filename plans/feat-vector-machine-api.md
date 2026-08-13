@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/vector-machine-api`  (worktree: `.claude/worktrees/vector-machine`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 Give Vector a PAT/Bearer **machine API** at `/vector/machine` so host tools (an agent on a personal access
@@ -12,24 +12,41 @@ every extension PAT-drivable; retire MCP`), which edited only lotek's *vendored*
 closes that drift so vector's own repo owns its machine API.
 
 ## Done
-- [ ] `plans/` entry committed first
+- [x] `plans/` entry committed first
+- [x] `vector/vector/host.py` — PAT capability accessors over `cfg.extras`, fail-closed 503, stamps
+      `__lotek_scope__` (verbatim)
+- [x] `vector/vector/api_schemas.py` — typed pydantic request bodies + `request_body` (verbatim)
+- [x] `vector/vector/api_pat.py` — `machine_bp` + diagram CRUD + HTML export, **adapted** to `int` ids
+- [x] `vector/vector/__init__.py` — import + register `machine_bp` at `<url_prefix>/machine`
+- [x] `vector/lotek-extension.toml` — `[host] machine_prefix = "/machine"`
+- [x] `vector/pyproject.toml` + `uv.lock` — `pydantic>=2`
+- [x] `vector/tests/conftest.py` — `StubActor`, the three PAT hooks on an `app.pat` holder (matching the
+      existing `app.holder` pattern), and a `pat_client` that blanks the session
+- [x] `vector/tests/test_machine_api.py` — 23 tests
+- [x] `uvx ruff check vector` clean + `cd vector && uv run python -m pytest` → **57 passed**
+      (23 new, existing 34 unaffected)
+- [x] Red/green proof: removing the DELETE route's `@host.require_scope` fails BOTH
+      `test_every_machine_route_is_scope_gated`
+      (`['/vector/machine/diagrams/<int:diagram_id>']`) and
+      `test_write_routes_each_reject_a_read_only_token`, then restored
 
 ## Remaining
-- [ ] `vector/vector/host.py` — PAT capability accessors over `cfg.extras`, fail-closed 503, stamps
-      `__lotek_scope__` (verbatim)
-- [ ] `vector/vector/api_schemas.py` — typed pydantic request bodies + `request_body` (verbatim)
-- [ ] `vector/vector/api_pat.py` — `machine_bp` + diagram CRUD + HTML export, **adapted** (see below)
-- [ ] `vector/vector/__init__.py` — import + register `machine_bp` at `<url_prefix>/machine`
-- [ ] `vector/lotek-extension.toml` — `[host] machine_prefix = "/machine"`
-- [ ] `vector/pyproject.toml` — `pydantic>=2`
-- [ ] `vector/tests/conftest.py` — add the PAT hooks + a `pat_client`
-- [ ] `vector/tests/test_machine_api.py` — scope gate, owner-scoped tenancy, builtin read-only, export
-- [ ] `uvx ruff check vector` clean + `cd vector && uv run python -m pytest` green
+- [ ] nothing blocking on this branch
+- [ ] **separate follow-up PR:** migrate vector to UUIDv7 PKs, then relax `_actor_owner_id()` to accept
+      `uuid.UUID` (see below)
 
 ## Notes / gotchas
 
-### The vendored copy is AHEAD of this repo, on an unrelated migration
-lotek's vendored vector has already been migrated to **UUIDv7 primary keys** (`Diagram.id`, `owner_id`,
+### Where the source came from (it moved mid-branch)
+This port was started against lotek's PR-#288 worktree, which was **deleted while this branch was in
+progress** — #288 merged at 2026-08-13T19:20Z and its worktree/branch were cleaned up. The files were then
+taken from lotek's **merged `origin/main`** (`extensions/vector/vector/…`), which is the better source
+anyway: it is post-merge and conflict-resolved. Re-verified at that point that the cream and registrar
+files already committed on their branches still matched merged main — `host.py` and `registrar/api_pat.py`
+byte-identical, and every other difference one of this port's own documented, deliberate changes.
+
+### The upstream copy is AHEAD of this repo, on an unrelated migration
+lotek's snapshot of vector has already been migrated to **UUIDv7 primary keys** (`Diagram.id`, `owner_id`,
 `client_id`, `source_job_id` are all `Uuid`), and its `deps.current_actor_id()` guards on `uuid.UUID`.
 **This repo's vector is still `Integer`-keyed.** So the vendored `api_pat.py` cannot be copied: its routes
 are `<uuid:diagram_id>` and would never bind to an Integer-PK model.
