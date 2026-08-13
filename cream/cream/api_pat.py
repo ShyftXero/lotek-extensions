@@ -164,8 +164,8 @@ def add_item(doc_id: uuid.UUID):
                 unit_price=body.get("unit_price", 0),
                 source=str(body.get("source") or "manual")[:128],
             )
-        except DocumentFrozen as e:
-            return jsonify({"error": "conflict", "detail": str(e)}), 409
+        except DocumentFrozen as _e:
+            return jsonify({"error": "conflict", "detail": "Document can no longer be modified."}), 409
         db.commit()
         return jsonify(_line_json(li)), 201
 
@@ -186,8 +186,8 @@ def sync_document(doc_id: uuid.UUID):
             return _forbidden()
         try:
             sugg = suggest_line_items(db, doc, present)
-        except DocumentFrozen as e:
-            return jsonify({"error": "conflict", "detail": str(e)}), 409
+        except DocumentFrozen as _e:
+            return jsonify({"error": "conflict", "detail": "Document can no longer be modified."}), 409
         return jsonify(suggestions=[
             {"unit_key": s.unit_key, "label": s.label, "unit_price": as_json(s.unit_price), "unit": s.unit}
             for s in sugg
