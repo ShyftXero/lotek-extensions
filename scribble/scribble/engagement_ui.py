@@ -66,7 +66,7 @@ from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
 from scribble.artifacts_storage import delete_file
-from scribble.authz import can_view_client_id, filter_visible_engagements, host_is_mounted
+from scribble.authz import can_view_client_id, host_is_mounted, visible_engagements
 from scribble.content import schema
 from scribble.deps import (
     client_model,
@@ -264,12 +264,13 @@ def register(api_bp, bp) -> None:
         """The engagement list, scoped to the viewer's own clients.
 
         It listed every engagement in the database, for every client -- the same cross-tenant read the
-        by-id gate closes, minus the need to guess an id. See `scribble.authz.filter_visible_engagements`
+        by-id gate closes, minus the need to guess an id. See `scribble.authz.visible_engagements`
         and `blueprint.dashboard`, which is the same fix on the same data.
         """
         with open_session() as db:
-            rows = db.scalars(select(Engagement).order_by(Engagement.created_at.desc())).all()
-            visible = filter_visible_engagements(rows, current_actor())
+            visible = visible_engagements(
+                db, select(Engagement).order_by(Engagement.created_at.desc()), current_actor()
+            )
             return render_template(
                 "scribble/engagements.html",
                 engagements=visible,

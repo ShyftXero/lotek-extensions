@@ -13,7 +13,7 @@ from flask import Blueprint, render_template
 from sqlalchemy import func, select
 
 from scribble._version import __version__
-from scribble.authz import filter_visible_engagements, host_is_mounted
+from scribble.authz import host_is_mounted, visible_engagements
 from scribble.deps import (
     client_names,
     current_actor,
@@ -51,7 +51,8 @@ def dashboard():
     It used to list the 10 most recent engagements across EVERY client, over global `SELECT count(*)`
     stat tiles (engagements/findings/clients). That is the same cross-tenant read the by-id gate closes,
     in its cheapest form: no id to guess, the names and client names of other tenants' engagements simply
-    rendered. `scribble.authz.filter_visible_engagements` scopes the list; the counts are then DERIVED
+    rendered. `scribble.authz.visible_engagements` scopes the list — in SQL when the host provides
+    `visible_client_ids`, otherwise through the per-client predicate — and the counts are then DERIVED
     from that same visible set rather than re-queried globally, so the tiles can't drift back out of
     scope independently of the list under them.
 
@@ -59,8 +60,9 @@ def dashboard():
     same reason its routes carry no engagement axis at all — see `library_ui.py`).
     """
     with open_session() as db:
-        rows = db.scalars(select(Engagement).order_by(Engagement.created_at.desc())).all()
-        visible = filter_visible_engagements(rows, current_actor())
+        visible = visible_engagements(
+            db, select(Engagement).order_by(Engagement.created_at.desc()), current_actor()
+        )
         visible_ids = [e.id for e in visible]
         findings = 0
         if visible_ids:
