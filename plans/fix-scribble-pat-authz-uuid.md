@@ -1,7 +1,7 @@
 # Plan: fix/scribble-pat-authz-uuid
 
 - **Branch:** `fix/scribble-pat-authz-uuid`  (worktree: `.claude/worktrees/pat-authz-uuid`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/13
 - **Status:** 🟢 ready to merge
 
 ## Purpose
