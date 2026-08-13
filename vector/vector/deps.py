@@ -8,6 +8,8 @@ role gate is the real write enforcement — the ``can_write`` hook here only dri
 
 from __future__ import annotations
 
+import logging
+import uuid
 from contextlib import contextmanager
 
 from flask import current_app
@@ -54,11 +56,28 @@ def current_actor_username() -> str | None:
     return getattr(actor, "username", None) if actor is not None else None
 
 
-def current_actor_id() -> int | None:
-    """The logged-in host user's id (``owner_id`` scope + attribution), or None. Standalone -> None."""
+def current_actor_id() -> uuid.UUID | None:
+    """The logged-in host user's id (``owner_id`` scope + attribution), or None. Standalone -> None.
+
+    lotek's core keys ``User`` on UUIDv7 (v2), so the host actor's ``id`` is a ``uuid.UUID``. Guarding on
+    ``uuid.UUID`` — not the old ``int`` — is load-bearing: an ``isinstance(ident, int)`` guard silently
+    returned None for every mounted diagram (unattributed owner + a ``owner_id == None`` visibility
+    filter), the exact silent-degradation the v2 model exists to avoid.
+    """
     actor = _actor()
     ident = getattr(actor, "id", None)
-    return ident if isinstance(ident, int) else None
+    if isinstance(ident, uuid.UUID):
+        return ident
+    if ident is not None:
+        # Degrade LOUDLY, never silently: a non-UUID host id is the same silent-degradation shape the
+        # UUID guard replaced (the old int guard returned None for a uuid.UUID host id -> owner-loss).
+        # Returning None here is the UNSAFE value in mounted mode (null-owner rows read as universally
+        # visible), so surface it rather than swallow it.
+        logging.getLogger("vector").warning(
+            "current_actor_id: host actor id is %s, not a uuid.UUID; owner scope will be None",
+            type(ident).__name__,
+        )
+    return None
 
 
 def current_actor_is_admin() -> bool:
