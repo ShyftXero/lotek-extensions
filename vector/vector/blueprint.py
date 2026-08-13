@@ -11,6 +11,7 @@ host's role gate is the write authority; ``vector_can_write`` only drives UI aff
 from __future__ import annotations
 
 import json
+import uuid
 
 from flask import Blueprint, abort, redirect, render_template, url_for
 from markupsafe import Markup
@@ -49,7 +50,7 @@ def visible_diagrams_stmt():
     return select(Diagram).where(or_(Diagram.owner_id == uid, Diagram.builtin.is_(True)))
 
 
-def load_visible_or_404(db, diagram_id: int) -> Diagram:
+def load_visible_or_404(db, diagram_id: uuid.UUID) -> Diagram:
     row = db.get(Diagram, diagram_id)
     if row is None:
         abort(404)
@@ -98,8 +99,8 @@ def new_diagram():
     )
 
 
-@bp.get("/edit/<int:diagram_id>")
-def edit_diagram(diagram_id: int):
+@bp.get("/edit/<uuid:diagram_id>")
+def edit_diagram(diagram_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         d = load_visible_or_404(db, diagram_id)
@@ -113,8 +114,8 @@ def edit_diagram(diagram_id: int):
     )
 
 
-@bp.get("/diagrams/<int:diagram_id>/export.json")
-def api_export_json(diagram_id: int):
+@bp.get("/diagrams/<uuid:diagram_id>/export.json")
+def api_export_json(diagram_id: uuid.UUID):
     from flask import Response
 
     cfg = get_config()
@@ -129,8 +130,8 @@ def api_export_json(diagram_id: int):
     )
 
 
-@bp.get("/diagrams/<int:diagram_id>/export.html")
-def api_export_html(diagram_id: int):
+@bp.get("/diagrams/<uuid:diagram_id>/export.html")
+def api_export_html(diagram_id: uuid.UUID):
     from flask import Response
 
     from vector.render import render_deliverable

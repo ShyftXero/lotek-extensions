@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import uuid
+
 from conftest import FakeUser, login
 
 from vector.schema import blank_model
 
-OP_A = FakeUser(1, "alice", "operator")
-OP_B = FakeUser(2, "bob", "operator")
-VIEWER = FakeUser(3, "val", "viewer")
-ADMIN = FakeUser(9, "admin", "admin")
+# v2 host actors are keyed on UUIDv7 (see vector.deps.current_actor_id) — the fake actors must be
+# uuid.UUID-typed or owner scoping silently collapses to None, exactly what the deps guard now refuses.
+OP_A = FakeUser(uuid.UUID(int=1), "alice", "operator")
+OP_B = FakeUser(uuid.UUID(int=2), "bob", "operator")
+VIEWER = FakeUser(uuid.UUID(int=3), "val", "viewer")
+ADMIN = FakeUser(uuid.UUID(int=9), "admin", "admin")
 
 
 def _create(client, name="D", model=None):

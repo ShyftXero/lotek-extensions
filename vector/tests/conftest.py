@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 
 import pytest
 
@@ -24,7 +25,7 @@ class FakeRole:
 
 
 class FakeUser:
-    def __init__(self, uid: int, username: str, role: str = "operator"):
+    def __init__(self, uid: uuid.UUID, username: str, role: str = "operator"):
         self.id = uid
         self.username = username
         self.role = FakeRole(role)
