@@ -25,6 +25,17 @@ label = "Vector"
 path = "/"
 icon = "◭"
 
+# How this extension plugs into generic HOST surfaces. A NEW top-level table on purpose: the staging
+# script already emits its own [extension] table before appending this file, and TOML forbids a
+# duplicate table — an [extension] header here would make tomllib raise and silently un-discover the
+# whole extension.
+[host]
+# Path (relative to url_prefix) of this extension's PAT/Bearer MACHINE api. The host treats it as a
+# machine surface: skipped by the cookie/session dashboard gate and CSRF-exempt, exactly like
+# lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
+# cookie-authed browser JSON api at <url_prefix>/api.
+machine_prefix = "/machine"
+
 # Tables this extension OWNS (see the equivalent block in Scribble): the host may carry them through a
 # database migration, attribute them for drop/truncate, and never touch a table nobody claims.
 [db]
