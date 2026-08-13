@@ -22,12 +22,26 @@ dev = [
 # `null` backends so the gate/audit machinery runs with no egress or credentials.
 providers = ["apache-libcloud>=3.8", "twilio>=9.0"]
 
+# Discovery signal: lotek enumerates installed extensions via this entry-point group
+# (importlib.metadata.entry_points(group="lotek.extensions")). The value is the entrypoint MODULE that
+# exposes register(...); ep.name is the slug and ep.load() imports that module.
+[project.entry-points."lotek.extensions"]
+registrar = "registrar"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["registrar"]
+
+# Ship lotek-extension.toml INSIDE the wheel's package dir so the host can read the mount/nav/host/db
+# manifest from the installed package via
+# importlib.resources.files("registrar").joinpath("lotek-extension.toml"). The manifest lives at the
+# project root (where lotek's vendoring consumes it verbatim); force-include copies it under the
+# package dir in the built wheel without moving or duplicating the source file in the repo.
+[tool.hatch.build.targets.wheel.force-include]
+"lotek-extension.toml" = "registrar/lotek-extension.toml"
 
 [tool.uv]
 package = true
