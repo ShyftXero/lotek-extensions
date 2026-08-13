@@ -19,6 +19,9 @@ dependencies = [
     # factory, so a build without these would ImportError at startup despite an "optional" label.
     "pycrdt>=0.9.0",
     "flask-sock>=0.7.0",
+    # scribble.api_schemas declares the machine API's request bodies as pydantic models; the host's
+    # OpenAPI generator hoists them into components.schemas so the spec documents real types.
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]

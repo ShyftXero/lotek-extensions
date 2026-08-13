@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/scribble-machine-upload`  (worktree: `.claude/worktrees/scribble-upload`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 Scribble already has a machine API; this **extends** it with the piece "an agent writes the pentest report"
@@ -15,19 +15,28 @@ PAT-drivable; retire MCP`), which edited only lotek's vendored copy — this clo
 own repo owns it.
 
 ## Done
-- [ ] `plans/` entry committed first
+- [x] `plans/` entry committed first
+- [x] `scribble/scribble/host.py` — `SCOPE_ATTR = "__lotek_scope__"` + stamped in `require_scope`
+      (without this, NONE of scribble's existing machine routes enter the generated spec)
+- [x] `scribble/scribble/api_schemas.py` — NEW: `request_body` + `CreateEngagementRequest`,
+      `AddFindingRequest`, `UploadArtifactRequest`
+- [x] `scribble/scribble/api_pat.py` — `@request_body(...)` stamps + the evidence-upload route
+      `POST /engagements/<id>/artifacts`
+- [x] The #288 review comment: verified the merged source already carries the preflight, and added the
+      **test** that pins it (see below)
+- [x] `scribble/pyproject.toml` + `uv.lock` — `pydantic>=2`
+- [x] `scribble/tests/test_machine_artifacts.py` — 22 tests
+- [x] `uvx ruff check scribble` clean
+- [x] `cd scribble && uv run python -m pytest` → **550 passed, 10 failed** — all 10 in `tests/test_skill.py`
+      and **pre-existing on `main`**: they require `scribble/skill/scribble-report-refine/`, which is not
+      tracked in git at all (`git ls-tree origin/main -- scribble/skill` is empty), i.e. a machine-local
+      directory. This branch touches nothing they read. `tests/test_machine_artifacts.py` → 22 passed.
 
 ## Remaining
-- [ ] `scribble/scribble/host.py` — add `SCOPE_ATTR = "__lotek_scope__"` and stamp it in `require_scope`
-      (without this, NONE of scribble's existing machine routes enter the generated spec)
-- [ ] `scribble/scribble/api_schemas.py` — NEW: `request_body` + `CreateEngagementRequest`,
-      `AddFindingRequest`, `UploadArtifactRequest`
-- [ ] `scribble/scribble/api_pat.py` — `@request_body(...)` stamps + the new evidence-upload route
-      `POST /engagements/<id>/artifacts`
-- [ ] **Address the open review comment from #288** (see below)
-- [ ] `scribble/pyproject.toml` — `pydantic>=2`
-- [ ] `scribble/tests/test_machine_artifacts.py` — upload tests
-- [ ] `uvx ruff check scribble` clean + `cd scribble && uv run python -m pytest` green
+- [ ] nothing blocking
+- [ ] (unrelated, pre-existing) `tests/test_skill.py` depends on an untracked `scribble/skill/` directory,
+      so it cannot pass from a clean clone. Worth either committing the skill or marking those tests
+      skip-if-absent — a separate change.
 
 ## Notes / gotchas
 
@@ -41,10 +50,15 @@ nit) and are out of scope here. The fourth lands squarely on the code being port
 > fully buffered/decoded in memory before returning 413. Add a preflight length check on the base64 string
 > to reject oversized payloads before decoding.
 
-**Fixed here**, not carried over: the b64 string length is checked BEFORE `b64decode`. Base64 encodes 3
-bytes as 4 chars, so any string longer than `4 * ceil(max/3)` cannot decode to something within the cap —
-rejecting on that bound is exact (no false 413 for a legal payload) and avoids materializing the decode.
-The post-decode check stays as the authoritative one.
+**Already fixed upstream before #288 merged** — the merged `api_pat.py` carries the preflight (plus an
+`isinstance(content_b64, str)` guard), so this branch inherits the fix rather than authoring it. What this
+branch adds is the **test** for it, which #288's own suite covered only at the post-decode cap.
+
+Checked the bound is exact rather than approximate: `max_b64_len = ((MAX + 2) // 3) * 4 + 4`, and a legal
+25 MiB payload encodes to `ceil(MAX/3) * 4` = 34,952,536 chars against a bound of 34,952,540 — so no legal
+upload is falsely rejected. The `# allow padding/newlines` comment slightly oversells it (a newline-bearing
+payload is rejected by `b64decode(validate=True)` anyway), but the behaviour is right: nothing that would
+have decoded within the cap gets a 413. The post-decode check remains the authoritative one.
 
 ### Provenance
 Source is lotek's **merged `origin/main`** (`extensions/scribble/scribble/…`). #288 merged at
@@ -55,6 +69,12 @@ Verified before copying that upstream's `api_pat.py` is a strict superset of thi
 this repo has that upstream lacks is the `from scribble.deps import …` line, which upstream merely extends
 with `get_config`. This repo's tenancy work (#11/#12/#13/#17) did not touch `api_pat.py` — #17 changed
 `authz.py`/`blueprint.py`/`engagement_ui.py` — so a wholesale copy loses nothing.
+
+### How the preflight test proves ORDERING, not just a status code
+A test that simply posts something oversized would pass with or without the preflight (both paths end in
+413/400 somewhere). So the test sends a payload that is **both oversized and invalid base64**: with the
+preflight it is 413, and decode-first would be 400 (`invalid base64 content`). Verified by deleting the
+preflight block, watching the test fail with exactly that 400, and restoring it.
 
 ### Security shape of the upload route (what the tests must pin)
 - **Tenancy before any write**: `can_view_engagement(engagement, host.actor())` on the engagement from the
