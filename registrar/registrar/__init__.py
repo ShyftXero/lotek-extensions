@@ -37,6 +37,7 @@ def register(
     # Import blueprints here (once per process, before register_blueprint) to satisfy Flask's
     # "no routes after first request" rule for every app this process builds.
     from registrar.api import api_bp
+    from registrar.api_pat import machine_bp
     from registrar.blueprint import bp
 
     inst = Path(instance_path) if instance_path else Path(app.instance_path)
@@ -58,4 +59,8 @@ def register(
 
     app.register_blueprint(bp, url_prefix=url_prefix)
     app.register_blueprint(api_bp, url_prefix=f"{url_prefix}/api")
+    # PAT/Bearer machine API — SEPARATE blueprint, prefix DISJOINT from the cookie-authed /api. The host
+    # exempts this prefix from CSRF + its session gate (manifest [host] machine_prefix). Confirm-tier
+    # execution (/approve) is deliberately NOT exposed here (INV-EXT-02: a PAT stages, a human approves).
+    app.register_blueprint(machine_bp, url_prefix=f"{url_prefix}/machine")
     return cfg
