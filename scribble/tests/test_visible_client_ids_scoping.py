@@ -93,6 +93,35 @@ def test_empty_set_scopes_everything_away(app, stub_host, session_factory):
     assert rows == []
 
 
+def test_sql_path_works_with_uuid_client_ids(app, stub_host, session_factory):
+    """The shape PRODUCTION actually uses. Every other test here uses int client ids (standalone
+    Scribble's own table), but a mounted v2 host's client PKs are UUIDv7, and `Engagement.client_id` is
+    `SoftHostId` — TEXT-backed, with `process_bind_param` stringifying on the way in.
+
+    That makes `.in_({uuid, …})` depend on the type's bind processor being applied to each element of the
+    expanding IN. If it were not, the query would return NOTHING — no error, just an empty list, which a
+    scoping helper renders as "you may see no engagements". A silently empty result is exactly the
+    failure this asserts against, and it is why the assertion is on the ROW, not on "it didn't raise".
+    """
+    import uuid as _uuid
+
+    held = _uuid.UUID("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
+    not_held = _uuid.UUID("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a99")
+    with session_factory() as db:
+        db.add(fm.Engagement(name="UUID ours", client_id=held))
+        db.add(fm.Engagement(name="UUID theirs", client_id=not_held))
+        db.commit()
+
+    stub_host.current_user = StubUser(id=63, username="uuid-member", role=_StubRole("operator"))
+    _wire_set_hook(app, {held})
+
+    with app.test_request_context(), session_factory() as db:
+        rows = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+    assert [e.name for e in rows] == ["UUID ours"], (
+        "a UUID client id did not survive the IN bind — the SQL path would silently show nothing"
+    )
+
+
 def test_both_paths_agree(app, stub_host, session_factory):
     """SQL path and predicate fallback must produce the same list for the same actor."""
     _clients_and_engagements(session_factory)
