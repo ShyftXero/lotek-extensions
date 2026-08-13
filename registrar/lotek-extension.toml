@@ -1,3 +1,16 @@
+# How this extension MOUNTS into a host (lotek). These are the values lotek's
+# scripts/stage-extension.sh currently GENERATES into its own [extension] table (passed as CLI args at
+# vendor time). Carried here so an INSTALLED package (pinned git dep) is self-describing: the host can
+# read its mount metadata straight from the shipped manifest instead of the operator re-supplying
+# entrypoint/url_prefix. Named [mount], NOT [extension], on purpose — the staging script still emits
+# its own [extension] table before appending this file, and TOML forbids a duplicate table, so an
+# [extension] header here would make tomllib raise and silently un-discover the whole extension.
+# Registrar has NO seed step, so the `seed` key is omitted (matching the generated manifest).
+[mount]
+name = "registrar"
+entrypoint = "registrar"          # importable module exposing register(...)
+url_prefix = "/registrar"
+
 # What Registrar exposes to a host (lotek). Appended verbatim to the generated extension.toml.
 [[nav]]
 label = "Registrar"

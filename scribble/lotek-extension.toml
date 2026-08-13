@@ -1,3 +1,16 @@
+# How this extension MOUNTS into a host (lotek). These are the values lotek's
+# scripts/stage-extension.sh currently GENERATES into its own [extension] table (passed as CLI args at
+# vendor time). Carried here so an INSTALLED package (pinned git dep) is self-describing: the host can
+# read its mount metadata straight from the shipped manifest instead of the operator re-supplying
+# entrypoint/url_prefix/seed. Named [mount], NOT [extension], on purpose — the staging script still
+# emits its own [extension] table before appending this file, and TOML forbids a duplicate table, so
+# an [extension] header here would make tomllib raise and silently un-discover the whole extension.
+[mount]
+name = "scribble"
+entrypoint = "scribble"          # importable module exposing register(...)
+url_prefix = "/scribble"
+seed = "scribble.seed:seed_defaults"   # module:callable run once after register() (idempotent)
+
 # What Scribble exposes to a host (e.g. lotek) beyond the basics. Consumed at vendor time by the host's
 # scripts/stage-extension.sh and appended to the generated extensions/scribble/extension.toml, so the
 # host renders exactly the sidebar entries the extension declares here. `path` is relative to the
