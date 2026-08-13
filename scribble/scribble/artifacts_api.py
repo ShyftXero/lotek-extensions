@@ -44,8 +44,8 @@ import binascii
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import delete_file, guess_content_type, resolve_path, save_bytes
-from scribble.authz import authorize_engagement_view
-from scribble.deps import current_actor_username, get_config, open_session
+from scribble.authz import can_view_engagement
+from scribble.deps import current_actor, current_actor_username, get_config, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.models import Artifact, Engagement
 
@@ -155,11 +155,16 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         # cannot reach it. Without this, any authenticated actor could attach evidence to another
         # client's engagement just by naming its id in the upload. Checked before ``save_bytes`` writes
         # a single byte to disk.
+        #
+        # Byte-identical refusal for "no such engagement" and "exists but not visible to this actor":
+        # the aborting ``authorize_engagement_view`` would answer the second case with Flask's default
+        # HTML 404 page, distinguishable from this route's own JSON 404 above -- a minor existence
+        # oracle (adversarial review on #256). ``can_view_engagement`` is the same predicate, called
+        # explicitly so both cases return this route's own JSON shape.
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
-            if engagement is None:
+            if engagement is None or not can_view_engagement(engagement, current_actor()):
                 return jsonify(error="engagement not found"), 404
-            authorize_engagement_view(engagement)
 
         # Idempotency guard (PLAN.md §19 offline upload-outbox): fall back to the request header when no
         # form/JSON field was given. Checked BEFORE save_bytes() writes anything to disk, so a retried

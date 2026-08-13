@@ -13,13 +13,19 @@ actually apply everywhere):
 
    The predicate is exposed in BOTH forms on purpose. ``authorize_engagement_view`` (aborting, implicit
    ``current_actor()``) fits a cookie-authed view that wants to stop right there; the plain predicates
-   fit the two callers it cannot serve:
+   fit the callers it cannot serve:
      * ``api_pat.py``'s machine routes, whose principal is the PAT actor (``extras['pat_actor']``), not
        the browser-session user — a machine request has no session, so an implicit ``current_actor()``
        would resolve to None and 404 every machine route. The host's ``can_view_client`` is duck-typed
        on ``.id`` precisely so it can take either principal shape.
      * list routes, which must FILTER rather than abort: aborting on the first foreign row would turn a
        dashboard into a 404 for anyone whose database contains another tenant's engagement.
+     * the two body-scoped routes below (``create_artifact``/``templating_preview``): they call
+       :func:`can_view_engagement` explicitly rather than the aborting wrapper so a foreign-but-real
+       engagement id gets the SAME response as a nonexistent one — their OWN JSON 404, not Flask's
+       default HTML error page, which the aborting wrapper would produce and which was a minor
+       existence oracle (distinguishable body/content-type for the same status code; adversarial
+       review on #256).
 
 2. :func:`register_gate` — a fail-closed ``before_request`` hook attached to ``bp`` AND ``api_bp``, and
    deliberately NOT to ``machine_bp``: the gate resolves the actor via ``current_actor()``, which is None
@@ -48,7 +54,8 @@ posture :func:`authorize_engagement_view` already carries, extended to "the id d
 Two known, deliberate gaps this gate does NOT close (view-arg resolution structurally can't reach them;
 see the two routes' own inline fixes instead):
   * ``artifacts_api.create_artifact`` (``POST /artifacts``) takes its target ``engagement_id`` from the
-    request BODY, not the URL -- it calls :func:`authorize_engagement_view` directly instead.
+    request BODY, not the URL -- it calls :func:`can_view_engagement` directly instead (not the aborting
+    wrapper -- see above for why).
   * ``templating_api.templating_preview`` (``POST /preview``) is the same shape (body-supplied
     ``engagement_id``) -- same direct-call fix.
 """

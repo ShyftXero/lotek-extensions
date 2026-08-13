@@ -31,9 +31,9 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from scribble.authz import authorize_engagement_view
+from scribble.authz import can_view_engagement
 from scribble.content.render_html import render_block
-from scribble.deps import open_session
+from scribble.deps import current_actor, open_session
 from scribble.models import Engagement, EngagementFinding
 from scribble.templating import (
     build_full_context,
@@ -81,13 +81,18 @@ def register(api_bp, bp) -> None:
 
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
-            if engagement is None:
-                return jsonify(error=f"engagement {engagement_id} not found"), 404
             # Tenancy: ``engagement_id`` is a body field, not a URL view arg, so the blueprint-wide
             # before_request gate (scribble/authz.py) can't reach this route -- it resolves purely off
             # view args. Without this, any authenticated actor could render (and read back) another
             # client's finding content/variables just by naming its engagement id in the preview body.
-            authorize_engagement_view(engagement)
+            #
+            # Byte-identical refusal for "no such engagement" and "exists but not visible to this
+            # actor": the aborting ``authorize_engagement_view`` would answer the second case with
+            # Flask's default HTML 404 page, distinguishable from this route's own JSON 404 -- a minor
+            # existence oracle (adversarial review on #256). ``can_view_engagement`` is the same
+            # predicate, called explicitly so both cases return this route's own JSON shape.
+            if engagement is None or not can_view_engagement(engagement, current_actor()):
+                return jsonify(error=f"engagement {engagement_id} not found"), 404
 
             finding = None
             finding_id = payload.get("finding_id")

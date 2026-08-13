@@ -27,7 +27,7 @@ Three things below make that gap hard to reopen:
 Plus explicit per-class ALLOW/DENY tests for the routes named in the audit (board/edit/delete/
 add_finding/reorder/artifact_raw), in the same style as `test_scribble_report_authz.py`, and dedicated
 coverage for the two BODY-scoped routes the view-arg gate structurally can't reach
-(`create_artifact`/`templating_preview`), which got their own direct `authorize_engagement_view` call
+(`create_artifact`/`templating_preview`), which got their own direct `can_view_engagement` call
 instead -- see those modules' own comments.
 
 Red -> green (recorded here since it's a one-time proof, not something worth wiring into CI as a
@@ -69,7 +69,7 @@ _RECOGNIZED_KEYS = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
 #
 # The rest are genuinely tenant-free: every route on a library-wide table shared across all tenants
 # (VulnerabilityTemplate/ChecklistTemplate/AssessmentType) rather than one engagement's data. Plus the
-# two BODY-scoped routes fixed with a direct `authorize_engagement_view` call instead of this gate (the
+# two BODY-scoped routes fixed with a direct `can_view_engagement` call instead of this gate (the
 # view-arg gate structurally can't reach a body field) -- see
 # `test_artifact_upload_to_foreign_engagement_denied` /`test_templating_preview_denies_foreign_engagement`
 # below for their own coverage.
@@ -401,13 +401,15 @@ def test_artifact_raw_denied_then_allowed(client, stub_host, session_factory, ap
     assert resp.get_data() == b"pngbytes"
 
 
-# ── the two body-scoped routes (direct authorize_engagement_view calls, not this gate) ──────────────
+# ── the two body-scoped routes (direct can_view_engagement calls, not this gate) ────────────────────
 
 
 def test_artifact_upload_to_foreign_engagement_denied(client, stub_host, session_factory):
     """`POST /artifacts` takes its `engagement_id` from the body, not the URL -- the view-arg gate
-    can't reach it, so `artifacts_api.create_artifact` calls `authorize_engagement_view` directly. This
-    proves that call, and that it runs BEFORE any byte is written to disk."""
+    can't reach it, so `artifacts_api.create_artifact` calls `can_view_engagement` directly (the
+    predicate, not the aborting wrapper, so a foreign engagement gets this route's own JSON 404 rather
+    than Flask's default error page). This proves that call, and that it runs BEFORE any byte is
+    written to disk."""
     eid = _make_engagement(session_factory, client_id=ACME)
     _outsider(stub_host)
     resp = client.post(
@@ -444,6 +446,56 @@ def test_templating_preview_allows_own_client_engagement(client, stub_host, sess
     _member(stub_host)
     resp = client.post(f"{API}/preview", json={"engagement_id": eid, "text": "hello"})
     assert resp.status_code == 200
+
+
+# ── existence-oracle consistency (adversarial review, #256) ────────────────────────────────────────
+#
+# Both body-scoped routes used to answer "engagement not found" with this route's own JSON 404 but
+# "engagement exists, you may not view it" with Flask's default HTML 404 page (the aborting
+# `authorize_engagement_view`) -- a distinguishable body/content-type for the identical status code,
+# i.e. a minor existence oracle. Both cases now fall through the SAME `jsonify(...), 404` return.
+
+
+def test_artifact_upload_not_found_and_forbidden_are_byte_identical(client, stub_host, session_factory):
+    """`create_artifact`'s refusal message names no id, so a nonexistent engagement and a real one the
+    actor cannot view must come back as the literal same response -- not just the same status code."""
+    real_eid = _make_engagement(session_factory, client_id=ACME)
+    missing_eid = real_eid + 999_000  # not a real row
+    _outsider(stub_host)
+
+    forbidden = client.post(
+        f"{API}/artifacts",
+        data={"engagement_id": str(real_eid), "file": (io.BytesIO(b"x"), "f.txt")},
+        content_type="multipart/form-data",
+    )
+    not_found = client.post(
+        f"{API}/artifacts",
+        data={"engagement_id": str(missing_eid), "file": (io.BytesIO(b"x"), "f.txt")},
+        content_type="multipart/form-data",
+    )
+    assert forbidden.status_code == not_found.status_code == 404
+    assert forbidden.content_type == not_found.content_type
+    assert forbidden.get_data() == not_found.get_data()
+    assert forbidden.get_json() == {"error": "engagement not found"}
+
+
+def test_templating_preview_not_found_and_forbidden_share_the_same_shape(
+    client, stub_host, session_factory
+):
+    """`templating_preview`'s refusal echoes the caller-supplied id (information the caller already
+    has, not a leak), so this asserts same status/content-type/JSON-shape rather than byte equality --
+    the regression this guards against is a reappearance of Flask's default HTML 404 for the forbidden
+    case, which would fail `.get_json()` entirely."""
+    real_eid = _make_engagement(session_factory, client_id=ACME)
+    missing_eid = real_eid + 999_000  # not a real row
+    _outsider(stub_host)
+
+    forbidden = client.post(f"{API}/preview", json={"engagement_id": real_eid, "text": "hello"})
+    not_found = client.post(f"{API}/preview", json={"engagement_id": missing_eid, "text": "hello"})
+    assert forbidden.status_code == not_found.status_code == 404
+    assert forbidden.content_type == not_found.content_type
+    assert forbidden.get_json() == {"error": f"engagement {real_eid} not found"}
+    assert not_found.get_json() == {"error": f"engagement {missing_eid} not found"}
 
 
 # ── standalone must still work (no host bundle -> no tenancy model to apply) ────────────────────────
