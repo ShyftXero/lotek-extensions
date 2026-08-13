@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/registrar-machine-api`  (worktree: `.claude/worktrees/registrar-machine`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 Give Registrar a PAT/Bearer **machine API** at `/registrar/machine` so host tools (an agent on a personal
@@ -15,20 +15,29 @@ machine API.
 `/approve` route on this surface at all.
 
 ## Done
-- [ ] `plans/` entry committed first
+- [x] `plans/` entry committed first
+- [x] `registrar/registrar/host.py` — PAT capability accessors over `cfg.extras`, fail-closed 503, stamps
+      `__lotek_scope__` (verbatim)
+- [x] `registrar/registrar/api_schemas.py` — typed pydantic `ActionRequest` + `request_body`. One fix on
+      top of the vendored copy: it documented `'domain.checkout'` as the example verb, which is not a
+      registrar verb at all — replaced with the real direct/confirm verb lists, since this schema is what
+      an agent reads out of the OpenAPI spec.
+- [x] `registrar/registrar/api_pat.py` — `machine_bp` + routes (reads + `/action`, staging only), verbatim
+- [x] `registrar/registrar/__init__.py` — import + register `machine_bp` at `<url_prefix>/machine`
+- [x] `registrar/lotek-extension.toml` — `[host] machine_prefix = "/machine"`
+- [x] `registrar/pyproject.toml` + new `uv.lock` — `pydantic>=2`
+- [x] **`registrar/tests/` — a whole new test harness** (Registrar shipped no tests directory): mounted-app
+      fixture, controllable host hooks, `StubActor`, a recording `AuditLog` for the host audit seam, a
+      scope-enforcing `require_pat_scope`, and a `pat_client` that blanks the session AND marks the request
+      non-interactive (which a token always is)
+- [x] `registrar/tests/test_machine_api.py` — 19 tests
+- [x] `uvx ruff check registrar` clean + `cd registrar && uv run python -m pytest` → **19 passed**
+- [x] Red/green proof: removing one `@host.require_scope` makes
+      `test_every_machine_route_is_scope_gated` fail with
+      `machine routes missing require_scope: ['/registrar/machine/domains']`, then restored
 
 ## Remaining
-- [ ] `registrar/registrar/host.py` — PAT capability accessors over `cfg.extras`, fail-closed 503, stamps
-      `__lotek_scope__`
-- [ ] `registrar/registrar/api_schemas.py` — typed pydantic `ActionRequest` + `request_body`
-- [ ] `registrar/registrar/api_pat.py` — `machine_bp` + routes (reads + `/action`, staging only)
-- [ ] `registrar/registrar/__init__.py` — import + register `machine_bp` at `<url_prefix>/machine`
-- [ ] `registrar/lotek-extension.toml` — `[host] machine_prefix = "/machine"`
-- [ ] `registrar/pyproject.toml` — `pydantic>=2`
-- [ ] **`registrar/tests/` — a whole new test harness.** Registrar ships NO tests directory today, so
-      unlike cream/vector there is no conftest to extend: the mounted-app fixture, the controllable host
-      hooks and the PAT stubs all have to be written here.
-- [ ] `uvx ruff check registrar` clean + `cd registrar && uv run python -m pytest` green
+- [ ] nothing blocking
 
 ## Notes / gotchas
 - Registrar's vendored copy is otherwise IDENTICAL to this repo's (the only pre-existing difference is one
