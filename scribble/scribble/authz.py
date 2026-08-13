@@ -63,6 +63,7 @@ see the two routes' own inline fixes instead):
 from __future__ import annotations
 
 from flask import abort, request
+from sqlalchemy import false, or_
 
 from scribble.deps import current_actor, get_config, open_session
 from scribble.models import (
@@ -158,9 +159,20 @@ def visible_engagements(db, stmt, actor) -> list:
     client_ids = host_visible_client_ids()
     if client_ids is None:
         return filter_visible_engagements(db.scalars(stmt).all(), actor)
-    if not client_ids:
-        return []  # holds no client -> sees no engagement (empty set is NOT "unscoped")
-    return list(db.scalars(stmt.where(Engagement.client_id.in_(client_ids))).all())
+
+    # An empty set is NOT "unscoped": it means this actor holds nothing, so nothing matches.
+    scoped = Engagement.client_id.in_(client_ids) if client_ids else false()
+
+    # ``IN (…)`` never matches NULL, so a CLIENT-LESS engagement would be invisible on this path
+    # whatever the host thinks — while the predicate path shows it to anyone the host answers True for.
+    # The real lotek host answers False for a NULL client (no admin bypass in v2, so nobody sees one),
+    # but a host is free to answer otherwise and Scribble's own test host does exactly that for admins.
+    # Asking the predicate once for the NULL case keeps the two paths identical for EVERY host instead
+    # of only the one this was written against — the "second, drifting copy" this helper exists to avoid.
+    if can_view_client_id(None, actor):
+        scoped = or_(scoped, Engagement.client_id.is_(None))
+
+    return list(db.scalars(stmt.where(scoped)).all())
 
 
 def filter_visible_engagements(engagements, actor) -> list:

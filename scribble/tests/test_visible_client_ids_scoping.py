@@ -122,6 +122,42 @@ def test_sql_path_works_with_uuid_client_ids(app, stub_host, session_factory):
     )
 
 
+def test_client_less_engagement_matches_the_predicate_on_both_paths(app, stub_host, session_factory):
+    """`IN (…)` never matches NULL — so a client-less engagement would be invisible on the SQL path
+    whatever the host thinks, while the predicate path shows it to anyone the host answers True for.
+
+    Raised by Copilot on the first revision of this PR, and it is a real divergence rather than a
+    theoretical one: the real lotek host answers False for a NULL client (v2 has no admin bypass, so
+    nobody sees one), but Scribble's own test host answers True for an ADMIN — it checks the role before
+    it ever looks at `client_id`. So the two paths disagreed for exactly the actor most likely to be
+    looking at the dashboard, and `test_both_paths_agree` missed it because no fixture had a NULL client.
+
+    Both directions are asserted, because a fix that simply always included NULL rows would be just as
+    wrong in the other direction.
+    """
+    _clients_and_engagements(session_factory)
+    with session_factory() as db:
+        db.add(fm.Engagement(name="No client", client_id=None))
+        db.commit()
+
+    # Admin: the stub host grants a NULL client -> visible on BOTH paths.
+    stub_host.current_user = StubUser(id=1, username="admin", role=_StubRole("admin"))
+    with app.test_request_context(), session_factory() as db:
+        fallback = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+    _wire_set_hook(app, {ACME, OTHER_CLIENT})
+    with app.test_request_context(), session_factory() as db:
+        sql = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+    assert "No client" in [e.name for e in fallback]
+    assert sorted(e.name for e in fallback) == sorted(e.name for e in sql)
+
+    # Non-admin member: the stub denies a NULL client -> hidden on BOTH paths.
+    _member(stub_host)
+    _wire_set_hook(app, {ACME})
+    with app.test_request_context(), session_factory() as db:
+        sql_member = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+    assert [e.name for e in sql_member] == ["Ours Q3"]
+
+
 def test_both_paths_agree(app, stub_host, session_factory):
     """SQL path and predicate fallback must produce the same list for the same actor."""
     _clients_and_engagements(session_factory)
