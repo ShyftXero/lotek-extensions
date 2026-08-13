@@ -1,7 +1,7 @@
 # Plan: feat/vector-machine-api
 
 - **Branch:** `feat/vector-machine-api`  (worktree: `.claude/worktrees/vector-machine`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/21
 - **Status:** 🟢 ready to merge
 
 ## Purpose
