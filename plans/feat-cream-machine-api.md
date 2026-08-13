@@ -1,7 +1,7 @@
 # Plan: feat/cream-machine-api
 
 - **Branch:** `feat/cream-machine-api`  (worktree: `.claude/worktrees/cream-machine`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/19
 - **Status:** 🟢 ready to merge
 
 ## Purpose
