@@ -96,8 +96,8 @@ def action():
         try:
             result = execute_direct(db, verb=verb, provider=provider, args=args,
                                     actor=getattr(actor, "username", None), host_audit=host_audit())
-        except ConfirmationRequired as e:
-            return jsonify({"error": "conflict", "detail": str(e)}), 409
+        except ConfirmationRequired:
+            return jsonify({"error": "conflict", "detail": "confirmation required"}), 409
         except ValueError as e:
             return jsonify({"error": "bad_request", "detail": str(e)}), 400
         return jsonify(status=result.status, detail=result.detail), 200
