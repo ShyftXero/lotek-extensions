@@ -75,14 +75,19 @@ Python. Override once with `RAILS_OVERRIDE=1` (logged).
 - The `INVARIANTS.md` ratchet lives in lotek; an extension's invariants are proven by its lotek-side
   tests (`test_<ext>_extension.py`).
 
-## Vendoring back into lotek
+## Shipping a change back to lotek (pinned git deps — vendoring is retired)
 
-An extension is developed here, then a snapshot is vendored into lotek in-tree:
+Extensions are **no longer vendored** into lotek. lotek installs each as a **pinned git dependency** from
+this public monorepo (one subdirectory per extension), discovers it via the `lotek.extensions` entry point,
+and reads its metadata from the wheel-shipped `lotek-extension.toml`. There is no vendored tree and no
+`stage-extension.sh`. To ship a change:
 
-```sh
-# from the lotek checkout:
-scripts/stage-extension.sh ~/Dropbox/code/lotek-extensions/<ext> <ext> <ext> /<ext> [seed]
-```
+1. **Land it here.** PR the extension's subdir into `main`, squash-merge. On merge, CI
+   (`.github/workflows/release-tag.yml`) cuts a dated release tag `v<YYYY.M.D.HHMMSS+g<sha>>`.
+2. **Re-pin in lotek.** Bump that extension's `tag = "…"` under `[tool.uv.sources]` in lotek's
+   `pyproject.toml`, then `uv lock --upgrade-package <ext>` + `uv sync --extra extensions`, run the mounted
+   tests (`tests/test_<ext>_*`, `test_extension_nav`), and PR into lotek `main`.
 
-Re-vendor after a change lands here; never hand-edit the vendored copy in lotek (it is overwritten on the
-next re-vendor).
+Never hand-edit an installed copy under lotek's environment — it is replaced on the next `uv sync`.
+See `README.md` ("How lotek consumes these") for the consumer side, and the runtime loader in lotek's
+`src/app/extensions.py`.
