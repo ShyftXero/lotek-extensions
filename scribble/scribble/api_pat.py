@@ -1048,6 +1048,18 @@ def scribble_upload_artifact(engagement_id: int):
 
     storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)
     with open_session() as db:
+        # Never attach to ANOTHER engagement's finding — the same defensive rule `add_finding` applies to
+        # `group_id`. `finding_id` is a caller-supplied id that was written straight through: the upload
+        # itself is gated on `engagement_id`, but the ATTACHMENT target was not, and
+        # `reporting/context.py` builds a finding's evidence gallery from `finding.artifacts` with no
+        # engagement cross-check. So a write token holding any engagement could bolt an attacker-chosen
+        # image and caption onto a finding in someone else's report, where it renders into that client's
+        # deliverable. Silently dropping the association (rather than 404ing) matches the `group_id`
+        # precedent: the artifact still lands on the engagement the URL named, unattached.
+        if fid is not None:
+            target = db.get(EngagementFinding, fid)
+            if target is None or target.engagement_id != engagement_id:
+                fid = None
         artifact = Artifact(
             engagement_id=engagement_id,
             finding_id=fid,

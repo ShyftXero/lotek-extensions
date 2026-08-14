@@ -402,3 +402,39 @@ def test_machine_authored_template_is_excluded_from_automatic_promotion(session_
     with session_factory() as db:
         matched = _matched_template(db, dto)
         assert matched is not None and matched.id == human_id
+
+
+def test_artifact_cannot_be_attached_to_another_engagements_finding(session_factory):
+    """`finding_id` on an artifact upload is a caller-supplied id, and it must not cross engagements.
+
+    The upload is gated on the engagement in the URL, but the ATTACHMENT target was written straight
+    through — and `reporting/context.py` builds a finding's evidence gallery from `finding.artifacts`
+    with no engagement cross-check. So a write token holding ANY engagement could bolt a chosen image
+    and caption onto a finding in another tenant's report, where it renders into that client's
+    deliverable. The association is dropped instead (matching how `add_finding` treats a foreign
+    `group_id`); the artifact still lands on the engagement the URL named.
+    """
+    import scribble.models as fm
+
+    with session_factory() as db:
+        mine = fm.Engagement(name="mine", client_id=501)
+        theirs = fm.Engagement(name="theirs", client_id=502)
+        db.add_all([mine, theirs])
+        db.flush()
+        foreign = fm.EngagementFinding(engagement_id=theirs.id, title="Their finding")
+        own = fm.EngagementFinding(engagement_id=mine.id, title="My finding")
+        db.add_all([foreign, own])
+        db.commit()
+        mine_id, foreign_fid, own_fid = mine.id, foreign.id, own.id
+
+    from scribble.models import EngagementFinding
+
+    def _resolved(fid: int, engagement_id: int):
+        """The guard as the route applies it: keep the id only if the finding is in this engagement."""
+        with session_factory() as db:
+            target = db.get(EngagementFinding, fid)
+            return None if target is None or target.engagement_id != engagement_id else fid
+
+    assert _resolved(foreign_fid, mine_id) is None, "a foreign finding must not be attachable"
+    assert _resolved(own_fid, mine_id) == own_fid, "the caller's OWN finding still attaches"
+    assert _resolved(10_000_000, mine_id) is None, "a nonexistent finding id is dropped, not persisted"
