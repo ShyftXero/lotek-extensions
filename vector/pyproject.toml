@@ -47,6 +47,10 @@ packages = ["vector"]
 # package dir in the built wheel without moving or duplicating the source file in the repo.
 [tool.hatch.build.targets.wheel.force-include]
 "lotek-extension.toml" = "vector/lotek-extension.toml"
+# Ship the operator doc INSIDE the wheel's package dir so the host's Docs page can read it from the
+# installed package (importlib.resources.files("vector").joinpath("docs/VECTOR.md")). Source lives at the
+# project root docs/; force-include copies it under the package dir without moving/duplicating the source.
+"docs/VECTOR.md" = "vector/docs/VECTOR.md"
 
 [tool.uv]
 package = true

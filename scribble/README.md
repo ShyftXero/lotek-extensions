@@ -1,40 +1,46 @@
 # Scribble
 
-A pentest **vulnerability database + reporting engine**. A Python re-imagining of OWASP FACTION's
-vulnerability-template library and report generation, built to [Lotek](https://github.com/)'s
-conventions and designed to **mount into Lotek** (`scribble.register(app, engine, ...)`) while also
-running **standalone** for solo development.
+A pentest **vulnerability-template library + reporting engine** — a Python re-imagining of OWASP
+FACTION's write-up library and report generation. It mounts into lotek at `/scribble` and turns scan
+output and hand-authored findings into a client deliverable (self-contained HTML, an HTML+artifacts zip,
+or an editable `.docx`).
 
-- **Vulnerability template library** — reusable finding write-ups with Jinja `{{VARIABLE}}` placeholders
-  (`{{COMPANY_NAME}}`, `{{TARGET_HOST}}:{{TARGET_PORT}}`, `{{TARGET_URL}}`, …).
-- **Engagements** — pick a template, add it to an engagement as an editable finding, attach artifacts.
-- **Finding board** — two-level drag-and-drop tree: assessment-type groups → findings; board order is
-  document order.
-- **Artifacts** — screenshots/text/files per finding with per-artifact include/exclude, caption, order.
-- **Rich text** — TipTap editor with inline image paste; autosave + presence now, CRDT co-editing later.
-- **Two deliverables from one context** — a self-contained HTML report (print-to-PDF) and an editable
-  `.docx` (docxtpl template converted from FACTION's default).
+- **Vuln template library** — reusable write-ups with `{{VARIABLE}}` placeholders; 63 seeded on first boot.
+- **Report boards** — per-engagement, two-level drag tree (assessment-type groups → findings); board
+  order is document order.
+- **Finding editor** — per-block rich text with autosave, presence, and inline image paste; artifacts
+  (screenshots/text/files) per finding with caption, include/exclude and ordering.
+- **Machine API** — nine PAT/Bearer routes under `/scribble/machine` so an agent can create engagements,
+  promote a whole scan job, upload evidence and drive the vuln map.
+- **Two deliverables from one context** — HTML (print-to-PDF) and `.docx`.
 
-See **[PLAN.md](PLAN.md)** for the full architecture and the parallel build plan, and
-**[plans/CONTRACTS.md](plans/CONTRACTS.md)** for the frozen interfaces every workstream builds against.
+## Operator documentation
 
-## Quick start (standalone)
+**[docs/SCRIBBLE.md](https://github.com/ShyftXero/lotek-extensions/blob/main/scribble/docs/SCRIBBLE.md)**
+— UI surfaces, data model, the full machine API table, report output, and the security posture. It
+ships inside the wheel and renders on lotek's in-app Docs page.
+
+## How lotek consumes this
+
+As a **pinned git dependency**, resolved by `uv` and discovered through the `lotek.extensions`
+entry-point group. There is no vendoring and no staging script — lotek installs the package, reads its
+mount metadata (`url_prefix`, nav entries, machine prefix, owned tables, seed callable) from the
+`lotek-extension.toml` shipped inside the wheel, and mounts it when the extension is enabled.
+
+Bump it from the lotek side:
+
+```sh
+uv lock --upgrade-package scribble
+```
+
+## Development
 
 ```sh
 uv sync --extra dev
-uv run python standalone_app.py       # boots the themed shell at http://127.0.0.1:5057/scribble/
-uv run pytest                          # unit + smoke tests
-uvx ruff check .                       # lint
+uv run pytest          # unit + smoke tests
+uvx ruff check .       # lint
 ```
 
-## Status
-
-Sprint 0 (scaffold + data model + contracts). Feature workstreams are built in parallel per PLAN.md §13.
-
-## Dev workflow
-
-Mirrors Lotek's rails: short-lived branches off `main` (`feat/`·`fix/`·`chore/`), one logical change per
-commit, explicit staging (never `git add -A`), `ruff` + `pyrefly` clean, tests with every change (that
-assert real state, not proxies), an adversarial-review gate before merge, and lead-driven merges. Each
-in-flight branch carries a `plans/<branch-slug>.md` (copy `plans/TEMPLATE.md`). Full rules:
-**[docs/RAILS.md](docs/RAILS.md)** (and [CLAUDE.md](CLAUDE.md) for the summary).
+Rails mirror lotek's: short-lived branches off `main` (`feat/`·`fix/`·`chore/`), one logical change per
+commit, explicit staging, `ruff` + `pyrefly` clean, tests with every change, adversarial review before
+merge.
