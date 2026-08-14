@@ -1,7 +1,7 @@
 # Plan: feat/scribble-report-redesign
 
 - **Branch:** `feat/scribble-report-redesign`  (worktree: `.claude/worktrees/scribble-report-redesign`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/28
 - **Status:** 🟢 ready to merge
 
 ## Purpose
