@@ -91,6 +91,7 @@ def register(api_bp, bp) -> None:
                 artifact_bytes=_make_artifact_bytes(cfg.artifact_root),
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
+                template=request.args.get("template"),
             )
         return Response(html_doc, mimetype="text/html")
 
@@ -108,7 +109,7 @@ def register(api_bp, bp) -> None:
             slug = _slugify(engagement.name)
 
             if fmt == "zip":
-                payload = export_zip(ctx, artifact_bytes)
+                payload = export_zip(ctx, artifact_bytes, template=request.args.get("template"))
                 return Response(
                     payload,
                     mimetype="application/zip",
@@ -121,6 +122,7 @@ def register(api_bp, bp) -> None:
                 artifact_bytes=artifact_bytes,
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
+                template=request.args.get("template"),
             )
 
         return Response(
