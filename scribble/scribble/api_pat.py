@@ -441,6 +441,9 @@ def scribble_create_template():
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
             template = VulnerabilityTemplate(
+                # Authored over the machine API: instantiable by id, but NEVER auto-adopted by
+                # promotion into another tenant's report. See models.VulnerabilityTemplate.
+                machine_authored=True,
                 name=name,
                 category=category,
                 default_severity=default_severity,
@@ -1005,13 +1008,11 @@ def scribble_upload_artifact(engagement_id: int):
             "detail": f"artifact exceeds the {_MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB limit",
         }), 413
 
-    # Tenancy: read the target BEFORE writing anything. The engagement arrives in the URL, but the
-    # blueprint has no id-shaped gate for it, so check the SAME predicate scribble's other machine routes
-    # use, against the PAT actor. Missing and not-visible return an identical 404 (no existence oracle).
-    with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        if engagement is None or not can_view_engagement(engagement, actor):
-            return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+    # (Tenancy was decided at the TOP of this function, before the body was read — see the comment
+    # there. It is deliberately NOT re-checked here: a second identical check would be a second DB
+    # round-trip per upload, and worse, it would leave two blocks where a maintainer told to "remove the
+    # duplicate" could delete the FIRST one and silently restore the parse-before-authorize ordering
+    # this route was fixed to remove.)
 
     idempotency_key = (idempotency_key or request.headers.get("Idempotency-Key") or None)
     if idempotency_key:

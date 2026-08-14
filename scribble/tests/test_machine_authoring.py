@@ -352,3 +352,53 @@ def test_require_scope_write_token_can_write(app, client, stub_host):
     _install_scope_enforcing_gate(app, stub_host)
     stub_host.actor = StubActor(id=6, username="rw", role="operator", scopes=frozenset({"read", "write"}))
     assert client.post(f"{M}/templates", json={"name": "ok"}).status_code == 201
+
+
+# ── a machine-authored template is never AUTO-adopted into someone else's report ────────────────────
+
+
+def test_machine_authored_template_is_excluded_from_automatic_promotion(session_factory):
+    """A PAT-authored template stays out of `promote`'s automatic vuln-map resolution.
+
+    The library is one shared, tenant-free table and `from_template` copies `content_json` VERBATIM into
+    a client-facing finding, while `promote` instantiates whatever a `ScribbleVulnMap` rule matches with
+    no human choosing it. A write-scoped PAT can already install a global rule, so once it could also
+    AUTHOR the content, agent-written prose would reach another tenant's deliverable unread — the
+    outward-effect class this platform keeps human-gated. Excluding machine-authored rows from the
+    AUTOMATIC path closes that while leaving explicit instantiation by id available.
+    """
+    from types import SimpleNamespace
+
+    import scribble.models as fm
+    from scribble.promote import _matched_template
+
+    with session_factory() as db:
+        human = fm.VulnerabilityTemplate(name="Human TLS", content_json={}, content_html={})
+        machine = fm.VulnerabilityTemplate(
+            name="Agent TLS", content_json={}, content_html={}, machine_authored=True
+        )
+        db.add_all([human, machine])
+        db.flush()
+        rule = fm.ScribbleVulnMap(source="nuclei", title_pattern="*", template_id=machine.id)
+        db.add(rule)
+        db.commit()
+        machine_id, human_id, rule_id = machine.id, human.id, rule.id
+
+    dto = SimpleNamespace(source="nuclei", title="anything", dedupe_key=None)
+    with session_factory() as db:
+        # The rule resolves to the machine-authored template...
+        from scribble.promote import resolve_vuln_template
+
+        assert resolve_vuln_template(db, source="nuclei", title="anything", dedupe_key=None) == machine_id
+        # ...but promotion refuses to adopt it.
+        assert _matched_template(db, dto) is None
+
+    # Positive control: repoint the SAME rule at the human-authored template and promotion adopts it —
+    # without this, a broken _matched_template that returned None for everything would pass above.
+    with session_factory() as db:
+        rule = db.get(fm.ScribbleVulnMap, rule_id)
+        rule.template_id = human_id
+        db.commit()
+    with session_factory() as db:
+        matched = _matched_template(db, dto)
+        assert matched is not None and matched.id == human_id

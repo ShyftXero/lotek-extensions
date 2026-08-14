@@ -188,6 +188,20 @@ class VulnerabilityTemplate(Base, TimestampMixin):
     content_html: Mapped[dict] = mapped_column(JSON, default=dict)  # {block_name: cached_html}
     references: Mapped[list] = mapped_column(JSON, default=list)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True when the row was authored over the PAT/machine API rather than by a human in the library UI.
+    #
+    # The template library is a SINGLE, SHARED, tenant-free table, and `EngagementFinding.from_template`
+    # copies `content_json` VERBATIM into a client-facing finding. `promote.py` instantiates templates
+    # AUTOMATICALLY whenever a `ScribbleVulnMap` rule matches — no human chooses that. Since a
+    # write-scoped PAT can already install a global vuln-map rule, letting an agent also author the
+    # CONTENT would mean agent-written prose could land in ANOTHER tenant's deliverable with nobody ever
+    # reading it. That is the outward-effect class this platform keeps human-gated (INV-EXT-02).
+    #
+    # So machine-authored templates are excluded from AUTOMATIC resolution (`resolve_vuln_template`),
+    # while remaining explicitly instantiable by id — an act performed by a caller who already holds
+    # access to the destination engagement, against a template they named. Authoring stays available to
+    # agents; silent cross-tenant adoption does not.
+    machine_authored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     tags: Mapped[list[Tag]] = relationship(secondary="scribble_template_tags")
 
