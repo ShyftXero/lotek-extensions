@@ -188,6 +188,20 @@ class VulnerabilityTemplate(Base, TimestampMixin):
     content_html: Mapped[dict] = mapped_column(JSON, default=dict)  # {block_name: cached_html}
     references: Mapped[list] = mapped_column(JSON, default=list)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True when the row was authored over the PAT/machine API rather than by a human in the library UI.
+    #
+    # The template library is a SINGLE, SHARED, tenant-free table, and `EngagementFinding.from_template`
+    # copies `content_json` VERBATIM into a client-facing finding. `promote.py` instantiates templates
+    # AUTOMATICALLY whenever a `ScribbleVulnMap` rule matches — no human chooses that. Since a
+    # write-scoped PAT can already install a global vuln-map rule, letting an agent also author the
+    # CONTENT would mean agent-written prose could land in ANOTHER tenant's deliverable with nobody ever
+    # reading it. That is the outward-effect class this platform keeps human-gated (INV-EXT-02).
+    #
+    # So machine-authored templates are excluded from AUTOMATIC resolution (`resolve_vuln_template`),
+    # while remaining explicitly instantiable by id — an act performed by a caller who already holds
+    # access to the destination engagement, against a template they named. Authoring stays available to
+    # agents; silent cross-tenant adoption does not.
+    machine_authored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     tags: Mapped[list[Tag]] = relationship(secondary="scribble_template_tags")
 
@@ -230,7 +244,14 @@ class EngagementFinding(Base, TimestampMixin):
     # set by ``from_lotek_finding`` when promoting a scan finding. Lets the promote flow dedup (has this
     # Lotek finding already been promoted into this engagement?) without a cross-table FK, since a
     # standalone Scribble has no Lotek ``Finding`` table to reference at all.
-    source_finding_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # ``SoftHostId``, NOT ``Integer``: a host ``Finding.id`` is a sequential int on a legacy/standalone
+    # host but a ``uuid.UUID`` on Lotek v2 (UUIDv7 PKs). Declared ``Integer``, promoting a v2 finding
+    # raises `(psycopg.errors.CannotCoerce) cannot cast type uuid to integer` on INSERT — the exact
+    # red-path INV-INTEGRITY-03 describes. It went unnoticed because SQLite accepts the value silently;
+    # only real Postgres refuses it. Any column holding a CORE id must use SoftHostId (see its docstring).
+    source_finding_id: Mapped[int | uuid.UUID | None] = mapped_column(
+        SoftHostId, nullable=True, index=True
+    )
     # Self-referential nesting: a PARENT finding groups instances of the same vuln TYPE (the resolved
     # vuln-DB template, else a source/title signature) as CHILDREN. Set by promotion aggregation;
     # adjustable by drag-to-nest on the board. Children are queried WHERE parent_id = id (no ORM
@@ -255,7 +276,9 @@ class EngagementFinding(Base, TimestampMixin):
     target_host: Mapped[str | None] = mapped_column(String(255))
     target_port: Mapped[str | None] = mapped_column(String(16))
     target_url: Mapped[str | None] = mapped_column(String(1024))
-    asset_id: Mapped[int | None] = mapped_column(Integer)  # optional link to host Asset when mounted
+    # Optional link to a host ``Asset`` when mounted — ``SoftHostId`` for the SAME reason as
+    # ``source_finding_id`` above: a v2 host Asset id is a UUID, and an Integer column cannot hold it.
+    asset_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True)
 
     analyst_notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(128))

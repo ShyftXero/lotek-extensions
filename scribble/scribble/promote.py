@@ -93,8 +93,17 @@ def resolve_vuln_template(
 
 
 def _matched_template(db: Any, dto: Any) -> VulnerabilityTemplate | None:
-    """The active ``VulnerabilityTemplate`` this finding resolves to, or ``None`` (no mapping, a mapping
-    to a deleted/retired template, or no source/title/dedupe_key to match on at all)."""
+    """The active, human-authored ``VulnerabilityTemplate`` this finding resolves to, or ``None`` (no
+    mapping, a mapping to a deleted/retired template, a MACHINE-authored one, or nothing to match on).
+
+    This is the AUTOMATIC path: promotion instantiates whatever a ``ScribbleVulnMap`` rule matches, with
+    no human choosing the template and no tenancy check — the library is a single shared table and
+    ``from_template`` copies ``content_json`` verbatim into a client-facing finding. A write-scoped PAT
+    can already install a global vuln-map rule, so if it could also AUTHOR the content, agent-written
+    prose would reach another tenant's deliverable unread. Machine-authored templates are therefore
+    excluded HERE — they stay explicitly instantiable by id (a deliberate act by someone who already
+    holds the destination engagement), just never silently adopted.
+    """
     template_id = resolve_vuln_template(
         db,
         source=getattr(dto, "source", None),
@@ -104,7 +113,9 @@ def _matched_template(db: Any, dto: Any) -> VulnerabilityTemplate | None:
     if template_id is None:
         return None
     template = db.get(VulnerabilityTemplate, template_id)
-    return template if template is not None and template.active else None
+    if template is None or not template.active:
+        return None
+    return None if getattr(template, "machine_authored", False) else template
 
 
 def _load_declarations(db: Any) -> list[tuple[str, str | None, list]]:

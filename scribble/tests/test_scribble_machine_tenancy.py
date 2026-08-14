@@ -53,6 +53,21 @@ _TENANT_FREE_ENDPOINTS = frozenset(
         # Create takes its client from the BODY, so it has no view arg to classify by; its own tenancy
         # rule is proven by the four `test_create_engagement_*` cases below.
         "scribble_machine.scribble_create_engagement",
+        # Authoring a template WRITES to that same library-wide table. It carries no engagement and no
+        # client: a template is a reusable vuln description ("Weak TLS configuration"), never client data.
+        # Classified with its sibling read routes above for exactly that reason.
+        "scribble_machine.scribble_create_template",
+    }
+)
+
+# Machine routes that legitimately answer 200 to ANY token because they are SCOPED LISTS: they return
+# only the rows the caller may see, so the correct answer for a foreign token is an EMPTY list, not a 404.
+# A 404 here would be wrong (the collection exists for everyone) and a blanket tenant-free exemption would
+# be a lie (these rows ARE client data). So they get their own category with a STRONGER obligation, proven
+# by `test_scoped_list_routes_return_nothing_to_a_foreign_client`: 200, and zero rows.
+_SCOPED_LIST_ENDPOINTS = frozenset(
+    {
+        "scribble_machine.scribble_list_engagements",
     }
 )
 
@@ -125,12 +140,14 @@ def test_every_machine_route_is_classified(app):
     unclassified = [
         (rule.endpoint, rule.rule, sorted(rule.arguments))
         for rule in _machine_rules(app)
-        if rule.endpoint not in _TENANT_FREE_ENDPOINTS and "engagement_id" not in rule.arguments
+        if rule.endpoint not in _TENANT_FREE_ENDPOINTS
+        and rule.endpoint not in _SCOPED_LIST_ENDPOINTS
+        and "engagement_id" not in rule.arguments
     ]
     assert unclassified == [], (
-        "machine route(s) neither engagement-scoped nor declared tenant-free — classify them (add the "
-        "engagement_id check in api_pat.py, or justify the addition to _TENANT_FREE_ENDPOINTS here): "
-        f"{unclassified}"
+        "machine route(s) neither engagement-scoped, scoped-list, nor declared tenant-free — classify "
+        "them (add the engagement_id check in api_pat.py, or justify the addition to "
+        f"_TENANT_FREE_ENDPOINTS / _SCOPED_LIST_ENDPOINTS here): {unclassified}"
     )
 
 
@@ -145,7 +162,7 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
 
     allowed = []
     for rule in _machine_rules(app):
-        if rule.endpoint in _TENANT_FREE_ENDPOINTS:
+        if rule.endpoint in _TENANT_FREE_ENDPOINTS or rule.endpoint in _SCOPED_LIST_ENDPOINTS:
             continue
         url = _build_url(app, rule, engagement_id=eid, job_id="job-1")
         for method in _http_methods(rule):
@@ -154,6 +171,46 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
                 allowed.append((rule.endpoint, method, url, resp.status_code))
 
     assert allowed == [], f"a token for another client was NOT denied on: {allowed}"
+
+
+def test_scoped_list_routes_return_nothing_to_a_foreign_client(app, stub_host, session_factory):
+    """The obligation a `_SCOPED_LIST_ENDPOINTS` entry buys instead of a 404: the collection answers 200
+    to anyone, but a token for another client must see ZERO rows.
+
+    This is the strictly harder property. A route exempted as "tenant-free" is never checked again; a
+    scoped list is checked EVERY run against a populated table, so the day someone drops the
+    `visible_engagements` filter — the one line between "your engagements" and "every client's
+    engagements" — this goes red. An empty database would make it pass vacuously, so the fixture seeds a
+    real engagement under the OTHER client first.
+    """
+    _engagement(session_factory, client_id=ACME)  # a row that exists and MUST NOT be disclosed
+    _foreign_token(stub_host)
+    client = app.test_client()
+
+    for rule in _machine_rules(app):
+        if rule.endpoint not in _SCOPED_LIST_ENDPOINTS:
+            continue
+        url = _build_url(app, rule, engagement_id=1, job_id="job-1")
+        resp = client.get(url)
+        assert resp.status_code == 200, (rule.endpoint, resp.status_code)
+        body = resp.get_json()
+        assert body["count"] == 0, f"{rule.endpoint} disclosed another client's rows: {body}"
+        assert body["items"] == [], f"{rule.endpoint} disclosed another client's rows: {body}"
+
+
+def test_scoped_list_routes_do_return_the_callers_own_rows(app, stub_host, session_factory):
+    """The positive control for the sweep above — without it, a route that returned an empty list to
+    EVERYONE (or 200 with nothing at all) would satisfy the denial test while being entirely broken."""
+    _engagement(session_factory, client_id=ACME)
+    _granted_token(stub_host)
+    client = app.test_client()
+
+    for rule in _machine_rules(app):
+        if rule.endpoint not in _SCOPED_LIST_ENDPOINTS:
+            continue
+        resp = client.get(_build_url(app, rule, engagement_id=1, job_id="job-1"))
+        assert resp.status_code == 200, (rule.endpoint, resp.status_code)
+        assert resp.get_json()["count"] >= 1, f"{rule.endpoint} hid the caller's OWN rows"
 
 
 def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_host, session_factory):

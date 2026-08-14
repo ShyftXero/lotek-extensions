@@ -68,12 +68,79 @@ Python. Override once with `RAILS_OVERRIDE=1` (logged).
 
 ## v2-native contract (every extension)
 
-- UUIDv7 surrogate PKs; cross-core refs are `sqlalchemy.Uuid`, never Integer/String.
+- UUIDv7 surrogate PKs; cross-core refs are `sqlalchemy.Uuid` (or scribble's `SoftHostId`), **never
+  Integer/String** — see the trap below.
 - No authorization data in the extension — resolve engagement rights through the host seam
   (`can_operate_on` / `visible_engagement_ids`), never a request body.
 - Own tables, prefixed. Confirm-tier outward actions are staged + audited server-side.
 - The `INVARIANTS.md` ratchet lives in lotek; an extension's invariants are proven by its lotek-side
   tests (`test_<ext>_extension.py`).
+
+### 🔴 A PAT write 403s on your machine route — `g.principal` and the host seam
+
+```
+403 {"error":"forbidden","detail":"not an operator on this engagement"}
+```
+
+…for a token whose user genuinely HOLDS an operator membership. Every host predicate an extension
+authorizes with — `can_operate_on`, `can_view_engagement`, `visible_engagement_ids` — resolves the caller
+from **`g.principal`** and **fails closed** when it is absent. Core's `api_v1._authenticate_pat` sets it,
+but that `before_request` fires only for `/api/v1`; an extension blueprint authenticates through
+`host_contract.pat_authenticate`, which until 2026-08-14 published only the `g.api_*` scalars. Result: a
+PAT could authenticate to `/<ext>/machine/*` and pass the scope gate, then be refused every write
+regardless of its memberships.
+
+Fixed in lotek (`pat_authenticate` now also builds `g.principal`), but the lesson generalizes:
+
+- **A stub host proves your logic, never the mount.** Each extension's own suite injects its own extras,
+  so a seam gap like this is invisible here and only appears MOUNTED in lotek. Always land a mounted
+  test in `lotek/tests/test_<ext>_extension.py` for anything that authorizes.
+- **This failed in the SAFE direction** (refuse, never leak), which is exactly why no test caught it.
+  A green suite is not evidence that an authorization path is reachable — assert the ALLOWED case too.
+
+### 🔴 `cannot cast type uuid to integer` — the core-ref column trap
+
+```
+sqlalchemy.exc.ProgrammingError: (psycopg.errors.CannotCoerce) cannot cast type uuid to integer
+```
+
+An extension column holding a **core (host) id** was declared `Integer` (or `String`). Core v2 keys every
+surrogate PK on UUIDv7, so the value is a `uuid.UUID`. This is INV-INTEGRITY-03's exact red path, and it
+bit `scribble_findings.source_finding_id` + `.asset_id` for real (fixed 2026-08-14).
+
+**It hides in plain sight**: SQLite stores the value silently — only real Postgres refuses it. A green
+unit run against SQLite proves nothing about this class of bug.
+
+Use `SoftHostId` (`scribble/db.py`): a TEXT-backed `TypeDecorator` that round-trips the ORIGINAL Python
+type (int for a legacy/standalone host, `uuid.UUID` for v2). There is **no** `ForeignKey` to a core table —
+the referenced table isn't known until mount time. Grep before shipping:
+
+```sh
+grep -rnE "(_id|_by)\s*:.*mapped_column\((Integer|String)" <ext>/*/models.py
+```
+
+Two follow-on gotchas once you change a declared type:
+
+- **`create_all` never retrofits an existing column's type** — it only ADDS columns. Recreate the table
+  (or migrate); a pre-existing table keeps the old native INTEGER and keeps failing.
+- **A non-editable `uv` path install is cached by version** — after editing source, `uv sync` reports
+  "Audited" and does NOT rebuild. Force it: `uv sync --reinstall-package <ext>`.
+
+### 🔴 Developing against a local checkout: non-editable path sources only
+
+An extension mounts only if the host can read its `lotek-extension.toml` via
+`importlib.resources.files("<pkg>")` — and that file is copied into the package by hatch
+`force-include` **at wheel-build time**. An `editable = true` path install skips the build, so the
+manifest is absent, `discover_extensions` **silently skips the extension**, and nothing mounts (the entry
+point still resolves and `import <pkg>` still works, which makes this baffling to debug — discovery
+swallows every exception by design). In lotek's `[tool.uv.sources]`, for local dev:
+
+```toml
+scribble = { path = "../lotek-extensions/scribble" }   # NOT editable = true
+```
+
+Revert the override and re-sync to the **released tag** before the final gate run, or the suite proves
+unreleased code.
 
 ## Shipping a change back to lotek (pinned git deps — vendoring is retired)
 
