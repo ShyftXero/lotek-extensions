@@ -3,7 +3,7 @@ name = "scribble"
 version = "0.1.0.dev0"
 description = "Pentest vulnerability database + reporting engine (FACTION-inspired), mountable into Lotek."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "flask>=3.0.0",
     "flask-wtf>=1.2.0",

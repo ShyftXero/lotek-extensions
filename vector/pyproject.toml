@@ -3,7 +3,7 @@ name = "vector"
 version = "0.1.0.dev0"
 description = "Attack-path visualization: author interactive kill-chain diagrams in the browser and export a self-contained HTML deliverable. Mountable into Lotek or run standalone."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "flask>=3.0.0",
     "flask-wtf>=1.2.0",
