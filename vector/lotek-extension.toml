@@ -35,6 +35,9 @@ icon = "◭"
 # lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
+# Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
+docs = "docs/VECTOR.md"
+docs_title = "Vector (attack paths)"
 
 # Tables this extension OWNS (see the equivalent block in Scribble): the host may carry them through a
 # database migration, attribute them for drop/truncate, and never touch a table nobody claims.

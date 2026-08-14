@@ -35,6 +35,10 @@ icon = "*"
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
 
+# Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
+docs = "docs/CREAM.md"
+docs_title = "CREAM (quoting & invoicing)"
+
 # Tables this extension OWNS: the host may carry them through a migration, attribute them for
 # drop/truncate, and never touch a table nobody claims. tests/test_extension_schema.py requires this.
 [db]

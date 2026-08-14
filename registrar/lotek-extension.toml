@@ -27,6 +27,9 @@ icon = "⌘"
 # lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
+# Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
+docs = "docs/REGISTRAR.md"
+docs_title = "Registrar (offensive infra)"
 
 # Tables this extension OWNS. tests/test_extension_schema.py requires this block.
 [db]
