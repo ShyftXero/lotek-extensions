@@ -20,6 +20,13 @@ because it takes no cookie).
 SHAPE: the document/line JSON is produced by ``cream.api``'s serializers, not a second copy of them. An
 agent reading a document over this surface and over the browser one must not be told two different
 shapes, and money must cross both boundaries the same way (:mod:`cream.money`).
+
+IDEMPOTENCY: the create-shaped writes (``POST /documents``, ``POST /documents/<id>/line-items``) run
+through the host's injected idempotency seam (``extras['idempotent']``, the same one core reuses for its
+resource-minting POSTs). An agent that retries a create with the same ``Idempotency-Key`` header (or
+``idempotency_key`` body field) gets the ORIGINAL resource back instead of a duplicate; with no key the
+seam calls the handler directly and behavior is byte-for-byte unchanged. ``/sync`` writes nothing and
+``/issue``/``/void`` deliberately do not exist (human-only), so neither is wrapped.
 """
 
 from __future__ import annotations
@@ -45,12 +52,48 @@ machine_bp = Blueprint("cream_machine", __name__)
 machine_bp.before_request(host.authenticate)
 
 
+# The bodies live as plain dicts so the idempotency seam (below) can also return them: ``produce`` must
+# hand the seam ``(dict, int)`` — a jsonified ``Response`` would be un-storable — while the cookieless
+# non-wrapped routes still return them jsonified.
+_FORBIDDEN_BODY = {"error": "forbidden", "detail": "not an operator on this engagement"}
+_NOT_FOUND_BODY = {"error": "not_found", "detail": "document not found"}
+
+
 def _forbidden():
-    return jsonify({"error": "forbidden", "detail": "not an operator on this engagement"}), 403
+    return jsonify(_FORBIDDEN_BODY), 403
 
 
 def _not_found():
-    return jsonify({"error": "not_found", "detail": "document not found"}), 404
+    return jsonify(_NOT_FOUND_BODY), 404
+
+
+def _idempotency_key() -> str | None:
+    """The request's idempotency key, or ``None``. The ``Idempotency-Key`` header wins; a body
+    ``idempotency_key`` field is the fallback so a client that cannot set headers can still opt in. An
+    empty/whitespace value is treated as absent (the seam then runs the mutation directly). Mirrors
+    core's ``app.api_v1._idempotency_key``."""
+    header = (request.headers.get("Idempotency-Key") or "").strip()
+    if header:
+        return header
+    body = request.get_json(silent=True)
+    if isinstance(body, dict):
+        field = body.get("idempotency_key")
+        if isinstance(field, str) and field.strip():
+            return field.strip()
+    return None
+
+
+def _idempotent(actor, key, produce):
+    """Run ``produce`` (``() -> (dict, int)``) through the HOST idempotency seam so a retried create with
+    the same key returns the ORIGINAL resource instead of a duplicate — the same seam core reuses for its
+    own resource-minting POSTs (``extras['idempotent']``). The seam itself is a no-op when ``key`` is
+    falsy (it calls ``produce`` directly and stores nothing), so behavior is byte-for-byte unchanged
+    without a key. Falls back to a direct call if the host injected no seam (older host), never failing
+    closed — idempotency is an enhancement, not an auth gate."""
+    seam = host.host_hook("idempotent")
+    if seam is None:
+        return produce()
+    return seam(actor, key, produce)
 
 
 def _load_visible_or_none(db, doc_id: uuid.UUID) -> Document | None:
@@ -98,76 +141,101 @@ def create_document():
     The brand defaults (currency, tax label/rate, quote RoE terms) are applied exactly as the browser
     ``POST <url_prefix>/api/documents`` applies them — an agent-created draft that rendered with a
     different currency or no tax line than a dashboard-created one would be a silent reporting defect.
+
+    Retried-create protection: an ``Idempotency-Key`` header (or ``idempotency_key`` body field) makes a
+    replayed POST return the ORIGINAL created document instead of minting a second draft — the whole
+    handler is ``produce``, so with no key supplied the seam calls it directly and behavior is unchanged.
     """
     actor = host.actor()
-    body = request.get_json(silent=True) or {}
-    kind = DocKind.quote if body.get("kind") == "quote" else DocKind.invoice
-    raw = body.get("engagement_id")
-    if not raw:
-        return jsonify({"error": "bad_request", "detail": "engagement_id is required"}), 400
-    try:
-        eid = uuid.UUID(str(raw))
-    except (ValueError, TypeError):
-        return jsonify({"error": "bad_request", "detail": "engagement_id must be a UUID"}), 400
-    if not host_can_operate_on(eid):  # engagement-level authz BEFORE any write (INV-TENANCY-05)
-        return _forbidden()
-    client_id = None
-    client_raw = body.get("client_id")
-    if client_raw:
+    key = _idempotency_key()
+
+    def produce() -> tuple[dict, int]:
+        body = request.get_json(silent=True) or {}
+        kind = DocKind.quote if body.get("kind") == "quote" else DocKind.invoice
+        raw = body.get("engagement_id")
+        if not raw:
+            return {"error": "bad_request", "detail": "engagement_id is required"}, 400
         try:
-            client_id = uuid.UUID(str(client_raw))
+            eid = uuid.UUID(str(raw))
         except (ValueError, TypeError):
-            return jsonify({"error": "bad_request", "detail": "client_id must be a UUID"}), 400
-    with get_config().session_factory() as db:
-        brand = get_brand(db)
-        doc = Document(
-            kind=kind,
-            title=(body.get("title") or "Untitled")[:255],
-            engagement_id=eid,
-            client_id=client_id,
-            currency=(body.get("currency") or brand.default_currency or "USD")[:8],
-            tax_label=body.get("tax_label") or brand.default_tax_label,
-            tax_pct=pct(body.get("tax_pct"), default=pct(brand.default_tax_pct)),
-            roe_terms=body.get("roe_terms") or (brand.default_roe_terms if kind is DocKind.quote else None),
-            authorization_required=bool(body.get("authorization_required")) or kind is DocKind.quote,
-            # Attribution comes from the PAT principal. `current_actor_id()` is session-only and is None
-            # on a machine request, which would leave every agent-drafted document unattributed.
-            owner_id=getattr(actor, "id", None),
-            created_by=getattr(actor, "username", None),
-        )
-        db.add(doc)
-        db.commit()
-        return jsonify(_doc_json(doc)), 201
+            return {"error": "bad_request", "detail": "engagement_id must be a UUID"}, 400
+        if not host_can_operate_on(eid):  # engagement-level authz BEFORE any write (INV-TENANCY-05)
+            return _FORBIDDEN_BODY, 403
+        client_id = None
+        client_raw = body.get("client_id")
+        if client_raw:
+            try:
+                client_id = uuid.UUID(str(client_raw))
+            except (ValueError, TypeError):
+                return {"error": "bad_request", "detail": "client_id must be a UUID"}, 400
+        with get_config().session_factory() as db:
+            brand = get_brand(db)
+            doc = Document(
+                kind=kind,
+                title=(body.get("title") or "Untitled")[:255],
+                engagement_id=eid,
+                client_id=client_id,
+                currency=(body.get("currency") or brand.default_currency or "USD")[:8],
+                tax_label=body.get("tax_label") or brand.default_tax_label,
+                tax_pct=pct(body.get("tax_pct"), default=pct(brand.default_tax_pct)),
+                roe_terms=(
+                    body.get("roe_terms")
+                    or (brand.default_roe_terms if kind is DocKind.quote else None)
+                ),
+                authorization_required=bool(body.get("authorization_required")) or kind is DocKind.quote,
+                # Attribution comes from the PAT principal. `current_actor_id()` is session-only and is None
+                # on a machine request, which would leave every agent-drafted document unattributed.
+                owner_id=getattr(actor, "id", None),
+                created_by=getattr(actor, "username", None),
+            )
+            db.add(doc)
+            db.commit()
+            return _doc_json(doc), 201
+
+    body_out, status = _idempotent(actor, key, produce)
+    return jsonify(body_out), status
 
 
 @machine_bp.post("/documents/<uuid:doc_id>/line-items")
 @host.require_scope("write")
 @request_body(AddLineItemRequest)
 def add_item(doc_id: uuid.UUID):
-    """Add a line item to a draft document (operator on its engagement only)."""
-    body = request.get_json(silent=True) or {}
-    with get_config().session_factory() as db:
-        doc = _load_visible_or_none(db, doc_id)
-        if doc is None:
-            return _not_found()
-        # Resolve the document FIRST, then ask the host about *that document's* engagement — never about
-        # an engagement id the caller supplied.
-        if not host_can_operate_on(doc.engagement_id):
-            return _forbidden()
-        try:
-            li = add_line_item(
-                db, doc,
-                description=(body.get("description") or "Item")[:512],
-                detail=body.get("detail"),
-                qty=body.get("qty", 1),
-                unit=str(body.get("unit") or DEFAULT_UNIT)[:16],
-                unit_price=body.get("unit_price", 0),
-                source=str(body.get("source") or "manual")[:128],
-            )
-        except DocumentFrozen as _e:
-            return jsonify({"error": "conflict", "detail": "Document can no longer be modified."}), 409
-        db.commit()
-        return jsonify(_line_json(li)), 201
+    """Add a line item to a draft document (operator on its engagement only).
+
+    Wrapped in the same retried-create idempotency seam as ``create_document``: a replayed POST with the
+    same ``Idempotency-Key`` returns the ORIGINAL added line item rather than appending a duplicate. No
+    key supplied → the seam runs ``produce`` directly and the end state is byte-for-byte unchanged.
+    """
+    actor = host.actor()
+    key = _idempotency_key()
+
+    def produce() -> tuple[dict, int]:
+        body = request.get_json(silent=True) or {}
+        with get_config().session_factory() as db:
+            doc = _load_visible_or_none(db, doc_id)
+            if doc is None:
+                return _NOT_FOUND_BODY, 404
+            # Resolve the document FIRST, then ask the host about *that document's* engagement — never
+            # about an engagement id the caller supplied.
+            if not host_can_operate_on(doc.engagement_id):
+                return _FORBIDDEN_BODY, 403
+            try:
+                li = add_line_item(
+                    db, doc,
+                    description=(body.get("description") or "Item")[:512],
+                    detail=body.get("detail"),
+                    qty=body.get("qty", 1),
+                    unit=str(body.get("unit") or DEFAULT_UNIT)[:16],
+                    unit_price=body.get("unit_price", 0),
+                    source=str(body.get("source") or "manual")[:128],
+                )
+            except DocumentFrozen as _e:
+                return {"error": "conflict", "detail": "Document can no longer be modified."}, 409
+            db.commit()
+            return _line_json(li), 201
+
+    body_out, status = _idempotent(actor, key, produce)
+    return jsonify(body_out), status
 
 
 @machine_bp.post("/documents/<uuid:doc_id>/sync")
