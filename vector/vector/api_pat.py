@@ -18,16 +18,17 @@ SECURITY (fail-closed):
 CSRF: the host exempts this prefix (manifest ``[host] machine_prefix``). Sound ONLY because these routes
 accept no cookie — never add a cookie fallback, never widen the prefix over the browser ``/api``.
 
-ID TYPE: diagram ids are ``int`` here because :class:`vector.models.Diagram` is still Integer-keyed, the
-same as the browser surface's ``<int:diagram_id>`` routes. lotek's own vendored snapshot of Vector has
-since been migrated to UUIDv7 keys; this package has NOT, and a schema migration is not an API port's
-business. See ``_actor_owner_id`` for what that costs while mounted, and ``plans/`` for the follow-up.
+ID TYPE: diagram ids are ``uuid.UUID`` here — :class:`vector.models.Diagram` is UUIDv7-keyed (matching
+lotek's core keys), the same as the browser surface's ``<uuid:diagram_id>`` routes. The PAT principal's
+id is likewise a ``uuid.UUID`` and is stored as the owner; see ``_actor_owner_id`` for how a non-UUID
+principal id degrades loudly to a NULL owner.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import or_, select
@@ -56,22 +57,20 @@ def _clean_name(raw, fallback: str = "Untitled attack path") -> str:
 
 
 def _actor_owner_id(actor):
-    """The PAT principal's id, if this package can actually store it as an owner.
+    """The PAT principal's id, if it is a ``uuid.UUID`` that can be stored as an owner.
 
-    ``Diagram.owner_id`` is an ``Integer`` column while lotek's core ``User.id`` is a UUIDv7, so a mounted
-    host's principal id does not fit. Degrade LOUDLY rather than binding a UUID into an Integer column:
-    return None and warn, exactly as ``vector.deps.current_actor_id`` already does for the browser
-    surface. The consequence is a NULL owner (admin-visible only) — the SAME pre-existing limitation the
-    cookie surface has today, not one this machine API introduces. It disappears when Vector migrates to
-    UUIDv7 keys, at which point this guard accepts ``uuid.UUID`` instead.
+    lotek's core keys ``User`` on UUIDv7 (v2), so a mounted host's principal id is a ``uuid.UUID`` and is
+    stored directly as ``Diagram.owner_id`` (a ``Uuid`` column). A non-UUID principal id (a stub/standalone
+    principal, or a legacy int) cannot be bound into that column, so degrade LOUDLY — return None and warn,
+    exactly as ``vector.deps.current_actor_id`` does for the browser surface — rather than silently
+    attributing the row to the wrong owner. The consequence is a NULL owner, visible only to admins.
     """
     ident = getattr(actor, "id", None)
-    if isinstance(ident, int) and not isinstance(ident, bool):
+    if isinstance(ident, uuid.UUID):
         return ident
     if ident is not None:
         logging.getLogger("vector").warning(
-            "machine api: PAT actor id is %s, not an int; diagram owner will be NULL until Vector's "
-            "keys are migrated to UUIDv7",
+            "machine api: PAT actor id is %s, not a uuid.UUID; diagram owner will be NULL",
             type(ident).__name__,
         )
     return None
@@ -93,7 +92,7 @@ def _visible_stmt(actor):
     return select(Diagram).where(or_(Diagram.owner_id == uid, Diagram.builtin.is_(True)))
 
 
-def _load_visible_or_none(db, actor, diagram_id: int) -> Diagram | None:
+def _load_visible_or_none(db, actor, diagram_id: uuid.UUID) -> Diagram | None:
     row = db.get(Diagram, diagram_id)
     if row is None:
         return None
@@ -122,9 +121,9 @@ def list_diagrams():
         return jsonify(diagrams=[_dict(d) for d in rows])
 
 
-@machine_bp.get("/diagrams/<int:diagram_id>")
+@machine_bp.get("/diagrams/<uuid:diagram_id>")
 @host.require_scope("read")
-def get_diagram(diagram_id: int):
+def get_diagram(diagram_id: uuid.UUID):
     """Fetch one diagram's normalized vector.attackpath/v1 model, if visible to the token's user."""
     actor = host.actor()
     with get_config().session_factory() as db:
@@ -156,10 +155,10 @@ def create_diagram():
         return jsonify(id=row.id, name=row.name), 201
 
 
-@machine_bp.put("/diagrams/<int:diagram_id>")
+@machine_bp.put("/diagrams/<uuid:diagram_id>")
 @host.require_scope("write")
 @request_body(UpdateDiagramRequest)
-def update_diagram(diagram_id: int):
+def update_diagram(diagram_id: uuid.UUID):
     """Update a diagram's name and/or model. Owner or admin only; builtin examples are read-only."""
     actor = host.actor()
     body = request.get_json(silent=True) or {}
@@ -177,9 +176,9 @@ def update_diagram(diagram_id: int):
         return jsonify(id=d.id, name=d.name)
 
 
-@machine_bp.delete("/diagrams/<int:diagram_id>")
+@machine_bp.delete("/diagrams/<uuid:diagram_id>")
 @host.require_scope("write")
-def delete_diagram(diagram_id: int):
+def delete_diagram(diagram_id: uuid.UUID):
     """Delete a diagram. Owner or admin only; builtin examples cannot be deleted."""
     actor = host.actor()
     with get_config().session_factory() as db:
@@ -190,12 +189,12 @@ def delete_diagram(diagram_id: int):
             return jsonify({"error": "forbidden", "detail": "builtin diagrams are read-only"}), 403
         db.delete(d)
         db.commit()
-        return jsonify(deleted=diagram_id)
+        return jsonify(deleted=str(diagram_id))
 
 
-@machine_bp.get("/diagrams/<int:diagram_id>/export.html")
+@machine_bp.get("/diagrams/<uuid:diagram_id>/export.html")
 @host.require_scope("read")
-def export_diagram(diagram_id: int):
+def export_diagram(diagram_id: uuid.UUID):
     """Render a saved diagram to a self-contained HTML deliverable (report evidence)."""
     actor = host.actor()
     with get_config().session_factory() as db:
