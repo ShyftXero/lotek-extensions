@@ -1,0 +1,75 @@
+# Auto-tag a dated release on every push to main, matching lotek core's version scheme.
+#
+# On merge to main we compute v<build-id> (YYYY.M.D.HHMMSS+g<shorthash>, from HEAD's committer date +
+# abbreviated hash — see scripts/build_id.py, which mirrors core's src/app/_version.py) and create both
+# the annotated git tag and a GitHub Release. That gives lotek a dated release tag to pin its extensions
+# to, instead of a raw SHA — and the tag string is directly comparable to core's own tags.
+#
+# No loop: a workflow with `on: push: branches` only fires on branch pushes, and pushing a *tag* ref
+# (refs/tags/*) is not a branch push, so the tag this job creates does NOT re-trigger the workflow.
+# The `skip if the tag already exists` guard makes a manual re-run (workflow_dispatch) a no-op too.
+name: release-tag
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}  # allow a manual re-run; it no-ops if the tag already exists
+
+# Least privilege: creating a tag + Release needs write to repository contents only.
+permissions:
+  contents: write
+
+concurrency:
+  # One tagging run at a time; don't cancel an in-flight one (it may be mid-push).
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # need committer date/hash of HEAD and the existing tag list
+          fetch-tags: true
+
+      - name: Compute release tag
+        id: build_id
+        run: |
+          set -euo pipefail
+          tag="$(python3 scripts/build_id.py)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Computed release tag: ${tag}"
+
+      - name: Skip if tag already exists
+        id: exists
+        env:
+          TAG: ${{ steps.build_id.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists locally — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create + push annotated tag and GitHub Release
+        if: steps.exists.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # default token; contents:write is enough for tag + release
+          TAG: ${{ steps.build_id.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "lotek-agent[bot]"
+          git config user.email "311620488+lotek-agent[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "refs/tags/${TAG}"
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes "Automated dated release for lotek-extensions at ${GITHUB_SHA}. Pin lotek's extensions to this tag." \
+            --target "${GITHUB_SHA}"
