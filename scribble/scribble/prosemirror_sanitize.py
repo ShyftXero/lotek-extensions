@@ -71,7 +71,11 @@ def _clean_heading_attrs(attrs: Any) -> dict[str, int]:
     level: Any = attrs.get("level", 1) if isinstance(attrs, dict) else 1
     try:
         level = int(level)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is not hypothetical: Python's json accepts the non-standard `Infinity` /
+        # `-Infinity` literals, and `int(float("inf"))` raises OverflowError — NOT ValueError. A write
+        # token posting {"type":"heading","attrs":{"level":Infinity}} would otherwise 500 the request
+        # from inside the module whose whole job is handling untrusted JSON safely.
         level = 1
     return {"level": min(max(level, 1), 6)}
 

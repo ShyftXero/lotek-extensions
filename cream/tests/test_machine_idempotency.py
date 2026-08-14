@@ -14,9 +14,11 @@ exist (human-only), so neither can be — nothing to test there.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 import pytest
+from flask import request
 
 from cream.models import Document
 
@@ -27,9 +29,11 @@ def _make_fake_idempotent():
 
       * key falsy, or a principal with no usable ``.id`` -> NOT idempotent (run ``produce`` directly);
       * otherwise the first call for ``(principal_id, key)`` runs ``produce`` once and, ONLY IF it is a
-        terminal success (2xx), stores its ``(body, status)``; a repeat replays a stored 2xx WITHOUT
-        re-running ``produce``. A non-2xx (a validation/authz failure) is NOT memoized — a retry
-        re-executes once the condition clears — mirroring ``app.idempotency`` after its hardening.
+        terminal success (2xx), stores its ``(body, status)`` together with a REQUEST FINGERPRINT
+        (endpoint + path params + body hash); a repeat whose fingerprint MATCHES replays the stored 2xx
+        WITHOUT re-running ``produce``, and a repeat whose fingerprint DIFFERS is answered **422** rather
+        than silently replaying or silently re-executing. A non-2xx is NOT memoized — a retry re-executes
+        once the condition clears. All of this mirrors ``app.idempotency`` after its hardening.
     """
     store: dict[tuple, tuple[dict, int]] = {}
 
@@ -45,12 +49,28 @@ def _make_fake_idempotent():
         pid = _principal_id(principal)
         if pid is None:
             return produce()
+        # The slot is (principal, key) — but a REQUEST FINGERPRINT is stored beside it and COMPARED,
+        # exactly as `app.idempotency` does. This fake originally keyed on (principal, key) alone, which
+        # made it promise something production does not: that a retry with a CHANGED body replays the
+        # original. A test written against that passed here and would have failed mounted. A fake kinder
+        # than production is worse than no fake — it certifies the wrong contract.
         slot = (pid, str(key))
+        fingerprint = (
+            request.endpoint or "",
+            repr(sorted((request.view_args or {}).items(), key=lambda kv: kv[0])),
+            hashlib.sha256(request.get_data() or b"").hexdigest(),
+        )
         if slot in store:
-            return store[slot]
+            stored_fp, stored_response = store[slot]
+            if stored_fp != fingerprint:
+                # Same key, different request: a caller bug. 422, never a silent replay or re-execute.
+                return ({"error": "unprocessable_entity",
+                         "detail": "this Idempotency-Key was already used for a different request; "
+                                   "use a new key for a new operation"}, 422)
+            return stored_response
         body, status = produce()
         if 200 <= status < 300:  # only terminal successes are memoized (see docstring)
-            store[slot] = (body, status)
+            store[slot] = (fingerprint, (body, status))
         return body, status
 
     idempotent.store = store  # exposed so a test can assert the slot was actually claimed
@@ -81,14 +101,21 @@ def test_repeated_create_with_same_key_header_returns_the_original(pat_client, i
     assert first.status_code == 201, first.get_data(as_text=True)
     id1 = first.get_json()["id"]
 
-    second = pat_client.post(f"{MACHINE}/documents",
-                             json={"engagement_id": str(engagement_id), "title": "Pentest (retry)"},
-                             headers=headers)
-    assert second.status_code == 201
-    # The retry replays the ORIGINAL response verbatim — same id, and the retry's changed title is ignored
-    # because produce() never ran a second time.
-    assert second.get_json()["id"] == id1
-    assert second.get_json()["title"] == "Pentest"
+    # A TRUE retry — byte-identical body — replays the original verbatim without re-running produce().
+    retry = pat_client.post(f"{MACHINE}/documents",
+                            json={"engagement_id": str(engagement_id), "title": "Pentest"},
+                            headers=headers)
+    assert retry.status_code == 201
+    assert retry.get_json()["id"] == id1
+
+    # The same key with a CHANGED body is NOT a retry — it is the caller reusing a key for a different
+    # request, and it is refused. Neither silent option is acceptable: replaying would hand back a
+    # document whose title the caller did not ask for, and re-executing would mint the second draft the
+    # key was sent to prevent.
+    changed = pat_client.post(f"{MACHINE}/documents",
+                              json={"engagement_id": str(engagement_id), "title": "Pentest (retry)"},
+                              headers=headers)
+    assert changed.status_code == 422, changed.get_data(as_text=True)
 
     with session_factory() as db:
         assert db.query(Document).count() == 1, "a retried create must not mint a second draft"

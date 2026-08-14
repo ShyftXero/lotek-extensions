@@ -34,7 +34,9 @@ class CreateEngagementRequest(BaseModel):
     scope_type: str | None = Field("external", description="e.g. 'external' | 'internal' (default external).")
     company_name: str | None = Field(None, description="Optional company/customer display name.")
     idempotency_key: str | None = Field(
-        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+        None,
+        description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
+        "original response; the same key with a DIFFERENT request is refused 422 (use a new key).",
     )
 
 
@@ -78,7 +80,9 @@ class AddFindingRequest(BaseModel):
         "the plain-text description/remediation for any block it supplies.",
     )
     idempotency_key: str | None = Field(
-        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+        None,
+        description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
+        "original response; the same key with a DIFFERENT request is refused 422 (use a new key).",
     )
 
 
@@ -104,7 +108,9 @@ class CreateTemplateRequest(BaseModel):
         "content blocks from the plain-text fields above.",
     )
     idempotency_key: str | None = Field(
-        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+        None,
+        description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
+        "original response; the same key with a DIFFERENT request is refused 422 (use a new key).",
     )
 
 
