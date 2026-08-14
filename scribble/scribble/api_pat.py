@@ -46,22 +46,31 @@ import base64
 import binascii
 import fnmatch
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import select
 
 from scribble import host
 from scribble.api_schemas import (
     AddFindingRequest,
     CreateEngagementRequest,
+    CreateTemplateRequest,
     UploadArtifactRequest,
     request_body,
 )
 from scribble.artifacts_api import _as_int, artifact_url
 from scribble.artifacts_storage import guess_content_type, save_bytes
-from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
-from scribble.deps import get_config, open_session, severity_enum  # noqa: F401
+from scribble.authz import (
+    can_view_client_id,
+    can_view_engagement,
+    host_is_mounted,
+    visible_engagements,
+)
+from scribble.content import schema
+from scribble.deps import get_config, open_session, severity_enum
 from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.models import (
     Artifact,
@@ -71,6 +80,10 @@ from scribble.models import (
     ScribbleVulnMap,
     VulnerabilityTemplate,
 )
+from scribble.prosemirror_sanitize import sanitize_content_json
+from scribble.reporting.context import build_report_context
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 machine_bp = Blueprint("scribble_machine", __name__)
 machine_bp.before_request(host.authenticate)
@@ -155,6 +168,115 @@ def _match_title(pattern: str, title: str) -> bool:
     return fnmatch.fnmatchcase(title.lower(), pattern.lower())
 
 
+# ── host audit + idempotency seams (INV-AUDIT-03 / app/idempotency.py) ───────────────────────────────
+#
+# Reached generically through ``host.host_hook`` rather than a dedicated ``host.py`` accessor: this
+# module does not own ``scribble/host.py``. Both fail OPEN when unmounted (standalone Scribble has no
+# host audit trail and no shared idempotency store) — the same fail-open-when-unmounted posture every
+# other tenancy/attribution hook in this package carries.
+
+
+def _audit(db, verb: str, *, subject_type: str, subject_id=None, before=None, after=None) -> None:
+    """Append one ``ext:scribble:<verb>`` audit row through the host seam, in the SAME session/txn as the
+    change (``db``), so it commits atomically with it. No-op standalone (no host)."""
+    hook = host.host_hook("audit")
+    if hook is None:
+        return
+    hook(
+        db,
+        f"ext:scribble:{verb}",
+        subject_type=subject_type,
+        subject_id=subject_id,
+        before=before,
+        after=after,
+    )
+
+
+def _idempotency_key(data: Any) -> str | None:
+    """The retry key for a mutating request: the ``Idempotency-Key`` header, else a body ``idempotency_key``
+    field. Empty/absent -> None (idempotency is opt-in per request)."""
+    body_key = data.get("idempotency_key") if isinstance(data, dict) else None
+    header_key = request.headers.get("Idempotency-Key")
+    return (header_key or body_key) or None
+
+
+def _with_idempotency(
+    key: str | None, produce: Callable[[], tuple[dict, int]]
+) -> tuple[dict, int]:
+    """Run ``produce`` (``() -> (body_dict, status)``) through the host idempotency seam when a key AND a
+    host are present, so a retried POST replays the stored response instead of executing twice; otherwise
+    run it directly. The seam's DB unique constraint (not Python) arbitrates the concurrent-retry race."""
+    hook = host.host_hook("idempotent")
+    if hook is None or not key:
+        return produce()
+    return hook(host.actor(), key, produce)
+
+
+# ── report rendering helpers (reused by the machine report route) ────────────────────────────────────
+
+
+def _artifact_bytes_reader(artifact_root: Path) -> Callable[[str], bytes | None]:
+    """A ``storage_path -> bytes`` reader confined to ``artifact_root`` — mirrors
+    ``report_html_api._make_artifact_bytes`` (path-escape guard + size ceiling)."""
+    root = artifact_root.resolve()
+
+    def _read(storage_path: str) -> bytes | None:
+        if not storage_path:
+            return None
+        candidate = (root / storage_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None  # path would escape the artifact root — refuse
+        if not candidate.is_file():
+            return None
+        try:
+            if candidate.stat().st_size > _MAX_ARTIFACT_BYTES:
+                return None
+            return candidate.read_bytes()
+        except OSError:
+            return None
+
+    return _read
+
+
+def _inline_url_factory(engagement: Engagement, make_inline_artifact_url) -> Callable[[int], str]:
+    """``artifact_url`` for ``build_report_context``: resolves an inline-image node's artifact id to the
+    renderer-specific placeholder that bakes in the artifact's storage_path."""
+    by_id = {a.id: a.storage_path for a in engagement.artifacts}
+
+    def _url(artifact_id: int) -> str:
+        return make_inline_artifact_url(by_id.get(artifact_id))
+
+    return _url
+
+
+def _author_content_json(data: dict) -> dict:
+    """Build a SANITIZED ``{block_name: prosemirror_doc}`` mapping for a directly-authored finding/template.
+
+    A supplied ``content_json`` dict wins per-block; plain-text ``description``/``remediation`` (and, for a
+    finding, ``references``) fill any block it does not provide. EVERY block — supplied JSON and
+    text-wrapped alike — passes through the ProseMirror sanitizer before it is returned, so no
+    write-scoped caller can persist markup that would execute when the report is opened. (Text wrapped by
+    ``schema.doc_from_text`` passes the sanitizer through unchanged.)"""
+    raw: dict[str, Any] = {}
+    supplied = data.get("content_json")
+    if isinstance(supplied, dict):
+        raw.update(supplied)
+    for block in ("description", "remediation"):
+        if block not in raw:
+            text = data.get(block)
+            if isinstance(text, str) and text.strip():
+                raw[block] = schema.doc_from_text(text)
+    if "references" not in raw:
+        refs = data.get("references")
+        if isinstance(refs, list):
+            refs_text = "\n".join(str(r).strip() for r in refs if str(r).strip())
+            if refs_text:
+                raw["references"] = schema.doc_from_text(refs_text)
+    return sanitize_content_json(raw)
+
+
 # ── 1. POST /engagements ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -194,20 +316,27 @@ def scribble_create_engagement():
             # exist to a token holding no grant under them.
             return jsonify({"error": "not_found", "detail": "client not found"}), 404
 
-    with open_session() as db:
-        eng = Engagement(
-            name=name,
-            scope_type=(data.get("scope_type") or "external"),
-            company_name=(data.get("company_name") or None),
-            client_id=client_id,
-            created_by=actor.username if actor else None,
-            # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so it
-            # cannot be older than itself (no more capability-gating on the mounted extension's schema).
-            owner_id=actor.id if actor else None,
-        )
-        db.add(eng)
-        db.commit()
-        return jsonify({"id": eng.id, "name": eng.name}), 201
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            eng = Engagement(
+                name=name,
+                scope_type=(data.get("scope_type") or "external"),
+                company_name=(data.get("company_name") or None),
+                client_id=client_id,
+                created_by=actor.username if actor else None,
+                # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so
+                # it cannot be older than itself (no more capability-gating on the mounted schema).
+                owner_id=actor.id if actor else None,
+            )
+            db.add(eng)
+            db.flush()  # assign the PK so the audit row + response can reference it
+            body = {"id": eng.id, "name": eng.name}
+            _audit(db, "create_engagement", subject_type="engagement", subject_id=eng.id, after=body)
+            db.commit()
+            return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
 
 
 # ── 2. GET /templates ────────────────────────────────────────────────────────────────────────────────
@@ -266,6 +395,74 @@ def scribble_get_template(template_id: int):
         )
 
 
+# ── 3b. POST /templates — author a reusable vuln template ────────────────────────────────────────────
+
+
+@machine_bp.post("/templates")
+@host.require_scope("write")
+@request_body(CreateTemplateRequest)
+def scribble_create_template():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "bad_request", "detail": "name is required"}), 400
+    category, err = _opt_str(data, "category")
+    if err:
+        return err
+    cvss_vector, err = _opt_str(data, "cvss_vector")
+    if err:
+        return err
+
+    SeverityEnum = severity_enum()
+    sev_raw = (data.get("default_severity") or "medium")
+    if not isinstance(sev_raw, str):
+        return jsonify({"error": "bad_request", "detail": "default_severity must be a string"}), 400
+    try:
+        default_severity = SeverityEnum(sev_raw.strip().lower())
+    except ValueError:
+        return (
+            jsonify({
+                "error": "bad_request",
+                "detail": "default_severity must be one of info|low|medium|high|critical",
+            }),
+            400,
+        )
+
+    references = data.get("references")
+    references = [str(r) for r in references] if isinstance(references, list) else []
+    # description/remediation are packed into content_json blocks and sanitized (references live in the
+    # template's own ``references`` column, so they are NOT folded into a content block here).
+    content_json = _author_content_json({
+        "description": data.get("description"),
+        "remediation": data.get("remediation"),
+        "content_json": data.get("content_json"),
+    })
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            template = VulnerabilityTemplate(
+                name=name,
+                category=category,
+                default_severity=default_severity,
+                cvss_vector=cvss_vector,
+                content_json=content_json,
+                references=references,
+                active=True,
+            )
+            db.add(template)
+            db.flush()
+            body = {"id": template.id}
+            _audit(
+                db, "create_template", subject_type="vuln_template", subject_id=template.id,
+                after={"id": template.id, "name": name, "default_severity": default_severity.value},
+            )
+            db.commit()
+            return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
 # ── 4. POST /engagements/<id>/findings ───────────────────────────────────────────────────────────────
 
 
@@ -295,14 +492,9 @@ def scribble_add_finding(engagement_id: int):
         group_id, err = _opt_int(data, "group_id")
         if err:
             return err
-        if not template_id and not lotek_finding_id:
-            return (
-                jsonify({
-                    "error": "bad_request",
-                    "detail": "template_id or lotek_finding_id is required",
-                }),
-                400,
-            )
+        # Neither id -> the THIRD branch (author a finding directly from the body); handled AFTER this
+        # session closes so its write can run through the idempotency seam. The two id-driven branches
+        # return in place below.
 
         # Resolve the target group; never attach to another engagement's group (defensive).
         group = db.get(FindingGroup, group_id) if group_id else None
@@ -325,52 +517,151 @@ def scribble_add_finding(engagement_id: int):
             for key in ("target_host", "target_port", "target_url"):
                 if data.get(key) is not None:
                     overrides[key] = data[key]
-            finding = EngagementFinding.from_template(template, **overrides)
-            db.add(finding)
-            db.commit()
-            return jsonify({"finding_id": finding.id, "engagement_id": engagement_id}), 201
+            # The WRITE runs through the idempotency seam (its own session), like the direct-author
+            # branch — so a retried template instantiation carrying an Idempotency-Key returns the ORIGINAL
+            # finding instead of a duplicate. Unlike the lotek_finding_id branch (which self-dedups on
+            # source_finding_id), a template instantiation has NO natural dedup key, so the seam is its
+            # only backstop. Only scalars cross into the closure; the template is re-fetched in-session.
+            _tmpl_pk = template_id
 
-        # Promote a single lotek scan finding. Tenancy is decided by the HOST — host.findings().
-        # get_finding applies user_can_view_job internally and returns None for missing, dangling-job,
-        # AND not-authorized alike (fail closed, no existence leak). ``findings()`` itself is None only
-        # when unmounted; treated the same as "nothing there" per its own contract.
-        findings_ns = host.findings()
-        dto = findings_ns.get_finding(lotek_finding_id, actor) if findings_ns is not None else None
-        if dto is None:
-            return jsonify({"error": "not_found", "detail": "lotek finding not found"}), 404
+            def _produce_tmpl() -> tuple[dict, int]:
+                with open_session() as wdb:
+                    tmpl = wdb.get(VulnerabilityTemplate, _tmpl_pk)
+                    if tmpl is None or not tmpl.active:
+                        return {"error": "not_found", "detail": "template not found"}, 404
+                    finding = EngagementFinding.from_template(tmpl, **overrides)
+                    wdb.add(finding)
+                    wdb.flush()  # assign the PK for the audit row + response
+                    body = {"finding_id": finding.id, "engagement_id": engagement_id}
+                    _audit(
+                        wdb, "add_finding", subject_type="finding", subject_id=finding.id,
+                        after={**body, "template_id": _tmpl_pk},
+                    )
+                    wdb.commit()
+                    return body, 201
 
-        # Idempotent promote: if this exact lotek finding was already promoted into this engagement,
-        # return the existing authored finding (precise dedup on source_finding_id) rather than creating
-        # a duplicate. Done here (not inside promote.promote_one) so a retrying tool never re-runs the
-        # heavier template-resolution/content-mapping path for a no-op.
-        already = next(
-            (f for f in engagement.findings if getattr(f, "source_finding_id", None) == dto.id), None
-        )
-        if already is not None:
-            return (
-                jsonify({"finding_id": already.id, "engagement_id": engagement_id, "deduped": True}),
-                200,
+            body, status = _with_idempotency(_idempotency_key(data), _produce_tmpl)
+            return jsonify(body), status
+
+        if lotek_finding_id:
+            # Promote a single lotek scan finding. Tenancy is decided by the HOST — host.findings().
+            # get_finding applies user_can_view_job internally and returns None for missing, dangling-job,
+            # AND not-authorized alike (fail closed, no existence leak). ``findings()`` itself is None only
+            # when unmounted; treated the same as "nothing there" per its own contract.
+            findings_ns = host.findings()
+            dto = findings_ns.get_finding(lotek_finding_id, actor) if findings_ns is not None else None
+            if dto is None:
+                return jsonify({"error": "not_found", "detail": "lotek finding not found"}), 404
+
+            # Idempotent promote: if this exact lotek finding was already promoted into this engagement,
+            # return the existing authored finding (precise dedup on source_finding_id) rather than
+            # creating a duplicate. Done here (not inside promote.promote_one) so a retrying tool never
+            # re-runs the heavier template-resolution/content-mapping path for a no-op.
+            already = next(
+                (f for f in engagement.findings if getattr(f, "source_finding_id", None) == dto.id), None
             )
+            if already is not None:
+                return (
+                    jsonify({"finding_id": already.id, "engagement_id": engagement_id, "deduped": True}),
+                    200,
+                )
 
-        from scribble.promote import promote_one  # lazy: scribble/promote.py is Track D's file
+            from scribble.promote import promote_one  # lazy: scribble/promote.py is Track D's file
 
-        finding = promote_one(
-            db,
-            engagement=engagement,
-            group=group,
-            dto=dto,
-            actor_username=actor_username,
-            order_index=len(siblings),
-        )
-        db.add(finding)  # safe no-op if promote_one already added it to this session
-        # Explicit target_host/target_port/target_url in the request body still win over whatever
-        # promote_one derived from the dto (matches the pre-refactor route: these were always applied
-        # from the request, regardless of the template_id/lotek_finding_id branch).
-        for key in ("target_host", "target_port", "target_url"):
-            if data.get(key) is not None:
-                setattr(finding, key, data[key])
-        db.commit()
-        return jsonify({"finding_id": finding.id, "engagement_id": engagement_id}), 201
+            finding = promote_one(
+                db,
+                engagement=engagement,
+                group=group,
+                dto=dto,
+                actor_username=actor_username,
+                order_index=len(siblings),
+            )
+            db.add(finding)  # safe no-op if promote_one already added it to this session
+            # Explicit target_host/target_port/target_url in the request body still win over whatever
+            # promote_one derived from the dto (matches the pre-refactor route: these were always applied
+            # from the request, regardless of the template_id/lotek_finding_id branch).
+            for key in ("target_host", "target_port", "target_url"):
+                if data.get(key) is not None:
+                    setattr(finding, key, data[key])
+            db.flush()
+            body = {"finding_id": finding.id, "engagement_id": engagement_id}
+            _audit(
+                db, "add_finding", subject_type="finding", subject_id=finding.id,
+                after={**body, "lotek_finding_id": lotek_finding_id},
+            )
+            db.commit()
+            return jsonify(body), 201
+
+        # ── THIRD branch: author a finding directly from the body ──
+        # Validation (reads only) runs here, inside the tenancy-checked session; the WRITE runs in a
+        # separate produce() so it can be replayed through the idempotency seam. ``title`` + ``severity``
+        # become required (there is no template/scan finding to inherit them from). Any supplied
+        # content_json is sanitized (allowlisted node/mark set) before persist — a write token cannot
+        # store markup that would execute when the report is opened.
+        author_title, err = _opt_str(data, "title")
+        if err:
+            return err
+        if not author_title:
+            return (
+                jsonify({
+                    "error": "bad_request",
+                    "detail": "template_id, lotek_finding_id, or a title (to author directly) is required",
+                }),
+                400,
+            )
+        sev_raw = data.get("severity")
+        if not isinstance(sev_raw, str) or not sev_raw.strip():
+            return jsonify({
+                "error": "bad_request", "detail": "severity is required to author a finding",
+            }), 400
+        try:
+            author_severity = severity_enum()(sev_raw.strip().lower())
+        except ValueError:
+            return (
+                jsonify({
+                    "error": "bad_request",
+                    "detail": "severity must be one of info|low|medium|high|critical",
+                }),
+                400,
+            )
+        author_cvss_vector, err = _opt_str(data, "cvss_vector")
+        if err:
+            return err
+        author_content_json = _author_content_json(data)
+        author_group_pk = group.id if group is not None else None
+        author_order = len(siblings)
+        author_target_host = data.get("target_host")
+        author_target_url = data.get("target_url")
+        _tp = data.get("target_port")
+        author_target_port = str(_tp) if _tp is not None else None
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            finding = EngagementFinding(
+                engagement_id=engagement_id,
+                group_id=author_group_pk,
+                order_index=author_order,
+                created_by=actor_username,
+                title=author_title,
+                severity=author_severity,
+                cvss_vector=author_cvss_vector,
+                content_json=author_content_json,
+                target_host=author_target_host,
+                target_port=author_target_port,
+                target_url=author_target_url,
+            )
+            db.add(finding)
+            db.flush()
+            body = {"finding_id": finding.id, "engagement_id": engagement_id}
+            _audit(
+                db, "add_finding", subject_type="finding", subject_id=finding.id,
+                after={**body, "authored": True, "severity": author_severity.value},
+            )
+            db.commit()
+            return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
 
 
 # ── 5. POST /vuln-map ────────────────────────────────────────────────────────────────────────────────
@@ -400,20 +691,34 @@ def scribble_create_vuln_map():
             400,
         )
     actor = host.actor()
+    # The template existence check is a read; do it up front so a missing template 404s WITHOUT claiming
+    # an idempotency slot (a validation failure must not be replayed as the stored response for the key).
     with open_session() as db:
         t = db.get(VulnerabilityTemplate, template_id)
         if t is None or not t.active:  # don't map to a missing/retired template
             return jsonify({"error": "not_found", "detail": "template not found"}), 404
-        m = ScribbleVulnMap(
-            source=source,
-            title_pattern=title_pattern,
-            dedupe_prefix=dedupe_prefix,
-            template_id=template_id,
-            created_by=actor.username if actor else None,
-        )
-        db.add(m)
-        db.commit()
-        return jsonify({"id": m.id}), 201
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            m = ScribbleVulnMap(
+                source=source,
+                title_pattern=title_pattern,
+                dedupe_prefix=dedupe_prefix,
+                template_id=template_id,
+                created_by=actor.username if actor else None,
+            )
+            db.add(m)
+            db.flush()
+            body = {"id": m.id}
+            _audit(
+                db, "create_vuln_map", subject_type="vuln_map", subject_id=m.id,
+                after={"id": m.id, "template_id": template_id},
+            )
+            db.commit()
+            return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
 
 
 # ── 6. GET /vuln-map ─────────────────────────────────────────────────────────────────────────────────
@@ -521,6 +826,105 @@ def scribble_promote_job(engagement_id: int, job_id: str):
             "parents": result.get("parents", 0),
         }
     )
+
+
+# ── 8b. GET /engagements — list the engagements this token may see ───────────────────────────────────
+
+
+def _engagement_summary(engagement: Engagement) -> dict:
+    return {
+        "id": engagement.id,
+        "name": engagement.name,
+        "client_id": str(engagement.client_id) if engagement.client_id is not None else None,
+        "scope_type": engagement.scope_type,
+        "company_name": engagement.company_name,
+        "status": engagement.status,
+    }
+
+
+@machine_bp.get("/engagements")
+@host.require_scope("read")
+def scribble_list_engagements():
+    """List engagements the caller may see — SCOPED, never the whole table. ``visible_engagements`` narrows
+    to the actor's client set (in SQL when the host exposes the set, else per-row predicate), exactly like
+    the cookie dashboard, so a read token never enumerates another tenant's engagements."""
+    actor = host.actor()
+    with open_session() as db:
+        stmt = select(Engagement).order_by(Engagement.id)
+        rows = visible_engagements(db, stmt, actor)
+        items = [_engagement_summary(e) for e in rows]
+    return jsonify({"count": len(items), "items": items})
+
+
+# ── 8c. GET /engagements/<id> — one engagement the caller may see ────────────────────────────────────
+
+
+@machine_bp.get("/engagements/<int:engagement_id>")
+@host.require_scope("read")
+def scribble_get_engagement(engagement_id: int):
+    actor = host.actor()
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        # Missing and not-visible are the SAME 404 — no existence oracle over the id space.
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+        summary = _engagement_summary(engagement)
+        summary["finding_count"] = len(engagement.findings)
+        summary["group_count"] = len(engagement.groups)
+        summary["artifact_count"] = len(engagement.artifacts)
+    return jsonify(summary)
+
+
+# ── 8d. GET /engagements/<id>/report — stream the rendered deliverable (html|docx) ───────────────────
+
+
+@machine_bp.get("/engagements/<int:engagement_id>/report")
+@host.require_scope("read")
+def scribble_engagement_report(engagement_id: int):
+    """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
+    pdf. Reuses the SAME ``build_report_context`` + renderers the cookie report routes use (artifact bytes
+    embedded), so the machine deliverable is byte-identical to the browser one.
+
+    Reading the whole deliverable — every client finding + evidence image — is a DISCLOSURE event, so it
+    EMITS an ``ext:scribble:report_read`` audit row (who/what/format) even though it mutates no report
+    data. Tenancy is the same ``can_view_engagement`` predicate as every other engagement-scoped route;
+    missing and not-visible are the same 404."""
+    actor = host.actor()
+    fmt = (request.args.get("format") or "html").strip().lower()
+    if fmt not in ("html", "docx"):
+        return jsonify({"error": "bad_request", "detail": "format must be html or docx"}), 400
+
+    cfg = get_config()
+    reader = _artifact_bytes_reader(cfg.artifact_root)
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+
+        if fmt == "docx":
+            from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
+
+            ctx = build_report_context(
+                engagement, artifact_url=_inline_url_factory(engagement, make_inline_artifact_url)
+            )
+            payload: bytes | str = render_report_docx(ctx, artifact_bytes=reader)
+            mimetype = _DOCX_MIME
+        else:
+            from scribble.reporting.render_html import make_inline_artifact_url, render_report_html
+
+            ctx = build_report_context(
+                engagement, artifact_url=_inline_url_factory(engagement, make_inline_artifact_url)
+            )
+            payload = render_report_html(ctx, inline_assets=True, artifact_bytes=reader)
+            mimetype = "text/html"
+
+        _audit(
+            db, "report_read", subject_type="engagement", subject_id=engagement_id,
+            after={"format": fmt, "actor": actor.username if actor else None},
+        )
+        db.commit()  # persist the disclosure audit row
+
+    return Response(payload, mimetype=mimetype)
 
 
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────

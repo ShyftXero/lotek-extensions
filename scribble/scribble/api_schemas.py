@@ -7,6 +7,8 @@ Declarative only — the handlers keep their own lenient parsing and error contr
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 REQUEST_MODEL_ATTR = "__lotek_request_model__"
@@ -31,13 +33,22 @@ class CreateEngagementRequest(BaseModel):
     )
     scope_type: str | None = Field("external", description="e.g. 'external' | 'internal' (default external).")
     company_name: str | None = Field(None, description="Optional company/customer display name.")
+    idempotency_key: str | None = Field(
+        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+    )
 
 
 class AddFindingRequest(BaseModel):
     """Body of ``POST /scribble/machine/engagements/{engagement_id}/findings`` (write scope).
 
-    Provide ``template_id`` (instantiate a library vuln template) OR ``lotek_finding_id`` (promote a scan
-    finding). At least one is required.
+    THREE mutually-exclusive authoring modes, tried in this order:
+      * ``template_id`` — instantiate a library vuln template;
+      * ``lotek_finding_id`` — promote a scan finding;
+      * neither — AUTHOR a finding directly from ``title`` + ``severity`` (+ the optional prose/CVSS/
+        reference/target fields below). ``title`` and ``severity`` are then required.
+
+    Any supplied ``content_json`` is sanitized (allowlisted ProseMirror node/mark set) before it is
+    persisted — a write-scoped PAT cannot store markup that would execute when the report is opened.
     """
 
     template_id: int | None = Field(None, description="VulnerabilityTemplate id to instantiate.")
@@ -46,6 +57,55 @@ class AddFindingRequest(BaseModel):
     target_host: str | None = Field(None, description="Override target host on the authored finding.")
     target_port: int | None = Field(None, description="Override target port.")
     target_url: str | None = Field(None, description="Override target URL.")
+    # ── direct-authoring branch (no template_id / no lotek_finding_id) ──
+    title: str | None = Field(None, description="Finding title (required when authoring directly).")
+    severity: str | None = Field(
+        None, description="info | low | medium | high | critical (required when authoring directly)."
+    )
+    description: str | None = Field(
+        None, description="Plain-text description; wrapped into the 'description' content block."
+    )
+    remediation: str | None = Field(
+        None, description="Plain-text remediation; wrapped into the 'remediation' content block."
+    )
+    cvss_vector: str | None = Field(None, description="Optional CVSS vector string.")
+    references: list[str] | None = Field(
+        None, description="Optional reference URLs/text; wrapped into the 'references' content block."
+    )
+    content_json: dict[str, Any] | None = Field(
+        None,
+        description="Optional {block_name: prosemirror_doc} content, sanitized before persist. Supersedes "
+        "the plain-text description/remediation for any block it supplies.",
+    )
+    idempotency_key: str | None = Field(
+        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+    )
+
+
+class CreateTemplateRequest(BaseModel):
+    """Body of ``POST /scribble/machine/templates`` — create a reusable vuln template (write scope)."""
+
+    name: str = Field(..., description="Template name (required).")
+    category: str | None = Field(None, description="Optional category label.")
+    default_severity: str = Field(
+        "medium", description="info | low | medium | high | critical (default medium)."
+    )
+    description: str | None = Field(
+        None, description="Plain-text description; packed into the 'description' content block."
+    )
+    remediation: str | None = Field(
+        None, description="Plain-text remediation; packed into the 'remediation' content block."
+    )
+    references: list[str] | None = Field(None, description="Optional reference URLs/text.")
+    content_json: dict[str, Any] | None = Field(
+        None,
+        description="Optional ProseMirror content blocks ({block_name: doc}). Sanitized (allowlisted "
+        "node/mark set) before persist. When omitted, 'description'/'remediation' are packed into "
+        "content blocks from the plain-text fields above.",
+    )
+    idempotency_key: str | None = Field(
+        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+    )
 
 
 class UploadArtifactRequest(BaseModel):
