@@ -16,8 +16,8 @@ from __future__ import annotations
 import functools
 import os
 import tempfile
-from dataclasses import dataclass, field
 import uuid
+from dataclasses import dataclass, field
 
 import pytest
 from flask import jsonify
@@ -49,11 +49,11 @@ class StubActor:
     cannot see.
 
     ``role`` is the role *value* string ("viewer"|"operator"|"admin"), matching the real ``PatActor``.
-    ``id`` is an int because ``vector.models.Diagram.owner_id`` is still an Integer column — see
-    ``api_pat._actor_owner_id``.
+    ``id`` is a ``uuid.UUID`` because lotek's core keys ``User`` on UUIDv7 (v2) and
+    ``vector.models.Diagram.owner_id`` is a ``Uuid`` column — see ``api_pat._actor_owner_id``.
     """
 
-    id: int = 7
+    id: uuid.UUID = uuid.UUID(int=7)
     username: str = "agent"
     role: str = "operator"
     scopes: frozenset[str] = field(default_factory=lambda: frozenset({"read", "write"}))

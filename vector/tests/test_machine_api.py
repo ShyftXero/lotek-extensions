@@ -10,6 +10,7 @@ this surface, and keeps the seeded examples read-only.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 from conftest import FakeUser, StubActor, login
@@ -109,7 +110,7 @@ def test_created_diagram_is_owned_by_the_pat_actor_not_the_session(app, pat_clie
     actor = app.pat["actor"]
     created = _create(pat_client, name="Agent path")
     with app.extensions["vector"].session_factory() as db:
-        row = db.get(Diagram, created["id"])
+        row = db.get(Diagram, uuid.UUID(created["id"]))
         assert row.owner_id == actor.id
         assert row.owner_id is not None
         assert row.created_by == actor.username
@@ -127,7 +128,7 @@ def test_the_creating_token_can_read_its_own_diagram_back(pat_client):
 def test_another_tokens_diagram_is_invisible_and_404s(app, pat_client):
     """Not 403 — a 403 would confirm the id exists, which is what an id-guessing probe wants."""
     created = _create(pat_client, name="Mine")
-    app.pat["actor"] = StubActor(id=99, username="other")
+    app.pat["actor"] = StubActor(id=uuid.UUID(int=99), username="other")
     assert pat_client.get(f"{MACHINE}/diagrams").get_json()["diagrams"] == []
     assert pat_client.get(f"{MACHINE}/diagrams/{created['id']}").status_code == 404
     assert pat_client.put(f"{MACHINE}/diagrams/{created['id']}", json={"name": "x"}).status_code == 404
@@ -136,7 +137,7 @@ def test_another_tokens_diagram_is_invisible_and_404s(app, pat_client):
 
 def test_admin_token_sees_every_diagram(app, pat_client):
     created = _create(pat_client, name="Mine")
-    app.pat["actor"] = StubActor(id=99, username="root", role="admin")
+    app.pat["actor"] = StubActor(id=uuid.UUID(int=99), username="root", role="admin")
     ids = [d["id"] for d in pat_client.get(f"{MACHINE}/diagrams").get_json()["diagrams"]]
     assert created["id"] in ids
 
@@ -145,44 +146,41 @@ def test_a_session_user_cannot_reach_another_users_machine_written_diagram(app, 
     """The two identities stay separate: a diagram owned by token principal 7 is not handed to a logged-in
     browser user who happens to be a different id."""
     created = _create(pat_client, name="Token owned")
-    login(app, FakeUser(uid=42, username="someone-else"))
+    login(app, FakeUser(uid=uuid.UUID(int=42), username="someone-else"))
     assert app.test_client().get(f"/vector/api/diagrams/{created['id']}").status_code == 404
 
 
 def test_get_missing_diagram_is_404(pat_client):
-    assert pat_client.get(f"{MACHINE}/diagrams/999999").status_code == 404
+    assert pat_client.get(f"{MACHINE}/diagrams/{uuid.uuid4()}").status_code == 404
 
 
-# ── the Integer-key limitation, pinned so it is documented and not silently wrong ──────────────────────
+# ── a non-UUID principal id degrades loudly, pinned so it is documented and not silently wrong ─────────
 
 
-def test_a_non_int_principal_id_degrades_loudly_to_a_null_owner(app, pat_client, caplog):
-    """`Diagram.owner_id` is an Integer column while lotek's core `User.id` is a UUIDv7, so a real mounted
-    principal id does not fit. The contract is: warn and store NULL — never bind a UUID into an Integer
-    column, and never silently pretend it worked.
+def test_a_non_uuid_principal_id_degrades_loudly_to_a_null_owner(app, pat_client, caplog):
+    """`Diagram.owner_id` is a `Uuid` column and lotek's core `User.id` is a UUIDv7, so a real mounted
+    principal id IS a `uuid.UUID` and is stored. A principal whose id is NOT a `uuid.UUID` (a legacy int,
+    say) cannot be bound into that column. The contract is: warn and store NULL — never coerce a non-UUID
+    into the owner column, and never silently pretend it worked.
 
-    This is the SAME pre-existing limitation the cookie surface has (`deps.current_actor_id` returns None
-    for a `uuid.UUID`), not one the machine API introduces. It goes away when Vector migrates to UUIDv7
-    keys; this test is what will fail and point at `_actor_owner_id` when it does.
+    This mirrors the cookie surface's guard (`deps.current_actor_id` returns None for a non-`uuid.UUID`
+    id); this test is what fails and points at `_actor_owner_id` if that ever regresses.
     """
-    import uuid as _uuid
-
-    app.pat["actor"] = StubActor(id=_uuid.uuid4())  # type: ignore[arg-type]
+    app.pat["actor"] = StubActor(id=999)  # type: ignore[arg-type]  # a non-UUID id cannot own a Uuid row
     with caplog.at_level("WARNING", logger="vector"):
-        created = _create(pat_client, name="Uuid principal")
-    assert "not an int" in caplog.text, caplog.text
+        created = _create(pat_client, name="Legacy-int principal")
+    assert "not a uuid.UUID" in caplog.text, caplog.text
     with app.extensions["vector"].session_factory() as db:
-        assert db.get(Diagram, created["id"]).owner_id is None
+        assert db.get(Diagram, uuid.UUID(created["id"])).owner_id is None
 
 
 def test_a_principal_whose_id_does_not_fit_lists_builtin_only(make_app):
-    """List and get must agree. Comparing against a None owner id would render as ``owner_id IS NULL`` and
-    list exactly the null-owner rows that a direct fetch refuses."""
-    import uuid as _uuid
-
+    """List and get must agree. A principal whose id is not a ``uuid.UUID`` resolves to a None owner id;
+    comparing against it would render as ``owner_id IS NULL`` and list exactly the null-owner rows that a
+    direct fetch refuses — so such a principal must see builtin-only."""
     app = make_app(seed=True)
     login(app, None)
-    app.pat["actor"] = StubActor(id=_uuid.uuid4())  # type: ignore[arg-type]
+    app.pat["actor"] = StubActor(id=999)  # type: ignore[arg-type]  # a non-UUID id cannot own a Uuid row
     client = app.test_client()
     diagrams = client.get(f"{MACHINE}/diagrams").get_json()["diagrams"]
     assert diagrams, "the builtin example should still be visible"
@@ -252,7 +250,7 @@ def test_export_returns_a_self_contained_html_attachment(pat_client):
 
 def test_export_of_another_tokens_diagram_is_404(app, pat_client):
     created = _create(pat_client)
-    app.pat["actor"] = StubActor(id=99, username="other")
+    app.pat["actor"] = StubActor(id=uuid.UUID(int=99), username="other")
     assert pat_client.get(f"{MACHINE}/diagrams/{created['id']}/export.html").status_code == 404
 
 
