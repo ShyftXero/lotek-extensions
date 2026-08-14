@@ -940,11 +940,23 @@ def scribble_upload_artifact(engagement_id: int):
     Accepts either a ``multipart/form-data`` upload (``file`` field) or a JSON body with base64 content
     (``content_base64``/``data_base64``/``data``). The engagement is taken from the URL (not the body),
     and TENANCY is the same predicate the rest of this module uses — ``can_view_engagement(engagement,
-    host.actor())`` — checked BEFORE a single byte is written; missing and not-visible are the same 404
+    host.actor())`` — checked BEFORE the body is even parsed; missing and not-visible are the same 404
     (no existence oracle). ``idempotency_key`` (body or ``Idempotency-Key`` header) makes a retry return
     the original artifact (200) rather than a duplicate.
     """
     actor = host.actor()
+
+    # DESTINATION tenancy FIRST — before the body is read, exactly as ``scribble_add_finding`` does it and
+    # for the reason stated there: authorizing ahead of validation keeps the refusal for a foreign
+    # engagement identical no matter what the body says, so a caller cannot map the id space by diffing
+    # 400s against 404s. This route used to parse the body first, which also meant an UNAUTHORIZED caller
+    # could make the server buffer up to _MAX_ARTIFACT_BYTES of multipart (or decode a base64 blob) before
+    # anything checked whether it was allowed to write here at all — work done on behalf of a tenant with
+    # no grant. The re-read below is what the write itself uses.
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
 
     upload = request.files.get("file")
     if upload is not None:
