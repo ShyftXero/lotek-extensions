@@ -71,5 +71,5 @@ jobs:
           git push origin "refs/tags/${TAG}"
           gh release create "${TAG}" \
             --title "${TAG}" \
-            --notes "Automated dated release for lotek-extensions at ${GITHUB_SHA}. Pin lotek's extensions to this tag." \
+            --generate-notes \
             --target "${GITHUB_SHA}"
