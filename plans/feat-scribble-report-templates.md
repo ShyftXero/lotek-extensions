@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/scribble-report-templates`  (worktree: `.claude/worktrees/scribble-report-redesign`, off `main` @ 319839e)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 Prove the report **layout-template system** (Phase 5 of `plans/scribble-report-vision.md`) and enrich
@@ -27,17 +27,23 @@ finding cards. Two things in one render-layer branch (no DB migration, no new ro
 - Ship path is re-pin, not vendor (see [[extension-deployment-model]] / plans/scribble-report-vision.md).
 
 ## Done
-- [ ] Plan committed first.
+- [x] Plan committed first.
+- [x] `reporting/templates.py`: `ReportTemplate` + registry (`default`/`compliance`/`dark`) + `get_template`/`list_templates`.
+- [x] `render_html`: `_render_block_by_key` dispatch; `_render_document` iterates the template's blocks
+      and stamps `<html data-theme>` (light/dark only).
+- [x] Blocks: summary / findings(+filter bar) / methodology, anchors kept for the sticky nav.
+- [x] Layout switcher in the sticky bar (`#template-select`, reloads with `?template=`); `?template=` wired
+      on `/engagements/<id>/report` + `/report/export` (html + zip).
+- [x] Finding card: always-on **Affected Assets** (`_affected_assets`/`_render_affected_assets`, aggregating
+      target host/url + child hosts + `AFFECTED`) and **Recommendations** (`_render_recommendations` from the
+      `remediation` block, empty-state prompt when unauthored). Dropped the free-floating target chips.
+- [x] `tests/test_report_templates.py` (9) + `test_report_html.py` (8) green; wider render subset 47/47.
+- [x] `uvx ruff check scribble` clean.
+- [x] Fixed stale `stage-extension.sh` comments in `scribble/lotek-extension.toml` (deployment is pinned deps).
 
 ## Remaining
-- [ ] `reporting/templates.py`: `ReportTemplate(name,label,theme,blocks)` + registry + `get_template`.
-- [ ] Refactor `render_html._render_document` to iterate a template's blocks; stamp theme on `<html>`.
-- [ ] Block renderers: summary / findings(+filter bar) / methodology; keep anchors for the nav.
-- [ ] Template switcher in the sticky bar; `?template=` on `/engagements/<id>/report`(+export).
-- [ ] Finding card: always-on Affected Assets + Recommendations (new `_render_assets` + remediation block).
-- [ ] `tests/test_report_templates.py` (order per template, dark theme stamp, unknown→default) +
-      finding assets/recommendations assertions; keep `test_report_html.py` green.
-- [ ] `uvx ruff check scribble` clean; render test subset green.
+- [ ] Open PR into `main`; squash-merge → CI cuts a release tag.
+- [ ] Bump the lotek pin to that tag (deploy) — the session goal.
 
 ## Notes / gotchas
 - Scope rendered verbatim (not title-cased) — group-order contract (see Phase 1 fix).

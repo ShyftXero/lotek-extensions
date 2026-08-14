@@ -44,6 +44,7 @@ import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
 from scribble.reporting.context import ArtifactCtx, FindingCtx, GroupCtx, ReportContext
+from scribble.reporting.templates import ReportTemplate, get_template, list_templates
 
 ArtifactBytes = Callable[[str], "bytes | None"]
 
@@ -218,24 +219,71 @@ def _render_gallery(f: FindingCtx, resolver: _AssetResolver) -> str:
     )
 
 
-def _target_chips(f: FindingCtx) -> str:
-    chips: list[str] = []
+def _affected_assets(f: FindingCtx) -> list[tuple[str, str | None]]:
+    """``(label, href)`` for every asset this finding touches: its own target host/url, any per-host
+    child instances, and an ``AFFECTED`` variable overlay. De-duplicated by label, order-preserving.
+    ``href`` is set only for a safe-scheme URL so the renderer can link it."""
+    out: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+
+    def add(label: str, href: str | None = None) -> None:
+        label = (label or "").strip()
+        if label and label not in seen:
+            seen.add(label)
+            out.append((label, href))
+
     if f.target_host:
-        label = f.target_host + (f":{f.target_port}" if f.target_port else "")
-        chips.append(f'<span class="chip">Host: {_esc(label)}</span>')
+        add(f.target_host + (f":{f.target_port}" if f.target_port else ""))
     if f.target_url:
-        href = _safe_href(f.target_url)
-        if href:
-            chips.append(f'<span class="chip">URL: <a href="{_esc(href)}">{_esc(f.target_url)}</a></span>')
-        else:
-            chips.append(f'<span class="chip">URL: {_esc(f.target_url)}</span>')
-    return "".join(chips)
+        add(f.target_url, _safe_href(f.target_url))
+    for c in f.children:
+        add(_child_host_label(c))
+    affected = f.variables.get("AFFECTED") if isinstance(f.variables, dict) else None
+    if affected:
+        for piece in str(affected).replace(";", ",").split(","):
+            add(piece.strip())
+    return out
+
+
+def _render_affected_assets(f: FindingCtx) -> str:
+    """Always-present per-finding "Affected Assets" section (empty-state when nothing is recorded)."""
+    assets = _affected_assets(f)
+    if not assets:
+        body = '<span class="muted">Not specified.</span>'
+    else:
+        lis = []
+        for label, href in assets:
+            inner = f'<a href="{_esc(href)}">{_esc(label)}</a>' if href else _esc(label)
+            lis.append(f"<li>{inner}</li>")
+        body = f'<ul class="asset-list">{"".join(lis)}</ul>'
+    return (
+        '<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
+        f'<div class="block-body">{body}</div></div>'
+    )
+
+
+def _render_recommendations(f: FindingCtx, resolver: _AssetResolver) -> str:
+    """Always-present per-finding "Recommendations" section, from the ``remediation`` content block
+    (empty-state prompt when unauthored)."""
+    fragment = f.blocks_html.get("remediation")
+    if fragment:
+        body = _substitute_inline_placeholders(fragment, resolver)
+    else:
+        body = '<span class="muted">No recommendation recorded.</span>'
+    return (
+        '<div class="block recommendations"><div class="block-label">Recommendations</div>'
+        f'<div class="block-body">{body}</div></div>'
+    )
 
 
 def _render_blocks(f: FindingCtx, resolver: _AssetResolver) -> str:
+    """The finding's descriptive content blocks (description, details, any custom blocks) -- NOT
+    ``remediation``, which renders separately as the always-present Recommendations section."""
     parts: list[str] = []
-    seen: set[str] = set()
+    seen: set[str] = {"remediation"}  # rendered separately by _render_recommendations
     for key in _BLOCK_ORDER:
+        if key in seen:
+            continue
         seen.add(key)
         fragment = f.blocks_html.get(key)
         if fragment:
@@ -244,7 +292,7 @@ def _render_blocks(f: FindingCtx, resolver: _AssetResolver) -> str:
         if key in seen or not fragment:
             continue
         parts.append(_render_block(key, fragment, resolver))
-    return "\n".join(parts) or '<p class="empty">No content.</p>'
+    return "\n".join(parts)
 
 
 def _render_block(key: str, fragment: str, resolver: _AssetResolver) -> str:
@@ -299,15 +347,17 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     if f.cvss_score is not None:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
-    meta_chips = _target_chips(f)
-    meta_html = f'<div class="finding-meta">{meta_chips}</div>' if meta_chips else ""
+    body = (
+        _render_blocks(f, resolver)
+        + _render_affected_assets(f)
+        + _render_recommendations(f, resolver)
+    )
     return (
         f'<article class="finding sev-{_esc(sev)}" data-sev="{_esc(sev)}" data-sevrank="{rank}" '
         f'id="finding-{f.id}">'
         f'<div class="finding-head"><h3>{_esc(f.title)}</h3>'
         f'<div class="finding-badges">{badges}</div></div>'
-        f"{meta_html}"
-        f'<div class="finding-body">{_render_blocks(f, resolver)}</div>'
+        f'<div class="finding-body">{body}</div>'
         f"{_render_gallery(f, resolver)}"
         f"{_render_children(f)}"
         "</article>"
@@ -349,10 +399,24 @@ def _render_filter_bar(ctx: ReportContext) -> str:
 
 
 def _render_header(
-    ctx: ReportContext, *, engagement_url: str | None = None, dashboard_url: str | None = None
+    ctx: ReportContext,
+    template: ReportTemplate,
+    *,
+    engagement_url: str | None = None,
+    dashboard_url: str | None = None,
 ) -> str:
-    """A sticky command bar (section jumps + print/expand/collapse) over a flat, hairline-ruled
-    masthead. All on-screen chrome carries ``no-print`` so the PDF opens straight on the masthead."""
+    """A sticky command bar (layout switcher + section jumps + print/expand/collapse) over a flat,
+    hairline-ruled masthead. All on-screen chrome carries ``no-print`` so the PDF opens straight on the
+    masthead."""
+    opts = "".join(
+        f'<option value="{_esc(t.name)}"{" selected" if t.name == template.name else ""}>'
+        f"{_esc(t.label)}</option>"
+        for t in list_templates()
+    )
+    switcher = (
+        '<label class="tmpl-switch" title="Report layout template">'
+        f'<span>Layout</span><select id="template-select" aria-label="Report layout">{opts}</select></label>'
+    )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
     subtitle = f"{_esc(ctx.scope_type)} assessment" if ctx.scope_type else "Penetration test report"
     sub_bits = [f"<span>{subtitle}</span>"]
@@ -376,7 +440,7 @@ def _render_header(
         '<div class="tb-brand"><span class="tb-mark"></span> Scribble</div>'
         '<nav><a href="#sec-summary">Summary</a><a href="#sec-findings">Findings</a>'
         '<a href="#sec-methodology">Methodology</a></nav>'
-        '<div class="tb-actions">'
+        f'<div class="tb-actions">{switcher}'
         '<button class="btn ghost" type="button" data-action="expand-all">Expand all</button>'
         '<button class="btn ghost" type="button" data-action="collapse-all">Collapse all</button>'
         '<button class="btn primary" type="button" data-action="print">⎙ Print / PDF</button>'
@@ -606,27 +670,44 @@ def _render_footer(ctx: ReportContext) -> str:
     return f'<div class="foot">Generated by Scribble · engagement #{ctx.engagement_id} · {generated}</div>'
 
 
+def _render_block_by_key(key: str, ctx: ReportContext, resolver: _AssetResolver) -> str:
+    """Render one top-level document block by its template key (see ``reporting.templates``). The filter
+    bar travels with the ``findings`` block so it always sits directly above the finding groups, whatever
+    order the template puts them in."""
+    if key == "summary":
+        return _render_summary(ctx)
+    if key == "findings":
+        return (
+            f"{_render_filter_bar(ctx)}\n"
+            '<div id="sec-findings"></div>\n'
+            f"{_render_groups(ctx, resolver)}"
+        )
+    if key == "methodology":
+        return f'<div id="sec-methodology"></div>\n{_render_checklists(ctx)}'
+    return ""  # unknown key: templates.BLOCK_KEYS guards this; render nothing defensively
+
+
 def _render_document(
     ctx: ReportContext,
     resolver: _AssetResolver,
     *,
+    template: ReportTemplate,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
 ) -> str:
+    # A template's theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so
+    # the report follows the viewer's prefers-color-scheme (the default behavior).
+    theme_attr = f' data-theme="{template.theme}"' if template.theme in ("light", "dark") else ""
+    blocks = "\n".join(_render_block_by_key(k, ctx, resolver) for k in template.blocks)
     return (
         "<!doctype html>\n"
-        '<html lang="en">\n<head>\n<meta charset="utf-8"/>\n'
+        f'<html lang="en"{theme_attr}>\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(ctx.engagement_name)} — Report</title>\n"
         f"<style>{_CSS}</style>\n</head>\n<body>\n"
-        f"{_render_header(ctx, engagement_url=engagement_url, dashboard_url=dashboard_url)}\n"
+        f"{_render_header(ctx, template, engagement_url=engagement_url, dashboard_url=dashboard_url)}\n"
         '<main class="wrap">\n'
-        f"{_render_summary(ctx)}\n"
-        f"{_render_filter_bar(ctx)}\n"
-        '<div id="sec-findings"></div>\n'
-        f"{_render_groups(ctx, resolver)}\n"
-        '<div id="sec-methodology"></div>\n'
-        f"{_render_checklists(ctx)}\n"
+        f"{blocks}\n"
         f"{_render_footer(ctx)}\n"
         "</main>\n"
         f"<script>{_JS}</script>\n"
@@ -641,6 +722,7 @@ def render_report_html(
     artifact_bytes: ArtifactBytes | None = None,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    template: str | None = None,
 ) -> str:
     """Render a full, self-contained HTML report for ``ctx``.
 
@@ -657,14 +739,19 @@ def render_report_html(
     same header as before nav links existed.
     """
     resolver = _AssetResolver("inline" if inline_assets else "none", artifact_bytes)
-    return _render_document(ctx, resolver, engagement_url=engagement_url, dashboard_url=dashboard_url)
+    return _render_document(
+        ctx, resolver, template=get_template(template),
+        engagement_url=engagement_url, dashboard_url=dashboard_url,
+    )
 
 
-def export_zip(ctx: ReportContext, artifact_bytes: ArtifactBytes | None) -> bytes:
+def export_zip(
+    ctx: ReportContext, artifact_bytes: ArtifactBytes | None, *, template: str | None = None
+) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
     ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7)."""
     resolver = _AssetResolver("zip", artifact_bytes)
-    html_doc = _render_document(ctx, resolver)
+    html_doc = _render_document(ctx, resolver, template=get_template(template))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("report.html", html_doc)
@@ -745,7 +832,12 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
   padding: 6px 9px; border-radius: 6px; white-space: nowrap;
 }
 .topbar nav a:hover { background: var(--surface-2); color: var(--ink); }
-.tb-actions { margin-left: auto; display: flex; gap: 8px; }
+.tb-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.tmpl-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.tmpl-switch select {
+  font-family: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line-2); border-radius: 6px; padding: 5px 8px; cursor: pointer;
+}
 .btn {
   display: inline-flex; align-items: center; gap: 6px; font-family: inherit;
   font-size: 13px; font-weight: 650; cursor: pointer; border-radius: 7px;
@@ -996,6 +1088,12 @@ table.index td.ix-cvss {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
 }
 .empty { color: var(--muted); font-style: italic; }
+.finding-body .asset-list { margin: 4px 0 0; padding-left: 18px; }
+.finding-body .asset-list li {
+  margin: 3px 0; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.finding-body .block.recommendations .block-label { color: var(--accent-ink); }
 
 /* children (affected hosts) */
 .children {
@@ -1150,6 +1248,15 @@ table.index td.ix-cvss {
 _JS = """
 (function () {
   "use strict";
+  // Layout switcher: reload with ?template=<name> so the server re-renders in the chosen template.
+  var tmpl = document.getElementById("template-select");
+  if (tmpl) {
+    tmpl.addEventListener("change", function () {
+      var u = new URL(window.location.href);
+      u.searchParams.set("template", tmpl.value);
+      window.location.assign(u.toString());
+    });
+  }
   var sections = Array.prototype.slice.call(document.querySelectorAll("section.sec"));
   sections.forEach(function (sec) {
     var h = sec.querySelector(".sec-h");
