@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/scribble-report-redesign`  (worktree: `.claude/worktrees/scribble-report-redesign`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 The Scribble HTML report reads "Web 2.0" — glossy gradient header, saturated pill-spam, heavy
@@ -23,21 +23,27 @@ hooks the tests pin are preserved (`risk-<overall>`, `summary-narrative`, `findi
 
 ## Done
 - [x] Cut branch + plan file (this file), committed first.
+- [x] Replaced `_CSS` with the light-first token system (light + dark tokens, print block).
+- [x] `_render_header`: sticky command bar (section jumps + expand/collapse/print) + flat masthead.
+- [x] `_render_summary`: added `_sev_bar` (severity distribution) + `_findings_index` (severity ·
+      title→`#finding-N` · host · CVSS) + metrics row; KEPT `risk risk-<overall>` banner and
+      `summary-narrative`. Scope rendered verbatim (not title-cased) so the group-order contract holds.
+- [x] Section anchors `#sec-findings` / `#sec-methodology` in `_render_document` for the sticky nav.
+- [x] Findings / children / evidence / checklists restyled via CSS only (markup hooks unchanged).
+- [x] `uvx ruff check scribble` clean.
+- [x] Tests: `test_report_html.py` (8) + render/docx/variable/e2e-flow/vuln-db/checklist subset (55)
+      all green. No test edits needed — every pinned markup hook preserved.
+- [x] Eyeballed the actual render (sample context through the new code) — matches the approved mockup.
 
 ## Remaining
-- [ ] Replace `_CSS` with the light-first token system (both light + dark, print block).
-- [ ] `_render_header`: sticky command bar (section jumps + print/expand/collapse) + flat masthead
-      (no gradient), keeping `no-print` on chrome.
-- [ ] `_render_summary`: add a **severity distribution bar** (from `rollup.counts`) and a
-      **findings-at-a-glance index table** (severity · title→`#finding-N` · host · CVSS), plus a compact
-      engagement/scope KV — while KEEPING the `risk risk-<overall>` banner and `summary-narrative`.
-- [ ] Add stable section `id`s so the sticky nav can jump (summary, findings groups, checklists).
-- [ ] Restyle findings / children / evidence / checklists via CSS only (markup hooks unchanged).
-- [ ] `uvx ruff check scribble` clean; `cd scribble && python -m pytest -q` green
-      (esp. `tests/test_report_html.py`, `test_e2e_flow.py`, `test_declared_variables.py`).
-- [ ] Update `tests/test_report_html.py` ONLY where markup deliberately changed, with intent noted.
-- [ ] Re-vendor note: after merge, re-run `scripts/stage-extension.sh` into lotek (do not hand-edit the
-      vendored copy).
+- [ ] Open PR into `main`; squash-merge.
+- [ ] After merge: re-vendor into lotek via `scripts/stage-extension.sh` (never hand-edit the vendored
+      copy). Then Phases 2–6 per `plans/scribble-report-vision.md`.
+
+## Pre-existing failures (NOT caused by this branch, verified against base #26)
+- `tests/test_skill.py` — the `scribble/skill/scribble-report-refine/` dir does not exist on base #26.
+- `tests/test_scribble_machine_tenancy.py::test_every_engagement_scoped_machine_route_denies_a_foreign_client`
+  — machine-API auth test; unrelated to rendering; fails identically with this branch's change stashed.
 
 ## Notes / gotchas
 - `test_render_facts_polish.py` asserts against the **DOCX** renderer, not HTML — untouched here.
