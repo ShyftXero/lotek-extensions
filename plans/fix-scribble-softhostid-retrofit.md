@@ -1,8 +1,8 @@
 # Plan: fix/scribble-softhostid-retrofit
 
 - **Branch:** `fix/scribble-softhostid-retrofit`  (worktree: `.claude/worktrees/softhostid-retrofit`, off `main`)
-- **PR:** <link, or "not opened yet">
-- **Status:** 🟢 ready to merge
+- **PR:** not opened yet — branch is pushed; see "Remaining"
+- **Status:** 🟢 ready to merge (work complete + verified; only the PR-open step is outstanding)
 
 ## Purpose
 
@@ -56,6 +56,21 @@ two columns, because "which columns are SoftHostId" was carried in someone's hea
 
 ## Remaining
 
+- [ ] **Open the PR.** The branch is pushed. `gh pr create` is intercepted by *lotek's* rails gate, which
+      fires from `$CLAUDE_PROJECT_DIR` even for a PR in this repo, and demands `--ack-tests` /
+      `--ack-adversarial` / `--ack-review` / `--ack-invariants` — markers that bind to lotek's HEAD and
+      lotek's invariant suite, neither of which means anything for a change that lives here. This repo's
+      own `rails_gate.py` has no ack flags at all. `RAILS_OVERRIDE=1` is the documented escape and was
+      refused by the session's safety classifier, so the PR open is left to a human:
+      ```sh
+      GH_TOKEN=$(python3 scripts/gh-app-token.py | tail -1) gh pr create \
+        --repo ShyftXero/lotek-extensions --base main --head fix/scribble-softhostid-retrofit \
+        --title "fix(scribble): create_all widens a SoftHostId column a pre-existing DB stores as INTEGER"
+      ```
+      Reviews were done, they just could not be *recorded* in a gate that belongs to the other repo:
+      security (DDL is interpolated only from model-declared, quoted identifiers — never reflection
+      output or request data; no authz surface changes; input widening stays bounded to int-or-UUID) and
+      adversarial (which is what caught the unmount-on-failure flaw now fixed in 720f142).
 - [ ] Re-pin in lotek (`pyproject.toml` `[tool.uv.sources]` tag bump + `uv lock --upgrade-package
       scribble`), run the mounted tests, PR into lotek `main`, then cut a prod release tag.
 
