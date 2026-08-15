@@ -257,6 +257,10 @@ def _widen_soft_host_id_columns(engine) -> None:
         a UUID string in an INTEGER-declared column unharmed. Skipped, deliberately, not silently
         broken.
       * Any other dialect is skipped with a warning rather than guessing at its ALTER syntax.
+
+    Two operational notes: ``ALTER COLUMN … TYPE`` REWRITES the table under an ACCESS EXCLUSIVE lock, so
+    on a large ``scribble_findings`` the first mount after upgrading pauses writes for the rewrite (once,
+    not per boot); and a failure here is logged and swallowed rather than raised — see the handler.
     """
     import logging
 
@@ -275,16 +279,32 @@ def _widen_soft_host_id_columns(engine) -> None:
             len(stale), engine.dialect.name, ", ".join(f"{t}.{c}" for t, c in stale),
         )
         return
-    with engine.begin() as conn:
-        for table_name, col_name in stale:
-            col = Base.metadata.tables[table_name].columns[col_name]
-            coltype = col.type.compile(dialect=engine.dialect)  # SoftHostId -> VARCHAR(64)
-            conn.execute(
-                text(
-                    f'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" TYPE {coltype} '
-                    f'USING "{col_name}"::{coltype}'
-                )
-            )
+    statements = []
+    for table_name, col_name in stale:
+        col = Base.metadata.tables[table_name].columns[col_name]
+        coltype = col.type.compile(dialect=engine.dialect)  # SoftHostId -> VARCHAR(64)
+        statements.append(
+            f'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" TYPE {coltype} '
+            f'USING "{col_name}"::{coltype}'
+        )
+    try:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+    except Exception:
+        # DEGRADE, never take the extension down. create_all runs at MOUNT, and lotek's
+        # discover_extensions swallows every exception by design -- so letting this propagate would make
+        # a failed ALTER (no DDL grant, a lock it can't take on a large table) unmount Scribble entirely
+        # and silently, trading a broken table for a vanished extension and a much worse trail to follow.
+        # Everything that does not touch these columns still works, exactly as it did before this repair
+        # existed; what is new is a log line naming the precise fix.
+        log.exception(
+            "scribble: could not widen %s to SoftHostId storage — writes to that table will keep failing "
+            "on Postgres until it is ALTERed by hand:\n  %s",
+            ", ".join(f"{t}.{c}" for t, c in stale),
+            ";\n  ".join(statements),
+        )
+        return
     log.warning(
         "scribble: widened %d pre-existing INTEGER column(s) to SoftHostId storage (%s) — a host UUID "
         "could not have been written to them before this",

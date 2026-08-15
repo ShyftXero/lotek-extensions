@@ -131,3 +131,39 @@ def test_create_all_widens_a_legacy_integer_column_on_postgres():
 
     create_all(eng)  # idempotent: nothing left to widen, no error on the next mount
     Base.metadata.drop_all(eng)
+
+
+@pytest.mark.skipif(not PG_URL, reason="needs a real Postgres (SCRIBBLE_TEST_PG_URL)")
+def test_a_failed_widening_degrades_instead_of_unmounting_the_extension(caplog):
+    """A repair that cannot run must not take Scribble down with it.
+
+    ``create_all`` runs at MOUNT, and lotek's ``discover_extensions`` swallows every exception by design —
+    so a raised ALTER failure would make the extension silently VANISH from the dashboard, which is a
+    strictly worse failure than the broken column it was trying to fix (and a far colder trail). Failure
+    is injected the way Postgres actually produces it: a VIEW depending on the column, which makes
+    ``ALTER COLUMN … TYPE`` refuse outright.
+    """
+    import logging
+
+    from scribble.db import Base
+
+    eng = create_engine(PG_URL)
+    Base.metadata.drop_all(eng)
+    create_all(eng)
+    with eng.begin() as c:
+        c.execute(text("ALTER TABLE scribble_findings ALTER COLUMN source_finding_id TYPE INTEGER "
+                       "USING source_finding_id::integer"))
+        c.execute(text("CREATE VIEW scribble_findings_pin AS SELECT source_finding_id FROM "
+                       "scribble_findings"))
+
+    with caplog.at_level(logging.ERROR, logger="scribble"):
+        create_all(eng)  # must NOT raise
+
+    assert "could not widen" in caplog.text
+    assert "ALTER TABLE" in caplog.text  # the message carries the exact SQL to run by hand
+    # the column is genuinely still broken -- the point is the honest degrade, not a pretended repair
+    assert ("scribble_findings", "source_finding_id") in soft_host_id_columns_typed_integer(eng)
+
+    with eng.begin() as c:
+        c.execute(text("DROP VIEW scribble_findings_pin"))
+    Base.metadata.drop_all(eng)
