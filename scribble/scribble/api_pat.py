@@ -489,7 +489,10 @@ def scribble_add_finding(engagement_id: int):
         template_id, err = _opt_int(data, "template_id")
         if err:
             return err
-        lotek_finding_id, err = _opt_int(data, "lotek_finding_id")
+        # _opt_HOST_id, not _opt_int: this is a CORE finding id, and core v2 keys it on UUIDv7. Parsed as
+        # an int here, promoting a scan finding was unreachable on every v2 host (int("0198…") -> 400)
+        # — the same failure, for the same reason, that _opt_host_id was written for on client_id.
+        lotek_finding_id, err = _opt_host_id(data, "lotek_finding_id")
         if err:
             return err
         group_id, err = _opt_int(data, "group_id")

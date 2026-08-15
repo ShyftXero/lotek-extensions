@@ -200,6 +200,99 @@ def _remap_standalone_client_ids(engine) -> None:
     )
 
 
+def soft_host_id_columns_typed_integer(engine) -> list[tuple[str, str]]:
+    """Return ``(table, column)`` for every ``SoftHostId`` model column the DB still stores as a native
+    INTEGER — i.e. the columns ``_widen_soft_host_id_columns`` has to fix. Split out from the ALTER so the
+    DETECTION is testable on SQLite (which reports the declared type faithfully) even though the repair
+    itself only runs on Postgres.
+
+    Reflection-driven rather than a hardcoded list: a column added to ``models.py`` as a ``SoftHostId``
+    later is covered the day it is declared, which is the exact way ``source_finding_id``/``asset_id``
+    slipped through the first time (only ``Engagement.owner_id``/``.client_id`` were known about, and they
+    were the only two anyone thought to ALTER by hand).
+    """
+    from sqlalchemy import Integer, inspect
+
+    from scribble import models  # noqa: F401  -- populate Base.metadata
+
+    insp = inspect(engine)
+    present = set(insp.get_table_names())
+    out: list[tuple[str, str]] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in present:
+            continue
+        soft = {c.name for c in table.columns if isinstance(c.type, SoftHostId)}
+        if not soft:
+            continue
+        for actual in insp.get_columns(table.name):
+            # Boolean/Numeric are NOT Integer subclasses, so this matches only genuine int columns.
+            if actual["name"] in soft and isinstance(actual["type"], Integer):
+                out.append((table.name, actual["name"]))
+    return out
+
+
+def _widen_soft_host_id_columns(engine) -> None:
+    """Retrofit a pre-existing INTEGER column to ``SoftHostId``'s TEXT storage.
+
+    ``create_all``'s additive pass only ever ADDS columns; SQLAlchemy never retrofits an existing
+    column's declared TYPE. So a table created while ``source_finding_id`` was still ``Integer`` keeps a
+    native INTEGER column after the model changes to ``SoftHostId``, and on Postgres **every INSERT into
+    that table then fails** — not merely the ones carrying a UUID:
+
+        column "source_finding_id" is of type integer but expression is of type character varying
+
+    psycopg binds the parameter with the type the MODEL declares (``$4::VARCHAR``), and Postgres rejects
+    that against an integer column *even when the value is NULL*. That took Scribble's entire finding
+    surface down on a real deployment — machine API and dashboard alike, with a minimal finding, because
+    nothing about the payload was involved. It went unnoticed for as long as it did precisely because
+    SQLite has no such objection, so the whole suite stayed green.
+
+    Idempotent and additive in spirit (widening only, never narrowing): after the ALTER the column
+    reflects as VARCHAR and the next mount finds nothing to do. Postgres rebuilds any index on the column
+    as part of ``ALTER COLUMN … TYPE``, so the declared index survives.
+
+    Dialect scope:
+      * **Postgres** — the real backend, and the only one that enforces column types — is repaired.
+      * **SQLite** cannot ``ALTER COLUMN … TYPE`` at all, and does not need to: its dynamic typing stores
+        a UUID string in an INTEGER-declared column unharmed. Skipped, deliberately, not silently
+        broken.
+      * Any other dialect is skipped with a warning rather than guessing at its ALTER syntax.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    stale = soft_host_id_columns_typed_integer(engine)
+    if not stale:
+        return
+    log = logging.getLogger("scribble")
+    if engine.dialect.name == "sqlite":
+        return  # dynamically typed: an INTEGER-declared column holds the TEXT id fine
+    if engine.dialect.name != "postgresql":
+        log.warning(
+            "scribble: %d SoftHostId column(s) are still INTEGER on a %s database (%s) and cannot be "
+            "widened automatically; writes carrying a host UUID will fail until they are ALTERed by hand",
+            len(stale), engine.dialect.name, ", ".join(f"{t}.{c}" for t, c in stale),
+        )
+        return
+    with engine.begin() as conn:
+        for table_name, col_name in stale:
+            col = Base.metadata.tables[table_name].columns[col_name]
+            coltype = col.type.compile(dialect=engine.dialect)  # SoftHostId -> VARCHAR(64)
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" TYPE {coltype} '
+                    f'USING "{col_name}"::{coltype}'
+                )
+            )
+    log.warning(
+        "scribble: widened %d pre-existing INTEGER column(s) to SoftHostId storage (%s) — a host UUID "
+        "could not have been written to them before this",
+        len(stale),
+        ", ".join(f"{t}.{c}" for t, c in stale),
+    )
+
+
 def create_all(engine) -> None:
     """Create Scribble's tables, then additively add any new columns (and their indexes) to
     pre-existing tables.
@@ -219,6 +312,10 @@ def create_all(engine) -> None:
       * Constraints: only INDEXes are retrofitted. A UNIQUE/CHECK constraint on a column added this way is
         NOT enforced on upgraded DBs — a column that needs one must be handled explicitly (e.g. a bespoke
         migration), not relied upon through this path.
+      * Types: the ONE type change made here is widening a ``SoftHostId`` column that a pre-existing DB
+        still stores as INTEGER (``_widen_soft_host_id_columns`` — Postgres only, and read its docstring
+        before assuming this is cosmetic: without it, Postgres refuses EVERY insert into that table). No
+        other declared-type change is retrofitted.
     """
     from sqlalchemy import inspect, text
 
@@ -250,6 +347,12 @@ def create_all(engine) -> None:
                 for index in table.indexes:
                     if all(c.name in have for c in index.columns):
                         index.create(bind=conn, checkfirst=True)
+
+    # Before any of the data migrations below touch a SoftHostId column: repair one whose STORAGE type
+    # predates the model declaring it SoftHostId. Ordering is load-bearing -- _remap_standalone_client_ids
+    # UPDATEs scribble_engagements.client_id with a HOST id, which under lotek v2 is a UUID, and that
+    # write is exactly what an unrepaired INTEGER column refuses.
+    _widen_soft_host_id_columns(engine)
 
     # Last: close the report-authz IDOR by remapping any standalone-space client_ids to host space.
     # After the tables exist, so it can read/rewrite scribble_engagements + retire scribble_clients.

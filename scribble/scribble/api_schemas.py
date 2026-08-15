@@ -54,7 +54,9 @@ class AddFindingRequest(BaseModel):
     """
 
     template_id: int | None = Field(None, description="VulnerabilityTemplate id to instantiate.")
-    lotek_finding_id: int | None = Field(None, description="lotek scan finding id to promote.")
+    lotek_finding_id: int | str | None = Field(
+        None, description="lotek scan finding id to promote (int or UUID — v2 keys findings on UUIDv7)."
+    )
     group_id: int | None = Field(None, description="Optional FindingGroup id to nest under.")
     target_host: str | None = Field(None, description="Override target host on the authored finding.")
     target_port: int | None = Field(None, description="Override target port.")
