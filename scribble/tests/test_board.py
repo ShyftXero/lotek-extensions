@@ -22,6 +22,7 @@ driven by the optional host `extras['can_write']` hook.
 from __future__ import annotations
 
 import io
+import uuid
 from types import SimpleNamespace
 
 from scribble.artifacts_storage import resolve_path
@@ -823,7 +824,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
         content_type="multipart/form-data",
     )
     assert upload.status_code == 201
-    artifact_id = upload.get_json()["id"]
+    artifact_id = uuid.UUID(upload.get_json()["id"])
 
     with session_factory() as db:
         artifact = db.get(Artifact, artifact_id)

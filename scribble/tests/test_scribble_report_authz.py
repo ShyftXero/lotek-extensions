@@ -30,13 +30,17 @@ reintroduce it as one.
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import StubUser, _StubRole
 
 UI = "/scribble"
 
-ACME = 42          # the client under test
-OTHER_CLIENT = 99  # a client the actor holds no grant under
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # the client under test
+OTHER_CLIENT = uuid.uuid7()  # a client the actor holds no grant under
 
 
 def _make_engagement(session_factory, *, client_id, owner_id=None) -> int:

@@ -41,6 +41,7 @@ never depended on it.
 from __future__ import annotations
 
 import io
+import uuid
 
 from flask import url_for
 
@@ -53,8 +54,10 @@ from tests.conftest import StubUser, _StubRole
 UI = "/scribble"
 API = "/scribble/api"
 
-ACME = 501          # the client under test
-OTHER_CLIENT = 502  # a client the actor holds no grant under
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # the client under test
+OTHER_CLIENT = uuid.uuid7()  # a client the actor holds no grant under
 
 # Derived from the gate itself (not duplicated by hand) -- see scribble/authz.py.
 _RECOGNIZED_KEYS = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
@@ -460,7 +463,9 @@ def test_artifact_upload_not_found_and_forbidden_are_byte_identical(client, stub
     """`create_artifact`'s refusal message names no id, so a nonexistent engagement and a real one the
     actor cannot view must come back as the literal same response -- not just the same status code."""
     real_eid = _make_engagement(session_factory, client_id=ACME)
-    missing_eid = real_eid + 999_000  # not a real row
+    # A UUID cannot be made "nearby but absent" by arithmetic the way an int could — mint a fresh
+    # one instead. It is not in the table, which is the only property this test needs.
+    missing_eid = uuid.uuid7()  # not a real row
     _outsider(stub_host)
 
     forbidden = client.post(
@@ -487,7 +492,9 @@ def test_templating_preview_not_found_and_forbidden_share_the_same_shape(
     the regression this guards against is a reappearance of Flask's default HTML 404 for the forbidden
     case, which would fail `.get_json()` entirely."""
     real_eid = _make_engagement(session_factory, client_id=ACME)
-    missing_eid = real_eid + 999_000  # not a real row
+    # A UUID cannot be made "nearby but absent" by arithmetic the way an int could — mint a fresh
+    # one instead. It is not in the table, which is the only property this test needs.
+    missing_eid = uuid.uuid7()  # not a real row
     _outsider(stub_host)
 
     forbidden = client.post(f"{API}/preview", json={"engagement_id": real_eid, "text": "hello"})

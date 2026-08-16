@@ -77,6 +77,30 @@ def _as_int(value) -> int | None:
         return None
 
 
+def _as_uuid(value):
+    """Coerce a body-supplied Scribble row id to a ``uuid.UUID``, or ``None`` if it is not one.
+
+    Scribble's ids became UUIDv7 in lotek#335, and JSON has no UUID type — so a body field arrives as a
+    STRING. Handing that string straight to ``db.get()`` does not raise a clean "bad id": SQLAlchemy's
+    ``Uuid`` type calls ``.hex`` on it and the request dies as
+    ``AttributeError: 'str' object has no attribute 'hex'`` — a 500, from deep inside the ORM, for what
+    is really malformed input. Returning ``None`` here lets the caller answer 400/404 the way it already
+    does for a missing id.
+
+    URL path segments do NOT need this: Flask's ``<uuid:…>`` converter has already parsed them.
+    """
+    import uuid as _uuid
+
+    if isinstance(value, _uuid.UUID):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return _uuid.UUID(value.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def _artifact_dict(a: Artifact) -> dict:
     return {
         "id": a.id,
@@ -115,8 +139,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
         upload = request.files.get("file")
         if upload is not None:
-            engagement_id = _as_int(request.form.get("engagement_id"))
-            finding_id = _as_int(request.form.get("finding_id"))
+            engagement_id = _as_uuid(request.form.get("engagement_id"))
+            finding_id = _as_uuid(request.form.get("finding_id"))
             caption = request.form.get("caption")
             kind_raw = request.form.get("kind")
             placement_raw = request.form.get("placement")
@@ -125,8 +149,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             data = upload.read()
         elif request.is_json:
             payload = request.get_json(silent=True) or {}
-            engagement_id = _as_int(payload.get("engagement_id"))
-            finding_id = _as_int(payload.get("finding_id"))
+            engagement_id = _as_uuid(payload.get("engagement_id"))
+            finding_id = _as_uuid(payload.get("finding_id"))
             caption = payload.get("caption")
             kind_raw = payload.get("kind")
             placement_raw = payload.get("placement")

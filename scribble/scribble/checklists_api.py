@@ -19,6 +19,7 @@ from flask import Response, jsonify, render_template, request
 from sqlalchemy import select
 
 from scribble import checklists as C
+from scribble.artifacts_api import _as_uuid
 from scribble.deps import open_session
 from scribble.enums import ChecklistKind
 from scribble.models import (
@@ -307,7 +308,7 @@ def register(api_bp, bp) -> None:
     def assign_engagement_checklist(eid: int):
         payload = request.get_json(silent=True) or {}
         try:
-            template_id = int(payload.get("template_id"))
+            template_id = _as_uuid(payload.get("template_id"))
         except (TypeError, ValueError):
             return jsonify(ok=False, error="template_id must be an integer"), 400
         with open_session() as db:

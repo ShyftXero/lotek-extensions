@@ -20,7 +20,9 @@ from tests.conftest import FakeFindingDTO, StubActor
 M = "/scribble/machine"
 
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 
 def _engagement(client, stub_host, name: str = "E") -> int:
@@ -65,7 +67,7 @@ def test_create_engagement_sets_created_by_and_owner_id(client, stub_host, sessi
         },
     )
     assert resp.status_code == 201
-    eid = resp.get_json()["id"]
+    eid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         assert eng is not None
@@ -104,7 +106,7 @@ def test_create_engagement_repoints_client_id_to_injected_host_client(app, sessi
 
     resp = app.test_client().post(f"{M}/engagements", json={"name": "Acme external", "client_id": cid})
     assert resp.status_code == 201
-    eid = resp.get_json()["id"]
+    eid = uuid.UUID(resp.get_json()["id"])
     with app.app_context(), session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         resolved = eng.resolve_client(db)

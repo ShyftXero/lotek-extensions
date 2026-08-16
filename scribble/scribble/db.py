@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, String, TypeDecorator
+from sqlalchemy import DateTime, String, TypeDecorator, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -21,6 +21,40 @@ def utcnow() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+class ScribbleUuid(TypeDecorator):
+    """Scribble's primary-key type: a UUID that also accepts its own wire representation.
+
+    Scribble's ids are UUIDv7 (lotek#335). JSON has no UUID type, so **every** id that crosses an HTTP
+    boundary — a request body, a form field, an id echoed back in a response and handed to the next call —
+    is a STRING. SQLAlchemy's plain ``Uuid`` refuses those: it calls ``.hex`` on the value, so a string id
+    does not produce a clean "bad id" but ``AttributeError: 'str' object has no attribute 'hex'``, raised
+    from deep inside the ORM and surfacing as a 500.
+
+    This is CANONICALISATION, not the lenient coercion INV-INPUT-06 forbids, and the distinction is worth
+    stating because the two look alike:
+
+    * ``uuid.UUID("0198…")`` yields **exactly** that id or raises — the value is unchanged, only its
+      representation is. Compare the coercion this project has already been burned by: ``int(uuid)``
+      silently produced a *different* 126-bit value, and truncating an id to fit produced a *different*
+      row.
+    * SQLAlchemy already behaves this way everywhere else — an ``Integer`` column happily accepts
+      ``"42"``. ``Uuid`` rejecting the standard textual form of a UUID is an inconsistency in the type,
+      not a validation boundary worth defending.
+
+    Boundary parsing (``artifacts_api._as_uuid``, ``api_pat._opt_uuid``) is still the right thing and
+    stays: it turns a malformed id into a clean 400 instead of a ``ValueError`` from here. This type is
+    the backstop for the paths nobody remembered to parse.
+    """
+
+    impl = Uuid
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, str):
+            return uuid.UUID(value.strip())  # raises on garbage — never silently substitutes
+        return value
 
 
 class SoftHostId(TypeDecorator):

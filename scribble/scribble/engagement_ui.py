@@ -94,6 +94,9 @@ _REGISTERED = False
 # --------------------------------------------------------------------------------- small helpers
 
 
+from scribble.artifacts_api import _as_uuid  # noqa: E402  -- one shared body-id parser (lotek#335)
+
+
 def _as_int(value) -> int | None:
     try:
         return int(value)
@@ -440,7 +443,7 @@ def register(api_bp, bp) -> None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
             if name:
-                assessment_type_id = _as_int(request.form.get("assessment_type_id"))
+                assessment_type_id = _as_uuid(request.form.get("assessment_type_id"))
                 at = db.get(AssessmentType, assessment_type_id) if assessment_type_id is not None else None
                 group = FindingGroup(
                     engagement_id=engagement_id,
@@ -476,10 +479,10 @@ def register(api_bp, bp) -> None:
             if engagement is None:
                 abort(404)
 
-            template_id = _as_int(request.form.get("template_id"))
+            template_id = _as_uuid(request.form.get("template_id"))
             template = db.get(VulnerabilityTemplate, template_id) if template_id is not None else None
             if template is not None:
-                group_id = _as_int(request.form.get("group_id"))
+                group_id = _as_uuid(request.form.get("group_id"))
                 group = db.get(FindingGroup, group_id) if group_id is not None else None
                 if group is not None and group.engagement_id != engagement_id:
                     group = None  # defensive: never attach to another engagement's group
@@ -605,10 +608,10 @@ def register(api_bp, bp) -> None:
                 return jsonify(error="engagement not found"), 404
 
             existing = {g.id: g for g in engagement.groups}
-            ordered_ids: list[int] = []
-            seen: set[int] = set()
+            ordered_ids: list = []
+            seen: set = set()
             for raw_id in order:
-                gid = _as_int(raw_id)
+                gid = _as_uuid(raw_id)
                 if gid is not None and gid in existing and gid not in seen:
                     ordered_ids.append(gid)
                     seen.add(gid)
@@ -647,9 +650,9 @@ def register(api_bp, bp) -> None:
 
             target_group = None
             if raw_group_id is not None:
-                target_group_id = _as_int(raw_group_id)
+                target_group_id = _as_uuid(raw_group_id)
                 if target_group_id is None:
-                    return jsonify(error="group_id must be an integer or null"), 400
+                    return jsonify(error="group_id must be a UUID or null"), 400
                 target_group = db.get(FindingGroup, target_group_id)
                 if target_group is None or target_group.engagement_id != finding.engagement_id:
                     return jsonify(error=f"group {target_group_id} not found on this engagement"), 404

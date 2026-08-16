@@ -21,6 +21,8 @@ survived a refused delete) rather than just an HTTP status code.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from flask import Flask
 from sqlalchemy import create_engine, event, select
@@ -179,7 +181,7 @@ def test_create_persists_row_with_given_fields(client, session_factory):
 def test_create_auto_derives_slug_from_name_when_omitted(client, session_factory):
     resp = client.post(f"{API_PREFIX}/assessment-types", json={"name": "zzCloud Native!!"})
     assert resp.status_code == 201
-    new_id = resp.get_json()["id"]
+    new_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         t = db.get(AssessmentType, new_id)
@@ -437,7 +439,7 @@ def test_create_ignores_client_supplied_id(client, session_factory):
         json={"id": 999999, "name": "zzMassAssignCreate", "slug": "zzmass-assign-create"},
     )
     assert resp.status_code == 201
-    new_id = resp.get_json()["id"]
+    new_id = uuid.UUID(resp.get_json()["id"])
     assert new_id != 999999
 
     with session_factory() as db:
@@ -584,7 +586,7 @@ def test_create_accepts_hex_color(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        t = db.get(AssessmentType, resp.get_json()["id"])
+        t = db.get(AssessmentType, uuid.UUID(resp.get_json()["id"]))
         assert t.color == "#Ab12Ef"
 
 
@@ -594,7 +596,7 @@ def test_create_allows_blank_color_as_none(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        assert db.get(AssessmentType, resp.get_json()["id"]).color is None
+        assert db.get(AssessmentType, uuid.UUID(resp.get_json()["id"])).color is None
 
 
 def test_update_rejects_non_hex_color_and_leaves_row_unchanged(client, session_factory):

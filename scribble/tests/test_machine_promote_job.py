@@ -9,13 +9,17 @@ and — again — the tenancy pass-through (missing/unauthorized job -> 404, not
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
 M = "/scribble/machine"
 
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 
 def _engagement(client, stub_host, name: str = "E") -> int:

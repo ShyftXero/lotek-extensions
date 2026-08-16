@@ -14,6 +14,8 @@ VulnerabilityTemplate instead of EngagementFinding), and list search/filter.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from scribble import library_ui
@@ -164,7 +166,7 @@ def test_create_template_minimal(client, session_factory):
     assert data["redirect"].endswith(f"/scribble/library/{data['id']}")
 
     with session_factory() as db:
-        t = db.get(VulnerabilityTemplate, data["id"])
+        t = db.get(VulnerabilityTemplate, uuid.UUID(data["id"]))
         assert t.name == "zzNew Template"
         assert t.active is True
         assert t.default_severity == Severity.medium
@@ -185,7 +187,7 @@ def test_create_template_full_fields(client, session_factory):
         },
     )
     assert resp.status_code == 201
-    template_id = resp.get_json()["id"]
+    template_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         t = db.get(VulnerabilityTemplate, template_id)
@@ -424,7 +426,7 @@ def test_duplicate_preserves_inactive_state(client, session_factory):
 
     resp = client.post(f"{API_PREFIX}/templates/{template_id}/duplicate")
     assert resp.status_code == 201
-    dup_id = resp.get_json()["id"]
+    dup_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         assert db.get(VulnerabilityTemplate, dup_id).active is False

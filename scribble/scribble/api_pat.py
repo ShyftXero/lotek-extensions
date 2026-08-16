@@ -61,7 +61,7 @@ from scribble.api_schemas import (
     UploadArtifactRequest,
     request_body,
 )
-from scribble.artifacts_api import _as_int, artifact_url
+from scribble.artifacts_api import _as_uuid, artifact_url
 from scribble.artifacts_storage import guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
@@ -995,7 +995,7 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = request.form.get("kind")
         placement_raw = request.form.get("placement")
         idempotency_key = request.form.get("idempotency_key")
-        fid = _as_int(request.form.get("finding_id"))
+        fid = _as_uuid(request.form.get("finding_id"))
         filename = upload.filename or "artifact"
         data = upload.read(_MAX_ARTIFACT_BYTES + 1)  # bound the read; the len() check below rejects >max
     elif request.is_json:
@@ -1004,7 +1004,7 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = payload.get("kind")
         placement_raw = payload.get("placement")
         idempotency_key = payload.get("idempotency_key")
-        fid = _as_int(payload.get("finding_id"))
+        fid = _as_uuid(payload.get("finding_id"))
         filename = payload.get("filename") or "artifact"
         content_b64 = payload.get("content_base64") or payload.get("data_base64") or payload.get("data")
         if not content_b64:

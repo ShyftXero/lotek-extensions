@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import io
+import uuid
 
 import pytest
 
@@ -26,7 +27,9 @@ from tests.conftest import StubActor
 
 M = "/scribble/machine"
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 # A 1x1 PNG — real bytes, so content-type sniffing and kind inference are exercised for real.
 PNG = base64.b64decode(
@@ -229,7 +232,7 @@ def test_a_retry_with_the_same_idempotency_key_returns_the_original(client, stub
 
     assert first.status_code == 201, first.get_json()
     assert second.status_code == 200, second.get_json()
-    assert second.get_json()["id"] == first.get_json()["id"]
+    assert second.get_json()["id"] == uuid.UUID(first.get_json()["id"])
     with session_factory() as db:
         assert db.query(fm.Artifact).count() == 1
 
@@ -239,7 +242,7 @@ def test_different_keys_produce_distinct_artifacts(client, stub_host, session_fa
     a = _upload_json(client, eid, idempotency_key="one")
     b = _upload_json(client, eid, idempotency_key="two")
     assert {a.status_code, b.status_code} == {201}
-    assert a.get_json()["id"] != b.get_json()["id"]
+    assert a.get_json()["id"] != uuid.UUID(b.get_json()["id"])
     with session_factory() as db:
         assert db.query(fm.Artifact).count() == 2
 

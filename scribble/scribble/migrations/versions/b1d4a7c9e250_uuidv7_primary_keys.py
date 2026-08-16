@@ -102,6 +102,14 @@ FK_EDGES: list[tuple[str, str, str, str, bool]] = [
     ("scribble_variable_values", "finding_id", "scribble_findings", "id", True),
 ]
 
+#: (table, column, parent_table, parent_col) — an intra-Scribble reference that never declared its
+#: ForeignKey, so the FK sweep above cannot see it. `scribble_engagement_checklists.template_id` records
+#: which checklist template a checklist came from (provenance) and points at a Scribble PK, so it has to
+#: follow them to UUID — by hand, precisely because there is no constraint to discover it from.
+SOFT_REFS: list[tuple[str, str, str, str]] = [
+    ("scribble_engagement_checklists", "template_id", "scribble_checklist_templates", "id"),
+]
+
 MAP_TABLE = "scribble_pk_migration_map"
 SUFFIX = "__uuid"
 
@@ -145,6 +153,15 @@ def upgrade() -> None:
     for child, child_col, parent, parent_col, _nullable in FK_EDGES:
         if child_col not in [c for t, pks in PK_TABLES if t == child for c in pks]:
             op.add_column(child, sa.Column(_tmp(child_col), sa.Uuid(), nullable=True))
+        conn.execute(
+            sa.text(
+                f'UPDATE "{child}" AS c SET "{_tmp(child_col)}" = p."{_tmp(parent_col)}" '
+                f'FROM "{parent}" AS p WHERE c."{child_col}" = p."{parent_col}"'
+            )
+        )
+
+    for child, child_col, parent, parent_col in SOFT_REFS:
+        op.add_column(child, sa.Column(_tmp(child_col), sa.Uuid(), nullable=True))
         conn.execute(
             sa.text(
                 f'UPDATE "{child}" AS c SET "{_tmp(child_col)}" = p."{_tmp(parent_col)}" '
@@ -201,6 +218,10 @@ def upgrade() -> None:
             continue  # handled with the PK swap below
         op.drop_column(child, child_col)
         op.alter_column(child, _tmp(child_col), new_column_name=child_col, nullable=nullable)
+
+    for child, child_col, _p, _pc in SOFT_REFS:
+        op.drop_column(child, child_col)
+        op.alter_column(child, _tmp(child_col), new_column_name=child_col, nullable=True)
 
     for table, pks in PK_TABLES:
         for pk in pks:

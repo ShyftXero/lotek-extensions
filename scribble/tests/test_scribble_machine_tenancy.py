@@ -37,8 +37,10 @@ from tests.conftest import StubActor
 
 M = "/scribble/machine"
 
-ACME = 501          # the client the token under test holds a grant under
-OTHER_CLIENT = 502  # a client it does not
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # the client the token under test holds a grant under
+OTHER_CLIENT = uuid.uuid7()  # a client it does not
 
 # Machine routes with no engagement axis AT ALL: the vulnerability-template library and the VulnMap that
 # indexes it are single, shared, tenant-free tables (the same reason `library_ui.py`'s routes carry no

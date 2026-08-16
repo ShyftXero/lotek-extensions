@@ -23,6 +23,7 @@ depending on the FACTION-derived seed text WS12 is actively rewriting.
 from __future__ import annotations
 
 import io
+import uuid
 import zipfile
 
 import docx
@@ -239,7 +240,7 @@ def flow(client, session_factory, cfg):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 201
-    kept_artifact_id = resp.get_json()["id"]
+    kept_artifact_id = uuid.UUID(resp.get_json()["id"])
 
     resp = client.post(
         f"{API}/artifacts",
@@ -252,7 +253,7 @@ def flow(client, session_factory, cfg):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 201
-    excluded_artifact_id = resp.get_json()["id"]
+    excluded_artifact_id = uuid.UUID(resp.get_json()["id"])
 
     resp = client.post(f"{API}/artifacts/{excluded_artifact_id}", json={"include_in_report": False})
     assert resp.status_code == 200

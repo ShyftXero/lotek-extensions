@@ -21,6 +21,7 @@ scribble's OWN proofs against the ``stub_host`` fixture (see ``tests/conftest.py
 from __future__ import annotations
 
 import functools
+import uuid
 
 from flask import jsonify
 
@@ -31,8 +32,10 @@ from tests.conftest import StubActor
 
 M = "/scribble/machine"
 
-ACME = 501          # a client the (admin) fixture actor can always see
-OTHER_CLIENT = 777  # a second client, for the list-scoping test
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # a client the (admin) fixture actor can always see
+OTHER_CLIENT = uuid.uuid7()  # a second client, for the list-scoping test
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
@@ -190,7 +193,7 @@ def test_create_template_persists_severity_refs_and_sanitized_content(client, st
         },
     )
     assert resp.status_code == 201, resp.get_json()
-    tid = resp.get_json()["id"]
+    tid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         t = db.get(fm.VulnerabilityTemplate, tid)
         assert t is not None and t.name == "Missing HSTS" and t.category == "web"
@@ -221,7 +224,7 @@ def test_create_template_sanitizes_a_malicious_content_block(client, stub_host, 
         },
     )
     assert resp.status_code == 201, resp.get_json()
-    tid = resp.get_json()["id"]
+    tid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         desc = db.get(fm.VulnerabilityTemplate, tid).content_json["description"]
     assert "html" not in _node_types(desc)
