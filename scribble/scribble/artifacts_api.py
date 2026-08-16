@@ -237,7 +237,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             }
         return jsonify(result), 201
 
-    @api_bp.get("/artifacts/<int:artifact_id>/raw")
+    @api_bp.get("/artifacts/<uuid:artifact_id>/raw")
     def artifact_raw(artifact_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -265,7 +265,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             mimetype=content_type or "application/octet-stream",
         )
 
-    @api_bp.post("/artifacts/<int:artifact_id>")
+    @api_bp.post("/artifacts/<uuid:artifact_id>")
     def update_artifact(artifact_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -285,7 +285,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             result = _artifact_dict(artifact)
         return jsonify(result)
 
-    @api_bp.post("/artifacts/<int:artifact_id>/delete")
+    @api_bp.post("/artifacts/<uuid:artifact_id>/delete")
     def delete_artifact(artifact_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -298,7 +298,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         delete_file(cfg, storage_path)
         return jsonify(ok=True)
 
-    @api_bp.get("/findings/<int:finding_id>/artifacts")
+    @api_bp.get("/findings/<uuid:finding_id>/artifacts")
     def list_finding_artifacts(finding_id: int):
         with open_session() as db:
             rows = (
@@ -310,7 +310,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             result = [_artifact_dict(a) for a in rows]
         return jsonify(artifacts=result)
 
-    @api_bp.post("/findings/<int:finding_id>/artifacts/reorder")
+    @api_bp.post("/findings/<uuid:finding_id>/artifacts/reorder")
     def reorder_artifacts(finding_id: int):
         payload = request.get_json(silent=True) or {}
         order = payload.get("order")

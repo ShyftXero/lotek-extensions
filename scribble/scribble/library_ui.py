@@ -130,7 +130,7 @@ def register(api_bp, bp) -> None:
             all_tags=all_tags,
         )
 
-    @bp.get("/library/<int:template_id>", endpoint="library_detail")
+    @bp.get("/library/<uuid:template_id>", endpoint="library_detail")
     def library_detail(template_id: int):
         with open_session() as db:
             template = db.get(VulnerabilityTemplate, template_id)
@@ -201,7 +201,7 @@ def register(api_bp, bp) -> None:
                 201,
             )
 
-    @api_bp.post("/templates/<int:template_id>")
+    @api_bp.post("/templates/<uuid:template_id>")
     def update_template(template_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -241,7 +241,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, id=template.id)
 
-    @api_bp.post("/templates/<int:template_id>/duplicate")
+    @api_bp.post("/templates/<uuid:template_id>/duplicate")
     def duplicate_template(template_id: int):
         with open_session() as db:
             original = db.get(VulnerabilityTemplate, template_id)
@@ -272,7 +272,7 @@ def register(api_bp, bp) -> None:
                 201,
             )
 
-    @api_bp.post("/templates/<int:template_id>/delete")
+    @api_bp.post("/templates/<uuid:template_id>/delete")
     def delete_template(template_id: int):
         """Toggle a template's active flag (soft delete / reactivate) — reversible.
 
@@ -287,7 +287,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, active=template.active)
 
-    @api_bp.post("/templates/<int:template_id>/blocks/<string:block>")
+    @api_bp.post("/templates/<uuid:template_id>/blocks/<string:block>")
     def save_template_block(template_id: int, block: str):
         doc = request.get_json(silent=True)
         if not schema.is_doc(doc):
@@ -318,7 +318,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, html=html)
 
-    @api_bp.get("/templates/<int:template_id>/blocks/<string:block>")
+    @api_bp.get("/templates/<uuid:template_id>/blocks/<string:block>")
     def get_template_block(template_id: int, block: str):
         with open_session() as db:
             template = db.get(VulnerabilityTemplate, template_id)

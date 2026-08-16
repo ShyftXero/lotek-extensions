@@ -94,7 +94,7 @@ def register(api_bp, bp) -> None:
         return  # idempotent: register(app, ...) may be called more than once per process in tests
     bp._ws8_docx_registered = True  # type: ignore[attr-defined]
 
-    @bp.get("/engagements/<int:engagement_id>/report.docx")
+    @bp.get("/engagements/<uuid:engagement_id>/report.docx")
     def engagement_report_docx(engagement_id: int):
         cfg = get_config()
         with open_session() as db:

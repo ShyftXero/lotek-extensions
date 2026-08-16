@@ -191,7 +191,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t)), 201
 
-    @api_bp.post("/checklists/templates/<int:tid>")
+    @api_bp.post("/checklists/templates/<uuid:tid>")
     def edit_checklist_template(tid: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -215,7 +215,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/hide")
+    @api_bp.post("/checklists/templates/<uuid:tid>/hide")
     def hide_checklist_template(tid: int):
         payload = request.get_json(silent=True) or {}
         hidden = bool(payload.get("hidden", True))
@@ -227,7 +227,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/reset")
+    @api_bp.post("/checklists/templates/<uuid:tid>/reset")
     def reset_checklist_template(tid: int):
         with open_session() as db:
             t = db.get(ChecklistTemplate, tid)
@@ -244,7 +244,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/duplicate")
+    @api_bp.post("/checklists/templates/<uuid:tid>/duplicate")
     def duplicate_checklist_template(tid: int):
         with open_session() as db:
             src = db.get(ChecklistTemplate, tid)
@@ -268,7 +268,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(new)), 201
 
-    @api_bp.get("/checklists/templates/<int:tid>/export")
+    @api_bp.get("/checklists/templates/<uuid:tid>/export")
     def export_checklist_template(tid: int):
         fmt = (request.args.get("format") or "json").lower()
         with open_session() as db:
@@ -290,7 +290,7 @@ def register(api_bp, bp) -> None:
 
     # ----------------------------------------------------------------- assignment (engagement side)
 
-    @api_bp.get("/engagements/<int:eid>/checklists")
+    @api_bp.get("/engagements/<uuid:eid>/checklists")
     def list_engagement_checklists(eid: int):
         with open_session() as db:
             e = db.get(Engagement, eid)
@@ -303,7 +303,7 @@ def register(api_bp, bp) -> None:
             ).all()
             return jsonify(ok=True, checklists=[_checklist_out(ec) for ec in rows])
 
-    @api_bp.post("/engagements/<int:eid>/checklists")
+    @api_bp.post("/engagements/<uuid:eid>/checklists")
     def assign_engagement_checklist(eid: int):
         payload = request.get_json(silent=True) or {}
         try:
@@ -321,7 +321,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, checklist=_checklist_out(ec)), 201
 
-    @api_bp.post("/engagement-checklists/<int:cid>")
+    @api_bp.post("/engagement-checklists/<uuid:cid>")
     def edit_engagement_checklist(cid: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -337,7 +337,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, checklist=_checklist_out(ec))
 
-    @api_bp.post("/engagement-checklists/<int:cid>/delete")
+    @api_bp.post("/engagement-checklists/<uuid:cid>/delete")
     def unassign_engagement_checklist(cid: int):
         with open_session() as db:
             ec = db.get(EngagementChecklist, cid)
@@ -347,7 +347,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True)
 
-    @api_bp.post("/engagement-checklist-items/<int:iid>")
+    @api_bp.post("/engagement-checklist-items/<uuid:iid>")
     def update_engagement_checklist_item(iid: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:

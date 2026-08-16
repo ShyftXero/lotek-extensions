@@ -114,7 +114,7 @@ def register(api_bp, bp) -> None:
                 201,
             )
 
-    @api_bp.post("/assessment-types/<int:type_id>")
+    @api_bp.post("/assessment-types/<uuid:type_id>")
     def update_assessment_type(type_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -163,7 +163,7 @@ def register(api_bp, bp) -> None:
                 return jsonify(ok=False, error="name or slug already in use"), 400
             return jsonify(ok=True, id=at.id)
 
-    @api_bp.post("/assessment-types/<int:type_id>/delete")
+    @api_bp.post("/assessment-types/<uuid:type_id>/delete")
     def delete_assessment_type(type_id: int):
         with open_session() as db:
             at = db.get(AssessmentType, type_id)

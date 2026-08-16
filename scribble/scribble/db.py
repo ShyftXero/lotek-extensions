@@ -374,9 +374,21 @@ def run_migrations(engine) -> None:
     has_scribble_tables = any(t.startswith("scribble_") and t != VERSION_TABLE for t in existing)
     has_version_table = VERSION_TABLE in existing
 
+    if not has_scribble_tables:
+        # FRESH database: build the current schema directly from the models and stamp HEAD. Replaying
+        # the chain would be strictly worse — it would create the old int-PK shape and then migrate it,
+        # and the migrations are written in the DDL of the backend that has to run them (Postgres:
+        # `UPDATE … FROM`, `DROP CONSTRAINT`), so a fresh SQLite database — every unit test — could not
+        # even get through them. Migrations exist to move EXISTING data; a database with no rows has
+        # nothing to move.
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            command.stamp(_alembic_config(conn), "head")
+        return
+
     with engine.begin() as conn:
         cfg = _alembic_config(conn)
-        if has_scribble_tables and not has_version_table:
+        if not has_version_table:
             # Adoption. Bring the drifted legacy schema up to the baseline shape, THEN stamp it.
             _additive_column_sync(engine)
             _widen_soft_host_id_columns(engine)

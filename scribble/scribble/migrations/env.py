@@ -22,8 +22,9 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-import scribble.models  # noqa: F401  -- REQUIRED: importing db.Base alone leaves metadata EMPTY, and
-#                          autogenerate then reports success while emitting an empty revision.
+# REQUIRED, and not an incidental import: `from scribble.db import Base` alone leaves `Base.metadata`
+# EMPTY, and autogenerate then reports success while emitting a revision with zero tables in it.
+import scribble.models  # noqa: F401
 from scribble.db import Base
 
 config = context.config

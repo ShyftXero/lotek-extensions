@@ -47,7 +47,7 @@ def register(api_bp, bp) -> None:
     if _REGISTERED:
         return
 
-    @api_bp.post("/findings/<int:finding_id>/blocks/<string:block>")
+    @api_bp.post("/findings/<uuid:finding_id>/blocks/<string:block>")
     def autosave_block(finding_id: int, block: str):
         doc = request.get_json(silent=True)
         if not schema.is_doc(doc):
@@ -76,7 +76,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, html=html)
 
-    @api_bp.get("/findings/<int:finding_id>/blocks/<string:block>")
+    @api_bp.get("/findings/<uuid:finding_id>/blocks/<string:block>")
     def get_block(finding_id: int, block: str):
         with open_session() as db:
             finding = db.get(EngagementFinding, finding_id)

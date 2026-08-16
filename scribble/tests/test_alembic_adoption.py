@@ -32,6 +32,10 @@ def _fresh_engine():
     with eng.begin() as c:
         c.execute(text(f"DROP TABLE IF EXISTS {VERSION_TABLE}"))
         c.execute(text("DROP TABLE IF EXISTS scribble_clients_pre_mount_remap"))
+        # Created by the UUID-PK revision and deliberately NOT dropped by it (lotek consumes it), so it
+        # is not in `Base.metadata` and `drop_all` leaves it behind — a leftover that makes the next
+        # `upgrade head` fail with DuplicateTable.
+        c.execute(text("DROP TABLE IF EXISTS scribble_pk_migration_map CASCADE"))
     return eng
 
 
@@ -55,17 +59,28 @@ def test_fresh_database_migrates_to_head():
 def test_a_preexisting_database_is_stamped_not_rebuilt_and_keeps_its_rows():
     """The adoption path. A database with real rows and no version table must end up at head with its
     data intact — the rows are the whole reason it cannot simply be recreated."""
-    from scribble.db import BASELINE_REVISION, Base, make_session_factory, run_migrations
+    from alembic import command
+
+    from scribble.db import BASELINE_REVISION, _alembic_config, make_session_factory, run_migrations
     from scribble.models import Engagement
 
     eng = _fresh_engine()
 
-    # Build the pre-Alembic world: tables via the raw metadata, a row, and NO version table.
-    Base.metadata.create_all(eng)
+    # Build the genuine pre-Alembic world: the INT-PK schema, a row, and NO version table.
+    #
+    # `Base.metadata.create_all` is wrong here and was the first version of this test: the models now
+    # declare UUID primary keys, so it builds the POST-migration schema, which is then stamped at a
+    # baseline claiming int PKs and "upgraded" over tables that are already migrated. Running the
+    # baseline revision itself is the only way to reproduce what a legacy deployment actually looks like.
+    with eng.begin() as conn:
+        command.upgrade(_alembic_config(conn), BASELINE_REVISION)
+    with eng.begin() as c:
+        c.execute(text(
+            "INSERT INTO scribble_engagements (id, name, scope_type, status, created_at, updated_at) "
+            "VALUES (1, 'pre-existing engagement', 'external', 'active', now(), now())"
+        ))
+        c.execute(text(f"DROP TABLE {VERSION_TABLE}"))  # a legacy DB has no revision pointer
     session_factory = make_session_factory(eng)
-    with session_factory() as db:
-        db.add(Engagement(name="pre-existing engagement"))
-        db.commit()
     assert VERSION_TABLE not in set(inspect(eng).get_table_names()), "test premise: not yet adopted"
 
     run_migrations(eng)

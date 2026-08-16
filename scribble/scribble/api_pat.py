@@ -101,6 +101,31 @@ def _sev_value(sev) -> str | None:
     return getattr(sev, "value", sev) if sev is not None else None
 
 
+def _opt_uuid(data: dict, key: str):
+    """Validate an OPTIONAL Scribble row id — a UUID since lotek#335.
+
+    Scribble's own primary keys became UUIDv7 to remove trivial enumeration, so the id fields a machine
+    caller sends (`template_id`, `group_id`, …) are UUID strings over JSON. Parsed as integers they
+    produced a flat 400 for every well-formed request, which is how this is caught if it regresses.
+
+    Returns `(value_or_None, error_response_or_None)` so a malformed id is a clean 400 rather than a 500
+    raised deep inside `db.get`. Accepts any spelling `uuid.UUID` does (dashed, undashed, braced, mixed
+    case) and normalises to a real `uuid.UUID`; rejects everything else, `bool` explicitly included.
+    """
+    v = data.get(key)
+    if v is None:
+        return None, None
+    bad = (jsonify({"error": "bad_request", "detail": f"{key} must be a UUID"}), 400)
+    if isinstance(v, uuid.UUID):
+        return v, None
+    if isinstance(v, bool) or not isinstance(v, str):
+        return None, bad
+    try:
+        return uuid.UUID(v.strip()), None
+    except (ValueError, AttributeError):
+        return None, bad
+
+
 def _opt_int(data: dict, key: str):
     """Validate an OPTIONAL integer JSON field. Returns (value_or_None, error_response_or_None) so a
     non-integer value (list/dict/non-numeric string/bool) yields a clean 400 rather than a 500 raised
@@ -374,7 +399,7 @@ def scribble_list_templates():
 # ── 3. GET /templates/<id> ───────────────────────────────────────────────────────────────────────────
 
 
-@machine_bp.get("/templates/<int:template_id>")
+@machine_bp.get("/templates/<uuid:template_id>")
 @host.require_scope("read")
 def scribble_get_template(template_id: int):
     with open_session() as db:
@@ -469,7 +494,7 @@ def scribble_create_template():
 # ── 4. POST /engagements/<id>/findings ───────────────────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/findings")
+@machine_bp.post("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
 def scribble_add_finding(engagement_id: int):
@@ -486,7 +511,7 @@ def scribble_add_finding(engagement_id: int):
             return _engagement_not_found()
 
         data = request.get_json(silent=True) or {}
-        template_id, err = _opt_int(data, "template_id")
+        template_id, err = _opt_uuid(data, "template_id")
         if err:
             return err
         # _opt_HOST_id, not _opt_int: this is a CORE finding id, and core v2 keys it on UUIDv7. Parsed as
@@ -495,7 +520,7 @@ def scribble_add_finding(engagement_id: int):
         lotek_finding_id, err = _opt_host_id(data, "lotek_finding_id")
         if err:
             return err
-        group_id, err = _opt_int(data, "group_id")
+        group_id, err = _opt_uuid(data, "group_id")
         if err:
             return err
         # Neither id -> the THIRD branch (author a finding directly from the body); handled AFTER this
@@ -677,7 +702,7 @@ def scribble_add_finding(engagement_id: int):
 @host.require_scope("write")
 def scribble_create_vuln_map():
     data = request.get_json(silent=True) or {}
-    template_id, err = _opt_int(data, "template_id")
+    template_id, err = _opt_uuid(data, "template_id")
     if err:
         return err
     if template_id is None:
@@ -781,7 +806,7 @@ def scribble_resolve_template():
 # ── 8. POST /engagements/<id>/promote-job/<job_id> ──────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/promote-job/<job_id>")
+@machine_bp.post("/engagements/<uuid:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
 def scribble_promote_job(engagement_id: int, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
@@ -865,7 +890,7 @@ def scribble_list_engagements():
 # ── 8c. GET /engagements/<id> — one engagement the caller may see ────────────────────────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>")
+@machine_bp.get("/engagements/<uuid:engagement_id>")
 @host.require_scope("read")
 def scribble_get_engagement(engagement_id: int):
     actor = host.actor()
@@ -884,7 +909,7 @@ def scribble_get_engagement(engagement_id: int):
 # ── 8d. GET /engagements/<id>/report — stream the rendered deliverable (html|docx) ───────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>/report")
+@machine_bp.get("/engagements/<uuid:engagement_id>/report")
 @host.require_scope("read")
 def scribble_engagement_report(engagement_id: int):
     """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
@@ -936,7 +961,7 @@ def scribble_engagement_report(engagement_id: int):
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/artifacts")
+@machine_bp.post("/engagements/<uuid:engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
 def scribble_upload_artifact(engagement_id: int):

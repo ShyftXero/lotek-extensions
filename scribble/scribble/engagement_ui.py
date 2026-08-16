@@ -325,7 +325,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: edit / delete
 
-    @bp.get("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit_page")
+    @bp.get("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit_page")
     def engagement_edit_page(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -338,7 +338,7 @@ def register(api_bp, bp) -> None:
                 error=None,
             )
 
-    @bp.post("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit")
+    @bp.post("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit")
     def engagement_edit(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -371,7 +371,7 @@ def register(api_bp, bp) -> None:
             db.commit()
         return redirect(url_for("scribble.engagements"))
 
-    @bp.post("/engagements/<int:engagement_id>/delete", endpoint="engagement_delete")
+    @bp.post("/engagements/<uuid:engagement_id>/delete", endpoint="engagement_delete")
     def engagement_delete(engagement_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -391,7 +391,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: board (detail)
 
-    @bp.get("/engagements/<int:engagement_id>", endpoint="engagement_board")
+    @bp.get("/engagements/<uuid:engagement_id>", endpoint="engagement_board")
     def engagement_board(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -432,7 +432,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: groups
 
-    @bp.post("/engagements/<int:engagement_id>/groups", endpoint="create_group")
+    @bp.post("/engagements/<uuid:engagement_id>/groups", endpoint="create_group")
     def create_group(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -452,7 +452,7 @@ def register(api_bp, bp) -> None:
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
-    @bp.post("/engagements/<int:engagement_id>/groups/<int:group_id>/delete", endpoint="delete_group")
+    @bp.post("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>/delete", endpoint="delete_group")
     def delete_group(engagement_id: int, group_id: int):
         with open_session() as db:
             group = db.get(FindingGroup, group_id)
@@ -469,7 +469,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: add finding
 
-    @bp.post("/engagements/<int:engagement_id>/findings", endpoint="add_finding")
+    @bp.post("/engagements/<uuid:engagement_id>/findings", endpoint="add_finding")
     def add_finding(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -503,7 +503,7 @@ def register(api_bp, bp) -> None:
     # =============================================================================== UI: delete finding
 
     @bp.post(
-        "/engagements/<int:engagement_id>/findings/<int:finding_id>/delete", endpoint="delete_finding"
+        "/engagements/<uuid:engagement_id>/findings/<uuid:finding_id>/delete", endpoint="delete_finding"
     )
     def delete_finding(engagement_id: int, finding_id: int):
         cfg = get_config()
@@ -529,7 +529,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: finding detail
 
-    @bp.route("/findings/<int:finding_id>", methods=["GET", "POST"], endpoint="finding_detail")
+    @bp.route("/findings/<uuid:finding_id>", methods=["GET", "POST"], endpoint="finding_detail")
     def finding_detail(finding_id: int):
         with open_session() as db:
             finding = db.get(EngagementFinding, finding_id)
@@ -592,7 +592,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: reorder groups
 
-    @api_bp.post("/engagements/<int:engagement_id>/groups/reorder")
+    @api_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
     def reorder_groups(engagement_id: int):
         payload = request.get_json(silent=True) or {}
         order = payload.get("order")
@@ -629,7 +629,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: move finding
 
-    @api_bp.post("/findings/<int:finding_id>/move")
+    @api_bp.post("/findings/<uuid:finding_id>/move")
     def move_finding(finding_id: int):
         payload = request.get_json(silent=True) or {}
         if "group_id" not in payload:
@@ -725,7 +725,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: update group
 
-    @api_bp.post("/groups/<int:group_id>")
+    @api_bp.post("/groups/<uuid:group_id>")
     def update_group(group_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:

@@ -76,7 +76,7 @@ def register(api_bp, bp) -> None:
     HTML/binary (not JSON), so no routes are added to the JSON API blueprint today.
     """
 
-    @bp.get("/engagements/<int:engagement_id>/report")
+    @bp.get("/engagements/<uuid:engagement_id>/report")
     def engagement_report(engagement_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -95,7 +95,7 @@ def register(api_bp, bp) -> None:
             )
         return Response(html_doc, mimetype="text/html")
 
-    @bp.get("/engagements/<int:engagement_id>/report/export")
+    @bp.get("/engagements/<uuid:engagement_id>/report/export")
     def engagement_report_export(engagement_id: int):
         cfg = get_config()
         fmt = (request.args.get("format") or "html").strip().lower()
