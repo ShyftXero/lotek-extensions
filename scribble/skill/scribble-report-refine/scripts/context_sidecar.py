@@ -7,6 +7,12 @@ the skill to read engagement facts (see ``../SKILL.md``'s no-data-change guardra
 goes through a session bound to a connection SQLite itself opened in ``mode=ro``, enforced at the
 connection level rather than by caller convention, so a coding mistake that tries to write through this
 session fails loudly instead of silently mutating a client's report.
+
+Caveat: this script runs outside any Flask app context, so ``scribble.deps.client_model()`` -- used
+transitively by ``build_report_context`` when resolving a finding's client -- always falls back to
+Scribble's OWN client table (``scribble_clients``), never a mounted host's client table. That is a
+documented pre-existing behavior of ``client_model()`` (see ``scribble/deps.py``), not something this
+sidecar introduces.
 """
 
 from __future__ import annotations

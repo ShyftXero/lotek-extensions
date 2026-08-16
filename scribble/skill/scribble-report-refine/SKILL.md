@@ -53,6 +53,11 @@ Concretely, this skill must never:
 - call any Scribble write endpoint, form, or ORM session that isn't the read-only sidecar above;
 - fabricate a finding, host, or evidence item not present in the sidecar JSON.
 
+Note also that read-only is the *only* thing the sidecar enforces: it performs **no per-engagement
+authorization** of its own, and never checks tenancy/membership. Point `--db`/`--engagement-id` only at
+a database file the invoking operator is already fully authorized to read end-to-end -- the sidecar will
+happily open and return data from any engagement in whatever file it's given.
+
 ## Output
 
 Produce refined prose (executive summary paragraph(s), narrative transitions, plain-language impact
