@@ -313,9 +313,94 @@ def _widen_soft_host_id_columns(engine) -> None:
     )
 
 
+#: The baseline revision: Scribble's schema exactly as `create_all` built it, int PKs and all. A
+#: database that already has Scribble tables but no version table is STAMPED at this revision rather
+#: than rebuilt — see `run_migrations`.
+BASELINE_REVISION = "e17599b0880a"
+
+VERSION_TABLE = "scribble_alembic_version"
+
+
+def _alembic_config(connection):
+    """An Alembic config bound to the HOST's live connection.
+
+    `alembic.ini` deliberately carries no `sqlalchemy.url`: Scribble never owns the database it migrates,
+    so the only correct target is the connection the host handed us at mount time.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    here = Path(__file__).resolve().parent
+    cfg = Config(str(here.parent / "alembic.ini"))
+    cfg.set_main_option("script_location", str(here / "migrations"))
+    cfg.attributes["connection"] = connection
+    return cfg
+
+
+def run_migrations(engine) -> None:
+    """Bring Scribble's schema to head, adopting Alembic on a pre-existing database if needed.
+
+    Scribble had no migration framework until lotek#335 — schema came from `create_all` plus the
+    hand-rolled one-shots below. Those cannot express a primary-key type change across 22 foreign-key
+    edges, which is what the UUID migration requires, so Alembic now owns the schema.
+
+    **Its version pointer lives in `scribble_alembic_version`, not `alembic_version`.** Scribble runs
+    inside the host's database alongside the host's own Alembic history; sharing one version table would
+    make each project read the other's revision id as an unknown head and refuse to run.
+
+    Three cases, and the middle one is the whole reason this function is not a one-liner:
+
+    * **Fresh database** — no Scribble tables. `upgrade head` builds everything from the baseline.
+    * **Pre-existing database, no version table** — every deployment that predates this change. Its
+      schema must be brought to *exactly* the baseline shape by the legacy one-shots FIRST, then STAMPED
+      (not rebuilt — the tables hold real data). Stamping a drifted database is how you get a migration
+      chain that believes a column exists when it does not, so the order here is load-bearing.
+    * **Already adopted** — version table present. Straight `upgrade head`.
+
+    The legacy one-shots run only on the adoption path and are kept, not deleted: they are what makes a
+    drifted pre-Alembic database match the baseline. Once every deployment has adopted, they become dead
+    code and can go.
+    """
+    from alembic import command
+    from sqlalchemy import inspect
+
+    from scribble import models  # noqa: F401  -- populate Base.metadata
+
+    _rename_from_fraction(engine)  # must precede everything: renames fraction_* tables in place
+
+    insp = inspect(engine)
+    existing = set(insp.get_table_names())
+    has_scribble_tables = any(t.startswith("scribble_") and t != VERSION_TABLE for t in existing)
+    has_version_table = VERSION_TABLE in existing
+
+    with engine.begin() as conn:
+        cfg = _alembic_config(conn)
+        if has_scribble_tables and not has_version_table:
+            # Adoption. Bring the drifted legacy schema up to the baseline shape, THEN stamp it.
+            _additive_column_sync(engine)
+            _widen_soft_host_id_columns(engine)
+            _remap_standalone_client_ids(engine)
+            command.stamp(cfg, BASELINE_REVISION)
+        command.upgrade(cfg, "head")
+
+
 def create_all(engine) -> None:
+    """Back-compat entry point: the host calls this at mount (`scribble/__init__.py`).
+
+    Kept as the public name so the host contract does not change, but it now delegates to
+    `run_migrations` — Alembic owns the schema since lotek#335.
+    """
+    run_migrations(engine)
+
+
+def _additive_column_sync(engine) -> None:
     """Create Scribble's tables, then additively add any new columns (and their indexes) to
     pre-existing tables.
+
+    **Legacy path only.** Since lotek#335 this runs exactly once per database — on the Alembic adoption
+    path in `run_migrations`, to bring a pre-Alembic schema up to the baseline shape before it is
+    stamped. New schema changes are Alembic revisions, not additions here.
 
     SQLAlchemy's ``create_all`` only ever creates MISSING TABLES — never new COLUMNS on a table that
     already exists, and it skips a pre-existing table entirely (so it won't add a new index either).
@@ -341,7 +426,7 @@ def create_all(engine) -> None:
 
     from scribble import models  # noqa: F401
 
-    _rename_from_fraction(engine)  # migrate an old fraction_*-prefixed DB in place, before create_all
+    # (`_rename_from_fraction` already ran in `run_migrations`, which is this function's only caller.)
     pre_existing = set(inspect(engine).get_table_names())  # capture BEFORE create_all (post-rename)
     Base.metadata.create_all(engine)  # creates missing tables at full shape; no-ops existing ones
 
@@ -368,12 +453,6 @@ def create_all(engine) -> None:
                     if all(c.name in have for c in index.columns):
                         index.create(bind=conn, checkfirst=True)
 
-    # Before any of the data migrations below touch a SoftHostId column: repair one whose STORAGE type
-    # predates the model declaring it SoftHostId. Ordering is load-bearing -- _remap_standalone_client_ids
-    # UPDATEs scribble_engagements.client_id with a HOST id, which under lotek v2 is a UUID, and that
-    # write is exactly what an unrepaired INTEGER column refuses.
-    _widen_soft_host_id_columns(engine)
-
-    # Last: close the report-authz IDOR by remapping any standalone-space client_ids to host space.
-    # After the tables exist, so it can read/rewrite scribble_engagements + retire scribble_clients.
-    _remap_standalone_client_ids(engine)
+    # `_widen_soft_host_id_columns` and `_remap_standalone_client_ids` used to run here. They are now
+    # sequenced by `run_migrations` (adoption path only), because their ordering relative to the Alembic
+    # STAMP is what makes adoption correct: the schema must match the baseline *before* it is stamped.
