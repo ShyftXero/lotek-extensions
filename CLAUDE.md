@@ -60,11 +60,81 @@ Prove a *mounted* behaviour (tenancy, the host seam) against lotek's suite too �
 contract is how it behaves inside lotek. See the extension's coverage in
 `lotek/tests/test_<ext>_extension.py`.
 
-## The commit gate
+## The commit + PR gate
 
-A PreToolUse hook (`.claude/hooks/rails_gate.py`) gates commits: it blocks `git add -A`/`commit -a`
-(stage explicit paths), blocks a commit landing on `main`, and requires `ruff` clean on the staged
-Python. Override once with `RAILS_OVERRIDE=1` (logged).
+A PreToolUse hook (`.claude/hooks/rails_gate.py`) gates commits AND `gh pr create` — ported from
+lotek core's `rails_gate.py` (2026-08, same author's design) so this repo enforces the same bar,
+adapted for a monorepo of four independent `uv` subprojects instead of one project:
+
+**Commit-time** (fast, runs on every `git commit`):
+- `explicit-staging` — blocks `git add -A`/`.` and `commit -a` (stage explicit paths instead).
+- `protected-branch` — refuses a commit landing directly on `main`.
+- `clean-checks` — `ruff` clean on the staged Python (one pass across all staged files; ruff's own
+  config discovery picks each file's nearest subproject `pyproject.toml`), **and now `pyrefly`
+  clean, per touched subproject** (`uv run --extra dev pyrefly check <files>`, run from that
+  subproject's own directory since each has its own venv/lock — `pyrefly`/`ruff`/`pytest` live
+  under each subproject's `[project.optional-dependencies].dev`, so `--extra dev` is required).
+  Fails OPEN (logs it) if `uv`/`pyrefly` aren't available; a real type error still denies.
+
+**PR-time** (`gh pr create` is blocked unless every APPLICABLE marker below is recorded for the
+current HEAD — there is no CI here to trust as a merge gate, so local verification before the PR
+is the real one):
+
+```sh
+/security-review                                      # review git diff main...HEAD, resolve findings
+python3 .claude/hooks/rails_gate.py --ack-review
+/adversarial-reviewer                                 # review git diff main...HEAD, resolve BLOCK/CONCERNS
+python3 .claude/hooks/rails_gate.py --ack-adversarial
+# run the relevant subproject suite(s): cd <ext> && uv run --extra dev pytest -q
+python3 .claude/hooks/rails_gate.py --ack-tests
+# only if the branch touches some subproject's tests/ — break each guard added, watch it fail, fix it
+python3 .claude/hooks/rails_gate.py --ack-transcripts
+gh pr create --base main --head <branch>              # ALL applicable markers present + current
+```
+
+Both `--ack-review` and `--ack-adversarial` also accept `--staged` (ack the staged tree before your
+final commit — the marker binds to `git write-tree` and survives the commit). Every marker is keyed
+to `git rev-parse HEAD` (or the staged tree for `--staged`); a further commit invalidates it and it
+must be re-acked. A branch whose every changed path is `.md` is exempt from `--ack-tests` only (not
+review/adversarial). Override any single gate with `RAILS_OVERRIDE=1 <cmd>` (logged to
+`<git-dir>/claude-rails-audit.jsonl`, same as every deny/fail-open/warn).
+
+**Not ported (deliberately, out of scope for this pass):** lotek core's `branch-owner` (shared-
+worktree session collision guard), `merge-gate` (local `git merge` into main), `push-identity`
+(bot-token push enforcement), and the `regression-test`/`ci-required-checks` soft advisories. This
+pass only imposes the same lint/type/review/test BAR, not lotek's full concurrent-session
+machinery — add those later if this repo grows the same multi-session pressure lotek did.
+
+### Invariant divergence (intentional) — this repo has NO local invariant contract
+
+lotek core has a deterministic `INVARIANTS.md` + `pytest -m invariant` suite (~150 tagged tests) and
+a non-opt-in `--ack-invariants` gate that RUNS that suite and only records a marker if it's green.
+**This repo has no equivalent** — see "Security-invariant contract" below: the registry and its
+enforcing tests both live in lotek core, not here. Porting `--ack-invariants` as a REQUIRED
+`gh pr create` gate in this repo would fake a green check for a contract this repo cannot itself
+run. So `--ack-invariants` exists here only as a CLI (muscle-memory parity with lotek) that scans
+the four subprojects for `@pytest.mark.invariant` usage (there is none today) and logs an honest
+SKIP-with-reason to the audit trail — never a marker, never a required gate. The compensating
+control is the `invariant-pointer` gate below: a non-blocking reminder on every `gh pr create`.
+
+## Security-invariant contract lives in lotek CORE, not here
+
+The canonical security-invariant contract is lotek core's `INVARIANTS.md`
+(https://github.com/ShyftXero/lotek/blob/main/INVARIANTS.md; locally usually
+`~/Dropbox/code/lotek/INVARIANTS.md`) — this repo does not duplicate it and must not fork it.
+
+**Any extension change touching a core-reference id** (principal/client/engagement/job/finding/
+asset/object), **tenancy scoping, audit emission, or a confirm-tier verb MUST consult it first.**
+This repo's code already carries inline `INV-…` tags (`INV-EXT-*`, `INV-TENANCY-05/06`,
+`INV-INTEGRITY-03`, `INV-AUDIT-03/04`, `INV-SECRET-05`, …) — those are REFERENCES into lotek core's
+registry, not a local one. An inline `INV-…` tag that names no real entry in lotek core's
+`INVARIANTS.md` is a defect, not a stylistic choice.
+
+The `rails_gate.py` PR gate surfaces this as a lightweight, non-blocking reminder: every
+`gh pr create` gets an `additionalContext` note pointing at lotek's `INVARIANTS.md` (resolved to a
+local path if one of the usual checkout locations exists on disk, else the canonical URL) — it
+never fails or blocks if lotek core isn't present on this machine; it's a pointer, not a hard
+cross-repo dependency. See `_g_invariant_pointer` in `.claude/hooks/rails_gate.py`.
 
 ## v2-native contract (every extension)
 
