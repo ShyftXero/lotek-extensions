@@ -9,6 +9,8 @@ Auth/scope RBAC is the host's own concern (see `test_machine_engagements.py`'s m
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 
 M = "/scribble/machine"
@@ -23,7 +25,7 @@ def _two_template_ids(client):
 def _mk(client, **body):
     r = client.post(f"{M}/vuln-map", json=body)
     assert r.status_code == 201, r.get_json()
-    return r.get_json()["id"]
+    return uuid.UUID(r.get_json()["id"])
 
 
 def _resolve(client, **body):

@@ -39,7 +39,7 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
 # ── fail-closed: no mounting host at all ─────────────────────────────────────────────────────────

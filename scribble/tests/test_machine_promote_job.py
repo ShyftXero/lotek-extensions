@@ -36,7 +36,7 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
 def test_promote_job_creates_findings_and_records_host_assignment(client, stub_host, session_factory):
