@@ -49,8 +49,8 @@ PX_CRITICAL = (179, 38, 30)
 PX_HIGH = (194, 65, 12)
 
 
-def _page1_rgb(pdf: Path) -> tuple[int, int, bytes]:
-    """Page 1 of ``pdf`` as raw RGB bytes, via poppler's ``pdftoppm`` writing a P6 PPM.
+def _pdf_pages_rgb(pdf: Path) -> list[bytes]:
+    """EVERY page of ``pdf`` as raw RGB bytes, via poppler's ``pdftoppm`` writing P6 PPMs.
 
     Pixels, not PDF operators. Reading back the content stream's fill operators (``r g b rg``) looks
     tempting and is WRONG for this defect: a severity colour also appears there as the finding card's
@@ -58,26 +58,34 @@ def _page1_rgb(pdf: Path) -> tuple[int, int, bytes]:
     operator-level check passes whether or not the bug is present (measured: it did). What distinguishes
     the two is how much of the page is actually painted in that colour.
 
+    Every page, not page 1: since ext#43 the deliverable opens on a cover page and a table of contents, so
+    the severity bar is on page 3. Measuring a fixed page number would have quietly turned this guard into
+    an assertion about a title page — the paginated position of a widget is not what it is testing.
+
     PPM is parsed by hand so this needs no image library — only poppler, which the caller skips without.
     """
     stem = pdf.with_suffix("")
     subprocess.run(  # noqa: S603 - fixed argv, path from tmp_path
-        ["pdftoppm", "-r", "72", "-f", "1", "-l", "1", str(pdf), str(stem)],
+        ["pdftoppm", "-r", "72", str(pdf), str(stem)],
         check=True,
         capture_output=True,
     )
-    ppm = sorted(pdf.parent.glob(f"{stem.name}*.ppm"))[0]
-    magic, dims, _maxval, pix = ppm.read_bytes().split(b"\n", 3)
-    assert magic.strip() == b"P6", f"unexpected raster format {magic!r}"
-    width, height = (int(v) for v in dims.split())
-    return width, height, pix
+    pages = sorted(pdf.parent.glob(f"{stem.name}-*.ppm"))
+    assert pages, f"pdftoppm produced no pages for {pdf.name}"
+    out: list[bytes] = []
+    for ppm in pages:
+        magic, _dims, _maxval, pix = ppm.read_bytes().split(b"\n", 3)
+        assert magic.strip() == b"P6", f"unexpected raster format {magic!r}"
+        out.append(pix)
+    return out
 
 
-def _count_colour(pix: bytes, target: tuple[int, int, int], tol: int = 12) -> int:
-    """Pixels within ``tol`` of ``target`` — tolerant of the rasterizer's antialiasing."""
+def _count_colour(pages: list[bytes], target: tuple[int, int, int], tol: int = 12) -> int:
+    """Pixels within ``tol`` of ``target`` across every page — tolerant of the rasterizer's antialiasing."""
     tr, tg, tb = target
     return sum(
         1
+        for pix in pages
         for i in range(0, len(pix) - 2, 3)
         if abs(pix[i] - tr) < tol and abs(pix[i + 1] - tg) < tol and abs(pix[i + 2] - tb) < tol
     )
@@ -256,7 +264,8 @@ def test_pdf_printed_without_background_graphics_keeps_the_severity_fills(
     Both PDFs are printed and compared to each other, so the claim is relative and needs no magic
     pixel count: printing WITHOUT background graphics must not lose the severity colour that printing
     WITH them has. Measured on this fixture — with the defect: 504 painted pixels vs 6774 (the bar and
-    every legend swatch gone); with the fix: 6773 vs 6774.
+    every legend swatch gone); with the fix: 6773 vs 6774. (Both PDFs now carry the ext#43 cover page and
+    contents, so the comparison is over every page — see ``_pdf_pages_rgb``.)
     """
     if shutil.which("pdftoppm") is None:  # pragma: no cover - environment-dependent
         pytest.skip("poppler's pdftoppm is not installed; skipping the rasterized PDF check (skip-clean)")
@@ -264,8 +273,8 @@ def test_pdf_printed_without_background_graphics_keeps_the_severity_fills(
     report_page.pdf(path=str(nobg), format="Letter", print_background=False)
     report_page.pdf(path=str(withbg), format="Letter", print_background=True)
 
-    painted_with = _count_colour(_page1_rgb(withbg)[2], colour)
-    painted_without = _count_colour(_page1_rgb(nobg)[2], colour)
+    painted_with = _count_colour(_pdf_pages_rgb(withbg), colour)
+    painted_without = _count_colour(_pdf_pages_rgb(nobg), colour)
     assert painted_with > 2000, f"fixture problem: {label} is barely on the page even WITH backgrounds"
     assert painted_without >= painted_with * 0.9, (
         f"printing with background graphics off lost the {label} fill: {painted_without} painted pixels "
