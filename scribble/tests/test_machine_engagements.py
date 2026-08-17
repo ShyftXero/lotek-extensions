@@ -17,6 +17,8 @@ import uuid
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
 
@@ -128,7 +130,7 @@ def test_list_templates_returns_seeded_library(client, stub_host):
 def test_get_template_and_404(client, stub_host):
     tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
     assert client.get(f"{M}/templates/{tid}").status_code == 200
-    assert client.get(f"{M}/templates/999999").status_code == 404
+    assert client.get(f"{M}/templates/{_MISSING_ID}").status_code == 404
 
 
 # ── add-finding: from a library template ─────────────────────────────────────────────────────────
@@ -173,7 +175,7 @@ def test_add_finding_rejects_non_integer_ids(client, stub_host):
 
 
 def test_add_finding_engagement_not_found(client, stub_host):
-    resp = client.post(f"{M}/engagements/999999/findings", json={"template_id": 1})
+    resp = client.post(f"{M}/engagements/{_MISSING_ID}/findings", json={"template_id": 1})
     assert resp.status_code == 404
 
 

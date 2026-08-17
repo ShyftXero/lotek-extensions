@@ -11,7 +11,11 @@ already proven against a real lotek host); this file proves scribble's OWN CRUD 
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
+
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 UI = "/scribble"
 
@@ -72,9 +76,9 @@ def test_edit_requires_a_name(client, stub_host, session_factory):
 
 
 def test_edit_and_delete_missing_engagement_404(client, stub_host):
-    assert client.get(f"{UI}/engagements/999999/edit").status_code == 404
-    assert client.post(f"{UI}/engagements/999999/edit", data={"name": "x"}).status_code == 404
-    assert client.post(f"{UI}/engagements/999999/delete").status_code == 404
+    assert client.get(f"{UI}/engagements/{_MISSING_ID}/edit").status_code == 404
+    assert client.post(f"{UI}/engagements/{_MISSING_ID}/edit", data={"name": "x"}).status_code == 404
+    assert client.post(f"{UI}/engagements/{_MISSING_ID}/delete").status_code == 404
 
 
 def test_delete_cascades_findings(client, stub_host, session_factory):

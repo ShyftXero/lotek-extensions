@@ -25,6 +25,8 @@ from scribble import api_pat
 from scribble.host import SCOPE_ATTR
 from tests.conftest import StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
 # Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
@@ -159,7 +161,7 @@ def test_upload_to_an_invisible_engagement_is_404_and_writes_nothing(client, stu
 def test_upload_to_a_missing_engagement_is_the_same_404(client, stub_host):
     """Missing and not-visible are indistinguishable — no existence oracle."""
     _engagement(client, stub_host)  # so the table is not simply empty
-    missing = client.post(f"{M}/engagements/999999/artifacts",
+    missing = client.post(f"{M}/engagements/{_MISSING_ID}/artifacts",
                           json={"filename": "x.png", "content_base64": base64.b64encode(PNG).decode()})
     assert missing.status_code == 404
 
@@ -232,7 +234,7 @@ def test_a_retry_with_the_same_idempotency_key_returns_the_original(client, stub
 
     assert first.status_code == 201, first.get_json()
     assert second.status_code == 200, second.get_json()
-    assert second.get_json()["id"] == uuid.UUID(first.get_json()["id"])
+    assert uuid.UUID(second.get_json()["id"]) == uuid.UUID(first.get_json()["id"])
     with session_factory() as db:
         assert db.query(fm.Artifact).count() == 1
 

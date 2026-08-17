@@ -9,7 +9,25 @@ import uuid
 import pytest
 from sqlalchemy import String, create_engine, inspect, text
 
-from scribble.db import create_all, soft_host_id_columns_typed_integer
+from scribble.db import (
+    _additive_column_sync,
+    _widen_soft_host_id_columns,
+    soft_host_id_columns_typed_integer,
+)
+
+
+def create_all(engine):
+    """The legacy mount path these tests pin, called directly.
+
+    `scribble.db.create_all` now delegates to `run_migrations`, which after adoption also
+    applies the UUID revision -- so calling it here would no longer isolate the one-shots
+    under test, it would migrate the very schema the test just constructed.
+    """
+    from scribble.db import Base
+
+    Base.metadata.create_all(engine)
+    _additive_column_sync(engine)
+    _widen_soft_host_id_columns(engine)
 
 #: A real Postgres to prove the widening against, e.g.
 #: ``SCRIBBLE_TEST_PG_URL=postgresql+psycopg://scribble:scribble@127.0.0.1:55432/scribble``.

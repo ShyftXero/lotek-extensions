@@ -40,6 +40,8 @@ from scribble.models import (
 )
 from scribble.reporting import build_report_context
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 API = "/scribble/api"
 UI = "/scribble"
 
@@ -125,7 +127,7 @@ def test_create_engagement_requires_name(client, session_factory):
 
 
 def test_engagement_board_404_for_missing_engagement(client):
-    resp = client.get(f"{UI}/engagements/999999")
+    resp = client.get(f"{UI}/engagements/{_MISSING_ID}")
     assert resp.status_code == 404
 
 
@@ -323,7 +325,7 @@ def test_finding_detail_get_renders_editor_and_gallery(client, session_factory):
 
 
 def test_finding_detail_404_for_missing(client):
-    resp = client.get(f"{UI}/findings/999999")
+    resp = client.get(f"{UI}/findings/{_MISSING_ID}")
     assert resp.status_code == 404
 
 
@@ -428,7 +430,7 @@ def test_reorder_groups_on_empty_engagement_is_a_noop(client, session_factory):
 
 
 def test_reorder_groups_missing_engagement_404(client):
-    resp = client.post(f"{API}/engagements/999999/groups/reorder", json={"order": []})
+    resp = client.post(f"{API}/engagements/{_MISSING_ID}/groups/reorder", json={"order": []})
     assert resp.status_code == 404
 
 
@@ -515,7 +517,7 @@ def test_move_nonexistent_finding_404(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         group_id = group.id
-    resp = client.post(f"{API}/findings/999999/move", json={"group_id": group_id, "order_index": 0})
+    resp = client.post(f"{API}/findings/{_MISSING_ID}/move", json={"group_id": group_id, "order_index": 0})
     assert resp.status_code == 404
 
 
@@ -718,7 +720,7 @@ def test_update_group_rejects_invalid_order_mode(client, session_factory):
 
 
 def test_update_group_missing_404(client):
-    resp = client.post(f"{API}/groups/999999", json={"name": "x"})
+    resp = client.post(f"{API}/groups/{_MISSING_ID}", json={"name": "x"})
     assert resp.status_code == 404
 
 
@@ -864,7 +866,7 @@ def test_delete_finding_missing_404(client, session_factory):
         eng = _make_engagement(db)
         eng_id = eng.id
 
-    resp = client.post(f"{UI}/engagements/{eng_id}/findings/999999/delete")
+    resp = client.post(f"{UI}/engagements/{eng_id}/findings/{_MISSING_ID}/delete")
     assert resp.status_code == 404
 
 

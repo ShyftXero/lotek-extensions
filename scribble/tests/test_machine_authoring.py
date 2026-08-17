@@ -30,6 +30,8 @@ from scribble.content import schema
 from scribble.enums import Severity
 from tests.conftest import StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
 # Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
@@ -266,7 +268,7 @@ def test_get_engagement_returns_counts(client, stub_host, session_factory):
     eid = _make_engagement(session_factory)
     _finding_with_body(session_factory, eid, title="F1")
     body = client.get(f"{M}/engagements/{eid}").get_json()
-    assert body["id"] == eid
+    assert uuid.UUID(body["id"]) == eid
     assert body["finding_count"] == 1
     assert body["group_count"] == 0
     assert body["artifact_count"] == 0
@@ -280,7 +282,7 @@ def test_get_engagement_foreign_and_missing_are_the_same_404(client, stub_host, 
     stub_host.viewable_client_ids = set()  # no grants at all
 
     r_foreign = client.get(f"{M}/engagements/{foreign}")
-    r_missing = client.get(f"{M}/engagements/999999")
+    r_missing = client.get(f"{M}/engagements/{_MISSING_ID}")
     assert r_foreign.status_code == r_missing.status_code == 404
     assert r_foreign.get_json() == r_missing.get_json()
 

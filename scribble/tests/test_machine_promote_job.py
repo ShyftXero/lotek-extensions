@@ -14,6 +14,8 @@ import uuid
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
 
@@ -100,4 +102,4 @@ def test_promote_unknown_job_and_engagement_404(client, stub_host):
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/nope").status_code == 404
-    assert client.post(f"{M}/engagements/999999/promote-job/job-1").status_code == 404
+    assert client.post(f"{M}/engagements/{_MISSING_ID}/promote-job/job-1").status_code == 404

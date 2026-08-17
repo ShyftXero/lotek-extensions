@@ -27,6 +27,8 @@ from scribble.models import Artifact, Client, Engagement, EngagementFinding, Fin
 from scribble.reporting import build_report_context
 from scribble.seed import seed_defaults
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
@@ -417,7 +419,7 @@ def test_raw_download_is_forced_attachment(client, session_factory):
 
 
 def test_raw_download_missing_returns_404(client):
-    resp = client.get("/scribble/api/artifacts/999999/raw")
+    resp = client.get("/scribble/api/artifacts/{_MISSING_ID}/raw")
     assert resp.status_code == 404
 
 
@@ -452,7 +454,7 @@ def test_update_caption_and_include_toggle(client, session_factory):
 
 
 def test_update_missing_artifact_404(client):
-    resp = client.post("/scribble/api/artifacts/999999", json={"caption": "x"})
+    resp = client.post("/scribble/api/artifacts/{_MISSING_ID}", json={"caption": "x"})
     assert resp.status_code == 404
 
 
@@ -532,7 +534,7 @@ def test_delete_removes_row_and_file(client, session_factory, cfg):
 
 
 def test_delete_missing_artifact_404(client):
-    resp = client.post("/scribble/api/artifacts/999999/delete")
+    resp = client.post("/scribble/api/artifacts/{_MISSING_ID}/delete")
     assert resp.status_code == 404
 
 
