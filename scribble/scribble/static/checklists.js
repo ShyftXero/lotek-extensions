@@ -155,6 +155,14 @@
           tray.appendChild(b);
         });
       });
+      // An OPEN tray with zero children paints the SAME empty dashed rectangle ext#44 reported — the
+      // `[hidden]` rule only covers the closed one. `suggest` legitimately returns two empty lists
+      // (fresh install, or every template `hidden`/inactive via the library page's Hide button), and
+      // revealing an empty box there tells the operator nothing except that the button is broken.
+      if (!tray.children.length) {
+        tray.appendChild(el("p", "ckp-tray-empty",
+          "No checklist templates available — add or unhide one in the checklist library."));
+      }
       tray.hidden = false;
     });
   });

@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 import socket
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,7 @@ _PKG = Path(scribble.__file__).resolve().parent
 _PANEL_CSS = _PKG / "static" / "checklists_panel.css"
 _SCRIBBLE_CSS = _PKG / "static" / "scribble.css"
 _CHECKLISTS_JS = _PKG / "static" / "checklists.js"
+_CKLIB_JS = _PKG / "static" / "checklists_library.js"
 
 _PANEL_CSS_LINK = "checklists_panel.css"
 
@@ -200,6 +202,46 @@ def test_checklists_library_page_links_the_panel_stylesheet(client):
     assert any(_PANEL_CSS_LINK in ln for ln in links), f"panel stylesheet not linked: {links}"
 
 
+def test_mounted_library_page_still_ships_its_cklib_rules(mounted_client):
+    """`.cklib-*` (library page only) lives in scribble.css, which the HOST's base never links — so by the
+    reasoning above it should be unstyled when mounted. Measured: it is not, because
+    `checklists_library.html` hardcodes `{% extends "scribble/base.html" %}` and therefore renders in
+    scribble's own shell even on the host, dragging scribble.css along.
+
+    So this guards the REACHABILITY, not the hardcode: switch that page to `scribble_base` (the filed
+    follow-up) and the rules silently stop arriving — which is the moment they need moving into a
+    page-linked stylesheet, the same treatment `.ckp-*` got. Fail then, loudly."""
+    test_client, _ = mounted_client
+    html = test_client.get("/scribble/checklists").get_data(as_text=True)
+
+    emitted = {
+        tok
+        for literal in (
+            re.findall(r'class="([^"]*)"', html)
+            + re.findall(r'el\(\s*"[a-z]+"\s*,\s*"([^"]+)"', _CKLIB_JS.read_text())
+        )
+        for tok in literal.split()
+        if tok.startswith("cklib-")
+    }
+    assert {"cklib-card", "cklib-head"} <= emitted, f"extraction broke, not the CSS: {sorted(emitted)}"
+
+    served = [_style_blocks(html)]
+    for link in _stylesheet_links(html):
+        href = re.search(r'href="([^"]+)"', link)
+        if not href:
+            continue
+        resp = test_client.get(href.group(1))
+        if resp.status_code == 200:  # the host's own /static/styles.css is absent in this fixture
+            served.append(resp.get_data(as_text=True))
+    defined = {cls for css in served for sel, _b in _rules(css) for cls in re.findall(r"\.([\w-]+)", sel)}
+
+    missing = emitted - defined
+    assert not missing, (
+        "the mounted library page renders classes no stylesheet it links defines: "
+        f"{sorted(missing)} — move them out of scribble.css into a page-linked sheet (ext#44 review)"
+    )
+
+
 def test_panel_stylesheet_is_served(client):
     assert client.get(f"/scribble/static/{_PANEL_CSS_LINK}").status_code == 200
 
@@ -240,21 +282,48 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture(scope="module")
-def panel_app(tmp_path_factory):
-    """A real scribble on a background werkzeug server with one coverage checklist assigned — the same
-    shape as the issue's repro script, so the screenshots and these assertions describe one thing."""
-    tmp = tmp_path_factory.mktemp("scribble-ckp-theming")
+def _boot(tmp, name: str):
+    """A real standalone scribble on its own sqlite, seeded. Returns (flask_app, session_factory)."""
     flask_app = Flask(__name__)
     flask_app.config["SECRET_KEY"] = "ckp-theming-test"
-    engine = create_engine(f"sqlite:///{tmp / 'ckp.db'}", future=True)
+    engine = create_engine(f"sqlite:///{tmp / name}", future=True)
     cfg = scribble.register(
         flask_app, engine, instance_path=str(tmp), base_template="scribble/base.html"
     )
     with cfg.session_factory() as db:
         seed_defaults(db)
         db.commit()
-    with cfg.session_factory() as db:
+    return flask_app, cfg.session_factory
+
+
+@contextmanager
+def _serving(flask_app):
+    """Run `flask_app` on a background werkzeug server, yielding its base URL."""
+    last: OSError | None = None
+    for _ in range(8):
+        try:
+            server = make_server("127.0.0.1", _free_port(), flask_app, threaded=True)
+        except OSError as exc:  # port stolen in the bind race — try another
+            last = exc
+            continue
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}"
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+        return
+    raise last if last is not None else RuntimeError("could not bind a live server port")
+
+
+@pytest.fixture(scope="module")
+def panel_app(tmp_path_factory):
+    """A board with one coverage checklist assigned — the same shape as the issue's repro script, so the
+    screenshots and these assertions describe one thing."""
+    tmp = tmp_path_factory.mktemp("scribble-ckp-theming")
+    flask_app, session_factory = _boot(tmp, "ckp.db")
+    with session_factory() as db:
         c = Client(name="Theming Client")
         db.add(c)
         db.flush()
@@ -266,41 +335,64 @@ def panel_app(tmp_path_factory):
         assign_template(db, eng, tmpl, assigned_by="test")
         db.commit()
         eid = eng.id
-
-    last: OSError | None = None
-    for _ in range(8):
-        try:
-            server = make_server("127.0.0.1", _free_port(), flask_app, threaded=True)
-        except OSError as exc:  # port stolen in the bind race — try another
-            last = exc
-            continue
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield {"url": f"http://127.0.0.1:{server.server_port}/scribble/engagements/{eid}"}
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
-        return
-    raise last if last is not None else RuntimeError("could not bind a live server port")
+    with _serving(flask_app) as base:
+        yield {"url": f"{base}/scribble/engagements/{eid}"}
 
 
 @pytest.fixture(scope="module")
-def panel_page(panel_app):
+def no_templates_app(tmp_path_factory):
+    """Same board, but every checklist template hidden — exactly what the library page's per-template
+    "Hide" button does, and what `/checklists/templates/suggest` then answers with two empty lists."""
+    tmp = tmp_path_factory.mktemp("scribble-ckp-empty")
+    flask_app, session_factory = _boot(tmp, "empty.db")
+    with session_factory() as db:
+        eng = Engagement(name="Empty tray board")
+        db.add(eng)
+        rows = db.scalars(select(ChecklistTemplate)).all()
+        assert rows, "seed_defaults shipped no templates, so hiding them proves nothing"
+        for t in rows:
+            t.hidden = True
+        db.commit()
+        eid = eng.id
+    with _serving(flask_app) as base:
+        yield {"url": f"{base}/scribble/engagements/{eid}"}
+
+
+@pytest.fixture(scope="module")
+def browser():
     if sync_playwright is None:
         pytest.skip("playwright not installed; skipping browser checks (skip-clean)")
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch()
+            b = p.chromium.launch()
         except Exception as exc:  # noqa: BLE001 - any launch failure is a skip, never a suite failure
             pytest.skip(f"no usable Chromium runtime ({exc}); skipping browser checks (skip-clean)")
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
         try:
-            page.goto(panel_app["url"], wait_until="networkidle")
-            page.wait_for_selector("#checklist-panel .ckp-status")
-            yield page
+            yield b
         finally:
-            browser.close()
+            b.close()
+
+
+@pytest.fixture(scope="module")
+def panel_page(browser, panel_app):
+    page = browser.new_page(viewport={"width": 1400, "height": 1000})
+    try:
+        page.goto(panel_app["url"], wait_until="networkidle")
+        page.wait_for_selector("#checklist-panel .ckp-status")
+        yield page
+    finally:
+        page.close()
+
+
+@pytest.fixture(scope="module")
+def empty_tray_page(browser, no_templates_app):
+    page = browser.new_page(viewport={"width": 1400, "height": 1000})
+    try:
+        page.goto(no_templates_app["url"], wait_until="networkidle")
+        page.wait_for_selector("#ckp-assign-btn")
+        yield page
+    finally:
+        page.close()
 
 
 def test_status_select_matches_the_field_next_to_it(panel_page):
@@ -335,6 +427,32 @@ def test_assign_tray_is_invisible_until_opened_and_closes_again(panel_page):
     assert panel_page.eval_on_selector(tray, display) != "none", "opened tray is not displayed"
     panel_page.click("#ckp-assign-btn")
     assert panel_page.eval_on_selector(tray, display) == "none", "tray did not close again"
+
+
+def test_assign_tray_never_opens_as_an_empty_dashed_box(empty_tray_page):
+    """The other half of #44's dashed rectangle, and the half `[hidden]` does NOT cover: with every
+    template hidden, `suggest` answers two empty lists, so the tray opens with zero children and paints
+    the identical empty dashed box — no rows, no reason, button reads as broken. Assert the OPEN tray is
+    either still not displayed or carries a visible explanation; an empty-but-displayed tray fails."""
+    tray = "#ckp-assign-tray"
+    assert empty_tray_page.eval_on_selector(tray, "el => getComputedStyle(el).display") == "none"
+    empty_tray_page.click("#ckp-assign-btn")
+    empty_tray_page.wait_for_function(
+        "() => { const t = document.querySelector('#ckp-assign-tray');"
+        "        return !t.hidden || t.children.length; }",
+        timeout=5000,
+    )
+    state = empty_tray_page.eval_on_selector(
+        tray,
+        """el => ({display: getComputedStyle(el).display, text: el.innerText.trim(),
+                  h: Math.round(el.getBoundingClientRect().height)})""",
+    )
+    if state["display"] == "none":
+        return  # left closed instead of opened empty — also a correct answer
+    assert state["text"], f"tray opened with no content: {state!r}"
+    assert empty_tray_page.is_visible(f"{tray} .ckp-tray-empty"), f"message is not visible: {state!r}"
+    # The measured symptom: an 890x18 dashed sliver with nothing in it.
+    assert state["h"] > 18, f"tray is still the empty-height dashed sliver: {state!r}"
 
 
 def test_panel_rows_lay_out_beside_their_status_control(panel_page):

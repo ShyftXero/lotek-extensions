@@ -103,8 +103,15 @@ h1, h2, h3 { margin: 0 0 .6rem; }
    scribble is MOUNTED in lotek (which renders inside the HOST's base.html). The panel's pages link that
    file through their `head_extra` block instead, which works in both contexts. Do NOT move them back,
    and do NOT link this stylesheet from a host page — it redefines `:root`, `body`, `.card`, `.btn` and
-   the shell, so it would restyle lotek itself. The `.cklib-*` library-page rules below are still
-   stylesheet-only (standalone-styled, unstyled on the host) — same defect class, separate change. */
+   the shell, so it would restyle lotek itself.
+   The `.cklib-*` library-page rules below are a DIFFERENT case, measured: their only consumer is
+   templates/scribble/checklists_library.html, which hardcodes `{% extends "scribble/base.html" %}`
+   instead of `scribble_base`, so that page renders in scribble's own shell — and therefore links this
+   stylesheet — even when scribble is mounted in lotek. They reach the host today. What they depend on is
+   that hardcode: the day that page is switched to `scribble_base` (a separate, filed defect), it starts
+   rendering inside the host's base, this stylesheet stops arriving, and these rules need the same
+   treatment the `.ckp-*` ones just got. `test_mounted_library_page_still_ships_its_cklib_rules` fails at
+   that moment so it cannot happen silently. */
 
 .cklib-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .cklib-showhidden { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
