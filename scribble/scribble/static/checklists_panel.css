@@ -1,0 +1,54 @@
+/* Coverage-checklist panel (engagement board `#checklist-panel`, plus `.ckp-kind` on the checklist
+   library page). Keyed to the host's CSS variables, exactly like scribble.css, so it themes correctly
+   standalone AND inside lotek.
+   ────────────────────────────────────────────────────────────────────────────────────────────────
+   WHY THIS IS ITS OWN FILE (ext#44). These rules used to live in scribble.css, which is linked ONLY by
+   scribble's own base template. A MOUNTED scribble renders inside lotek's base.html, whose single
+   stylesheet-injection point is `{% block head_extra %}` — and no scribble template filled it, so on
+   the host NONE of these rules arrived: rows lost their flex layout, the chips/kind pills rendered as
+   bare text, and the note fields and status selects painted as native white OS controls. That is the
+   panel the client saw ("coverage checklist looks broken while editing"); the standalone repro only
+   showed the milder half of it.
+   Linking scribble.css itself from a host page is NOT the fix and must not be attempted: it redefines
+   `:root`, `body`, `.card`, `.btn`, `.table` and the sidebar/appbar, so it would silently restyle
+   lotek's whole shell on every scribble page. This file deliberately contains panel classes ONLY —
+   nothing element-level, nothing shared with the host shell — so it is safe to inject anywhere.
+   Both consumers (engagement.html, checklists_library.html) link it through their own `head_extra`
+   block; tests/test_checklists_panel_theming.py pins that the link survives into a host-shaped page. */
+
+.ckp { margin-top: 18px; padding: 14px 16px; }
+.ckp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ckp-head h2 { margin: 0; font-size: 16px; }
+.ckp-tray { margin: 10px 0; padding: 8px; border: 1px dashed var(--line-strong); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+/* The tray ships `hidden` and checklists.js toggles that attribute — but an AUTHOR `display: flex`
+   outranks the UA's `[hidden] { display: none }`, so without this the closed tray showed as an empty
+   dashed rectangle above the list and the assign button never visually closed it (ext#44). */
+.ckp-tray[hidden] { display: none; }
+.ckp-tray-h { width: 100%; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-top: 4px; }
+.ckp-list { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+.ckp-list-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ckp-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.ckp-rollup { display: flex; gap: 5px; flex-wrap: wrap; }
+.ckp-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+.ckp-toggle { font-size: 12px; color: var(--muted); margin-left: auto; display: inline-flex; gap: 4px; align-items: center; }
+.ckp-remove { padding: 2px 9px; }
+.ckp-section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 10px 0 3px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+.ckp-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+.ckp-item-mid { flex: 1; }
+.ckp-item-text { font-size: 14px; }
+.ckp-ctrl { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* A <select> inherits NOTHING from the panel: with only size declared it painted the native OS control
+   (a light-grey box, measured rgb(239,239,239)) on the dark card — the client's "checklist looks broken
+   while editing" (ext#44). Themed off the same tokens as its row-mate `.ckp-note`, so the two controls
+   in a row match in either theme. The native dropdown arrow is kept on purpose (no `appearance: none`),
+   so the control still reads as a picker. */
+.ckp-status {
+  font-size: 12px; min-width: 92px; padding: 3px 6px; font-family: inherit;
+  background: var(--field-bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.ckp-note { display: block; width: 100%; margin-top: 3px; font-size: 12px; background: var(--field-bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; color: var(--ink); }
+.ck-satisfied { border-color: var(--accent-strong) !important; color: var(--accent) !important; }
+.ck-deficient { border-color: var(--sev-high) !important; color: var(--sev-high) !important; }
+.ck-not_applicable { border-color: var(--line-strong) !important; }
+.ck-open { border-color: var(--sev-info) !important; color: var(--sev-info) !important; }
