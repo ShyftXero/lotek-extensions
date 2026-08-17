@@ -68,7 +68,12 @@ def test_promote_is_deduped_on_rerun(client, stub_host):
     eid = _engagement(client, stub_host)
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     r2 = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
-    assert r2.get_json() == {"engagement_id": eid, "promoted": 0, "skipped": 2, "parents": 0}
+    assert r2.get_json() == {
+        "engagement_id": str(eid),  # ids serialise to strings on the wire
+        "promoted": 0,
+        "skipped": 2,
+        "parents": 0,
+    }
 
 
 def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean_vuln_map):
@@ -77,7 +82,7 @@ def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean
     )
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     client.post(f"{M}/vuln-map", json={"source": "nuclei", "template_id": tid})
 
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")

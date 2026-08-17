@@ -333,7 +333,7 @@ def test_upload_with_same_idempotency_key_header_returns_existing_artifact(clien
         headers={"Idempotency-Key": "retry-key-1"},
     )
     assert second.status_code == 200
-    assert second.get_json()["id"] == first_id
+    assert uuid.UUID(second.get_json()["id"]) == first_id
 
     with session_factory() as db:
         count = db.query(Artifact).filter_by(engagement_id=engagement_id).count()
@@ -478,7 +478,7 @@ def test_reorder_persists_order_index(client, session_factory):
             },
             content_type="multipart/form-data",
         )
-        ids.append(resp.get_json()["id"])
+        ids.append(uuid.UUID(resp.get_json()["id"]))
 
     # Reverse the natural creation order.
     new_order = list(reversed(ids))
@@ -486,7 +486,7 @@ def test_reorder_persists_order_index(client, session_factory):
     assert resp.status_code == 200
 
     listing = client.get(f"/scribble/api/findings/{finding_id}/artifacts").get_json()
-    assert [a["id"] for a in listing["artifacts"]] == new_order
+    assert [uuid.UUID(a["id"]) for a in listing["artifacts"]] == new_order
 
     with session_factory() as db:
         rows = {a.id: a.order_index for a in db.query(Artifact).filter_by(finding_id=finding_id).all()}

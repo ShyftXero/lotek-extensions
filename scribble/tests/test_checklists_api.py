@@ -4,6 +4,7 @@ import/export/hide/reset, assignment, and per-item updates."""
 from __future__ import annotations
 
 import re
+import uuid
 
 from scribble.models import ChecklistTemplate, Engagement, EngagementFinding
 
@@ -140,13 +141,13 @@ def test_finding_link_must_be_same_engagement(client, session_factory):
     assert bad.status_code == 400 and bad.get_json()["ok"] is False
     # same-engagement finding -> accepted
     good = client.post(f"{API}/engagement-checklist-items/{iid}", json={"finding_id": local_fid})
-    assert good.get_json()["item"]["finding_id"] == local_fid
+    assert uuid.UUID(good.get_json()["item"]["finding_id"]) == local_fid
     # unlink -> accepted
     unl = client.post(f"{API}/engagement-checklist-items/{iid}", json={"finding_id": None})
     assert unl.get_json()["item"]["finding_id"] is None
 
 
-def test_assign_rejects_non_integer_template_id(client, session_factory):
+def test_assign_rejects_a_non_uuid_template_id(client, session_factory):
     eid = _mk_engagement(session_factory)
     resp = client.post(f"{API}/engagements/{eid}/checklists", json={"template_id": "abc"})
     assert resp.status_code == 400

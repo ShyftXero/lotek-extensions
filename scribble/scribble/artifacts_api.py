@@ -335,7 +335,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         return jsonify(artifacts=result)
 
     @api_bp.post("/findings/<uuid:finding_id>/artifacts/reorder")
-    def reorder_artifacts(finding_id: int):
+    def reorder_artifacts(finding_id):
         payload = request.get_json(silent=True) or {}
         order = payload.get("order")
         if not isinstance(order, list):
@@ -343,7 +343,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         with open_session() as db:
             rows = {a.id: a for a in db.query(Artifact).filter(Artifact.finding_id == finding_id).all()}
             for index, artifact_id in enumerate(order):
-                artifact = rows.get(_as_int(artifact_id))
+                artifact = rows.get(_as_uuid(artifact_id))
                 if artifact is not None:
                     artifact.order_index = index
             db.commit()

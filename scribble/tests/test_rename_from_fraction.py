@@ -7,7 +7,7 @@ on a fresh database and safe to run on every boot.
 
 from sqlalchemy import create_engine, inspect, text
 
-from scribble.db import _rename_from_fraction, create_all
+from scribble.db import Base, _rename_from_fraction
 
 
 def _seed_old_engagements():
@@ -48,10 +48,17 @@ def test_rename_skips_when_target_already_present():
 
 
 def test_create_all_renames_before_building():
-    """The full boot path: create_all renames the old table first, so create_all no-ops it instead of
-    building an empty ``scribble_engagements`` beside the populated one — and the row survives."""
+    """The boot path: the rename happens FIRST, so table creation no-ops the renamed table instead of
+    building an empty ``scribble_engagements`` beside the populated one — and the row survives.
+
+    Calls the rename plus plain table creation rather than `create_all`, which now delegates to
+    `run_migrations`: on a database that already has scribble tables that takes the Alembic ADOPTION
+    path and applies the UUID revision, whose Postgres-only DDL cannot run on this SQLite fixture. The
+    property under test — rename before build — is unchanged either way.
+    """
     engine = _seed_old_engagements()
-    create_all(engine)
+    _rename_from_fraction(engine)
+    Base.metadata.create_all(engine)
     names = set(inspect(engine).get_table_names())
     assert "scribble_engagements" in names
     assert "fraction_engagements" not in names

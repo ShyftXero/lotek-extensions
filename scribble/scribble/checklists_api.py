@@ -305,12 +305,21 @@ def register(api_bp, bp) -> None:
             return jsonify(ok=True, checklists=[_checklist_out(ec) for ec in rows])
 
     @api_bp.post("/engagements/<uuid:eid>/checklists")
-    def assign_engagement_checklist(eid: int):
+    def assign_engagement_checklist(eid):
         payload = request.get_json(silent=True) or {}
-        try:
-            template_id = _as_uuid(payload.get("template_id"))
-        except (TypeError, ValueError):
-            return jsonify(ok=False, error="template_id must be an integer"), 400
+        raw_template_id = payload.get("template_id")
+        if raw_template_id is None:
+            # REQUIRED. Falling through with None reaches `db.get(..., None)` and answers 404 "template
+            # not found", which tells the caller their template is missing when they never named one.
+            return jsonify(ok=False, error="template_id is required"), 400
+        template_id = _as_uuid(raw_template_id)
+        if template_id is None:
+            # SUPPLIED but unparseable -> 400. `_as_uuid` returns None for both "absent" and
+            # "malformed", so without this check a garbage id falls through to `db.get(..., None)` and
+            # comes back as a 404 "template not found" — telling the caller their id does not exist when
+            # in fact it was never a valid id. The distinction matters to a machine client deciding
+            # whether to retry.
+            return jsonify(ok=False, error="template_id must be a UUID"), 400
         with open_session() as db:
             e = db.get(Engagement, eid)
             if e is None:
@@ -349,7 +358,7 @@ def register(api_bp, bp) -> None:
             return jsonify(ok=True)
 
     @api_bp.post("/engagement-checklist-items/<uuid:iid>")
-    def update_engagement_checklist_item(iid: int):
+    def update_engagement_checklist_item(iid):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
             it = db.get(EngagementChecklistItem, iid)
@@ -366,10 +375,9 @@ def register(api_bp, bp) -> None:
                 else:
                     # A finding cross-link must reference a finding IN THIS engagement (no dangling or
                     # cross-engagement links). it.checklist.engagement_id is the item's engagement.
-                    try:
-                        fid = int(fid)
-                    except (TypeError, ValueError):
-                        return jsonify(ok=False, error="finding_id must be an integer or null"), 400
+                    fid = _as_uuid(fid)
+                    if fid is None:
+                        return jsonify(ok=False, error="finding_id must be a UUID or null"), 400
                     f = db.get(EngagementFinding, fid)
                     if f is None or f.engagement_id != it.checklist.engagement_id:
                         return jsonify(

@@ -1,3 +1,5 @@
+// Ids are UUIDv7 strings since lotek#335 -- parseInt() returns NaN for one, silently, and the
+// request then carries a null/NaN id instead of failing. Ids are opaque here: pass them through.
 // scribble/static/board.js — the two-level drag-and-drop finding board (WS3).
 //
 // Native HTML5 drag-and-drop only (no external/CDN sortable library — same constraint as WS5's
@@ -156,7 +158,7 @@
           return li.dataset.findingId;
         });
       var index = order.indexOf(draggedFinding.dataset.findingId);
-      var groupId = list.dataset.groupId ? parseInt(list.dataset.groupId, 10) : null;
+      var groupId = list.dataset.groupId ? list.dataset.groupId : null;
       var moveUrl = draggedFinding.dataset.moveUrl;
       var originList = draggedFindingOriginList;
 
@@ -199,7 +201,7 @@
           return el.classList.contains("scribble-board-group") && el.dataset.groupId;
         })
         .map(function (el) {
-          return parseInt(el.dataset.groupId, 10);
+          return el.dataset.groupId;
         });
       fetch(board.dataset.reorderGroupsUrl, {
         method: "POST",

@@ -39,10 +39,10 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     return uuid.UUID(resp.get_json()["id"])
 
 
-def _first_template_id(client) -> int:
+def _first_template_id(client) -> uuid.UUID:
     items = client.get(f"{M}/templates").get_json()["items"]
     assert items, "expected the seeded scribble library to have >=1 template"
-    return items[0]["id"]
+    return uuid.UUID(items[0]["id"])
 
 
 def _map_source(client, *, source, template_id) -> None:
@@ -129,7 +129,7 @@ def test_promote_different_templates_get_separate_parents(
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     items = client.get(f"{M}/templates").get_json()["items"]
     assert len(items) >= 2
-    tid_a, tid_b = items[0]["id"], items[1]["id"]
+    tid_a, tid_b = uuid.UUID(items[0]["id"]), uuid.UUID(items[1]["id"])
     _map_source(client, source="enum4linux", template_id=tid_a)
     _map_source(client, source="dalfox", template_id=tid_b)
 

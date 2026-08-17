@@ -1,3 +1,5 @@
+// Ids are UUIDv7 strings since lotek#335 -- parseInt() returns NaN for one, silently, and the
+// request then carries a null/NaN id instead of failing. Ids are opaque here: pass them through.
 // scribble/static/artifacts.js — vanilla JS behavior for the artifact gallery partial (WS5).
 //
 // No build step, no external library (Lotek is CSP-strict: no CDN scripts). Uses HTML5 drag-and-drop
@@ -181,13 +183,21 @@
   // `notBeforeId` so a lost-success retry only treats a row NEWER than everything present at enqueue
   // time as "this upload already landed" -- a pre-existing same-named artifact can't be mistaken for it.
   function maxRealId(gallery) {
-    let max = 0;
+    // The greatest id currently rendered, as an ORDERABLE STRING. Ids are UUIDv7 since lotek#335, and
+    // v7 is time-ordered, so lexicographic `>` still means "created later" — which is the only property
+    // `notBeforeId` needs (see outbox.js: a lost-success retry must only adopt a row NEWER than every
+    // row present at enqueue).
+    //
+    // The previous version seeded `max = 0` and compared a string id against a number: JS coerces the
+    // UUID to NaN, every comparison is false, and it always returned 0 — so the dedupe descriptor never
+    // matched any row and a retried upload could duplicate.
+    let max = "";
     const items = gallery.querySelectorAll(".scribble-gallery-item[data-id]");
     for (let i = 0; i < items.length; i++) {
-      const n = parseInt(items[i].dataset.id, 10);
-      if (!isNaN(n) && n > max) max = n;
+      const id = items[i].dataset.id;
+      if (id && id > max) max = id;
     }
-    return max;
+    return max || null;
   }
 
   function enqueueGalleryUpload(tempId, meta) {
@@ -415,7 +425,7 @@
     ev.preventDefault();
     const list = gallery.querySelector(".scribble-gallery-list");
     const order = Array.prototype.map.call(list.children, function (li) {
-      return parseInt(li.dataset.id, 10);
+      return li.dataset.id;
     });
     fetch(gallery.dataset.reorderUrl, {
       method: "POST",

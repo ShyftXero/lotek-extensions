@@ -462,10 +462,10 @@ def test_move_finding_across_groups_updates_group_and_reindexes_both_sides(clien
     resp = client.post(f"{API}/findings/{f1_id}/move", json={"group_id": external_id, "order_index": 0})
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["finding"]["group_id"] == external_id
+    assert uuid.UUID(body["finding"]["group_id"]) == external_id
     assert body["finding"]["order_index"] == 0
-    assert body["group"]["id"] == external_id
-    assert body["previous_group"]["id"] == internal_id
+    assert uuid.UUID(body["group"]["id"]) == external_id
+    assert uuid.UUID(body["previous_group"]["id"]) == internal_id
 
     with session_factory() as db:
         moved = db.get(EngagementFinding, f1_id)
@@ -488,7 +488,7 @@ def test_move_finding_into_nonexistent_group_404(client, session_factory):
         db.commit()
         f_id = f.id
 
-    resp = client.post(f"{API}/findings/{f_id}/move", json={"group_id": 999999, "order_index": 0})
+    resp = client.post(f"{API}/findings/{f_id}/move", json={"group_id": str(uuid.uuid7()), "order_index": 0})
     assert resp.status_code == 404
     with session_factory() as db:
         # The finding must not have moved when the target group doesn't exist.

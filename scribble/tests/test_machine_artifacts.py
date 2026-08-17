@@ -293,6 +293,9 @@ def test_an_invalid_kind_or_placement_is_400(client, stub_host):
 def test_upload_fails_closed_with_no_host_mounted(client):
     """Standalone scribble has no PAT scheme, so the machine route must refuse rather than run
     unauthenticated (`scribble/host.py::_no_host`)."""
-    resp = client.post(f"{M}/engagements/1/artifacts", json={"filename": "x", "content_base64": "eA=="})
+    resp = client.post(
+        f"{M}/engagements/{uuid.uuid7()}/artifacts",
+        json={"filename": "x", "content_base64": "eA=="},
+    )  # a well-formed id: the point is the 503 from an unmounted host, not a routing 404
     assert resp.status_code == 503
     assert resp.get_json()["error"] == "unavailable"

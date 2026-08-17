@@ -247,7 +247,7 @@ def test_list_engagements_is_scoped_to_the_tokens_clients(client, stub_host, ses
     stub_host.viewable_client_ids = {ACME}
 
     body = client.get(f"{M}/engagements").get_json()
-    ids = {e["id"] for e in body["items"]}
+    ids = {uuid.UUID(e["id"]) for e in body["items"]}
     assert ids == {mine}
     assert body["count"] == 1
     assert body["items"][0]["client_id"] == str(ACME)  # host id is stringified on the wire
@@ -257,7 +257,7 @@ def test_list_engagements_admin_sees_all(client, stub_host, session_factory):
     a = _make_engagement(session_factory, name="a", client_id=ACME)
     b = _make_engagement(session_factory, name="b", client_id=OTHER_CLIENT)
     # default fixture actor is admin
-    ids = {e["id"] for e in client.get(f"{M}/engagements").get_json()["items"]}
+    ids = {uuid.UUID(e["id"]) for e in client.get(f"{M}/engagements").get_json()["items"]}
     assert {a, b} <= ids
 
 
@@ -442,4 +442,6 @@ def test_artifact_cannot_be_attached_to_another_engagements_finding(session_fact
 
     assert _resolved(foreign_fid, mine_id) is None, "a foreign finding must not be attachable"
     assert _resolved(own_fid, mine_id) == own_fid, "the caller's OWN finding still attaches"
-    assert _resolved(10_000_000, mine_id) is None, "a nonexistent finding id is dropped, not persisted"
+    assert _resolved(uuid.uuid7(), mine_id) is None, (
+        "a nonexistent finding id is dropped, not persisted"
+    )

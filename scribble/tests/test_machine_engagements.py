@@ -128,7 +128,7 @@ def test_list_templates_returns_seeded_library(client, stub_host):
 
 
 def test_get_template_and_404(client, stub_host):
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     assert client.get(f"{M}/templates/{tid}").status_code == 200
     assert client.get(f"{M}/templates/{_MISSING_ID}").status_code == 404
 
@@ -138,7 +138,7 @@ def test_get_template_and_404(client, stub_host):
 
 def test_add_finding_from_template(client, stub_host, session_factory):
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     resp = client.post(
         f"{M}/engagements/{eid}/findings",
         json={"template_id": tid, "target_host": "10.0.0.5"},
@@ -159,7 +159,7 @@ def test_add_finding_requires_a_source(client, stub_host):
 
 def test_add_finding_rejects_deactivated_template(client, stub_host, session_factory):
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     with session_factory() as db:
         db.get(fm.VulnerabilityTemplate, tid).active = False
         db.commit()

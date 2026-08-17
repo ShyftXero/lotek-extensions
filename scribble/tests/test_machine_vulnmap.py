@@ -40,7 +40,10 @@ def test_create_validates_inputs(client, stub_host, clean_vuln_map):
     assert client.post(f"{M}/vuln-map", json={"source": "nuclei"}).status_code == 400  # no template_id
     assert client.post(f"{M}/vuln-map", json={"template_id": tid}).status_code == 400  # no match key
     assert (
-        client.post(f"{M}/vuln-map", json={"source": "x", "template_id": 999999}).status_code == 404
+        client.post(
+            f"{M}/vuln-map", json={"source": "x", "template_id": str(uuid.uuid7())}
+        ).status_code
+        == 404
     )  # template doesn't exist
     assert (
         client.post(f"{M}/vuln-map", json={"source": "x", "template_id": []}).status_code == 400
