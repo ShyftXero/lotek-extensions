@@ -55,6 +55,9 @@ _BLOCK_ORDER = ("description", "remediation", "details")
 
 # Toolbar label per top-level block key (``reporting.templates.BLOCK_KEYS``). A key is linked only when
 # its block actually rendered its ``id="sec-<key>"`` anchor — see ``_render_document``/``_render_header``.
+# ``cover`` and ``toc`` are deliberately ABSENT: both are print-only (``display: none`` on screen), so a
+# toolbar link would scroll a reader to an invisible element — the same class of broken link as ext#42's
+# link into an empty anchor, which is why the on-screen toolbar must not offer them at all.
 _NAV_LABELS = {
     "summary": "Summary",
     "findings": "Findings",
@@ -395,6 +398,14 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     )
 
 
+def _group_anchor(group: GroupCtx) -> str:
+    """The ``id`` a group's section carries, and therefore the TOC's link target for it (ext#43). Groups
+    had ``data-group-id`` but no ``id`` — nothing to link a table of contents at — so this is the one
+    piece of new markup the TOC needed. Built here and used by both sides (``_render_group`` and
+    ``_toc_entries``) so a renamed anchor can never leave the contents pointing at nothing."""
+    return f"group-{group.id if group.id is not None else 'ungrouped'}"
+
+
 def _render_group(group: GroupCtx, resolver: _AssetResolver) -> str:
     gid = group.id if group.id is not None else "ungrouped"
     swatch = f'<span class="swatch" style="background:{_esc(group.color)}"></span>' if group.color else ""
@@ -403,7 +414,8 @@ def _render_group(group: GroupCtx, resolver: _AssetResolver) -> str:
         '<p class="empty">No findings in this section.</p>'
     )
     return (
-        f'<section class="sec group" data-group-id="{_esc(str(gid))}">'
+        f'<section class="sec group" id="{_esc(_group_anchor(group))}" '
+        f'data-group-id="{_esc(str(gid))}">'
         f'<h2 class="sec-h">{swatch}{_esc(group.name)} <span class="chev">▾</span>'
         f'<span class="count">{n} finding{"s" if n != 1 else ""}</span></h2>'
         f'<div class="sec-body"><div class="findings-list">{findings_html}</div></div>'
@@ -455,11 +467,12 @@ def _render_header(
         f'<span>Layout</span><select id="template-select" aria-label="Report layout">{opts}</select></label>'
     )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
-    subtitle = f"{_esc(ctx.scope_type)} assessment" if ctx.scope_type else "Penetration test report"
-    sub_bits = [f"<span>{subtitle}</span>"]
-    if ctx.start_date or ctx.end_date:
+    # Same helpers the cover page uses, so the two title blocks cannot describe the engagement differently.
+    sub_bits = [f"<span>{_assessment_kind(ctx)}</span>"]
+    window = _date_range(ctx)
+    if window:
         sub_bits.append('<span class="dot">·</span>')
-        sub_bits.append(f'<span>{_esc(ctx.start_date or "?")} – {_esc(ctx.end_date or "present")}</span>')
+        sub_bits.append(f"<span>{window}</span>")
     assessor = ctx.variables.get("ASSESSOR", "") if ctx.variables else ""
     if assessor:
         sub_bits.append('<span class="dot">·</span>')
@@ -503,6 +516,180 @@ def _render_header(
 
 
 _SEV_LABELS = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}
+
+# ── front matter (ext#43) ─────────────────────────────────────────────────────────────────────────────
+#
+# STANDING, TEMPLATE-LEVEL boilerplate — the same category as ``_METHODOLOGY_PHASES``, and for the same
+# reason: there is no field anywhere in the model for an engagement overview, a scope statement or a
+# handling notice, so the only honest place for this prose today is one module constant per piece. A
+# per-engagement, editable prose block is a schema + editor change and is deliberately NOT half-built here
+# (see plans/fix-scribble-report-render-sweep.md, "Deferred"). Everything below is true of how this
+# practice works, names no tool and no host, and states no per-engagement fact: every engagement-specific
+# sentence on the cover and in the overview is built from ``ReportContext`` fields and omitted when the
+# field is empty, so the report never asserts something nobody recorded.
+_COVER_HANDLING = (
+    "This report describes weaknesses that could be used against the environment it covers. Treat it as "
+    "confidential: share it only with people who need it in order to act on the findings, and store and "
+    "transmit it accordingly."
+)
+
+_LIMITATIONS: tuple[str, ...] = (
+    "This report describes the environment as it was during the testing window. A change made after "
+    "testing — a deployment, a configuration change, a newly published vulnerability — is not reflected "
+    "here.",
+    "The absence of a finding means a weakness was not observed in the time and scope available. It is "
+    "not proof that none exists.",
+    "Testing was non-destructive. A validated weakness was exercised only as far as was needed to "
+    "establish its impact, and anything outside the agreed scope was not touched.",
+)
+
+# What each severity level MEANS, so the severity bar and the findings index are legible to a reader who
+# did not run the assessment — the client's "three plain columns of numbers" was partly this: the ratings
+# were shown and never defined. Ordered by ``SEVERITY_ORDER`` at render time, not here.
+_SEVERITY_DEFINITIONS: dict[str, str] = {
+    "critical": (
+        "Leads directly and reliably to full compromise of a system, an account of consequence, or a "
+        "sensitive data set. Remediate immediately."
+    ),
+    "high": (
+        "Gives an attacker a serious foothold or access to sensitive data without unusual preconditions. "
+        "Remediate urgently."
+    ),
+    "medium": (
+        "Real exposure that needs a further condition to be useful — a valid account, user interaction, "
+        "or adjacent network access. Remediate on the normal maintenance cycle."
+    ),
+    "low": (
+        "Limited direct impact on its own; most useful to an attacker in combination with something else."
+    ),
+    "info": "No direct impact. Recorded for completeness, or as hardening worth doing.",
+}
+
+
+def _assessment_kind(ctx: ReportContext) -> str:
+    """The one-line description of what this assessment was, for the masthead and the cover page. Renders
+    ``scope_type`` VERBATIM (never title-cased) — see ``_render_summary``: a group named after a scope word
+    must stay the document's first capitalized occurrence of it (tests/test_report_html.py)."""
+    return f"{_esc(ctx.scope_type)} assessment" if ctx.scope_type else "Penetration test report"
+
+
+def _date_range(ctx: ReportContext) -> str:
+    if not (ctx.start_date or ctx.end_date):
+        return ""
+    return f'{_esc(ctx.start_date or "?")} – {_esc(ctx.end_date or "present")}'
+
+
+def _cover_facts(ctx: ReportContext) -> list[tuple[str, str]]:
+    """The cover page's fact table — ONLY rows whose data the engagement actually carries. A cover page is
+    the one part of a deliverable a client reads as a statement of record, so an empty field is omitted
+    rather than printed as "—" (which reads as "recorded as nothing")."""
+    facts: list[tuple[str, str]] = []
+    client = ctx.client_name or ctx.company_name
+    if client:
+        facts.append(("Client", _esc(client)))
+    if ctx.scope_type:
+        facts.append(("Assessment type", _esc(ctx.scope_type)))
+    window = _date_range(ctx)
+    if window:
+        facts.append(("Testing window", window))
+    assessor = (ctx.variables.get("ASSESSOR", "") if ctx.variables else "") or ""
+    if assessor:
+        facts.append(("Assessor", _esc(assessor)))
+    facts.append(("Report date", datetime.now(UTC).strftime("%Y-%m-%d")))
+    facts.append(("Engagement reference", f"#{_esc(str(ctx.engagement_id))}"))
+    return facts
+
+
+def _render_cover(ctx: ReportContext) -> str:
+    """The PRINT-ONLY cover page (ext#43): the PDF used to open straight into the masthead and then the
+    executive summary, with no title page at all.
+
+    It is a re-layout of front matter the context already carries — client, engagement name, assessment
+    kind, window, assessor, the Confidential badge — plus the standing handling notice. On paper it
+    REPLACES the masthead (``body.has-cover .masthead`` is hidden in ``@media print``), which is not only
+    de-duplication: the masthead is a ``<header>`` *before* ``<main>``, so leaving it visible would print
+    it ahead of the cover and the deliverable would still not open on its title page.
+
+    The big title is a ``<div>``, not a second ``<h1>``: the masthead's ``<h1>`` remains the document's
+    one top-level heading (the cover is ``display: none`` on screen, so a screen reader never reaches it,
+    and Chrome's print path does not carry heading semantics into the PDF anyway).
+    """
+    facts = "".join(
+        f'<div class="cover-fact"><dt>{_esc(label)}</dt><dd>{value}</dd></div>'
+        for label, value in _cover_facts(ctx)
+    )
+    eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
+    return (
+        '<section class="cover" id="sec-cover">'
+        '<div class="cover-top">'
+        f'<div class="cover-eyebrow">{eyebrow}</div>'
+        f'<div class="cover-title">{_esc(ctx.engagement_name)}</div>'
+        f'<div class="cover-kind">{_assessment_kind(ctx)}</div>'
+        "</div>"
+        f'<dl class="cover-facts">{facts}</dl>'
+        '<div class="cover-foot">'
+        '<span class="cover-badge">Confidential</span>'
+        f'<p class="cover-handling">{_COVER_HANDLING}</p>'
+        "</div></section>"
+    )
+
+
+def _overview_paragraph(ctx: ReportContext) -> str:
+    """The engagement-overview sentences: what this report covers, over what window, by whom — assembled
+    from ``ReportContext`` fields, one clause per field, each omitted when the field is empty. This is the
+    factual half of the overview; ``ctx.narrative`` (generated from the rollup) follows it."""
+    company = ctx.company_name or ctx.client_name
+    subject = f"of {_esc(company)}" if company else "of the target environment"
+    kind = f"{_esc(ctx.scope_type)} assessment" if ctx.scope_type else "security assessment"
+    # "an internal assessment", not "a internal assessment" -- ``scope_type`` is operator-supplied free
+    # text, so the article has to follow the value rather than being baked into the sentence.
+    article = "an" if kind[:1].lower() in "aeiou" else "a"
+    bits = [f"This report covers {article} {kind} {subject}."]
+    window = _date_range(ctx)
+    if window:
+        bits.append(f"Testing was carried out over {window}.")
+    assessor = (ctx.variables.get("ASSESSOR", "") if ctx.variables else "") or ""
+    if assessor:
+        bits.append(f"The assessment was performed by {_esc(assessor)}.")
+    return " ".join(bits)
+
+
+def _render_front_matter(ctx: ReportContext) -> str:
+    """Front matter at the head of the Executive Summary: the engagement overview and the standing scope /
+    limitations statement.
+
+    ext#43's third part, reported as "the executive summary reads like a printed dashboard". It was
+    accurate: the summary opened on a risk banner, one generated sentence, a severity bar, three metric
+    tiles and an index — all true, and none of it telling a reader what was assessed or what the report
+    does and does not claim. This block is prose FIRST, with the dashboard below it as supporting detail.
+    """
+    limits = "".join(f"<li>{text}</li>" for text in _LIMITATIONS)
+    narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
+    return (
+        '<div class="frontmatter">'
+        '<div class="fm-block"><h3>Engagement overview</h3>'
+        f'<p class="fm-lead">{_overview_paragraph(ctx)}</p>{narrative}</div>'
+        '<div class="fm-block"><h3>Scope and limitations</h3>'
+        f'<ul class="fm-limits">{limits}</ul></div>'
+        "</div>"
+    )
+
+
+def _render_severity_definitions(rollup) -> str:
+    """What the severity ratings mean, directly under the severity bar they explain. Empty when there are no
+    findings — same rule as ``_sev_bar``: a clean report has no ratings to explain."""
+    if not rollup or rollup.total <= 0:
+        return ""
+    rows = "".join(
+        f'<div class="sd-row"><span class="sev-tag sev-{s}">{_esc(_SEV_LABELS.get(s, s.title()))}</span>'
+        f'<span class="sd-text">{_SEVERITY_DEFINITIONS[s]}</span></div>'
+        for s in SEVERITY_ORDER
+        if s in _SEVERITY_DEFINITIONS
+    )
+    return (
+        '<div class="sev-defs"><div class="cap">How these ratings are used</div>'
+        f"{rows}</div>"
+    )
 
 
 def _sev_bar(rollup) -> str:
@@ -585,17 +772,19 @@ def _render_summary(ctx: ReportContext) -> str:
     date_metric = (
         f'<div class="metric"><div class="k">Window</div><div class="v">{dates}</div></div>' if dates else ""
     )
-    narrative_html = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
+    # Front matter FIRST (ext#43): the overview prose — which carries ``ctx.narrative`` — then the risk
+    # verdict, then the chart, its rating definitions, the metric tiles and the index.
     return (
         '<section class="sec" id="sec-summary">'
         '<h2 class="sec-h">Executive Summary <span class="chev">▾</span></h2>'
         '<div class="sec-body">'
+        f"{_render_front_matter(ctx)}"
         f'<div class="risk {banner_class}">'
         '<div class="rating"><div class="label">Overall Risk</div>'
         f'<div class="level">{_esc(banner_label)}</div></div>'
         f'<div class="narr">{_esc(banner_sub)}</div></div>'
-        f"{narrative_html}"
         f"{_sev_bar(rollup)}"
+        f"{_render_severity_definitions(rollup)}"
         '<div class="metrics">'
         f'<div class="metric"><div class="k">Total Findings</div><div class="v">{total}</div></div>'
         f'<div class="metric"><div class="k">Sections</div><div class="v">{n_groups}</div></div>'
@@ -798,6 +987,17 @@ def _methodology_prose(ctx: ReportContext) -> str:
     return "".join(parts)
 
 
+def _methodology_heading(ctx: ReportContext) -> str:
+    """The Methodology section's heading — "Methodology and Coverage" when a coverage/reminder checklist
+    opted into the report, else "Methodology". One function so the section and the table of contents cannot
+    disagree about what the section is called (ext#43)."""
+    coverage = [c for c in ctx.checklists if c.kind != "compliance"]
+    return "Methodology and Coverage" if coverage else "Methodology"
+
+
+_COMPLIANCE_HEADING = "Compliance Attestation"
+
+
 def _render_methodology(ctx: ReportContext) -> str:
     """The Methodology section — ALWAYS non-empty, and always the owner of the ``#sec-methodology``
     anchor the toolbar links to.
@@ -811,7 +1011,7 @@ def _render_methodology(ctx: ReportContext) -> str:
     """
     coverage = [c for c in ctx.checklists if c.kind != "compliance"]
     compliance = [c for c in ctx.checklists if c.kind == "compliance"]
-    heading = "Methodology and Coverage" if coverage else "Methodology"
+    heading = _methodology_heading(ctx)
     body = _methodology_prose(ctx)
     if coverage:
         body += "".join(_render_checklist_coverage(c) for c in coverage)
@@ -826,8 +1026,11 @@ def _render_methodology(ctx: ReportContext) -> str:
     ]
     if compliance:
         attestation = "".join(_render_checklist_compliance(c) for c in compliance)
+        # ``id="sec-compliance"`` so the table of contents can link it (ext#43). It is deliberately NOT a
+        # template block key, so it gets no toolbar link — ``nav_keys`` only matches ``id="sec-<block key>"``.
         out.append(
-            '<section class="sec group"><h2 class="sec-h">Compliance Attestation '
+            '<section class="sec group" id="sec-compliance">'
+            f'<h2 class="sec-h">{_COMPLIANCE_HEADING} '
             f'<span class="chev">▾</span></h2><div class="sec-body">{attestation}</div></section>'
         )
     return "\n".join(out)
@@ -860,10 +1063,78 @@ def _render_footer(ctx: ReportContext) -> str:
     return f'<div class="foot">Generated by Scribble · engagement #{ctx.engagement_id} · {generated}</div>'
 
 
-def _render_block_by_key(key: str, ctx: ReportContext, resolver: _AssetResolver) -> str:
+def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int, str, str, str]]:
+    """``(level, anchor, label, severity)`` for every section this document will contain, in document order.
+
+    Driven by the template's own ``blocks`` and by the same conditions the block renderers use, so the
+    contents list what the document has and nothing else: the Evidence appendix appears only when there is
+    engagement-level evidence, the Compliance Attestation only when a compliance checklist opted in, the
+    Methodology heading is whatever ``_methodology_heading`` calls it, and a template that reorders or drops
+    blocks reorders or drops their entries with them. ``severity`` is "" for anything but a finding.
+
+    A group with no ``id`` cannot be linked, which is exactly the one case that produces no entry: the
+    "No findings recorded for this engagement" placeholder ``_render_groups`` emits when ``ctx.groups`` is
+    empty. ``tests/test_report_cover_and_toc.py`` pins the completeness of this list against the rendered
+    document, so a future section that forgets to register here fails rather than going quietly missing.
+    """
+    entries: list[tuple[int, str, str, str]] = []
+    for key in blocks:
+        if key == "summary":
+            entries.append((1, "sec-summary", "Executive Summary", ""))
+        elif key == "findings":
+            for group in ctx.groups:
+                entries.append((1, _group_anchor(group), group.name, ""))
+                for f in group.findings:
+                    entries.append((2, f"finding-{f.id}", f.title, f.severity))
+        elif key == "methodology":
+            entries.append((1, "sec-methodology", _methodology_heading(ctx), ""))
+            if any(c.kind == "compliance" for c in ctx.checklists):
+                entries.append((1, "sec-compliance", _COMPLIANCE_HEADING, ""))
+        elif key == "evidence":
+            if ctx.artifacts:
+                entries.append((1, "sec-evidence", "Evidence", ""))
+    return entries
+
+
+def _render_toc(ctx: ReportContext, blocks: tuple[str, ...]) -> str:
+    """The PRINT-ONLY table of contents (ext#43): sections at level 1, each section's findings at level 2.
+
+    No page numbers, deliberately and unavoidably: page numbers require paged-media counters
+    (``target-counter()``), which Chrome's print engine does not implement — and Chrome is what renders the
+    PDF here. The links are real anchors, so they are live in the PDF as well as on screen; what the printed
+    contents give a reader is the document's shape and order.
+    """
+    entries = _toc_entries(ctx, blocks)
+    if not entries:
+        return ""
+    items = []
+    for level, anchor, label, severity in entries:
+        sev = (
+            f'<span class="toc-sev sev-{_esc(severity)}">{_esc(_SEV_LABELS.get(severity, severity))}</span>'
+            if severity
+            else ""
+        )
+        items.append(
+            f'<li class="toc-l{level}"><a href="#{_esc(anchor)}">{_esc(label)}</a>{sev}</li>'
+        )
+    return (
+        '<nav class="toc" id="sec-toc" aria-label="Contents">'
+        '<div class="toc-cap">Contents</div>'
+        f'<ol class="toc-list">{"".join(items)}</ol></nav>'
+    )
+
+
+def _render_block_by_key(
+    key: str, ctx: ReportContext, resolver: _AssetResolver, *, blocks: tuple[str, ...] = ()
+) -> str:
     """Render one top-level document block by its template key (see ``reporting.templates``). The filter
     bar travels with the ``findings`` block so it always sits directly above the finding groups, whatever
-    order the template puts them in."""
+    order the template puts them in. ``blocks`` is the template's full block list — only the ``toc`` needs
+    it, because a table of contents is a statement about the whole document."""
+    if key == "cover":
+        return _render_cover(ctx)
+    if key == "toc":
+        return _render_toc(ctx, blocks)
     if key == "summary":
         return _render_summary(ctx)
     if key == "findings":
@@ -895,9 +1166,16 @@ def _render_document(
     # order. Deriving the nav from the rendered output (rather than from a fixed list, as it was until
     # ext#42) is what makes a dangling link structurally impossible — a block that renders nothing, or a
     # template that drops a block entirely, cannot leave a live link behind it.
-    rendered = [(k, _render_block_by_key(k, ctx, resolver)) for k in template.blocks]
+    rendered = [
+        (k, _render_block_by_key(k, ctx, resolver, blocks=template.blocks)) for k in template.blocks
+    ]
     blocks = "\n".join(html for _k, html in rendered if html)
     nav_keys = tuple(k for k, html in rendered if f'id="sec-{k}"' in html)
+    # ``has-cover`` lets the print sheet hide the masthead when — and only when — a cover page rendered in
+    # its place (ext#43). It has to be a class the renderer stamps rather than a CSS ``:has()`` test,
+    # because the masthead must keep printing for a template that carries no ``cover`` block: dropping it
+    # unconditionally would leave such a PDF with no title anywhere.
+    body_class = ' class="has-cover"' if any(k == "cover" and html for k, html in rendered) else ""
     header = _render_header(
         ctx, template, nav_keys=nav_keys, engagement_url=engagement_url, dashboard_url=dashboard_url
     )
@@ -906,7 +1184,7 @@ def _render_document(
         f'<html lang="en"{theme_attr}>\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(ctx.engagement_name)} — Report</title>\n"
-        f"<style>{_CSS}</style>\n</head>\n<body>\n"
+        f"<style>{_CSS}</style>\n</head>\n<body{body_class}>\n"
         f"{header}\n"
         '<main class="wrap">\n'
         f"{blocks}\n"
@@ -1089,6 +1367,55 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 }
 .toolbar { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* cover page + table of contents — PRINT ONLY (see reporting/templates.py). Hidden here in the base
+   sheet rather than inside an `@media screen` block so they stay hidden under every non-print medium,
+   and shown again only in the `@media print` block at the foot of this sheet. */
+.cover, .toc { display: none; }
+.cover-eyebrow {
+  font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent-ink);
+}
+.cover-title {
+  font-size: 40pt; line-height: 1.08; font-weight: 720; letter-spacing: -0.02em; margin-top: 10px;
+}
+.cover-kind { margin-top: 10px; font-size: 15pt; color: var(--ink-2); }
+/* Ruled with BORDERS, not with the container-background-through-a-1px-gap trick `.metrics` uses: a border
+   is painted even with "Background graphics" off, so the cover's fact table needs no `print-color-adjust`
+   entry to survive the print dialog's default (see the @media print note on meaningful fills). */
+.cover-facts {
+  margin: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.cover-fact { border-top: 1px solid var(--line); padding: 9px 2px; }
+.cover-fact dt {
+  font-size: 9pt; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700;
+}
+.cover-fact dd { margin: 3px 0 0; font-size: 12pt; font-weight: 600; word-break: break-word; }
+.cover-foot { border-top: 2px solid var(--sev-critical); padding-top: 12px; }
+.cover-badge {
+  display: inline-block; font-size: 10pt; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--sev-critical); border: 1px solid var(--sev-critical); border-radius: 4px; padding: 4px 12px;
+}
+.cover-handling { margin: 10px 0 0; font-size: 10pt; color: var(--ink-2); max-width: 78ch; }
+.toc-cap {
+  font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-2); border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 10px;
+}
+.toc-list { list-style: none; margin: 0; padding: 0; }
+.toc-list li { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.toc-list a { color: var(--ink); text-decoration: none; }
+.toc-list li.toc-l1 { font-weight: 650; font-size: 12pt; margin-top: 8px; }
+.toc-list li.toc-l2 { padding-left: 22px; font-size: 10.5pt; }
+.toc-l2 a { color: var(--ink-2); }
+.toc-sev {
+  margin-left: auto; font-size: 8.5pt; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+}
+.toc-sev.sev-critical { color: var(--sev-critical); }
+.toc-sev.sev-high { color: var(--sev-high); }
+.toc-sev.sev-medium { color: var(--sev-medium); }
+.toc-sev.sev-low { color: var(--sev-low); }
+.toc-sev.sev-info { color: var(--sev-info); }
+
 /* sections */
 main.wrap { padding-bottom: 72px; }
 section.sec { padding-top: 34px; scroll-margin-top: 64px; }
@@ -1138,6 +1465,27 @@ section.sec { padding-top: 34px; scroll-margin-top: 64px; }
 .summary-narrative {
   color: var(--ink); font-size: 15px; line-height: 1.6; margin: 2px 0 18px; max-width: var(--measure);
 }
+
+/* front matter: engagement overview + scope and limitations (see _render_front_matter) */
+.frontmatter { max-width: var(--measure); margin-bottom: 22px; }
+.fm-block + .fm-block { margin-top: 18px; }
+.fm-block h3 {
+  font-size: 12px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--accent-ink); font-weight: 700; margin-bottom: 6px;
+}
+.fm-lead { color: var(--ink); font-size: 15px; margin: 0; }
+.fm-limits { margin: 0; padding-left: 20px; color: var(--ink-2); font-size: 14.5px; }
+.fm-limits li { margin: 4px 0; }
+
+/* what the severity ratings mean, under the bar that uses them */
+.sev-defs { margin: 18px 0 8px; max-width: var(--measure); }
+.sev-defs .cap {
+  font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; margin-bottom: 8px;
+}
+.sd-row { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; }
+.sd-row .sev-tag { flex: 0 0 auto; min-width: 78px; justify-content: center; }
+.sd-text { color: var(--ink-2); font-size: 14px; }
 
 /* severity distribution bar (the one chart) */
 .sevbar-wrap { margin: 20px 0 8px; }
@@ -1514,6 +1862,21 @@ table.index td.ix-cvss {
   }
   body { font-size: 10.5pt; }
   .topbar, .filters, .sec-h .chev, .no-print, .toolbar, .report-nav { display: none !important; }
+  /* The printed deliverable opens on its title page, then its contents (ext#43). Both blocks are
+     `display: none` in the base sheet and exist ONLY here.
+     `body.has-cover .masthead` is not just de-duplication: header.masthead sits BEFORE main.wrap in the
+     document, so leaving it visible prints it ahead of the cover and page 1 is still not the title page.
+     (Do not write markup tags in these comments: the stylesheet ships inside the document, so a literal
+     tag here is matched by anything grepping the rendered HTML — it broke a masthead test once.)
+     The class is stamped by the renderer only when a cover actually rendered, so a template without a
+     `cover` block keeps its masthead and still has a title on paper. */
+  .cover {
+    display: flex; flex-direction: column; justify-content: space-between; gap: 24px;
+    min-height: 88vh; break-after: page; padding-top: 12px;
+  }
+  .toc { display: block; break-after: page; padding-top: 12px; }
+  .toc-list li { break-inside: avoid; }
+  body.has-cover .masthead { display: none !important; }
   .sec.collapsed .sec-body { display: block !important; }
   .finding, .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
   .mth-phase, .mth-frame { break-inside: avoid; }

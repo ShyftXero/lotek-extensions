@@ -7,11 +7,22 @@ a future template *editor* (operator-customizable layouts) has something concret
 layout is just the ``default`` template.
 
 Blocks (keys dispatched in ``render_html._render_block_by_key``):
-- ``summary``     — Executive Summary (risk banner, narrative, severity bar, metrics, findings index).
+- ``cover``       — PRINT-ONLY title page: client, engagement, assessment kind, testing window, assessor,
+  report date, the Confidential badge and the handling notice. ``break-after: page``, and it takes the
+  masthead's place on paper (``body.has-cover .masthead`` is hidden in ``@media print``).
+- ``toc``         — PRINT-ONLY table of contents, DERIVED from the blocks this template renders and the
+  groups/findings in the context, so it cannot list a section the document does not have.
+- ``summary``     — Executive Summary: front matter (engagement overview + scope and limitations), the
+  risk banner, the generated narrative, the severity bar + rating definitions, metrics, findings index.
 - ``findings``    — the filter bar + the finding groups.
 - ``methodology`` — the standing methodology description + coverage / compliance checklists.
 - ``evidence``    — appendix of ENGAGEMENT-level evidence (artifacts with no ``finding_id``). Renders
   nothing when there is none, which is the normal case; the toolbar link follows the rendered anchor.
+
+``cover`` and ``toc`` are ``display: none`` on screen and shown only in ``@media print``: on screen the
+sticky toolbar's section jumps and the "Findings at a glance" index already do this navigation live, while
+on paper both of those are gone (``.topbar`` is ``no-print``) — so the printed deliverable is the only
+place they add anything. That also means adding them changed nothing about the on-screen report.
 
 Theme (stamped on ``<html data-theme=…>`` by ``render_html``):
 - ``auto``  — no stamp; follows the viewer's ``prefers-color-scheme`` (current default behavior).
@@ -25,7 +36,14 @@ from dataclasses import dataclass
 
 # Every block key a template may reference. Kept here so an unknown key in a template is a caught
 # programming error, and so a future editor can offer the closed set.
-BLOCK_KEYS: tuple[str, ...] = ("summary", "findings", "methodology", "evidence")
+BLOCK_KEYS: tuple[str, ...] = (
+    "cover",
+    "toc",
+    "summary",
+    "findings",
+    "methodology",
+    "evidence",
+)
 THEMES: tuple[str, ...] = ("auto", "light", "dark")
 
 
@@ -42,16 +60,22 @@ class ReportTemplate:
             assert b in BLOCK_KEYS, f"unknown block {b!r}"
 
 
-# ``evidence`` sits LAST in every shipped template: it is an appendix of engagement-level material, so it
-# belongs after the findings and the methodology rather than interrupting either.
-_STANDARD_BLOCKS = ("summary", "findings", "methodology", "evidence")
+# ``cover`` then ``toc`` FIRST — a deliverable opens on its title page and its contents, and both carry
+# ``break-after: page`` so they own page 1 and page 2 of the PDF. ``evidence`` sits LAST: it is an appendix
+# of engagement-level material, so it belongs after the findings and the methodology rather than
+# interrupting either.
+_STANDARD_BLOCKS = ("cover", "toc", "summary", "findings", "methodology", "evidence")
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
 _TEMPLATES: tuple[ReportTemplate, ...] = (
     ReportTemplate("default", "Standard", "auto", _STANDARD_BLOCKS),
-    # Methodology/coverage BEFORE findings — proves a template can reorder whole sections.
+    # Methodology/coverage BEFORE findings — proves a template can reorder whole sections. The TOC follows
+    # the template, so it lists methodology before the findings here without knowing anything about it.
     ReportTemplate(
-        "compliance", "Compliance-first", "auto", ("summary", "methodology", "findings", "evidence")
+        "compliance",
+        "Compliance-first",
+        "auto",
+        ("cover", "toc", "summary", "methodology", "findings", "evidence"),
     ),
     # Same layout, dark theme forced — proves a template can carry theme.
     ReportTemplate("dark", "Dark", "dark", _STANDARD_BLOCKS),
