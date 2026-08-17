@@ -150,6 +150,42 @@ def _engagement_not_found():
     return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
 
 
+def _client_not_found():
+    """The ONE refusal for a client the caller may not create an engagement under — and the STATIC
+    next-step hint that keeps it from being a dead end.
+
+    Reported by a client driving prod over a PAT (ext#47): ``POST /api/v1/clients`` answers 201, the very
+    next ``POST /scribble/machine/engagements`` answers 404 ``client not found``, and the caller holds an
+    id it just created. Both halves are correct and neither may change:
+
+      * a core client is RECORD-ONLY by design (``api_v1.create_client_api`` sets ``owner_id`` and nothing
+        else); the first engagement under it is what mints the membership. ``POST /api/v1/engagements``
+        does that, self-granting the creator an ``operator`` membership — and it is ADMIN-ONLY, so a
+        non-admin token cannot self-onboard at all and needs someone to grant it. The hint says both,
+        because a hint that only named the route would dead-end a non-admin one step later.
+      * the refusal stays a 404 and stays IDENTICAL for "no such client" and "exists but you hold no
+        grant" — ``host_contract.make_can_view_client`` is membership-only precisely so that ownership
+        cannot be an access axis (a cross-tenant escalation: client creation is self-service for any
+        write-scoped token and ``upsert_client`` resolves by name globally).
+
+    The hint is therefore STATIC and appended UNCONDITIONALLY. It distinguishes nothing between the two
+    cases, so the no-existence-oracle property survives exactly as it was: this function takes no client
+    id and reads no row, which is what makes the byte-identity structural rather than a promise
+    (``tests/test_machine_findings_crud.py`` pins it).
+    """
+    return (
+        jsonify({
+            "error": "not_found",
+            "detail": "client not found, or you hold no membership under it. A client created with "
+                      "POST /api/v1/clients is record-only: the first engagement under it is what grants "
+                      "membership. Create one with POST /api/v1/engagements (admin-only — it self-grants "
+                      "the creator an operator membership), or ask an admin to grant you a membership on "
+                      "an existing engagement, then retry.",
+        }),
+        404,
+    )
+
+
 def _opt_str(data: dict, key: str):
     """Validate an OPTIONAL string JSON field -> (stripped_value_or_None, error_response_or_None). A
     non-string (list/dict/number) yields a clean 400 instead of an AttributeError on .strip()."""
@@ -313,8 +349,9 @@ def scribble_create_engagement():
             )
         if not can_view_client_id(client_id, actor):
             # 404 on the CLIENT for the same reason as on an engagement: do not confirm which client ids
-            # exist to a token holding no grant under them.
-            return jsonify({"error": "not_found", "detail": "client not found"}), 404
+            # exist to a token holding no grant under them. The detail carries a static next-step hint —
+            # see _client_not_found for why appending it unconditionally keeps that property.
+            return _client_not_found()
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
