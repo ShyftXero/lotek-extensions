@@ -2,6 +2,77 @@
 
 from __future__ import annotations
 
+import re
+
+
+def _identity_cell(body: str, doc_id: str) -> str:
+    """The rendered text of the list row's identity cell, i.e. the anchor whose href is exactly this
+    document's view URL.
+
+    Asserted at the HTML level on purpose: the defect in ext#46 was not in a helper's return value, it
+    was what the row *said* to the human reading it. A test that only checked ``document_handle`` would
+    have stayed green through a template that never used it — and the row is the surface the client saw.
+    The closing quote after the id keeps this from matching the row's Edit/PDF links.
+    """
+    match = re.search(rf'<a[^>]*href="[^"]*/documents/{re.escape(doc_id)}"[^>]*>(.*?)</a>', body, re.S)
+    assert match, f"no view link for document {doc_id} in the list"
+    return " ".join(match.group(1).split())
+
+
+def _view_heading(body: str) -> str:
+    match = re.search(r"<h1[^>]*>(.*?)</h1>", body, re.S)
+    assert match, "no <h1> on the document view page"
+    return " ".join(match.group(1).split())
+
+
+def test_a_draft_row_names_itself_with_a_tail_truncated_handle(client, make_doc):
+    """ext#46: an unissued document's cell used to be a bare ``—`` — and since that cell IS the row's
+    link, a one-character click target with no identity in it."""
+    doc = make_doc(title="Unissued work")
+    body = client.get("/cream/").get_data(as_text=True)
+    assert _identity_cell(body, doc["id"]) == f"draft …{doc['id'][-10:]}"
+
+
+def test_the_draft_row_carries_the_whole_id_for_copying(client, make_doc):
+    """A truncated handle must not be a dead end — the full id is on the link itself."""
+    doc = make_doc()
+    body = client.get("/cream/").get_data(as_text=True)
+    assert f'title="{doc["id"]}"' in body
+
+
+def test_an_issued_row_shows_its_frozen_number_and_no_handle(client, make_doc):
+    """The handle is a stand-in, not an addition: once a number exists it is the identity."""
+    doc = make_doc()
+    number = client.post(f"/cream/api/documents/{doc['id']}/issue").get_json()["number"]
+    assert number
+    cell = _identity_cell(client.get("/cream/").get_data(as_text=True), doc["id"])
+    assert cell == number
+    assert "…" not in cell
+
+
+def test_a_voided_draft_is_not_labelled_a_draft(client, make_doc):
+    """``void`` accepts a draft, so an unnumbered document is not necessarily a draft — the handle's
+    leading word is the document's status, and must track it."""
+    doc = make_doc()
+    assert client.post(f"/cream/api/documents/{doc['id']}/void").status_code == 200
+    cell = _identity_cell(client.get("/cream/").get_data(as_text=True), doc["id"])
+    assert cell == f"void …{doc['id'][-10:]}"
+
+
+def test_the_view_page_heading_names_an_unissued_document(client, make_doc):
+    """``Invoice (draft)`` was the same heading on every draft. The handle makes the page self-identify —
+    which is what a screenshot or a PDF print of it needs."""
+    doc = make_doc()
+    heading = _view_heading(client.get(f"/cream/documents/{doc['id']}").get_data(as_text=True))
+    assert heading == f"Invoice draft …{doc['id'][-10:]}"
+
+
+def test_the_view_page_heading_of_an_issued_document_is_its_number(client, make_doc):
+    doc = make_doc()
+    number = client.post(f"/cream/api/documents/{doc['id']}/issue").get_json()["number"]
+    heading = _view_heading(client.get(f"/cream/documents/{doc['id']}").get_data(as_text=True))
+    assert heading == f"Invoice {number}"
+
 
 def test_dashboard_lists_a_document(client, make_doc):
     make_doc(title="External assessment")

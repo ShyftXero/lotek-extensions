@@ -24,6 +24,7 @@ from cream.deps import (
     host_visible_engagement_ids,
 )
 from cream.enums import COMMON_UNITS, DocStatus
+from cream.handles import document_handle
 from cream.models import Document
 from cream.money import as_json, money, pct
 from cream.render import render_document_html, render_document_pdf
@@ -56,6 +57,18 @@ def _load(db, doc_id: uuid.UUID) -> Document:
     if vis is not None and doc.engagement_id not in vis:
         abort(404)  # not in the actor's engagements — 404, don't disclose existence
     return doc
+
+
+def _view_meta(doc: Document, *, editable: bool) -> dict:
+    """The header facts ``view.html`` shows above the rendered document.
+
+    ``number`` stays the raw column (NULL until issue). ``handle`` is what the heading NAMES the document
+    by — the number once it has one, and a tail-truncated-id handle before that, so an unissued document
+    is not headed just ``Invoice (draft)`` with nothing to tell it from the other four drafts (ext#46).
+    """
+    return {"kind": doc.kind.value, "status": doc.status.value, "number": doc.number,
+            "handle": document_handle(doc.number, doc.status.value, doc.id),
+            "editable": editable}
 
 
 def _editor_payload(doc: Document) -> dict:
@@ -119,7 +132,13 @@ def dashboard():
                 continue  # read-scope to the actor's engagements
             rows.append({
                 "id": str(d.id), "kind": d.kind.value, "status": d.status.value,
-                "number": d.number or "—", "title": d.title,
+                # An unissued document has no number, and this cell is also the row's LINK — so a bare
+                # "—" here was a one-character click target with no identity (ext#46). `document_handle`
+                # falls back to a tail-truncated id: `draft …b839c91e20`.
+                "number": document_handle(d.number, d.status.value, d.id), "title": d.title,
+                # Left as an em-dash on purpose: a blank bill-to is a MISSING FIELD, not a missing
+                # identifier. Substituting an id tail here would print the document's id under a column
+                # headed "Bill to", inventing an identity for a client record that may not exist yet.
                 "client": d.bill_to_name or "—",
                 "editable": d.status is DocStatus.draft,
                 "total": totals(d).total, "currency": d.currency,
@@ -142,8 +161,7 @@ def view_document(doc_id: uuid.UUID):
         brand = get_brand(db)
         db.commit()  # get_brand may have created the singleton on first ever view
         html = render_document_html(view_for(doc, brand))
-        meta = {"kind": doc.kind.value, "status": doc.status.value, "number": doc.number,
-                "editable": doc.status is DocStatus.draft}
+        meta = _view_meta(doc, editable=doc.status is DocStatus.draft)
     return render_template("cream/view.html", doc_html=html, doc_id=str(doc_id), meta=meta)
 
 
@@ -158,8 +176,7 @@ def edit_document(doc_id: uuid.UUID):
         if doc.status is not DocStatus.draft:
             # Nothing to edit — send the reader to the frozen view rather than showing dead inputs.
             html = render_document_html(view_for(doc, brand))
-            meta = {"kind": doc.kind.value, "status": doc.status.value, "number": doc.number,
-                    "editable": False}
+            meta = _view_meta(doc, editable=False)
             return render_template("cream/view.html", doc_html=html, doc_id=str(doc_id), meta=meta)
         payload = _editor_payload(doc)
         initial = render_document_html(view_for(doc, brand))

@@ -56,10 +56,27 @@ Everything else is reached from those two.
 
 ### Documents list — `/cream/`
 
-Every document the current actor may see, newest first, with kind, status, number (`—` while draft),
-title, bill-to name and total. Rows are filtered by the host's visible-engagement set: a document
-belonging to an engagement you hold no membership on simply is not in the list. Links out to **New
-document**, and per row to Edit (drafts) / View / PDF.
+Every document the current actor may see, newest first, with kind, status, number, title, bill-to name
+and total. Rows are filtered by the host's visible-engagement set: a document belonging to an engagement
+you hold no membership on simply is not in the list. Links out to **New document**, and per row to Edit
+(drafts) / View / PDF.
+
+The **number** cell is also the row's link, so it never renders as a placeholder. A document with no
+number yet (nothing is numbered before issue) shows a **handle** built from the tail of its id —
+`draft …b839c91e20` — with the full id in the link's `title`; the same handle heads the document's own
+view page. It used to be a bare `—`, which made a draft's whole click target one em-dash with no identity
+in it (ext#46, client-reported). The leading word is the document's *status*, not the literal "draft",
+because voiding a draft leaves it unnumbered but no longer a draft.
+
+**The tail, not the head.** These ids are UUIDv7 — the first 48 bits are a millisecond timestamp, so
+consecutively created ids share their front (lotek#336 measured five sharing their first 23 characters).
+A head-truncated "short id" shows different documents as the same string and never errors. If lotek lands
+#336's core-owned UUID-reference widget, this call site should move onto it rather than keep its own copy;
+`cream/handles.py` deliberately follows that convention (tail, leading `…`, full id on hover).
+
+A blank **bill-to** still renders `—` on purpose: that is a missing *field*, not a missing identifier, and
+printing an id tail under a column headed "Bill to" would invent an identity for a client record that may
+not exist yet.
 
 ### New document — `/cream/documents/new`
 

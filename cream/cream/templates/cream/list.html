@@ -25,7 +25,11 @@
     <tbody>
     {% for d in documents %}
       <tr>
-        <td><a href="{{ url_for('cream.view_document', doc_id=d.id) }}">{{ d.number }}</a></td>
+        {# d.number is the ISSUED number, or a `draft …b839c91e20` handle for one that has none — built by
+           cream.handles.document_handle in blueprint.dashboard. The full id rides along in `title` so the
+           truncated handle is expandable on hover instead of being a dead end. #}
+        <td><a href="{{ url_for('cream.view_document', doc_id=d.id) }}"
+               title="{{ d.id }}">{{ d.number }}</a></td>
         <td>{{ d.kind }}</td>
         <td>{{ d.title }}</td>
         <td>{{ d.client }}</td>
