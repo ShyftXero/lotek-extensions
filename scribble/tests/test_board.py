@@ -24,6 +24,8 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from scribble.artifacts_storage import resolve_path
 from scribble.blueprint import _inject_base
 from scribble.content import schema
@@ -838,6 +840,77 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
         assert db.get(EngagementFinding, finding_id) is None
         assert db.get(Artifact, artifact_id) is None
     assert not on_disk.is_file()
+
+
+def test_delete_finding_detaches_its_nested_children(client, session_factory):
+    """The cookie board's delete hit the same self-FK wall as the machine route (both call
+    `findings_service.delete_finding`): deleting a promoted PARENT raised `IntegrityError` and the request
+    500'd, because `EngagementFinding.parent_id` has no `ondelete` and no ORM relationship to clear it.
+
+    Children are detached, not deleted — see `findings_service.detach_children`. Driven through the HTTP
+    route rather than the service so it proves the surface a user actually clicks.
+    """
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        group = _make_group(db, eng, "Active Directory")
+        tmpl = _make_template(db, "Kerberoasting")
+        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        db.add(parent)
+        db.flush()
+        children = [
+            EngagementFinding.from_template(
+                tmpl, engagement_id=eng.id, group_id=group.id, parent_id=parent.id,
+                target_host=host, order_index=index + 1,
+            )
+            for index, host in enumerate(("10.0.0.10", "10.0.0.20"))
+        ]
+        db.add_all(children)
+        db.commit()
+        eng_id, parent_id = eng.id, parent.id
+        child_ids = [child.id for child in children]
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/findings/{parent_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(EngagementFinding, parent_id) is None
+        for child_id in child_ids:
+            child = db.get(EngagementFinding, child_id)
+            assert child is not None and child.parent_id is None
+
+
+def test_engagement_delete_survives_a_promoted_parent_child_cluster(client, session_factory):
+    """Deleting an ENGAGEMENT that holds a promoted aggregation must work.
+
+    Pre-existing defect of the same class as the parent-delete one, found while fixing it and not reported:
+    `Engagement.findings` cascades `delete-orphan`, and with no ORM relationship on the self-FK SQLAlchemy
+    has no dependency to order those DELETEs by — it emits them in one batch and the child rows' `parent_id`
+    FK fails. So an engagement holding ANY promoted finding could not be deleted at all (`IntegrityError`
+    here, `ForeignKeyViolation` on prod Postgres). `findings_service.flatten_nesting` clears the links first.
+    """
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "SMB signing not required")
+        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        db.add(parent)
+        db.flush()
+        db.add_all([
+            EngagementFinding.from_template(
+                tmpl, engagement_id=eng.id, parent_id=parent.id, target_host=f"10.0.0.{n}"
+            )
+            for n in (5, 6, 7)
+        ])
+        db.commit()
+        eng_id = eng.id
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(Engagement, eng_id) is None
+        assert db.scalars(
+            select(EngagementFinding).where(EngagementFinding.engagement_id == eng_id)
+        ).all() == []
 
 
 def test_delete_finding_wrong_engagement_404(client, session_factory):

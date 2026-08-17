@@ -15,12 +15,17 @@ So every function here assumes its caller has already ANSWERED "may this actor t
 and validated the input — nothing in this module authorizes anything.
 
 Session handling is the caller's too: these functions mutate ORM objects in the caller's open session and
-never commit. :func:`delete_finding` returns the on-disk artifact paths instead of unlinking them, so the
+never commit (:func:`detach_children` flushes, which is not a commit — see its docstring for why the order
+matters). :func:`delete_finding` hands back the on-disk artifact paths instead of unlinking them, so the
 caller deletes files only AFTER its transaction commits (a rolled-back delete must not leave the bytes
 gone — the same order ``engagement_ui.delete_finding``/``engagement_delete`` already used).
 """
 
 from __future__ import annotations
+
+from typing import NamedTuple
+
+from sqlalchemy import select, update
 
 from scribble.enums import OrderMode, severity_rank
 from scribble.models import Engagement, EngagementFinding, FindingGroup
@@ -60,6 +65,48 @@ def ungrouped_display_order(engagement: Engagement, *, exclude_id: int | None = 
         (f for f in engagement.findings if f.group_id is None and f.id != exclude_id),
         key=lambda f: (severity_rank(f.severity), f.order_index),
     )
+
+
+def nested_child_ids(findings) -> set[int]:
+    """The ids in ``findings`` that the RENDERER nests under a parent instead of rendering top-level.
+
+    ONE copy of the nesting rule, shared with ``reporting/context.py::_nest_findings`` (which calls this)
+    and with :func:`rendered_top_level_count`. A finding counts as nested only when its ``parent_id``
+    resolves to another finding IN THIS SAME list that is itself a true parent (``parent_id is None``) —
+    one level of nesting, no queries. A child whose parent is missing from the list (excluded from the
+    report, or sitting in a different bucket) renders top-level, so it is NOT nested here either.
+    """
+    by_id = {f.id: f for f in findings}
+    nested: set[int] = set()
+    for finding in findings:
+        if finding.parent_id is None:
+            continue
+        parent = by_id.get(finding.parent_id)
+        if parent is not None and parent.parent_id is None:
+            nested.add(finding.id)
+    return nested
+
+
+def rendered_top_level_count(engagement: Engagement) -> int:
+    """How many findings the REPORT renders at TOP level — the number to quote as "N findings".
+
+    A flat count of ``engagement.findings`` is NOT that number: promotion produces a parent per vuln type
+    with the per-host instances as CHILDREN, and the renderer nests those inside their parent's card, so a
+    caller counting board rows over-reports (a 1-parent/2-child cluster is one finding in the deliverable,
+    three on the board). Excluded groups and ``include_in_report=False`` findings drop out too, exactly as
+    ``reporting/context.py::build_report_context`` drops them.
+
+    Mirrors that function's bucket walk rather than re-deriving the rule — and
+    ``test_top_level_count_matches_what_the_renderer_produces`` asserts equality against the renderer's own
+    output, so the two cannot drift silently.
+    """
+    buckets = [
+        [f for f in group.findings if f.include_in_report]
+        for group in engagement.groups
+        if group.include_in_report
+    ]
+    buckets.append([f for f in engagement.findings if f.group_id is None and f.include_in_report])
+    return sum(len(bucket) - len(nested_child_ids(bucket)) for bucket in buckets)
 
 
 def reindex(items) -> None:
@@ -195,17 +242,92 @@ def delete_group(db, group: FindingGroup) -> None:
     db.delete(group)
 
 
-def delete_finding(db, finding: EngagementFinding) -> list[str]:
-    """Delete a finding AND its artifact rows; returns the artifacts' ``storage_path``s for the caller to
-    unlink after it commits.
+def detach_children(db, finding: EngagementFinding) -> list[int]:
+    """NULL the ``parent_id`` of every finding nested under ``finding``; returns their ids in board order.
+
+    Nothing else clears that column. ``EngagementFinding.parent_id`` is a self-FK with **no** ``ondelete``
+    and **no** ORM relationship (the model keeps the self-ref config deliberately trivial), so neither the
+    database nor the unit of work detaches a child for us: deleting a parent while a child still points at
+    it raises ``IntegrityError`` on SQLite and ``ForeignKeyViolation`` on Postgres, and the whole
+    transaction dies. That is the DEFAULT shape, not a corner case — ``promote.promote_job`` creates a
+    parent per matched vuln template with every per-host instance as a child, so a promoted finding was
+    precisely the thing a delete was most likely to be handed.
+
+    Children are DETACHED, never deleted, for :func:`delete_group`'s reason: the parent is a synthesized
+    umbrella row built from the vuln-DB template, while the CHILD is the row carrying the irreplaceable
+    per-host evidence (its own ``target_host``, ``variables``, ``source_finding_id`` and artifacts). One
+    DELETE must not destroy N per-host findings the caller never named. Detached children keep their group
+    and ``order_index``, so they stay where the board already showed them and simply render top-level —
+    the shape ``reporting/context.py::_nest_findings`` already handles for an unresolvable parent.
+
+    Flushed here on purpose: the UPDATEs must reach the database BEFORE the caller's ``db.delete(finding)``
+    issues its DELETE, and relying on the unit of work's internal save-before-delete ordering for that
+    would make an FK violation an implementation detail away.
+    """
+    children = db.scalars(
+        select(EngagementFinding)
+        .where(EngagementFinding.parent_id == finding.id)
+        .order_by(EngagementFinding.order_index, EngagementFinding.id)
+    ).all()
+    for child in children:
+        child.parent_id = None
+    if children:
+        db.flush()
+    return [child.id for child in children]
+
+
+def flatten_nesting(db, engagement: Engagement) -> None:
+    """Clear every ``parent_id`` in ``engagement`` so a cascade delete of the whole engagement is
+    ordering-independent.
+
+    ``Engagement.findings`` cascades ``delete-orphan``, and with no ORM relationship on the self-FK (see
+    :func:`detach_children`) SQLAlchemy has no dependency to sort those DELETEs by — it emits them in one
+    executemany batch and the child rows' ``parent_id`` FK fails. So deleting an engagement that holds ANY
+    promoted aggregation raised ``IntegrityError``/``ForeignKeyViolation``: the engagement could not be
+    deleted at all. (Found while fixing :func:`detach_children`, not reported — a pre-existing defect of
+    the same class on the cookie ``engagement_delete`` route.)
+
+    A Core UPDATE, not per-object assignment: the findings are about to be marked deleted, and the unit of
+    work does not emit an UPDATE for an object it is deleting — so the assignment would be dropped and the
+    FK would fail anyway.
+    """
+    db.execute(
+        update(EngagementFinding)
+        .where(
+            EngagementFinding.engagement_id == engagement.id,
+            EngagementFinding.parent_id.isnot(None),
+        )
+        .values(parent_id=None)
+    )
+
+
+class DeletedFinding(NamedTuple):
+    """What :func:`delete_finding` leaves for its CALLER to finish.
+
+    ``storage_paths`` are unlinked only after the caller commits; ``detached_child_ids`` are reported back
+    to the caller so a delete that changed OTHER rows says so (the machine route puts them in its response
+    body — a per-host child silently becoming a top-level finding would otherwise be invisible).
+    """
+
+    storage_paths: list[str]
+    detached_child_ids: list[int]
+
+
+def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:
+    """Delete a finding AND its artifact rows, DETACHING any children; returns the artifacts'
+    ``storage_path``s for the caller to unlink after it commits, plus the detached children's ids.
 
     Unlike :func:`delete_group`, a finding IS its content: deleting it must take its evidence with it.
     ``EngagementFinding.artifacts`` carries no delete/delete-orphan cascade and ``Artifact.finding_id`` is
     nullable, so a bare ``db.delete(finding)`` would silently NULL out each artifact's ``finding_id``
     (orphaning the row and leaking the file) instead of removing it. The rows go explicitly, here.
+
+    Nested CHILDREN are the opposite case and go the other way — see :func:`detach_children` for why they
+    survive, and for why omitting that step made this an outright 500 on any promoted finding.
     """
     storage_paths = [a.storage_path for a in finding.artifacts]
     for artifact in list(finding.artifacts):
         db.delete(artifact)
+    detached_child_ids = detach_children(db, finding)
     db.delete(finding)
-    return storage_paths
+    return DeletedFinding(storage_paths, detached_child_ids)

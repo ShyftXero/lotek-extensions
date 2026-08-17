@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import object_session
 
+from scribble import findings_service
 from scribble.content import render_html
 from scribble.enums import OrderMode, Severity, risk_rating, severity_rank
 from scribble.templating import build_context, build_full_context, make_var_resolver
@@ -204,14 +205,17 @@ def _nest_findings(ordered_findings, *, artifact_url) -> list[FindingCtx]:
     the model (no ORM relationship, no extra query: this is a single pass over ``ordered_findings``).
     A finding whose ``parent_id`` doesn't resolve within this list (missing / excluded / cross-group
     parent) falls back to rendering top-level, exactly as it would have before nesting existed.
+
+    That rule lives in ``findings_service.nested_child_ids`` rather than here, because the machine API's
+    board listing has to answer "how many findings does the report actually show?" with the SAME rule --
+    it counted a promoted parent's children as three top-level findings when the report renders one.
     """
-    by_id = {f.id: f for f in ordered_findings}
+    nested = findings_service.nested_child_ids(ordered_findings)
     children_by_parent: dict[int, list] = {}
     top_level: list = []
     for f in ordered_findings:
-        parent = by_id.get(f.parent_id) if f.parent_id is not None else None
-        if parent is not None and parent.parent_id is None:
-            children_by_parent.setdefault(parent.id, []).append(f)
+        if f.id in nested:
+            children_by_parent.setdefault(f.parent_id, []).append(f)
         else:
             top_level.append(f)
 

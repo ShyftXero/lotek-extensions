@@ -32,7 +32,9 @@ UI (``bp``, mounted at the host ``url_prefix``, default ``/scribble``):
     POST /engagements/<id>/findings                       add a finding from a VulnerabilityTemplate
     POST /engagements/<id>/findings/<finding_id>/delete   delete a finding AND its artifacts (endpoint:
                                                            delete_finding) -- unlike group delete, a
-                                                           finding IS its content, so this does not detach
+                                                           finding IS its content, so its evidence goes
+                                                           with it; its nested per-host CHILDREN do not,
+                                                           they are detached (findings_service)
     GET  /findings/<id>                                   finding detail (endpoint: finding_detail)
     POST /findings/<id>                                   update finding meta
 
@@ -50,8 +52,10 @@ ignored (not a 500); moving into a nonexistent or cross-engagement group is a 40
 corruption; deleting a group detaches its findings (group_id -> NULL) instead of cascading their
 deletion, since a report *section* is not the same thing as the findings inside it -- conversely,
 deleting a finding (``delete_finding``) DOES cascade to its own artifacts, since a finding is its
-content and evidence, not a container for other authored rows; 404 (never 500) if the finding doesn't
-exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
+content and evidence, not a container for other authored rows -- but its nested per-host CHILDREN are
+DETACHED like a group's findings are, because those rows carry evidence of their own (and, until that was
+handled, deleting a promoted parent violated the ``parent_id`` self-FK and 500'd); 404 (never 500) if the
+finding doesn't exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
 
 ``Engagement.created_by`` / ``EngagementFinding.created_by`` are set from the optional host-injected
 ``current_actor`` hook (``scribble.deps.current_actor_username``) -- ``None`` standalone.
@@ -364,6 +368,11 @@ def register(api_bp, bp) -> None:
             # bytes on disk are not the ORM's to clean up -- collect the paths before the cascade delete,
             # then best-effort remove the files afterward, same as delete_finding does per-finding.
             storage_paths = [a.storage_path for a in engagement.artifacts]
+            # Clear the finding->finding parent_id links FIRST: the delete-orphan cascade below emits its
+            # finding DELETEs in one unordered batch, and a child still pointing at its parent makes that
+            # batch violate the self-FK -- i.e. an engagement holding any promoted aggregation could not be
+            # deleted at all. See findings_service.flatten_nesting.
+            findings_service.flatten_nesting(db, engagement)
             db.delete(engagement)  # cascades to groups/findings/artifacts/variable_values (delete-orphan)
             db.commit()
         for storage_path in storage_paths:
@@ -483,7 +492,9 @@ def register(api_bp, bp) -> None:
             # Takes its artifact ROWS with it (unlike delete_group's detach) and hands back their on-disk
             # paths — see findings_service.delete_finding. The files go only AFTER the commit below, so a
             # rolled-back delete cannot leave the bytes gone (mirrors artifacts_api.delete_artifact).
-            storage_paths = findings_service.delete_finding(db, finding)
+            # Children (per-host instances of a promoted vuln type) are DETACHED, not deleted — see
+            # findings_service.detach_children. Without that step this route 500'd on any promoted parent.
+            storage_paths = findings_service.delete_finding(db, finding).storage_paths
             db.commit()
         for storage_path in storage_paths:
             delete_file(cfg, storage_path)

@@ -30,6 +30,7 @@ import functools
 
 import pytest
 from flask import jsonify
+from sqlalchemy import select
 
 import scribble.models as fm
 from scribble.artifacts_storage import resolve_path
@@ -199,6 +200,67 @@ def test_list_findings_returns_groups_ungrouped_and_board_order(client, token, s
     assert [f["id"] for f in body["ungrouped"]] == [loose]
 
 
+def test_list_findings_is_the_board_list_and_says_what_the_report_renders(
+    client, token, session_factory
+):
+    """A promoted parent's children are BOARD rows here, and the listing must not let a caller mistake
+    `count` for "findings in the deliverable".
+
+    The listing is flat on purpose — that is what the drag board shows, and `order_index` on a move is a
+    slot in exactly this list. But the renderer nests each per-host child inside its parent's card, so a
+    1-parent/2-child promotion is 3 rows here and ONE finding in the client's report. An agent that quoted
+    `count` would over-report the engagement to the client; `top_level_count` is the honest number.
+    """
+    eid = _engagement(session_factory)
+    parent = _finding(session_factory, eid, title="Kerberoasting")
+    child_a = _finding(session_factory, eid, title="Kerberoasting — DC01", parent_id=parent,
+                       order_index=1)
+    child_b = _finding(session_factory, eid, title="Kerberoasting — SQL01", parent_id=parent,
+                       order_index=2)
+
+    body = client.get(f"{M}/engagements/{eid}/findings").get_json()
+
+    assert [f["id"] for f in body["ungrouped"]] == [parent, child_a, child_b]
+    assert [f["parent_id"] for f in body["ungrouped"]] == [None, parent, parent]
+    assert body["count"] == 3            # board rows, children included
+    assert body["top_level_count"] == 1  # what the report actually shows
+
+
+def test_top_level_count_matches_what_the_renderer_produces(client, token, session_factory, app):
+    """`top_level_count` is pinned to the RENDERER, not to a restatement of its rule.
+
+    Asserted against `build_report_context`'s own output over a deliberately awkward board: a nested
+    cluster, an excluded child, an excluded parent whose child therefore renders top-level, an excluded
+    group, and a flat finding. Any future change to the nesting/filtering rules that this route did not
+    follow makes the two numbers differ.
+    """
+    from scribble.reporting import build_report_context
+
+    eid = _engagement(session_factory)
+    shown = _group(session_factory, eid, "Active Directory", order_index=0)
+    hidden = _group(session_factory, eid, "Draft", order_index=1)
+    parent = _finding(session_factory, eid, title="Kerberoasting", group_id=shown)
+    _finding(session_factory, eid, title="— DC01", group_id=shown, parent_id=parent, order_index=1)
+    _finding(session_factory, eid, title="— SQL01", group_id=shown, parent_id=parent, order_index=2,
+             include_in_report=False)
+    orphaned_parent = _finding(session_factory, eid, title="SMB signing", group_id=shown,
+                               order_index=3, include_in_report=False)
+    _finding(session_factory, eid, title="— FS01", group_id=shown, parent_id=orphaned_parent,
+             order_index=4)
+    _finding(session_factory, eid, title="Banner disclosure")
+    _finding(session_factory, eid, title="Hidden section finding", group_id=hidden)
+    with session_factory() as db:
+        db.get(fm.FindingGroup, hidden).include_in_report = False
+        db.commit()
+
+    reported = client.get(f"{M}/engagements/{eid}/findings").get_json()["top_level_count"]
+
+    with session_factory() as db:
+        engagement = db.get(fm.Engagement, eid)
+        rendered = sum(len(group.findings) for group in build_report_context(engagement).groups)
+    assert reported == rendered, "the listing's top_level_count disagrees with the renderer"
+
+
 def test_get_finding_returns_content_evidence_and_children(client, token, session_factory, app):
     """One finding, in full — prose blocks, evidence artifacts, and the promoted per-host CHILDREN.
 
@@ -311,6 +373,58 @@ def test_patch_merges_content_blocks_and_sanitizes_them(client, token, session_f
     assert "Enable SMB signing" in html["remediation"]
 
 
+@pytest.mark.parametrize(
+    "block,payload",
+    [("description", {"description": ""}),
+     ("description", {"description": "   "}),
+     ("remediation", {"remediation": ""}),
+     ("references", {"references": []}),
+     ("references", {"references": ["", "  "]})],
+)
+def test_patch_clears_a_prose_block_when_the_value_is_empty(
+    client, token, session_factory, block, payload
+):
+    """A supplied-but-EMPTY prose value CLEARS that block. It used to be silently dropped.
+
+    `_author_content_json`'s guards are truthiness tests, right for a create ("nothing supplied" ==
+    "supplied nothing") and wrong for an edit: `{"title": "x", "description": ""}` answered 200 with the
+    PLACEHOLDER prose still in `content_json`, and `{"description": ""}` alone answered a misleading 400
+    "no updatable fields supplied" — so there was no way at all to clear a block through this API, and the
+    attempt to do so alongside another field reported success for prose that was never written. That is the
+    exact failure `_patch_content_blocks`' docstring says it exists to prevent, arriving by value instead of
+    by type. An empty ProseMirror doc is what the cookie editor's autosave stores for a cleared block.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    with session_factory() as db:
+        finding = db.get(fm.EngagementFinding, fid)
+        finding.content_json = {block: schema.doc_from_text("PLACEHOLDER — replace me")}
+        db.commit()
+
+    resp = client.patch(f"{M}/findings/{fid}", json={"title": "Edited", **payload})
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["content_json"][block] == schema.empty_doc()
+
+    with session_factory() as db:
+        stored = db.get(fm.EngagementFinding, fid)
+        assert stored.content_json[block] == schema.empty_doc(), "the block was reported cleared but is not"
+        assert stored.content_html[block] in ("", None) or "PLACEHOLDER" not in str(
+            stored.content_html[block]
+        ), "the cached HTML still shows prose the report no longer contains"
+
+
+def test_patch_clearing_a_block_alone_is_not_a_no_op_400(client, token, session_factory):
+    """Clearing prose is a real edit, so it must not need a second field to be accepted. `{"description":
+    ""}` on its own used to fall through to "no updatable fields supplied"."""
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+
+    resp = client.patch(f"{M}/findings/{fid}", json={"description": ""})
+    assert resp.status_code == 200, resp.get_json()
+    with session_factory() as db:
+        assert db.get(fm.EngagementFinding, fid).content_json["description"] == schema.empty_doc()
+
+
 def test_patch_rejects_an_unknown_field(client, token, session_factory):
     """A typo'd field name must be a refusal, not a 200 for an edit that never happened. This module's
     house style is lenient parsing; the edit route deliberately breaks it, because "silent success that
@@ -365,6 +479,106 @@ def test_patch_refuses_a_value_that_would_overflow_its_column(client, token, ses
     over = client.patch(f"{M}/findings/{fid}", json={field: "x" * (cap + 1)})
     assert over.status_code == 400, over.get_json()
     assert "too long" in over.get_json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "field,cap",
+    [("title", 512), ("cvss_vector", 255), ("target_host", 255), ("target_port", 16),
+     ("target_url", 1024)],
+)
+def test_create_refuses_a_value_that_would_overflow_its_column(
+    client, token, session_factory, field, cap
+):
+    """The CREATE route bounds the same columns PATCH does — it did not, and that is the same 500.
+
+    The width caps landed on PATCH only, which left the create route on the SAME blueprint writing the same
+    `String(n)` columns unbounded: `POST …/findings {"title": "x"*600}` answered 201 while
+    `PATCH …/findings/<id>` with the identical value answered 400. On SQLite (this suite) the create stores
+    the over-long value silently; on prod Postgres it raises `StringDataRightTruncation` and the caller gets
+    a 500 for what is really a bad request. A cap only one of two writers consults is not a boundary.
+    """
+    eid = _engagement(session_factory)
+    base = {"title": "Authored finding", "severity": "high"}
+
+    at_cap = client.post(f"{M}/engagements/{eid}/findings", json={**base, field: "x" * cap})
+    assert at_cap.status_code == 201, at_cap.get_json()  # the cap itself is still accepted
+
+    over = client.post(f"{M}/engagements/{eid}/findings", json={**base, field: "x" * (cap + 1)})
+    assert over.status_code == 400, over.get_json()
+    assert "too long" in over.get_json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"target_host": {"host": "10.0.0.1"}},   # a dict bound straight to a String column
+        {"target_url": ["https://x"]},
+        {"target_port": {"port": 443}},
+        {"target_port": True},                   # bool is an int subclass — not a port
+    ],
+)
+def test_create_refuses_a_wrong_typed_target_field(client, token, session_factory, body):
+    """`target_host`/`target_url`/`target_port` were assigned from the body with no type check at all, so a
+    dict or a list bound directly to a `String` column — a driver-level error on Postgres for a request that
+    should never have reached the database."""
+    eid = _engagement(session_factory)
+    resp = client.post(
+        f"{M}/engagements/{eid}/findings",
+        json={"title": "Authored finding", "severity": "high", **body},
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["error"] == "bad_request"
+
+
+def test_create_coerces_an_integer_target_port_to_text_at_the_boundary():
+    """An integer `target_port` becomes text at the PARSE, so every create branch writes a `str` to the
+    `String(16)` column.
+
+    Asserted on `_parse_target_fields` rather than on the stored row, and that is deliberate: SQLite applies
+    column affinity and silently converts an int bound to a `VARCHAR` — the probe reads it back as `'8443'`
+    either way — so an end-to-end assertion here could not fail and would be a guard in name only. The
+    defect it guards is real and only visible on Postgres, where a raw int bound to a varchar is a
+    `DataError`; the direct-author branch coerced with `str()` while the template and promote branches
+    assigned `data[key]` raw, so the same field's type depended on which branch ran.
+    """
+    from scribble.api_pat import _parse_target_fields
+
+    parsed, err = _parse_target_fields({"target_port": 8443, "target_host": " 10.0.0.1 "})
+    assert err is None
+    assert parsed == {"target_port": "8443", "target_host": "10.0.0.1"}
+
+
+@pytest.mark.parametrize(
+    "path,body,field,cap",
+    [
+        ("/engagements", {"client_id": ACME}, "name", 255),              # Engagement.name     String(255)
+        ("/engagements", {"client_id": ACME, "name": "Q3"}, "scope_type", 64),
+        ("/engagements", {"client_id": ACME, "name": "Q3"}, "company_name", 255),
+        ("/templates", {}, "name", 512),                                 # …Template.name      String(512)
+        ("/templates", {"name": "Weak TLS"}, "category", 255),
+        ("/templates", {"name": "Weak TLS"}, "cvss_vector", 255),
+    ],
+)
+def test_every_create_route_on_this_blueprint_bounds_its_strings(
+    client, token, session_factory, path, body, field, cap
+):
+    """The two OTHER create routes write `String(n)` columns too, and they were unbounded as well.
+
+    Found while fixing the findings-create hole the review reported: `POST /engagements` with a 5000-char
+    `name` answered 201 (probe 6 of the reviewer's own script), and `scope_type`/`company_name` were read
+    raw from the body — so a dict bound straight to a `String` column. Fixing one route and leaving the
+    engagement-create route (the FIRST call any agent makes) with the same defect would have been fixing the
+    instance instead of the class.
+    """
+    at_cap = client.post(f"{M}{path}", json={**body, field: "x" * cap})
+    assert at_cap.status_code == 201, at_cap.get_json()
+
+    over = client.post(f"{M}{path}", json={**body, field: "x" * (cap + 1)})
+    assert over.status_code == 400, over.get_json()
+    assert "too long" in over.get_json()["detail"]
+
+    wrong_type = client.post(f"{M}{path}", json={**body, field: {"nested": 1}})
+    assert wrong_type.status_code == 400, wrong_type.get_json()
 
 
 def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
@@ -435,12 +649,83 @@ def test_delete_finding_takes_its_evidence_rows_and_files(client, token, session
 
     resp = client.delete(f"{M}/findings/{fid}")
     assert resp.status_code == 200, resp.get_json()
-    assert resp.get_json() == {"deleted": True, "finding_id": fid, "engagement_id": eid}
+    assert resp.get_json() == {
+        "deleted": True, "finding_id": fid, "engagement_id": eid, "detached_children": [],
+    }
 
     with session_factory() as db:
         assert db.get(fm.EngagementFinding, fid) is None
         assert db.get(fm.Artifact, artifact_id) is None
     assert not on_disk.is_file()
+
+
+def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
+    client, token, session_factory, app
+):
+    """Deleting a PROMOTED PARENT must succeed, keep its per-host children, and say that it did.
+
+    This was a 500 — the single operation ext#41 was filed about, on the shape this very API produces by
+    default. `EngagementFinding.parent_id` is a self-FK with no `ondelete` and no ORM relationship, so
+    nothing cleared it: the DELETE raised `IntegrityError` (SQLite) / `ForeignKeyViolation` (prod
+    Postgres), nothing was deleted, and the audit row rolled back with it. `promote_job` builds exactly
+    this shape for every finding that resolves to a vuln-DB template, so "an agent's only recovery is
+    delete-and-recreate" still could not be performed on a promoted finding.
+
+    The children are DETACHED, never deleted: the parent is a synthesized umbrella row over the template's
+    write-up, while each child carries the irreplaceable per-host evidence — its own target, variables and
+    artifacts. One DELETE must not destroy N findings the caller never named. The child's artifact below is
+    the load-bearing assertion: it proves the cascade stopped at the parent.
+    """
+    cfg = app.extensions["scribble"]
+    eid = _engagement(session_factory)
+    gid = _group(session_factory, eid, "Active Directory")
+    parent = _finding(session_factory, eid, title="Kerberoasting", group_id=gid)
+    child_a = _finding(session_factory, eid, title="Kerberoasting — DC01", group_id=gid,
+                       parent_id=parent, target_host="10.0.0.10", order_index=1)
+    child_b = _finding(session_factory, eid, title="Kerberoasting — SQL01", group_id=gid,
+                       parent_id=parent, target_host="10.0.0.20", order_index=2)
+    upload = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        json={"filename": "hashes.png", "content_base64": base64.b64encode(PNG).decode(),
+              "finding_id": child_a},
+    )
+    assert upload.status_code == 201, upload.get_json()
+    child_artifact = upload.get_json()["id"]
+    with session_factory() as db:
+        child_file = resolve_path(cfg, db.get(fm.Artifact, child_artifact).storage_path)
+
+    resp = client.delete(f"{M}/findings/{parent}")
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json() == {
+        "deleted": True, "finding_id": parent, "engagement_id": eid,
+        "detached_children": [child_a, child_b],
+    }
+
+    with session_factory() as db:
+        assert db.get(fm.EngagementFinding, parent) is None
+        for cid in (child_a, child_b):
+            child = db.get(fm.EngagementFinding, cid)
+            assert child is not None, "a per-host child must survive its parent's delete"
+            assert child.parent_id is None, "a surviving child must be detached, not dangling"
+            assert child.group_id == gid  # stays where the board already showed it
+        assert db.get(fm.Artifact, child_artifact) is not None
+    assert child_file.is_file(), "the child's evidence file must not be swept up by the parent's delete"
+
+
+def test_deleting_a_parent_is_recorded_with_the_children_it_detached(
+    client, token, session_factory, app
+):
+    """The audit row for a parent delete names the rows it re-parented. A trail recording only "one finding
+    deleted" would hide the fact that two other findings changed shape in the same transaction."""
+    recorded = _install_audit_recorder(app)
+    eid = _engagement(session_factory)
+    parent = _finding(session_factory, eid, title="Weak TLS")
+    child = _finding(session_factory, eid, title="Weak TLS — web01", parent_id=parent)
+
+    assert client.delete(f"{M}/findings/{parent}").status_code == 200
+
+    row = next(r for r in recorded if r[0] == "ext:scribble:delete_finding")
+    assert row[4] == {"detached_children": [child]}
 
 
 def test_delete_finding_twice_is_a_404_the_second_time(client, token, session_factory):
@@ -557,6 +842,75 @@ def test_bulk_move_preserves_the_listed_order(client, token, session_factory):
         ordered = sorted(group.findings, key=lambda f: f.order_index)
         assert [f.id for f in ordered] == [b, c, a]
         assert [f.order_index for f in ordered] == [0, 1, 2]  # no gaps, no duplicates
+
+
+def test_bulk_move_reports_the_order_index_it_actually_persisted(client, token, session_factory):
+    """The `moved[]` entries must be the PERSISTED positions, not a mid-loop reading.
+
+    Each placement reindexes the WHOLE destination, so an `order_index` read inside the placement loop can
+    be stale by the time the next finding lands. The ungrouped bucket is where it bites hardest: it has no
+    `order_mode` to flip to manual, so every insert re-sorts by severity — move a `low` and then a `medium`
+    into a bucket that already holds a `critical`, and the `low` that was written at slot 0 ends up at slot
+    2. The response said 0. A caller computing its next `order_index` from that body is working from a
+    number that was never in the database.
+    """
+    eid = _engagement(session_factory)
+    gid = _group(session_factory, eid, "Web Application")
+    _finding(session_factory, eid, title="Critical (already ungrouped)", severity=Severity.critical)
+    low = _finding(session_factory, eid, title="Low", severity=Severity.low, group_id=gid)
+    medium = _finding(session_factory, eid, title="Medium", severity=Severity.medium, group_id=gid)
+
+    body = client.post(
+        f"{M}/engagements/{eid}/findings/move",
+        json={"finding_ids": [low, medium], "group_id": None, "order_index": 0},
+    ).get_json()
+
+    with session_factory() as db:
+        persisted = {
+            f.id: f.order_index
+            for f in db.scalars(
+                select(fm.EngagementFinding).where(fm.EngagementFinding.engagement_id == eid)
+            )
+        }
+    reported = {m["finding_id"]: m["order_index"] for m in body["moved"]}
+    assert reported == {fid: persisted[fid] for fid in reported}, (
+        f"reported {reported}, database holds {persisted}"
+    )
+
+
+@pytest.mark.parametrize("order_index", [-1, -5])
+@pytest.mark.parametrize("bulk", [False, True])
+def test_move_refuses_a_negative_order_index(client, token, session_factory, order_index, bulk):
+    """A negative `order_index` is a 400, on both move routes, and nothing moves.
+
+    `place_finding` clamps with `max(0, min(requested, len))`, so every negative offset collapsed to slot 0
+    — and in a bulk move each successive insert at slot 0 pushed the previous one down, silently REVERSING
+    the caller's listed order while the route answered 200 and its docstring promised the order was
+    preserved. `order_index: -1` ("insert before the first", an obvious thing for an agent doing index
+    arithmetic) reversed a 2-item move. Zero already means "before the first", so a negative index cannot
+    express anything a caller could have meant: refusing it is the honest answer, where clamping quietly did
+    the opposite of what was asked.
+    """
+    eid = _engagement(session_factory)
+    gid = _group(session_factory, eid, "Web Application")
+    a = _finding(session_factory, eid, title="A")
+    b = _finding(session_factory, eid, title="B")
+    c = _finding(session_factory, eid, title="C")
+
+    if bulk:
+        resp = client.post(f"{M}/engagements/{eid}/findings/move",
+                           json={"finding_ids": [a, b, c], "group_id": gid,
+                                 "order_index": order_index})
+    else:
+        resp = client.post(f"{M}/findings/{a}/move",
+                           json={"group_id": gid, "order_index": order_index})
+
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["error"] == "bad_request"
+    with session_factory() as db:
+        assert [f.group_id for f in db.scalars(
+            select(fm.EngagementFinding).where(fm.EngagementFinding.engagement_id == eid)
+        )] == [None, None, None], "a refused move must not have moved anything"
 
 
 def test_bulk_move_with_a_foreign_finding_id_moves_nothing(client, token, session_factory):

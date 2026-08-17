@@ -71,7 +71,9 @@ Board order *is* document order.
 - Ungrouped findings sit in their own bucket, always shown severity-first.
 - A group can be excluded from the rendered report without deleting it. **Deleting a group detaches its
   findings** (they go ungrouped) rather than destroying them — a report section is not the same thing as
-  the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both.
+  the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both — but
+  **not its nested children**: a promoted parent is an umbrella over the vuln-DB write-up while each child
+  holds the per-host evidence, so the children are detached (they become top-level findings) and survive.
 - Every rule above is enforced by `scribble/findings_service.py`, which the **machine API calls too** (see
   "The board" under the machine API). The browser and a PAT therefore place a finding identically; there is
   no second implementation of the ordering rules to drift.
@@ -181,14 +183,14 @@ also could not do. The board routes below share their mutation logic with the co
 
 | Method · path | Scope | Purpose |
 |---|---|---|
-| `POST /scribble/machine/engagements` | write | Create an engagement. `name` **and** `client_id` required when mounted; optional `scope_type` (default `external`), `company_name`. |
+| `POST /scribble/machine/engagements` | write | Create an engagement. `name` **and** `client_id` required when mounted; optional `scope_type` (default `external`), `company_name`. Every string is length-capped to its column width (400, never a Postgres truncation 500). |
 | `GET /scribble/machine/engagements` | read | List the engagements this token may see (scoped — never the whole table). |
 | `GET /scribble/machine/engagements/<engagement_id>` | read | One engagement + `finding_count` / `group_count` / `artifact_count`. |
 | `GET /scribble/machine/engagements/<engagement_id>/report` | read | Stream the rendered deliverable: `?format=html` (default) or `docx`. Emits an `ext:scribble:report_read` audit row. |
-| `POST /scribble/machine/templates` | write | Author a reusable vuln template. Excluded from AUTOMATIC vuln-map adoption (`machine_authored`). |
+| `POST /scribble/machine/templates` | write | Author a reusable vuln template. Excluded from AUTOMATIC vuln-map adoption (`machine_authored`). `name`/`category`/`cvss_vector` are length-capped like every other string on this surface. |
 | `GET /scribble/machine/templates` | read | List active library templates. Filters: `?q=` (name contains), `?category=`, `?severity=`. |
 | `GET /scribble/machine/templates/<template_id>` | read | One template with full `content_json`, CVSS and references. 404 if missing or retired. |
-| `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id`, by promoting one `lotek_finding_id`, **or** by authoring directly from `title` + `severity`. Optional `group_id`, `target_host`, `target_port`, `target_url`. |
+| `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id`, by promoting one `lotek_finding_id`, **or** by authoring directly from `title` + `severity`. Optional `group_id`, `target_host`, `target_port`, `target_url`. String values are length-capped to their column widths (a 400, never a Postgres truncation 500) — the same caps `PATCH` enforces. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. |
 | `POST /scribble/machine/engagements/<engagement_id>/promote-job/<job_id>` | write | **Bulk-promote every finding of a scan job** into the engagement. |
 | `POST /scribble/machine/vuln-map` | write | Curate a scan-finding → template mapping. `template_id` required, plus at least one of `source`, `title_pattern`, `dedupe_prefix`. |
@@ -199,10 +201,10 @@ also could not do. The board routes below share their mutation logic with the co
 
 | Method · path | Scope | Purpose |
 |---|---|---|
-| `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order**, grouped as the report will render it (`groups[]` each with their `findings[]`, plus `ungrouped[]`). |
+| `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order** — the flat board list (`groups[]` each with their `findings[]`, plus `ungrouped[]`). `count` is board rows; `top_level_count` is how many findings the **report** renders, which is the smaller number whenever promotion nested per-host children (see below). |
 | `GET /scribble/machine/findings/<finding_id>` | read | One finding in full: content blocks, evidence artifacts, and its promoted per-host `children`. |
-| `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized). Omitted = unchanged, explicit `null` = cleared. An **unknown field is a 400**, not a silent no-op. |
-| `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files). |
+| `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized). Omitted = unchanged, explicit `null` = cleared, and an **empty** `description`/`remediation`/`references` (`""` / `[]`) **clears that prose block**. An **unknown field is a 400**, not a silent no-op. |
+| `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files). Nested per-host **children are detached, not deleted** — their ids come back in `detached_children` and they become top-level findings. |
 | `POST /scribble/machine/findings/<finding_id>/move` | write | `{"group_id": <id\|null>, "order_index": <int>}` — set group + position. `group_id` is required (`null` = ungrouped). |
 | `POST /scribble/machine/engagements/<engagement_id>/findings/move` | write | **Bulk** move: `{"finding_ids": [...], "group_id": <id\|null>, "order_index": <int>}`, listed order preserved. Atomic — one id outside the engagement refuses the whole request. |
 | `POST /scribble/machine/engagements/<engagement_id>/groups` | write | Create a report section. `name` required; optional `assessment_type_id`. |
@@ -214,7 +216,14 @@ Ordering semantics worth knowing before you drive these:
 
 - **`order_index` on a move is a slot in the RENDERED order**, not a raw column write. An `auto_severity`
   group renders worst-severity-first, so `order_index: 0` means "where the board currently shows the first
-  card", which is what the browser sends too.
+  card", which is what the browser sends too. It must be **`>= 0`** — `0` already means "before the first",
+  so a negative index is a 400 rather than something clamped (clamping reversed a bulk move's listed order,
+  every insert landing in slot 0 and pushing the previous one down).
+- **The board list is FLAT; the report NESTS.** Promotion aggregates per-host instances of a vuln type under
+  a parent finding, and the renderer draws those children inside their parent's card. They are separate rows
+  on the board (and in `GET …/findings`), which is deliberate — `order_index` indexes that flat list. So
+  `count` over-reports what a client sees: quote `top_level_count`. `GET /findings/<id>` returns a parent's
+  `children` explicitly.
 - **Any move flips the destination group to `order_mode: "manual"`** — a deliberate placement outranks
   severity ranking. `PATCH …/groups/<id> {"order_mode": "auto_severity"}` is the way back ("re-rank by
   severity").
@@ -326,7 +335,9 @@ consume, so HTML and `.docx` cannot drift apart):
 What enters the report: groups in board order (a synthetic *Ungrouped* bucket last), findings ordered by
 the group's own mode, `include_in_report` respected at group, finding **and** artifact level, plus a
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
-into the report.
+into the report. Promoted per-host findings render **nested inside their parent's card** (one level), so the
+report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
+answers that number as `top_level_count`.
 
 There is **no server-side PDF renderer**. The HTML is a print-to-PDF deliverable; the `.docx` is the
 editable hand-off.

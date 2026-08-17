@@ -2,7 +2,8 @@
 
 - **Branch:** `feat/scribble-machine-findings-crud`  (worktree: `.claude/worktrees/ux-findings-crud`, off `main`)
 - **PR:** not opened yet (the orchestrator opens it)
-- **Status:** 🟢 ready to merge — closes ext#41 and ext#47
+- **Status:** 🟢 ready to merge — closes ext#41 and ext#47. **Adversarial review round 1 (2026-08-17):
+  1 BLOCK + 4 CONCERNs, all five fixed** (see "Review round 1" below); nothing refuted.
 
 ## Purpose
 
@@ -97,15 +98,91 @@ API (`scribble/api_pat.py`):
   the cookie autosave uses, so the editor/preview cache cannot drift from `content_json`. The report
   renders from `content_json` (`reporting/context.py:165`), so this is cache hygiene, not report
   correctness.
-- **String values are length-capped at the boundary** (`_PATCH_MAX_LEN`, `_GROUP_NAME_MAX_LEN`) and
+- **String values are length-capped at the boundary** (`_COLUMN_MAX_LEN`, `_GROUP_NAME_MAX_LEN`) and
   `cvss_score` is bounded to 0.0–10.0. Found in self-review: these are `String(n)` columns, so on
   Postgres — prod — an over-long value raises `StringDataRightTruncation` and the caller gets a 500 for a
   bad request, while SQLite (this suite's backend) accepts it silently. Same shape as the uuid/Integer
   trap. The range check on `cvss_score` also refuses the `NaN`/`Infinity` tokens Python's JSON parser
-  accepts by default.
+  accepts by default. **The first version capped PATCH only** — the sibling CREATE route on the same
+  blueprint wrote the same columns unbounded, so the guard the commit existed for was still reachable one
+  route over — as did `POST /engagements` and `POST /templates`. Fixed in review round 1: every string this
+  blueprint writes is now bounded, and the dict is named `_COLUMN_`, not `_PATCH_`, precisely so the next
+  writer does not read it as one route's business.
 - **`_sev_value` → `_enum_value`** (pure rename, 3 call sites): the finding serializers needed the same
   enum unwrap for `confidence`/`status`/`order_mode`/`kind`, and four more copies of a one-liner was the
   alternative.
+
+## Review round 1 — adversarial review, 2026-08-17 (1 BLOCK + 4 CONCERNs, all fixed)
+
+Nothing was refuted; every finding reproduced. The BLOCK was the one that mattered, and the reviewer's
+diagnosis of how it survived 71 tests is correct: the delete test asserted the artifact cascade — the
+cascade the author was thinking about — and nothing on the branch seeded a parent with children on a WRITE
+path.
+
+1. **BLOCK · `DELETE /findings/<id>` 500'd on a promoted PARENT.** `EngagementFinding.parent_id` is a
+   self-FK with no `ondelete` and no ORM relationship, so nothing cleared it: the DELETE raised
+   `IntegrityError` (SQLite, FKs on) / `ForeignKeyViolation` (prod Postgres), nothing was deleted and the
+   audit row rolled back with it. `promote_job` builds parent+children by DEFAULT for every finding that
+   resolves to a template, so the single operation ext#41 was filed about could not be performed on a
+   promoted finding — the exact thing this branch exists to fix. Reproduced with the reviewer's script
+   before touching anything (`/tmp/advrev/repro_parent_delete.py` → `FOREIGN KEY constraint failed`).
+   **Fix:** `findings_service.detach_children` — children are DETACHED (`parent_id` → NULL), not deleted,
+   and their ids come back in `detached_children` (response + audit row). Chosen over cascading the delete
+   because the parent is a synthesized umbrella row over the template's write-up while each child holds the
+   irreplaceable per-host evidence (own target, variables, `source_finding_id`, artifacts) — the same reason
+   `delete_group` detaches instead of destroying. One DELETE must not take N unnamed findings with it, and
+   the renderer already draws an unresolvable-parent child top-level (`tests/test_smoke.py` covers it).
+   The cookie route shares the fix through the same service function.
+   - **🔴 Same defect class found while fixing it, NOT reported by the reviewer: the cookie
+     `engagement_delete` route could not delete an engagement holding any promoted aggregation at all.**
+     `Engagement.findings` cascades `delete-orphan`, and with no ORM relationship on the self-FK SQLAlchemy
+     has no dependency to order those DELETEs by — it emits them as one unordered batch and the child rows'
+     FK fails. Pre-existing (not introduced here), a prod 500, and fixed with
+     `findings_service.flatten_nesting` + a test (`tests/test_board.py`), since it is the same one-line
+     omission on the same column and there was no cookie engagement-delete test at all.
+2. **CONCERN · a negative `order_index` silently REVERSED a bulk move.** `place_finding` clamps with
+   `max(0, min(requested, len))`, so every negative offset collapsed to slot 0 and each successive insert
+   pushed the previous one down — 200, docstring promising the listed order was preserved, board in the
+   opposite order. `order_index: -1` reversed a 2-item move. **Fix:** `_parse_move_target` refuses `< 0`
+   with a 400 (0 already means "before the first", so a negative index cannot express anything a caller
+   could have meant), on BOTH move routes.
+3. **CONCERN · the bulk move's `moved[].order_index` was stale.** Read inside the placement loop, while
+   each placement reindexes the whole destination — the response reported 0 for every entry of a 3-finding
+   move that the database stored as 0,1,2. **Fix:** built from a pass over the placed findings AFTER the
+   loop, plus a test asserting the reported map EQUALS the persisted one.
+4. **CONCERN · `GET /engagements/<id>/findings` counted nested children as top-level findings** while its
+   docstring claimed the listing "IS the document order". The listing is right and the docstring was wrong:
+   the list is the BOARD list (children are their own rows there, and `order_index` on a move is a slot in
+   exactly that flat list — nesting it would have made the move indices refer to a list the caller can no
+   longer see). **Fix:** docstring + `docs/SCRIBBLE.md` corrected to say board list, and a new
+   `top_level_count` answers "how many findings does the report show?" via
+   `findings_service.rendered_top_level_count`. The nesting rule now lives ONCE
+   (`findings_service.nested_child_ids`, which `reporting/context.py::_nest_findings` calls), and
+   `test_top_level_count_matches_what_the_renderer_produces` asserts the count against
+   `build_report_context`'s own output over an awkward board (nested cluster, excluded child, excluded
+   parent, excluded group) rather than restating the rule.
+5. **CONCERN · PATCH silently dropped an empty prose payload.** `{"title": "x", "description": ""}` → 200
+   with the old prose intact; `{"description": ""}` alone → a misleading 400 "no updatable fields supplied".
+   So there was no way to clear a block at all, and trying reported success — the very failure
+   `_patch_content_blocks`' docstring says it exists to prevent, arriving by VALUE rather than by type
+   (`_author_content_json`'s guards are truthiness tests, correct for a create, wrong for an edit).
+   **Fix:** a supplied-but-empty `description`/`remediation`/`references` becomes an explicit empty
+   ProseMirror doc — what the cookie editor's autosave already stores for a cleared block, and what the
+   renderer treats as an absent section. Still routed through the sanitizer, so there is one path into
+   `content_json`. `{"content_json": {}}` remains "no blocks supplied", documented.
+6. **CONCERN · the width caps were PATCH-only** while the CREATE route on the same blueprint wrote the same
+   `String(n)` columns unbounded (`POST …/findings {"title": "x"*600}` → 201; the identical PATCH → 400), and
+   assigned `target_host`/`target_url` with no type check at all. The reviewer is also right that the plan
+   presented this as a solved class. **Fix:** `_PATCH_MAX_LEN` → `_COLUMN_MAX_LEN`, hoisted next to
+   `_opt_str` with `_too_long`, plus `_parse_target_fields` — ONE type-checked, length-capped, `str()`-coerced
+   parse of the three `target_*` fields shared by all three create branches (the template and promote
+   branches previously bound a raw int to a `String(16)` port column, which is a Postgres `DataError`).
+   - **🔴 Also not reported: `POST /engagements` and `POST /templates` had the identical hole** — the
+     reviewer's own probe 6 still answered `201` for a 5000-char engagement `name` (`String(255)`) after the
+     findings-create fix, and `scope_type`/`company_name` were read raw from the body (a dict binds straight
+     to a `String` column). Both routes now go through `_opt_str` + `_too_long`, so every string this
+     blueprint writes is bounded at the boundary — the class, not the instance. Creating the engagement is
+     the first call any agent makes, which is exactly the wrong place to leave it.
 
 ## Out of scope (deliberate decisions, not oversights)
 
@@ -386,6 +463,259 @@ FAILED …::test_every_mutating_route_emits_an_audit_row
 --- GREEN ---
 1 passed in 1.44s
 ```
+
+## Red-then-green — review round 1
+
+Same protocol as above: each fix's production code broken on purpose, the test watched fail, restored,
+watched pass. Verbatim, nothing reconstructed.
+
+### 14. BLOCK · deleting a parent must detach its children, not violate the self-FK
+
+Dropped the `detach_children` call from `findings_service.delete_finding` (i.e. the state the branch was
+reviewed in). ONE edit, both surfaces red — the extraction doing its job again:
+
+```
+--- RED (no child detach) ---
+sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) FOREIGN KEY constraint failed
+[SQL: DELETE FROM scribble_findings WHERE scribble_findings.id = ?]
+E   assert 500 == 200
+E   assert 500 == 302
+FAILED tests/test_machine_findings_crud.py::test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK
+FAILED tests/test_machine_findings_crud.py::test_deleting_a_parent_is_recorded_with_the_children_it_detached
+FAILED tests/test_board.py::test_delete_finding_detaches_its_nested_children - assert 500 == 302
+
+--- GREEN ---
+3 passed, 147 deselected in 3.85s
+```
+
+The reviewer's own end-to-end probe (`/tmp/advrev/probe3.py` — promote a scan job over the machine API,
+then DELETE the aggregated parent) run against the fix, as the acceptance check:
+
+```
+promote: 200 {'engagement_id': 1, 'parents': 1, 'promoted': 2, 'skipped': 0}
+listed top-level ungrouped: [(1, 'Kerberoasting', None), (2, 'Kerberoasting', 1), (3, 'Kerberoasting', 1)]
+count field: 3 top_level_count: 1 -- parents: [1] children: [2, 3]
+
+finding 1 has 2 children -> DELETE it:
+  DELETE status: 200
+  body: {'deleted': True, 'detached_children': [2, 3], 'engagement_id': 1, 'finding_id': 1}
+
+AFTER the parent delete:
+  rows: [(2, 'Kerberoasting', None), (3, 'Kerberoasting', None)]
+  count: 2 top_level_count: 2
+```
+
+### 15. the same defect on `engagement_delete` (found here, not reported)
+
+Removed the `findings_service.flatten_nesting(db, engagement)` call:
+
+```
+--- RED (delete-orphan cascade hits the self-FK) ---
+sqlite3.IntegrityError: FOREIGN KEY constraint failed
+tests/test_board.py:907: assert 500 == 302
+FAILED tests/test_board.py::test_engagement_delete_survives_a_promoted_parent_child_cluster
+
+--- GREEN ---
+1 passed, 53 deselected in 2.06s
+```
+
+### 16. a negative `order_index` is refused, not clamped
+
+Removed the `order_index < 0` guard from `_parse_move_target`:
+
+```
+--- RED (clamped, as reviewed) ---
+    assert 200 == 400   (×4)
+FAILED …::test_move_refuses_a_negative_order_index[False--1]
+FAILED …::test_move_refuses_a_negative_order_index[False--5]
+FAILED …::test_move_refuses_a_negative_order_index[True--1]
+FAILED …::test_move_refuses_a_negative_order_index[True--5]
+4 failed, 92 deselected in 4.08s
+
+--- GREEN ---
+4 passed, 92 deselected in 4.46s
+```
+
+And the reviewer's damage claim reproduced independently while the guard was out
+(`/tmp/advrev/neg_probe.py`, bulk move of A,B,C at `order_index: -5`):
+
+```
+--- guard removed ---
+asked for order: ['A', 'B', 'C'] -> status 200
+board now: ['C', 'B', 'A']
+--- guard restored ---
+asked for order: ['A', 'B', 'C'] -> status 400
+board now: []
+```
+
+### 17. the bulk move reports the `order_index` it PERSISTED
+
+Reverted `moved` to being appended inside the placement loop:
+
+```
+--- RED (mid-loop read) ---
+E   AssertionError: reported {2: 0, 3: 1}, database holds {1: 0, 2: 2, 3: 1}
+E   assert {2: 0, 3: 1} == {2: 2, 3: 1}
+FAILED …::test_bulk_move_reports_the_order_index_it_actually_persisted
+
+--- GREEN ---
+9 passed, 87 deselected in 7.54s
+```
+
+Worth recording HOW the test had to be built, because the first version of it passed against the broken
+code: with a non-negative index into a `FindingGroup` the mid-loop read happens to be correct (every move
+flips the group to `manual`, so later inserts land after earlier ones). The observable case is the
+**ungrouped bucket**, which has no `order_mode` and re-sorts by severity on every insert — a `low` written
+at slot 0 ends up at slot 2 once a `medium` lands behind a `critical`. The negative-index case the reviewer
+measured is now a 400, so it could not have carried this guard.
+
+### 18. `top_level_count` is the RENDERER's number
+
+Broke `rendered_top_level_count` back to `len(engagement.findings)`:
+
+```
+--- RED (board rows reported as report findings) ---
+    assert body["top_level_count"] == 1
+E   assert 3 == 1
+    assert reported == rendered, "the listing's top_level_count disagrees with the renderer"
+E   assert 7 == 3
+FAILED …::test_list_findings_is_the_board_list_and_says_what_the_report_renders
+FAILED …::test_top_level_count_matches_what_the_renderer_produces
+
+--- GREEN ---
+2 passed, 94 deselected in 2.44s
+```
+
+The second assertion is against `build_report_context`'s own output (7 board rows vs the 3 cards the report
+draws), not a restatement of the nesting rule.
+
+### 19. the nesting rule nests exactly ONE level (a gap this refactor exposed)
+
+Moving the rule into `findings_service.nested_child_ids` meant asking what pinned it. Half of it was
+unpinned: dropping the `parent.parent_id is None` condition passed the whole existing nesting suite.
+
+```
+--- BREAK (condition dropped), BEFORE the new test ---
+8 passed, 113 deselected in 7.33s      # nothing noticed
+
+--- RED (with tests/test_smoke.py::test_report_context_nests_exactly_one_level_deep) ---
+E   AssertionError: assert ['10.0.0.1'] == ['10.0.0.1', '10.0.0.3']
+FAILED tests/test_smoke.py::test_report_context_nests_exactly_one_level_deep
+
+--- GREEN (condition restored) ---
+14 passed in 11.15s
+```
+
+A grandchild (`parent_id` -> a finding that is itself a child) must render top-level; with the condition
+dropped it vanished inside the child's card. The pre-existing orphan test covers "parent not in the list",
+never "parent is not a parent".
+
+### 20. an empty prose value CLEARS the block
+
+Reverted `_patch_content_blocks` to letting `_author_content_json`'s truthiness guards swallow it:
+
+```
+--- RED (silently dropped) ---
+E   AssertionError: assert {'content': [...'type': 'doc'} == {'type': 'doc', 'content': []}
+    assert 400 == 200
+FAILED …::test_patch_clears_a_prose_block_when_the_value_is_empty[description-payload0]
+FAILED …::test_patch_clears_a_prose_block_when_the_value_is_empty[description-payload1]
+FAILED …::test_patch_clears_a_prose_block_when_the_value_is_empty[remediation-payload2]
+FAILED …::test_patch_clears_a_prose_block_when_the_value_is_empty[references-payload3]
+FAILED …::test_patch_clears_a_prose_block_when_the_value_is_empty[references-payload4]
+FAILED …::test_patch_clearing_a_block_alone_is_not_a_no_op_400 - {'detail': 'no updatable fields supplied'}
+6 failed, 1 passed, 89 deselected in 6.80s
+
+--- GREEN ---
+38 passed, 58 deselected in 27.66s
+```
+
+Note the two shapes of the same bug in that RED: with another field alongside, a **200** for prose that was
+never written; alone, a **400** claiming there was nothing to update.
+
+### 21. the CREATE route bounds the same columns PATCH does
+
+Reverted `_parse_target_fields` to the pre-fix raw pass-through and removed the direct-author
+`title`/`cvss_vector` caps:
+
+```
+--- RED (create unbounded + untyped, as reviewed) ---
+FAILED …::test_create_refuses_a_value_that_would_overflow_its_column[title-512]
+FAILED …::test_create_refuses_a_value_that_would_overflow_its_column[cvss_vector-255]
+FAILED …::test_create_refuses_a_value_that_would_overflow_its_column[target_host-255]
+FAILED …::test_create_refuses_a_value_that_would_overflow_its_column[target_port-16]
+FAILED …::test_create_refuses_a_value_that_would_overflow_its_column[target_url-1024]
+FAILED …::test_create_refuses_a_wrong_typed_target_field[body0]   # {"target_host": {...}}
+FAILED …::test_create_refuses_a_wrong_typed_target_field[body1]   # {"target_url": [...]}
+FAILED …::test_create_refuses_a_wrong_typed_target_field[body2]   # {"target_port": {...}}
+FAILED …::test_create_refuses_a_wrong_typed_target_field[body3]   # {"target_port": true}
+9 failed, 1 passed, 86 deselected in 9.09s
+
+--- GREEN ---
+12 passed, 84 deselected in 10.82s
+```
+
+### 22. …and coerces an integer port to text — asserted at the BOUNDARY, because SQLite hides it
+
+The first version of this test asserted the STORED value end-to-end and **passed against the broken code**
+— so it went in the bin rather than in the suite. SQLite applies column affinity to a `VARCHAR`, so a raw
+int is converted on write and read back as text either way:
+
+```
+$ python /tmp/advrev/port_probe.py        # int bound to String(16) on SQLite
+ORM read: '8443'
+raw typeof: [('text', '8443')]
+```
+
+The check therefore lives on `_parse_target_fields`, where it can actually fail:
+
+```
+--- RED (str() coercion removed) ---
+E   TypeError: object of type 'int' has no len()
+FAILED …::test_create_coerces_an_integer_target_port_to_text_at_the_boundary
+1 failed, 11 passed, 84 deselected in 10.21s
+
+--- GREEN ---
+12 passed, 84 deselected in 9.93s
+```
+
+Be precise about what this proves: that the boundary hands a `str` to the column. The Postgres `DataError`
+it exists to prevent is still not exercised anywhere in this suite — same honest limit as transcript 11.
+
+### 23. …and so do the OTHER two create routes on this blueprint (found here, not reported)
+
+The reviewer scoped the cap asymmetry to `POST …/findings`. Their own probe script answers the wider
+question, and it was still red after that fix:
+
+```
+=== PROBE 6: create engagement name / group name unbounded on create? ===
+POST /engagements name 5000 -> 201 {'id': 2, 'name': 'NNNNNNNN…
+```
+
+`Engagement.name` is `String(255)`, and `scope_type` (`String(64)`) / `company_name` (`String(255)`) were
+read raw from the body — no width, no type check, so a dict bound straight to a `String` column.
+`POST /templates` had the same for `name` (`String(512)`), `category` and `cvss_vector`. Creating the
+engagement is the FIRST call any agent makes, so leaving that one would have been fixing the instance and
+not the class. Reverted all of it to the pre-fix reads:
+
+```
+--- RED (both other create routes unbounded) ---
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/engagements-body0-name-255]
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/engagements-body1-scope_type-64]
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/engagements-body2-company_name-255]
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/templates-body3-name-512]
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/templates-body4-category-255]
+FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/templates-body5-cvss_vector-255]
+6 failed, 96 deselected in 7.54s
+
+--- GREEN ---
+6 passed, 96 deselected in 7.38s
+```
+
+`_too_long` grew a `cap=` override for this: `name` is `String(128)` on a group, `String(255)` on an
+engagement and `String(512)` on a template, so one lookup keyed on the JSON field name would have applied
+one table's width to another's column. The two group-name checks now go through the same helper (identical
+message text) instead of open-coding the comparison.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md

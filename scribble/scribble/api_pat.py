@@ -207,6 +207,88 @@ def _opt_str(data: dict, key: str):
     return (v.strip() or None), None
 
 
+def _bad_request(detail: str):
+    return jsonify({"error": "bad_request", "detail": detail}), 400
+
+
+# Column-width caps, enforced at the boundary on EVERY route that writes these columns — NOT decoration.
+# These are ``String(n)`` columns, so on Postgres an over-long value raises
+# ``StringDataRightTruncation`` and the caller gets a 500 for what is really a 400. SQLite stores it
+# silently, which is exactly why this needs to be checked in code rather than trusted to "the tests pass":
+# the extension's own suite runs on SQLite and cannot see the failure (the same trap INV-INTEGRITY-03's
+# uuid/Integer bug hid behind). ``analyst_notes`` is ``Text`` and is deliberately absent — it has no width
+# to exceed. Mirrors how core's own api_v1 length-bounds every string it accepts.
+#
+# Named ``_COLUMN_``, not ``_PATCH_``: it started as a PATCH-only guard, which left the CREATE route on the
+# same blueprint writing the same columns unbounded — a 500 waiting on prod behind a green SQLite suite.
+# A cap that only one of two writers consults is not a boundary.
+_COLUMN_MAX_LEN = {
+    "title": 512,          # EngagementFinding.title       String(512)
+    "category": 255,       # …category                     String(255)
+    "cvss_vector": 255,    # …cvss_vector                  String(255)
+    "target_host": 255,    # …target_host                  String(255)
+    "target_port": 16,     # …target_port                  String(16)
+    "target_url": 1024,    # …target_url                   String(1024)
+}
+# Same-named fields on OTHER tables of this blueprint, named separately because ``name`` is three
+# different widths depending on which route is writing it (see ``_too_long``'s ``cap`` argument).
+_GROUP_NAME_MAX_LEN = 128       # FindingGroup.name              String(128)
+_ENGAGEMENT_NAME_MAX_LEN = 255  # Engagement.name                String(255)
+_SCOPE_TYPE_MAX_LEN = 64        # Engagement.scope_type          String(64)
+_COMPANY_NAME_MAX_LEN = 255     # Engagement.company_name        String(255)
+_TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
+
+
+def _too_long(key: str, value: str, *, cap: int | None = None):
+    """400 when a value would overflow its column — see ``_COLUMN_MAX_LEN``. None when it fits.
+
+    ``cap`` overrides the table above for a field whose NAME is not unique across this blueprint: ``name``
+    is ``String(128)`` on a group, ``String(255)`` on an engagement and ``String(512)`` on a template, so a
+    single lookup keyed on the JSON field name would silently apply one table's width to another's column.
+    """
+    cap = cap if cap is not None else _COLUMN_MAX_LEN.get(key)
+    if cap is not None and len(value) > cap:
+        return _bad_request(f"{key} too long (max {cap} characters)")
+    return None
+
+
+def _parse_target_fields(data: dict):
+    """The three ``target_*`` overrides a CREATE body may carry -> ``(supplied_values, error_or_None)``.
+
+    All three authoring branches of ``scribble_add_finding`` apply these, and all three used to read
+    ``data[key]`` raw: no type check (a dict bound straight to a ``String`` column), no width check (a
+    600-char title's twin problem — 201 on SQLite, ``StringDataRightTruncation`` 500 on prod Postgres), and
+    ``target_port`` coerced with ``str()`` in one branch but not the other two, so an integer port bound as
+    an integer to a ``String(16)`` column. One parse, shared, with the same caps ``PATCH`` enforces.
+
+    Only keys the body actually supplied appear in the result; a ``null`` (or a value that strips to empty)
+    is treated as "not supplied", which is create's existing semantics — there is nothing to clear on a row
+    that does not exist yet.
+    """
+    supplied: dict[str, str] = {}
+    for key in ("target_host", "target_url"):
+        if data.get(key) is None:
+            continue
+        value, err = _opt_str(data, key)
+        if err:
+            return None, err
+        if value is None:
+            continue
+        if (err := _too_long(key, value)) is not None:
+            return None, err
+        supplied[key] = value
+    port = data.get("target_port")
+    if port is not None:
+        if isinstance(port, bool) or not isinstance(port, (int, str)):
+            return None, _bad_request("target_port must be a string or an integer")
+        text = str(port).strip()
+        if text:
+            if (err := _too_long("target_port", text)) is not None:
+                return None, err
+            supplied["target_port"] = text
+    return supplied, None
+
+
 def _match_title(pattern: str, title: str) -> bool:
     """Case-insensitive glob match of a ScribbleVulnMap.title_pattern against a finding's title.
     Operators write e.g. ``*sql injection*`` for a substring match; a plain string with no glob chars
@@ -331,9 +413,31 @@ def _author_content_json(data: dict) -> dict:
 @request_body(CreateEngagementRequest)
 def scribble_create_engagement():
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
+    name, err = _opt_str(data, "name")
+    if err:
+        return err
     if not name:
         return jsonify({"error": "bad_request", "detail": "name is required"}), 400
+    # Same boundary rule as the findings routes: these are String(n) columns, so an over-long value is a
+    # 400 here rather than a StringDataRightTruncation 500 from prod Postgres (SQLite would store it).
+    # scope_type/company_name go through _opt_str for the type check too — they were read raw from the
+    # body, so a dict bound straight to a String column.
+    if (err := _too_long("name", name, cap=_ENGAGEMENT_NAME_MAX_LEN)) is not None:
+        return err
+    scope_type, err = _opt_str(data, "scope_type")
+    if err:
+        return err
+    if scope_type is not None and (err := _too_long(
+        "scope_type", scope_type, cap=_SCOPE_TYPE_MAX_LEN
+    )) is not None:
+        return err
+    company_name, err = _opt_str(data, "company_name")
+    if err:
+        return err
+    if company_name is not None and (err := _too_long(
+        "company_name", company_name, cap=_COMPANY_NAME_MAX_LEN
+    )) is not None:
+        return err
     client_id, err = _opt_host_id(data, "client_id")
     if err:
         return err
@@ -367,8 +471,8 @@ def scribble_create_engagement():
         with open_session() as db:
             eng = Engagement(
                 name=name,
-                scope_type=(data.get("scope_type") or "external"),
-                company_name=(data.get("company_name") or None),
+                scope_type=(scope_type or "external"),
+                company_name=company_name,
                 client_id=client_id,
                 created_by=actor.username if actor else None,
                 # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so
@@ -450,14 +554,25 @@ def scribble_get_template(template_id: int):
 @request_body(CreateTemplateRequest)
 def scribble_create_template():
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
+    name, err = _opt_str(data, "name")
+    if err:
+        return err
     if not name:
         return jsonify({"error": "bad_request", "detail": "name is required"}), 400
+    # Column widths, same reason as everywhere else on this blueprint (see _COLUMN_MAX_LEN): a 400 here
+    # instead of a Postgres truncation 500 there. ``name`` is String(512) on a TEMPLATE — wider than an
+    # engagement's — hence the explicit cap.
+    if (err := _too_long("name", name, cap=_TEMPLATE_NAME_MAX_LEN)) is not None:
+        return err
     category, err = _opt_str(data, "category")
     if err:
         return err
+    if category is not None and (err := _too_long("category", category)) is not None:
+        return err
     cvss_vector, err = _opt_str(data, "cvss_vector")
     if err:
+        return err
+    if cvss_vector is not None and (err := _too_long("cvss_vector", cvss_vector)) is not None:
         return err
 
     SeverityEnum = severity_enum()
@@ -545,6 +660,11 @@ def scribble_add_finding(engagement_id: int):
         group_id, err = _opt_int(data, "group_id")
         if err:
             return err
+        # Type-checked and length-capped ONCE, here, because all three branches below write these same
+        # String(n) columns — see _parse_target_fields.
+        target_fields, err = _parse_target_fields(data)
+        if err:
+            return err
         # Neither id -> the THIRD branch (author a finding directly from the body); handled AFTER this
         # session closes so its write can run through the idempotency seam. The two id-driven branches
         # return in place below.
@@ -566,10 +686,8 @@ def scribble_add_finding(engagement_id: int):
                 "group_id": group.id if group is not None else None,
                 "order_index": len(siblings),
                 "created_by": actor_username,
+                **target_fields,
             }
-            for key in ("target_host", "target_port", "target_url"):
-                if data.get(key) is not None:
-                    overrides[key] = data[key]
             # The WRITE runs through the idempotency seam (its own session), like the direct-author
             # branch — so a retried template instantiation carrying an Idempotency-Key returns the ORIGINAL
             # finding instead of a duplicate. Unlike the lotek_finding_id branch (which self-dedups on
@@ -633,9 +751,8 @@ def scribble_add_finding(engagement_id: int):
             # Explicit target_host/target_port/target_url in the request body still win over whatever
             # promote_one derived from the dto (matches the pre-refactor route: these were always applied
             # from the request, regardless of the template_id/lotek_finding_id branch).
-            for key in ("target_host", "target_port", "target_url"):
-                if data.get(key) is not None:
-                    setattr(finding, key, data[key])
+            for key, value in target_fields.items():
+                setattr(finding, key, value)
             db.flush()
             body = {"finding_id": finding.id, "engagement_id": engagement_id}
             _audit(
@@ -662,6 +779,8 @@ def scribble_add_finding(engagement_id: int):
                 }),
                 400,
             )
+        if (err := _too_long("title", author_title)) is not None:
+            return err
         sev_raw = data.get("severity")
         if not isinstance(sev_raw, str) or not sev_raw.strip():
             return jsonify({
@@ -680,13 +799,15 @@ def scribble_add_finding(engagement_id: int):
         author_cvss_vector, err = _opt_str(data, "cvss_vector")
         if err:
             return err
+        if author_cvss_vector is not None:
+            if (err := _too_long("cvss_vector", author_cvss_vector)) is not None:
+                return err
         author_content_json = _author_content_json(data)
         author_group_pk = group.id if group is not None else None
         author_order = len(siblings)
-        author_target_host = data.get("target_host")
-        author_target_url = data.get("target_url")
-        _tp = data.get("target_port")
-        author_target_port = str(_tp) if _tp is not None else None
+        author_target_host = target_fields.get("target_host")
+        author_target_url = target_fields.get("target_url")
+        author_target_port = target_fields.get("target_port")
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
@@ -1298,23 +1419,6 @@ def _group_summary(group: FindingGroup) -> dict:
 _ABSENT = object()
 
 _PATCH_TEXT_FIELDS = ("category", "cvss_vector", "target_host", "target_url", "analyst_notes")
-
-# Column-width caps, enforced at the boundary — NOT decoration. These are ``String(n)`` columns, so on
-# Postgres an over-long value raises ``StringDataRightTruncation`` and the caller gets a 500 for what is
-# really a 400. SQLite stores it silently, which is exactly why this needs to be checked in code rather
-# than trusted to "the tests pass": the extension's own suite runs on SQLite and cannot see the failure
-# (the same trap INV-INTEGRITY-03's uuid/Integer bug hid behind). ``analyst_notes`` is ``Text`` and is
-# deliberately absent — it has no width to exceed. Mirrors how core's own api_v1 length-bounds every
-# string it accepts.
-_PATCH_MAX_LEN = {
-    "title": 512,          # EngagementFinding.title       String(512)
-    "category": 255,       # …category                     String(255)
-    "cvss_vector": 255,    # …cvss_vector                  String(255)
-    "target_host": 255,    # …target_host                  String(255)
-    "target_port": 16,     # …target_port                  String(16)
-    "target_url": 1024,    # …target_url                   String(1024)
-}
-_GROUP_NAME_MAX_LEN = 128  # FindingGroup.name             String(128)
 _PATCH_CONTENT_FIELDS = ("description", "remediation", "references", "content_json")
 _PATCH_ALLOWED = (
     {"title", "severity", "confidence", "status", "cvss_score", "target_port",
@@ -1322,18 +1426,6 @@ _PATCH_ALLOWED = (
     | set(_PATCH_TEXT_FIELDS)
     | set(_PATCH_CONTENT_FIELDS)
 )
-
-
-def _bad_request(detail: str):
-    return jsonify({"error": "bad_request", "detail": detail}), 400
-
-
-def _too_long(key: str, value: str):
-    """400 when a value would overflow its column — see ``_PATCH_MAX_LEN``. Returns None when it fits."""
-    cap = _PATCH_MAX_LEN.get(key)
-    if cap is not None and len(value) > cap:
-        return _bad_request(f"{key} too long (max {cap} characters)")
-    return None
 
 
 def _patch_content_blocks(data: dict):
@@ -1345,6 +1437,19 @@ def _patch_content_blocks(data: dict):
     caller and it must not be reachable around. Types are validated strictly here (rather than relying on
     ``_author_content_json``'s isinstance checks, which silently IGNORE a wrong-typed field) because on an
     edit route a silently-dropped block reports success for prose that was never saved.
+
+    An EMPTY value is that same failure by another route, and it is handled here for the same reason.
+    ``_author_content_json``'s guards are truthiness tests (``if isinstance(text, str) and text.strip()``,
+    ``if refs_text``), written for a CREATE where "nothing supplied" and "supplied nothing" are the same
+    thing. On an edit they are not: ``{"description": ""}`` is the only way to say "delete this block's
+    prose", and letting the guard swallow it meant a 200 for an edit that never happened — with no way at
+    all to clear a block through this API. So a supplied-but-empty ``description``/``remediation``/
+    ``references`` becomes an explicit empty ProseMirror doc, which is exactly what the cookie editor's
+    autosave stores for a cleared block (``autosave_api``) and what the renderer treats as an absent
+    section. A block named in ``content_json`` still wins over its plain-text twin, unchanged.
+
+    ``{"content_json": {}}`` is NOT a clear-everything: it supplies zero blocks, so it changes no prose (and
+    on its own it is the "no updatable fields supplied" 400). Clearing is per block, by name.
     """
     if not (set(_PATCH_CONTENT_FIELDS) & data.keys()):
         return {}, None
@@ -1359,6 +1464,15 @@ def _patch_content_blocks(data: dict):
     if refs is not _ABSENT and not isinstance(refs, list):
         return {}, _bad_request("references must be a list")
     blocks = _author_content_json({k: data[k] for k in _PATCH_CONTENT_FIELDS if k in data})
+    # Whatever the caller named but ``_author_content_json`` produced no block for was empty — clear it.
+    # Routed through the sanitizer too, so there is still exactly one path into ``content_json``.
+    cleared = {
+        key: schema.empty_doc()
+        for key in ("description", "remediation", "references")
+        if key in data and key not in blocks
+    }
+    if cleared:
+        blocks = {**blocks, **sanitize_content_json(cleared)}
     return blocks, None
 
 
@@ -1498,13 +1612,25 @@ def _apply_content_blocks(finding: EngagementFinding, blocks: dict) -> None:
 @machine_bp.get("/engagements/<int:engagement_id>/findings")
 @host.require_scope("read")
 def scribble_list_findings(engagement_id: int):
-    """Every finding in an engagement, IN BOARD ORDER, grouped exactly as the report will render it.
+    """Every finding in an engagement, in BOARD order — the flat list the drag board shows, NOT the nested
+    document tree the report renders.
 
     ``GET /engagements/<id>`` answers a bare ``finding_count``, so before this route a machine caller
     could not read back what it had created, let alone address it by id. Group order is
     ``FindingGroup.order_index``; within a group, ``findings_service.display_order`` applies the group's
-    own ``order_mode`` — the same ordering ``reporting/context.py`` reads, so this listing IS the document
-    order rather than an approximation of it.
+    own ``order_mode`` — the same ordering ``reporting/context.py`` reads.
+
+    It is the BOARD list on purpose, and the distinction matters twice:
+
+      * A promoted per-host CHILD appears here as its own entry (with its ``parent_id`` set), because that
+        is where it sits on the board and because ``order_index`` is a slot in exactly THIS list — the one
+        ``place_finding`` counts positions in. Nesting the listing would have made the move route's
+        indices refer to a list the caller could no longer see.
+      * The RENDERED report nests those children inside their parent's card, so ``count`` (board rows) is
+        not the number of findings a client sees. ``top_level_count`` is that number — the renderer's own
+        rule (``findings_service.rendered_top_level_count``), excluded groups and excluded findings
+        dropped. Quote that one; a 1-parent/2-child promotion is ONE finding in the deliverable and three
+        rows here.
     """
     actor = host.actor()
     with open_session() as db:
@@ -1515,6 +1641,7 @@ def scribble_list_findings(engagement_id: int):
         body = {
             "engagement_id": engagement_id,
             "count": len(engagement.findings),
+            "top_level_count": findings_service.rendered_top_level_count(engagement),
             "groups": [
                 {
                     **_group_summary(group),
@@ -1618,6 +1745,13 @@ def scribble_delete_finding(finding_id: int):
     cookie board performs (artifact ROWS go with it; a group delete only detaches, a finding delete does
     not, because a finding IS its content).
 
+    Nested per-host CHILDREN are the exception: they are DETACHED (``parent_id`` -> NULL) and reported in
+    ``detached_children``, never deleted. A promoted parent is a synthesized umbrella row over the vuln-DB
+    write-up while its children hold the real per-host evidence, so one DELETE must not destroy N findings
+    the caller never named — and until ``detach_children`` existed this route answered 500 for every
+    promoted parent (the self-FK has no ``ondelete``). The detached ids are in the response because a
+    delete that turned other rows into top-level findings must say so.
+
     The on-disk artifact files are unlinked only AFTER the transaction commits, so a rolled-back delete
     cannot leave the bytes gone. On an idempotent REPLAY nothing is unlinked, because ``_produce`` never
     runs — the files went with the original request.
@@ -1639,14 +1773,24 @@ def scribble_delete_finding(finding_id: int):
             if finding is None or finding.engagement_id != authorized_engagement_id:
                 return {"error": "not_found", "detail": "finding not found"}, 404
             before = _finding_summary(finding)
-            removed_paths.extend(findings_service.delete_finding(db, finding))
+            deleted = findings_service.delete_finding(db, finding)
+            removed_paths.extend(deleted.storage_paths)
             _audit(
                 db, "delete_finding", subject_type="finding", subject_id=finding_id,
-                before=before, after=None,
+                before=before,
+                # The detached children ARE part of what this delete did, so they belong in the audit row
+                # too — otherwise the trail records one row removed and says nothing about the rows it
+                # re-parented.
+                after=(
+                    {"detached_children": deleted.detached_child_ids}
+                    if deleted.detached_child_ids
+                    else None
+                ),
             )
             db.commit()
             return {"deleted": True, "finding_id": finding_id,
-                    "engagement_id": authorized_engagement_id}, 200
+                    "engagement_id": authorized_engagement_id,
+                    "detached_children": deleted.detached_child_ids}, 200
 
     body, status = _with_idempotency(_idempotency_key(request.get_json(silent=True) or {}), _produce)
     if status == 200:
@@ -1669,6 +1813,13 @@ def _parse_move_target(data: dict, engagement_id: int, db):
     the request: dropping it would move the finding OUT of whatever group it was in, which is data loss
     the caller never asked for, reported as success. The refusal is one message for both cases, so it
     still confirms nothing about which group ids exist.
+
+    A NEGATIVE ``order_index`` is refused rather than clamped. ``place_finding`` clamps with
+    ``max(0, min(requested, len))``, so every negative offset collapses to slot 0 — and in a BULK move each
+    successive insert at slot 0 pushes the previous one down, silently REVERSING the caller's listed order
+    (``order_index: -1``, the obvious way to say "before the first", reverses a 2-item move). Zero already
+    means "before the first", so a negative index cannot express anything the caller could have meant;
+    refusing it is honest where clamping quietly did the opposite of what was asked.
     """
     if "group_id" not in data:
         return None, 0, _bad_request("group_id is required (use null to move to ungrouped)")
@@ -1676,6 +1827,8 @@ def _parse_move_target(data: dict, engagement_id: int, db):
     if err:
         return None, 0, err
     order_index = 0 if order_index is None else order_index
+    if order_index < 0:
+        return None, 0, _bad_request("order_index must be 0 or greater (0 = the first position)")
 
     if data.get("group_id") is None:
         return None, order_index, None
@@ -1802,13 +1955,17 @@ def scribble_move_findings(engagement_id: int):
             )
             if target_group_id is not None and target_group is None:
                 return {"error": "not_found", "detail": "group not found on this engagement"}, 404
-            moved = []
+            placed: list[EngagementFinding] = []
             for offset, fid in enumerate(finding_ids):
                 finding = db.get(EngagementFinding, fid)
                 if finding is None or finding.engagement_id != engagement_id:
                     return {"error": "not_found", "detail": "finding not found"}, 404
                 findings_service.place_finding(finding, target_group, order_index + offset)
-                moved.append({"finding_id": finding.id, "order_index": finding.order_index})
+                placed.append(finding)
+            # Read AFTER every placement, not inside the loop: each insert reindexes the whole destination,
+            # so an order_index read mid-loop is stale by the time the next finding lands — the response
+            # reported numbers that were never persisted (every entry read 0 for a 3-item move).
+            moved = [{"finding_id": f.id, "order_index": f.order_index} for f in placed]
             _audit(
                 db, "move_findings", subject_type="engagement", subject_id=engagement_id,
                 after={"group_id": target_group_id, "finding_ids": finding_ids},
@@ -1846,10 +2003,10 @@ def scribble_create_group(engagement_id: int):
         return err
     if not name:
         return _bad_request("name is required")
-    if len(name) > _GROUP_NAME_MAX_LEN:
-        # `FindingGroup.name` is String(128) — see _PATCH_MAX_LEN for why this is checked here and not
-        # left to the database (Postgres 500s, SQLite silently truncates nothing at all).
-        return _bad_request(f"name too long (max {_GROUP_NAME_MAX_LEN} characters)")
+    # `FindingGroup.name` is String(128) — see _COLUMN_MAX_LEN for why this is checked here and not left
+    # to the database (Postgres 500s, SQLite stores the over-long value silently).
+    if (err := _too_long("name", name, cap=_GROUP_NAME_MAX_LEN)) is not None:
+        return err
     assessment_type_id, err = _opt_int(data, "assessment_type_id")
     if err:
         return err
@@ -1907,8 +2064,8 @@ def scribble_update_group(engagement_id: int, group_id: int):
             return err
         if not name:
             return _bad_request("name cannot be empty")
-        if len(name) > _GROUP_NAME_MAX_LEN:
-            return _bad_request(f"name too long (max {_GROUP_NAME_MAX_LEN} characters)")
+        if (err := _too_long("name", name, cap=_GROUP_NAME_MAX_LEN)) is not None:
+            return err
         updates["name"] = name
     if "order_mode" in data:
         raw = data.get("order_mode")
