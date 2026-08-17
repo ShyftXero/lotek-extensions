@@ -1466,7 +1466,9 @@ section.sec { padding-top: 34px; scroll-margin-top: 64px; }
   color: var(--ink); font-size: 15px; line-height: 1.6; margin: 2px 0 18px; max-width: var(--measure);
 }
 
-/* front matter: engagement overview + scope and limitations (see _render_front_matter) */
+/* front matter at the head of the executive summary — see _render_front_matter. (Wording kept clear of
+   the section headings themselves: this stylesheet ships inside the document, so a phrase repeated here
+   is a false positive for anything grepping the rendered HTML for that prose.) */
 .frontmatter { max-width: var(--measure); margin-bottom: 22px; }
 .fm-block + .fm-block { margin-top: 18px; }
 .fm-block h3 {

@@ -294,6 +294,32 @@ An engagement-level artifact is exposed to the renderers as `ReportContext.artif
 on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
 link — are absent when there is nothing unattached, which is the normal case.
 
+**The printed deliverable opens like a document** (ext#43, 2026-08-17 — it opened on the masthead and then
+straight into the executive summary before). Two blocks exist only in `@media print`:
+
+| block | what it is |
+|---|---|
+| `cover` | Title page: client, engagement, assessment kind, then Client · Assessment type · Testing window · Assessor · Report date · Engagement reference — **only the rows the engagement records**, an empty field is omitted rather than printed as `—` — plus the *Confidential* badge and the handling notice. |
+| `toc` | Contents: sections at level 1, each section's top-level findings (with severity) at level 2. |
+
+Both are `display: none` on screen: the sticky toolbar's section jumps and the *Findings at a glance* index
+already do that navigation live, and on paper both of those are gone. So the on-screen report is exactly
+what it was. On paper the cover **replaces** the masthead (`body.has-cover .masthead`) — the masthead is a
+`<header>` before `<main>`, so leaving it visible would print it ahead of the cover; a template with no
+`cover` block keeps its masthead and its title. The contents are **derived** from the template's block list
+plus the same conditions the block renderers use, so they cannot list a section the document lacks (and a
+test asserts the reverse too, so a new section cannot go missing from them). They carry no page numbers:
+that needs `target-counter()`, which Chrome's print engine does not implement.
+
+**The executive summary leads with prose.** Front matter first — an *Engagement overview* (clauses built
+from `scope_type` / dates / `ASSESSOR`, each omitted when the field is empty, then the generated narrative)
+and a standing *Scope and limitations* statement — with the risk banner, severity bar, metric tiles and
+findings index below it. The severity bar now carries rating definitions, so a reader who did not run the
+assessment can tell what *High* means. There is still **no per-engagement editable prose field** anywhere in
+the model: the standing text is template-level boilerplate in `render_html.py`
+(`_COVER_HANDLING`/`_LIMITATIONS`/`_SEVERITY_DEFINITIONS`), and an authored engagement overview needs a
+schema + editor change (see `plans/fix-scribble-report-render-sweep.md`).
+
 **Methodology always renders.** With coverage checklists it is *Methodology and Coverage* and they are the
 record; with none it is *Methodology* carrying a standing phased description plus framing for the
 assessment types this report's sections actually use, and an explicit note that no engagement-specific
@@ -303,7 +329,9 @@ section is structurally impossible (ext#42) — the toolbar also carries the bac
 masthead as the document's own title block (ext#45).
 
 There is **no server-side PDF renderer**. The HTML is a print-to-PDF deliverable; the `.docx` is the
-editable hand-off. The print stylesheet marks the elements whose BACKGROUND carries meaning
+editable hand-off — and the cover page, the contents and the summary front matter are **HTML/PDF only**
+(Word owns pagination and has its own TOC field, so docx parity is a separate change against the authored
+`default.docx`). The print stylesheet marks the elements whose BACKGROUND carries meaning
 (severity bar and legend, severity tags/badges, the metric and methodology tiles) `print-color-adjust:
 exact`, so they survive Chrome's *Background graphics: off* — the print-dialog default, under which the
 severity block used to print blank (ext#39). It also pins the light paper palette at a specificity that
