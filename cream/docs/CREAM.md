@@ -103,6 +103,10 @@ renderer through a rolled-back savepoint, so what you see is what the PDF will b
 Actions: **Save**, **Issue & freeze**. Opening the editor on a non-draft redirects to the frozen view
 rather than showing dead inputs.
 
+The editor's heading and browser-tab title carry the same handle the list cell does (`Invoice
+draft …b839c91e20`), because the editor is where a draft is worked — a draft row's only action link is
+**Edit**, not View — and two editors open on two drafts otherwise read identically.
+
 ### Viewer — `/cream/documents/<uuid>`
 
 The rendered document plus the lifecycle buttons: **Issue & freeze**, **Mark sent**, **Client accepted**
@@ -265,8 +269,19 @@ something the export will not.
 | Output | Route | Notes |
 |---|---|---|
 | Preview fragment | editor pane (`POST …/preview`) | Rendered from unsaved state inside a rolled-back savepoint. |
-| Standalone HTML | `GET /cream/documents/<uuid>/export.html` | Full page, inline `<style>`, `Content-Disposition: attachment`, filename = document number. |
+| Standalone HTML | `GET /cream/documents/<uuid>/export.html` | Full page, inline `<style>`, `Content-Disposition: attachment`. |
 | PDF | `GET /cream/documents/<uuid>/export.pdf` | Requires the optional `weasyprint` extra. |
+
+**A download names itself.** The filename is the document number (`INV-2026-0001.pdf`), or — before
+issue — `invoice-draft-b839c91e20.pdf`, and the page's `<title>` is the matching handle (`Invoice
+draft …b839c91e20`), which is also what `weasyprint` writes into the PDF's metadata title. Every unissued
+export used to be `document.pdf` titled a bare `Invoice`, so three of them landed in a Downloads folder as
+`document.pdf`, `document(1).pdf`, `document(2).pdf`. The filename stem is deliberately ASCII (no `…`, no
+space): a non-ASCII `filename=` needs RFC 5987's `filename*` form to survive every browser, and the stem
+is sanitized where it is built because it is interpolated into a `Content-Disposition` header.
+
+The **document itself** is unchanged by that: a draft's id tail is app-side naming and is *not* printed
+where the invoice number goes. A document gets its printed identity when it is issued.
 
 The rendered document contains: issuer block (logo, address, contact, tax ID) · document heading, number
 and status pill · issued / valid-until / due / execution-window / client-reference metadata · bill-to

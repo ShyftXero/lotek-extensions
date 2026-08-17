@@ -1,6 +1,8 @@
 {% extends cream_base %}
-{% block title %}CREAM — Document{% endblock %}
-{% block appbar_title %}Document{% endblock %}
+{# Same rule as the heading below and as edit.html: a page showing exactly ONE document names it, in the
+   browser tab as well as on the page — a tab reading "CREAM — Document" identifies nothing (ext#46). #}
+{% block title %}CREAM — {{ meta.kind|capitalize }} {{ meta.handle }}{% endblock %}
+{% block appbar_title %}{{ meta.kind|capitalize }} {{ meta.handle }}{% endblock %}
 {% block content %}
 {% include "cream/_ui.html" %}
 <div class="cr-wrap" style="max-width:900px">

@@ -24,7 +24,7 @@ from cream.deps import (
     host_visible_engagement_ids,
 )
 from cream.enums import COMMON_UNITS, DocStatus
-from cream.handles import document_handle
+from cream.handles import document_handle, export_stem
 from cream.models import Document
 from cream.money import as_json, money, pct
 from cream.render import render_document_html, render_document_pdf
@@ -73,7 +73,15 @@ def _view_meta(doc: Document, *, editable: bool) -> dict:
 
 def _editor_payload(doc: Document) -> dict:
     """The document as the editor's JavaScript wants it — money as numbers, dates as ``YYYY-MM-DD``
-    for ``<input type=date>``, everything else a plain string."""
+    for ``<input type=date>``, everything else a plain string.
+
+    ``handle`` is the one key here that is not a form field: the editor is where a draft is actually
+    worked, and the *only* action a draft's row offers (``list.html``'s per-row link is ``Edit``, not
+    ``View``), so its heading and tab title need the same identity the list cell got — two editors open on
+    two drafts were both headed ``Invoice draft`` (ext#46 review round 1). ``service.update_document``
+    ignores keys it does not know, so this rides along in the state the editor PUTs back without reaching
+    anything writable.
+    """
     scope: list[str] = []
     if doc.scope_json:
         try:
@@ -85,6 +93,7 @@ def _editor_payload(doc: Document) -> dict:
         "id": str(doc.id),
         "kind": doc.kind.value,
         "status": doc.status.value,
+        "handle": document_handle(doc.number, doc.status.value, doc.id),
         "scope": scope,
         "title": doc.title or "",
         "currency": doc.currency or "USD",
@@ -190,8 +199,12 @@ def export_html(doc_id: uuid.UUID):
         doc = _load(db, doc_id)
         brand = get_brand(db)
         db.commit()
-        html = render_document_html(view_for(doc, brand), standalone=True)
-        name = (doc.number or "document") + ".html"
+        # An unissued export used to be titled a bare `Invoice` and downloaded as `document.html` — the
+        # same "no identity" defect as the list's em-dash cell, in the browser tab and the Downloads
+        # folder (ext#46 review round 1). Both are named from the id now; the document BODY is unchanged.
+        html = render_document_html(view_for(doc, brand), standalone=True,
+                                    name=document_handle(doc.number, doc.status.value, doc.id))
+        name = export_stem(doc.number, doc.kind.value, doc.status.value, doc.id) + ".html"
     return Response(html, mimetype="text/html",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
@@ -205,8 +218,9 @@ def export_pdf(doc_id: uuid.UUID):
         doc = _load(db, doc_id)
         brand = get_brand(db)
         db.commit()
-        pdf = render_document_pdf(view_for(doc, brand))
-        name = (doc.number or "document") + ".pdf"
+        pdf = render_document_pdf(view_for(doc, brand),
+                                  name=document_handle(doc.number, doc.status.value, doc.id))
+        name = export_stem(doc.number, doc.kind.value, doc.status.value, doc.id) + ".pdf"
     if pdf is None:
         return Response(
             "PDF rendering is not available on this install: the optional `weasyprint` dependency is "
