@@ -53,16 +53,22 @@ from typing import Any
 from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import select
 
-from scribble import host
+from scribble import findings_service, host
 from scribble.api_schemas import (
     AddFindingRequest,
+    BulkMoveFindingsRequest,
     CreateEngagementRequest,
+    CreateGroupRequest,
     CreateTemplateRequest,
+    MoveFindingRequest,
+    PatchFindingRequest,
+    ReorderGroupsRequest,
+    UpdateGroupRequest,
     UploadArtifactRequest,
     request_body,
 )
 from scribble.artifacts_api import _as_int, artifact_url
-from scribble.artifacts_storage import guess_content_type, save_bytes
+from scribble.artifacts_storage import delete_file, guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
     can_view_engagement,
@@ -71,7 +77,7 @@ from scribble.authz import (
 )
 from scribble.content import schema
 from scribble.deps import get_config, open_session, severity_enum
-from scribble.enums import ArtifactKind, ArtifactPlacement
+from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingStatus, OrderMode
 from scribble.models import (
     Artifact,
     Engagement,
@@ -97,8 +103,12 @@ _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
 
 
-def _sev_value(sev) -> str | None:
-    return getattr(sev, "value", sev) if sev is not None else None
+def _enum_value(value) -> str | None:
+    """The ``.value`` of an enum column, or the raw value when it is already a plain string (a mounted
+    host may inject its own ``Severity``, and SQLAlchemy hands some columns back as ``str``). None-safe.
+    Was ``_sev_value``; generalized when the findings serializers below needed the same unwrap for
+    ``confidence``/``status``/``order_mode``/``kind`` rather than four more copies of it."""
+    return getattr(value, "value", value) if value is not None else None
 
 
 def _opt_int(data: dict, key: str):
@@ -394,13 +404,13 @@ def scribble_list_templates():
         rows = db.execute(stmt.order_by(VulnerabilityTemplate.name)).scalars().all()
         # Severity is an enum column; filter in Python to stay robust to enum storage form.
         if severity:
-            rows = [t for t in rows if _sev_value(t.default_severity) == severity]
+            rows = [t for t in rows if _enum_value(t.default_severity) == severity]
         items = [
             {
                 "id": t.id,
                 "name": t.name,
                 "category": t.category,
-                "default_severity": _sev_value(t.default_severity),
+                "default_severity": _enum_value(t.default_severity),
                 "cvss_score": t.cvss_score,
             }
             for t in rows
@@ -423,7 +433,7 @@ def scribble_get_template(template_id: int):
                 "id": t.id,
                 "name": t.name,
                 "category": t.category,
-                "default_severity": _sev_value(t.default_severity),
+                "default_severity": _enum_value(t.default_severity),
                 "cvss_score": t.cvss_score,
                 "cvss_vector": t.cvss_vector,
                 "references": t.references or [],
@@ -1121,6 +1131,848 @@ def scribble_upload_artifact(engagement_id: int):
             "id": artifact.id, "url": artifact_url(artifact.id),
             "kind": artifact.kind.value, "filename": artifact.filename,
         }), 201
+
+
+# ── 10. findings CRUD + board management (ext#41) ─────────────────────────────────────────────────────
+#
+# Until this section existed the machine API could CREATE a finding and nothing else — no read-back, no
+# edit, no delete, no grouping, no ordering. An agent authoring a deliverable over a PAT therefore could
+# not fix a title without deleting and recreating the finding, which it could not do either, and which
+# would have thrown away that finding's group membership and its position in the report. Reported by a
+# client after authoring a real deliverable (ext#41, punch-list items 9-12).
+#
+# Three rules hold across every route below, and they are why this is a SURFACE addition rather than a new
+# authorization model:
+#
+#   1. TENANCY IS RESOLVED FROM THE ENGAGEMENT, never from the request body. A route keyed on a child id
+#      (``/findings/<fid>``) loads the child, follows it to its engagement, and asks the same
+#      ``can_view_engagement`` predicate every other engagement-scoped route in this module asks. So a
+#      finding belonging to another engagement is NOT addressable — and because missing and not-visible
+#      answer the SAME 404, it is indistinguishable from one that never existed.
+#   2. AUTHORIZE BEFORE PARSING, as ``scribble_add_finding``/``scribble_upload_artifact`` already do and
+#      for the reason stated there: a refusal that varied with the body (400 vs 404) would itself answer
+#      "does this id exist?" for every id probed.
+#   3. THE MUTATION LOGIC IS NOT WRITTEN HERE. ``scribble/findings_service.py`` owns the ordering,
+#      grouping and cascade algorithms, and the COOKIE board calls the same functions — see that module's
+#      docstring. Two copies of "where does this finding land, and what do its neighbours' ``order_index``
+#      values become" is how a deliverable ends up rendering in an order nobody chose.
+#
+# Every mutating route here also emits its ``_audit`` row and honours the ``Idempotency-Key`` seam, like
+# its neighbours above.
+
+
+def _finding_not_found():
+    """The ONE refusal for a finding the caller may not touch — byte-identical to the one for a finding
+    that does not exist, for the same reason as :func:`_engagement_not_found`. Covers both "no such id"
+    and "that id belongs to an engagement outside your grants"."""
+    return jsonify({"error": "not_found", "detail": "finding not found"}), 404
+
+
+def _group_not_found():
+    """Missing group, or a group belonging to a DIFFERENT engagement than the one being operated on —
+    one refusal for both, so a caller cannot enumerate group ids across engagements by diffing them."""
+    return jsonify({"error": "not_found", "detail": "group not found on this engagement"}), 404
+
+
+def _visible_engagement(db, engagement_id, actor) -> Engagement | None:
+    """The engagement, or None for BOTH missing and not-visible (the caller 404s identically)."""
+    engagement = db.get(Engagement, engagement_id)
+    if engagement is None or not can_view_engagement(engagement, actor):
+        return None
+    return engagement
+
+
+def _visible_finding(db, finding_id, actor) -> EngagementFinding | None:
+    """The finding, or None when it does not exist OR its ENGAGEMENT is outside the actor's grants.
+
+    This is rule 1 of the section banner: the tenancy anchor is the row's own ``engagement_id``, read from
+    the database, never an engagement id the caller supplied alongside it. A caller therefore cannot pair
+    one of its own engagement ids with another tenant's finding id.
+    """
+    finding = db.get(EngagementFinding, finding_id)
+    if finding is None:
+        return None
+    engagement = db.get(Engagement, finding.engagement_id)
+    if engagement is None or not can_view_engagement(engagement, actor):
+        return None
+    return finding
+
+
+def _group_of(db, engagement_id, group_id) -> FindingGroup | None:
+    """A group BY ID, but only if it belongs to ``engagement_id`` — else None. The same defensive rule
+    ``scribble_add_finding`` applies to a body-supplied ``group_id``, hoisted so every board route uses
+    one implementation of it."""
+    group = db.get(FindingGroup, group_id)
+    if group is None or group.engagement_id != engagement_id:
+        return None
+    return group
+
+
+# ── serializers ──────────────────────────────────────────────────────────────────────────────────────
+
+
+def _artifact_summary(artifact: Artifact) -> dict:
+    return {
+        "id": artifact.id,
+        "filename": artifact.filename,
+        "kind": _enum_value(artifact.kind),
+        "placement": _enum_value(artifact.placement),
+        "caption": artifact.caption,
+        "order_index": artifact.order_index,
+        "include_in_report": artifact.include_in_report,
+        "url": artifact_url(artifact.id),
+    }
+
+
+def _finding_summary(finding: EngagementFinding) -> dict:
+    """The board-shaped view of a finding: enough to LIST, order and address it, without its prose."""
+    return {
+        "id": finding.id,
+        "title": finding.title,
+        "severity": _enum_value(finding.severity),
+        "confidence": _enum_value(finding.confidence),
+        "status": _enum_value(finding.status),
+        "category": finding.category,
+        "cvss_score": finding.cvss_score,
+        "cvss_vector": finding.cvss_vector,
+        "group_id": finding.group_id,
+        "order_index": finding.order_index,
+        "parent_id": finding.parent_id,
+        "include_in_report": finding.include_in_report,
+        "target_host": finding.target_host,
+        "target_port": finding.target_port,
+        "target_url": finding.target_url,
+    }
+
+
+def _finding_detail(db, finding: EngagementFinding) -> dict:
+    """The full view: prose blocks, evidence, and the promoted per-host CHILDREN.
+
+    Children are included because they are otherwise invisible to a machine caller: nesting is produced by
+    promotion (``promote.py``), a child carries its own target and evidence, and there is no ORM
+    relationship to walk — only ``parent_id``. An agent that could not see them would keep re-promoting
+    or re-authoring rows that already exist.
+    """
+    detail = _finding_summary(finding)
+    children = db.scalars(
+        select(EngagementFinding)
+        .where(EngagementFinding.parent_id == finding.id)
+        .order_by(EngagementFinding.order_index, EngagementFinding.id)
+    ).all()
+    detail.update({
+        "engagement_id": finding.engagement_id,
+        "template_id": finding.template_id,
+        # SoftHostId: an int on a legacy/standalone host, a uuid.UUID under lotek v2. Stringified for a
+        # stable JSON shape whichever host is mounted — the same thing _engagement_summary does.
+        "source_finding_id": (
+            str(finding.source_finding_id) if finding.source_finding_id is not None else None
+        ),
+        "analyst_notes": finding.analyst_notes,
+        "created_by": finding.created_by,
+        "content_json": finding.content_json or {},
+        "variables": finding.variables or {},
+        "artifacts": [
+            _artifact_summary(a) for a in sorted(finding.artifacts, key=lambda a: a.order_index)
+        ],
+        "children": [_finding_summary(c) for c in children],
+    })
+    return detail
+
+
+def _group_summary(group: FindingGroup) -> dict:
+    return {
+        "id": group.id,
+        "name": group.name,
+        "order_index": group.order_index,
+        "order_mode": _enum_value(group.order_mode),
+        "include_in_report": group.include_in_report,
+        "assessment_type_id": group.assessment_type_id,
+    }
+
+
+# ── PATCH body parsing ───────────────────────────────────────────────────────────────────────────────
+
+# Sentinel for "the body did not mention this field at all", which a PATCH must distinguish from an
+# explicit ``null`` (= clear a nullable column). ``data.get(key)`` alone conflates the two, which would
+# make every PATCH silently clear every field the caller left out.
+_ABSENT = object()
+
+_PATCH_TEXT_FIELDS = ("category", "cvss_vector", "target_host", "target_url", "analyst_notes")
+_PATCH_CONTENT_FIELDS = ("description", "remediation", "references", "content_json")
+_PATCH_ALLOWED = (
+    {"title", "severity", "confidence", "status", "cvss_score", "target_port",
+     "include_in_report", "idempotency_key"}
+    | set(_PATCH_TEXT_FIELDS)
+    | set(_PATCH_CONTENT_FIELDS)
+)
+
+
+def _bad_request(detail: str):
+    return jsonify({"error": "bad_request", "detail": detail}), 400
+
+
+def _patch_content_blocks(data: dict):
+    """Sanitized ``{block_name: prosemirror_doc}`` for whatever content a PATCH body carried -> (blocks,
+    error). Empty dict when the body carried none, which means "leave the prose alone".
+
+    Runs through the SAME ``_author_content_json`` the create route uses, so a PATCH cannot become a
+    second, laxer path into ``content_json`` — the sanitizer is the stored-XSS gate for every write-scoped
+    caller and it must not be reachable around. Types are validated strictly here (rather than relying on
+    ``_author_content_json``'s isinstance checks, which silently IGNORE a wrong-typed field) because on an
+    edit route a silently-dropped block reports success for prose that was never saved.
+    """
+    if not (set(_PATCH_CONTENT_FIELDS) & data.keys()):
+        return {}, None
+    supplied = data.get("content_json", _ABSENT)
+    if supplied is not _ABSENT and not isinstance(supplied, dict):
+        return {}, _bad_request("content_json must be an object of {block_name: prosemirror_doc}")
+    for key in ("description", "remediation"):
+        value = data.get(key, _ABSENT)
+        if value is not _ABSENT and not isinstance(value, str):
+            return {}, _bad_request(f"{key} must be a string")
+    refs = data.get("references", _ABSENT)
+    if refs is not _ABSENT and not isinstance(refs, list):
+        return {}, _bad_request("references must be a list")
+    blocks = _author_content_json({k: data[k] for k in _PATCH_CONTENT_FIELDS if k in data})
+    return blocks, None
+
+
+def _parse_finding_patch(data: dict):
+    """Validate a PATCH body -> ``(updates, blocks, error_response_or_None)``.
+
+    ``updates`` maps a model attribute to its new value and holds ONLY fields the body actually supplied:
+    absent = unchanged, explicit ``null`` = cleared (for a nullable column). ``blocks`` is the sanitized
+    content mapping from :func:`_patch_content_blocks`.
+
+    UNKNOWN fields are REFUSED rather than ignored. This module's convention is lenient parsing, and this
+    route deliberately breaks it: a typo'd field name is an agent's single most likely mistake, and
+    ignoring it would return 200 for an edit that did not happen — the "silent success that did nothing"
+    failure. ``group_id``/``order_index`` get a pointed message because they are the two fields a caller
+    most plausibly expects to work here; they belong to ``move``, which owns re-ordering semantics.
+    """
+    unknown = set(data) - _PATCH_ALLOWED
+    for moved in ("group_id", "order_index"):
+        if moved in unknown:
+            return None, None, _bad_request(
+                f"{moved} is not a PATCH field — use POST /findings/<finding_id>/move"
+            )
+    if unknown:
+        return None, None, _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
+
+    updates: dict[str, Any] = {}
+
+    title = data.get("title", _ABSENT)
+    if title is not _ABSENT:
+        # Non-empty, unlike the cookie form (which silently ignores a blank title): on a machine surface a
+        # silent no-op is worse than a refusal — the caller cannot tell its edit was dropped.
+        if not isinstance(title, str) or not title.strip():
+            return None, None, _bad_request("title must be a non-empty string")
+        updates["title"] = title.strip()
+
+    for key in _PATCH_TEXT_FIELDS:
+        value = data.get(key, _ABSENT)
+        if value is _ABSENT:
+            continue
+        if value is None:
+            updates[key] = None
+            continue
+        if not isinstance(value, str):
+            return None, None, _bad_request(f"{key} must be a string or null")
+        updates[key] = value.strip() or None
+
+    port = data.get("target_port", _ABSENT)
+    if port is not _ABSENT:
+        if port is None:
+            updates["target_port"] = None
+        elif isinstance(port, bool) or not isinstance(port, (int, str)):
+            return None, None, _bad_request("target_port must be a string, an integer, or null")
+        else:
+            updates["target_port"] = str(port).strip() or None
+
+    score = data.get("cvss_score", _ABSENT)
+    if score is not _ABSENT:
+        if score is None:
+            updates["cvss_score"] = None
+        elif isinstance(score, bool) or not isinstance(score, (int, float)):
+            return None, None, _bad_request("cvss_score must be a number or null")
+        else:
+            updates["cvss_score"] = float(score)
+
+    for key, factory in (
+        ("severity", severity_enum),
+        ("confidence", lambda: Confidence),
+        ("status", lambda: FindingStatus),
+    ):
+        raw = data.get(key, _ABSENT)
+        if raw is _ABSENT:
+            continue
+        enum_cls = factory()
+        allowed = "|".join(_enum_value(member) or "" for member in enum_cls)
+        if not isinstance(raw, str):
+            return None, None, _bad_request(f"{key} must be a string ({allowed})")
+        try:
+            updates[key] = enum_cls(raw.strip().lower())
+        except ValueError:
+            return None, None, _bad_request(f"{key} must be one of {allowed}")
+
+    flag = data.get("include_in_report", _ABSENT)
+    if flag is not _ABSENT:
+        if not isinstance(flag, bool):
+            return None, None, _bad_request("include_in_report must be true or false")
+        updates["include_in_report"] = flag
+
+    blocks, err = _patch_content_blocks(data)
+    if err is not None:
+        return None, None, err
+    if not updates and not blocks:
+        return None, None, _bad_request("no updatable fields supplied")
+    return updates, blocks, None
+
+
+def _apply_content_blocks(finding: EngagementFinding, blocks: dict) -> None:
+    """Merge sanitized prose blocks into ``content_json`` and re-derive the cached ``content_html`` for
+    exactly those blocks.
+
+    Re-deriving through the SAME ``render_block`` + artifact-URL guess the cookie autosave route uses
+    (``autosave_api``) is deliberate: ``content_html`` is the editor/preview cache, and a PATCH that
+    updated only the JSON would leave the browser showing prose the report no longer contains. The report
+    itself re-renders from ``content_json`` (``reporting/context.py``), so this is cache hygiene, not
+    report correctness.
+
+    Reassigns both dicts rather than mutating in place — they are plain JSON columns, not ``MutableDict``,
+    so SQLAlchemy only notices a NEW object being set on the attribute.
+    """
+    from scribble.autosave_api import _artifact_url as _editor_artifact_url
+    from scribble.content.render_html import render_block
+
+    content_json = dict(finding.content_json or {})
+    content_json.update(blocks)
+    finding.content_json = content_json
+
+    content_html = dict(finding.content_html or {})
+    for name, doc in blocks.items():
+        content_html[name] = render_block(doc, artifact_url=_editor_artifact_url)
+    finding.content_html = content_html
+
+
+# ── 10a. GET /engagements/<id>/findings — the board, read back ───────────────────────────────────────
+
+
+@machine_bp.get("/engagements/<int:engagement_id>/findings")
+@host.require_scope("read")
+def scribble_list_findings(engagement_id: int):
+    """Every finding in an engagement, IN BOARD ORDER, grouped exactly as the report will render it.
+
+    ``GET /engagements/<id>`` answers a bare ``finding_count``, so before this route a machine caller
+    could not read back what it had created, let alone address it by id. Group order is
+    ``FindingGroup.order_index``; within a group, ``findings_service.display_order`` applies the group's
+    own ``order_mode`` — the same ordering ``reporting/context.py`` reads, so this listing IS the document
+    order rather than an approximation of it.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        groups = sorted(engagement.groups, key=lambda g: g.order_index)
+        body = {
+            "engagement_id": engagement_id,
+            "count": len(engagement.findings),
+            "groups": [
+                {
+                    **_group_summary(group),
+                    "findings": [
+                        _finding_summary(f)
+                        for f in findings_service.display_order(group.findings, group.order_mode)
+                    ],
+                }
+                for group in groups
+            ],
+            "ungrouped": [
+                _finding_summary(f) for f in findings_service.ungrouped_display_order(engagement)
+            ],
+        }
+    return jsonify(body)
+
+
+# ── 10b. GET /findings/<id> — one finding, in full ───────────────────────────────────────────────────
+
+
+@machine_bp.get("/findings/<int:finding_id>")
+@host.require_scope("read")
+def scribble_get_finding(finding_id: int):
+    actor = host.actor()
+    with open_session() as db:
+        finding = _visible_finding(db, finding_id, actor)
+        if finding is None:
+            return _finding_not_found()
+        return jsonify(_finding_detail(db, finding))
+
+
+# ── 10c. PATCH /findings/<id> — edit in place ────────────────────────────────────────────────────────
+
+
+@machine_bp.patch("/findings/<int:finding_id>")
+@host.require_scope("write")
+@request_body(PatchFindingRequest)
+def scribble_update_finding(finding_id: int):
+    """Partially update a finding — the machine counterpart of the cookie finding-detail form plus the
+    per-block autosave route, in one call.
+
+    Only the fields the body supplies change; an explicit ``null`` clears a nullable column. Prose arrives
+    either as plain text (``description``/``remediation``/``references``) or as ProseMirror
+    ``content_json``, and either way it goes through the SAME sanitizer the create route uses.
+
+    Fixing wording was the client's actual complaint: without this, the only recovery was delete and
+    recreate — which the machine API could not do either, and which would have lost the finding's group
+    and its position.
+    """
+    actor = host.actor()
+
+    # Tenancy FIRST, before the body is parsed (rule 2 of the section banner).
+    with open_session() as db:
+        finding = _visible_finding(db, finding_id, actor)
+        if finding is None:
+            return _finding_not_found()
+        authorized_engagement_id = finding.engagement_id
+
+    data = request.get_json(silent=True) or {}
+    updates, blocks, err = _parse_finding_patch(data)
+    if err is not None:
+        return err
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            finding = db.get(EngagementFinding, finding_id)
+            # Re-fetched in the write session, so a row deleted between the check above and here is a
+            # clean 404 rather than an AttributeError. The engagement_id equality is the load-bearing
+            # half: a finding cannot legally change engagement, so if this id moved, the row is not the
+            # one that was authorized and the write must not land.
+            if finding is None or finding.engagement_id != authorized_engagement_id:
+                return {"error": "not_found", "detail": "finding not found"}, 404
+            before = {field: _enum_value(getattr(finding, field)) for field in updates}
+            for field, value in updates.items():
+                setattr(finding, field, value)
+            if blocks:
+                _apply_content_blocks(finding, blocks)
+            after = {field: _enum_value(getattr(finding, field)) for field in updates}
+            _audit(
+                db, "update_finding", subject_type="finding", subject_id=finding.id,
+                before=before,
+                # The block NAMES, never their prose: an audit row is not the place to duplicate a
+                # client's write-up, and the content itself is already versioned by the row it lands on.
+                after={**after, "content_blocks": sorted(blocks)} if blocks else after,
+            )
+            body = _finding_detail(db, finding)
+            db.commit()
+            return body, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+# ── 10d. DELETE /findings/<id> ───────────────────────────────────────────────────────────────────────
+
+
+@machine_bp.delete("/findings/<int:finding_id>")
+@host.require_scope("write")
+def scribble_delete_finding(finding_id: int):
+    """Delete a finding and its evidence — ``findings_service.delete_finding``, the same cascade the
+    cookie board performs (artifact ROWS go with it; a group delete only detaches, a finding delete does
+    not, because a finding IS its content).
+
+    The on-disk artifact files are unlinked only AFTER the transaction commits, so a rolled-back delete
+    cannot leave the bytes gone. On an idempotent REPLAY nothing is unlinked, because ``_produce`` never
+    runs — the files went with the original request.
+    """
+    actor = host.actor()
+    cfg = get_config()
+
+    with open_session() as db:
+        finding = _visible_finding(db, finding_id, actor)
+        if finding is None:
+            return _finding_not_found()
+        authorized_engagement_id = finding.engagement_id
+
+    removed_paths: list[str] = []
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            finding = db.get(EngagementFinding, finding_id)
+            if finding is None or finding.engagement_id != authorized_engagement_id:
+                return {"error": "not_found", "detail": "finding not found"}, 404
+            before = _finding_summary(finding)
+            removed_paths.extend(findings_service.delete_finding(db, finding))
+            _audit(
+                db, "delete_finding", subject_type="finding", subject_id=finding_id,
+                before=before, after=None,
+            )
+            db.commit()
+            return {"deleted": True, "finding_id": finding_id,
+                    "engagement_id": authorized_engagement_id}, 200
+
+    body, status = _with_idempotency(_idempotency_key(request.get_json(silent=True) or {}), _produce)
+    if status == 200:
+        for storage_path in removed_paths:
+            delete_file(cfg, storage_path)
+    return jsonify(body), status
+
+
+# ── 10e. POST /findings/<id>/move — one finding into a group / position ──────────────────────────────
+
+
+def _parse_move_target(data: dict, engagement_id: int, db):
+    """Shared parse for both move routes -> ``(target_group, order_index, error_response_or_None)``.
+
+    ``group_id`` must be PRESENT (``null`` = the ungrouped bucket), mirroring the cookie route: a move
+    that silently defaulted the destination would be a guess about where the caller wanted the finding.
+
+    A group id that does not exist, or belongs to a DIFFERENT engagement, is a 404 — deliberately NOT the
+    silent-drop treatment ``add_finding`` gives a foreign ``group_id``. On a move the destination group IS
+    the request: dropping it would move the finding OUT of whatever group it was in, which is data loss
+    the caller never asked for, reported as success. The refusal is one message for both cases, so it
+    still confirms nothing about which group ids exist.
+    """
+    if "group_id" not in data:
+        return None, 0, _bad_request("group_id is required (use null to move to ungrouped)")
+    order_index, err = _opt_int(data, "order_index")
+    if err:
+        return None, 0, err
+    order_index = 0 if order_index is None else order_index
+
+    if data.get("group_id") is None:
+        return None, order_index, None
+    group_id, err = _opt_int(data, "group_id")
+    if err:
+        return None, 0, err
+    target_group = _group_of(db, engagement_id, group_id)
+    if target_group is None:
+        return None, 0, _group_not_found()
+    return target_group, order_index, None
+
+
+@machine_bp.post("/findings/<int:finding_id>/move")
+@host.require_scope("write")
+@request_body(MoveFindingRequest)
+def scribble_move_finding(finding_id: int):
+    """Set a finding's group and its position — ``{"group_id": <id|null>, "order_index": <int>}``.
+
+    ``order_index`` is a slot in the RENDERED order, exactly as the browser board sends it, and the
+    destination group flips to manual ordering. Both are ``findings_service.place_finding``'s semantics,
+    shared with the cookie route rather than reimplemented.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        finding = _visible_finding(db, finding_id, actor)
+        if finding is None:
+            return _finding_not_found()
+        engagement_id = finding.engagement_id
+
+        data = request.get_json(silent=True) or {}
+        target_group, order_index, err = _parse_move_target(data, engagement_id, db)
+        if err is not None:
+            return err
+        target_group_id = target_group.id if target_group is not None else None
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            finding = db.get(EngagementFinding, finding_id)
+            if finding is None or finding.engagement_id != engagement_id:
+                return {"error": "not_found", "detail": "finding not found"}, 404
+            target_group = (
+                _group_of(db, engagement_id, target_group_id) if target_group_id is not None else None
+            )
+            if target_group_id is not None and target_group is None:
+                return {"error": "not_found", "detail": "group not found on this engagement"}, 404
+            before = {"group_id": finding.group_id, "order_index": finding.order_index}
+            findings_service.place_finding(finding, target_group, order_index)
+            after = {"group_id": finding.group_id, "order_index": finding.order_index}
+            _audit(
+                db, "move_finding", subject_type="finding", subject_id=finding_id,
+                before=before, after=after,
+            )
+            body = {
+                "finding_id": finding.id,
+                "engagement_id": engagement_id,
+                "group_id": finding.group_id,
+                "order_index": finding.order_index,
+            }
+            db.commit()
+            return body, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+# ── 10f. POST /engagements/<id>/findings/move — BULK ─────────────────────────────────────────────────
+
+
+@machine_bp.post("/engagements/<int:engagement_id>/findings/move")
+@host.require_scope("write")
+@request_body(BulkMoveFindingsRequest)
+def scribble_move_findings(engagement_id: int):
+    """Move SEVERAL findings into one group in a single call —
+    ``{"finding_ids": [...], "group_id": <id|null>, "order_index": <int>}``.
+
+    This is the client's "multi-select and drag several findings into a group at once": one call per
+    finding works, but it is N round trips and a partial failure leaves the board half-arranged. The
+    listed order is preserved (each finding lands at ``order_index + its position in the list``).
+
+    ATOMIC by construction: every id must belong to THIS engagement, and if any does not, the whole
+    request is refused with the same ``finding not found`` a nonexistent id gets and NOTHING moves. A
+    partial success that silently skipped ids would be indistinguishable from a complete one — and
+    skipping is what would make a foreign id a probe rather than a refusal. Duplicate ids are collapsed
+    to their first occurrence (a client-side artefact of multi-select, not an error).
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get("finding_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return _bad_request("finding_ids must be a non-empty list of finding ids")
+        finding_ids: list[int] = []
+        for raw in raw_ids:
+            if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+                return _bad_request("finding_ids must contain integers")
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                return _bad_request("finding_ids must contain integers")
+            if parsed not in finding_ids:
+                finding_ids.append(parsed)
+
+        target_group, order_index, err = _parse_move_target(data, engagement_id, db)
+        if err is not None:
+            return err
+        target_group_id = target_group.id if target_group is not None else None
+
+        # Membership of the URL's engagement is checked for EVERY id before anything moves. Note this
+        # cannot leak: the engagement itself was already authorized above, so the only thing an id
+        # confirms is whether it is in a report the caller can already read in full.
+        for fid in finding_ids:
+            candidate = db.get(EngagementFinding, fid)
+            if candidate is None or candidate.engagement_id != engagement_id:
+                return _finding_not_found()
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            target_group = (
+                _group_of(db, engagement_id, target_group_id) if target_group_id is not None else None
+            )
+            if target_group_id is not None and target_group is None:
+                return {"error": "not_found", "detail": "group not found on this engagement"}, 404
+            moved = []
+            for offset, fid in enumerate(finding_ids):
+                finding = db.get(EngagementFinding, fid)
+                if finding is None or finding.engagement_id != engagement_id:
+                    return {"error": "not_found", "detail": "finding not found"}, 404
+                findings_service.place_finding(finding, target_group, order_index + offset)
+                moved.append({"finding_id": finding.id, "order_index": finding.order_index})
+            _audit(
+                db, "move_findings", subject_type="engagement", subject_id=engagement_id,
+                after={"group_id": target_group_id, "finding_ids": finding_ids},
+            )
+            body = {"engagement_id": engagement_id, "group_id": target_group_id, "moved": moved}
+            db.commit()
+            return body, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+# ── 10g. groups: create / update / delete / reorder ──────────────────────────────────────────────────
+
+
+@machine_bp.post("/engagements/<int:engagement_id>/groups")
+@host.require_scope("write")
+@request_body(CreateGroupRequest)
+def scribble_create_group(engagement_id: int):
+    """Create a report section (``FindingGroup``) at the end of the board.
+
+    ``assessment_type_id`` is optional and links the section to a library ``AssessmentType`` (a
+    library-wide, tenant-free table). An id that does not resolve is left unset rather than refused —
+    the cookie route's behaviour, kept identical here.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+    data = request.get_json(silent=True) or {}
+    name, err = _opt_str(data, "name")
+    if err:
+        return err
+    if not name:
+        return _bad_request("name is required")
+    assessment_type_id, err = _opt_int(data, "assessment_type_id")
+    if err:
+        return err
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                return {"error": "not_found", "detail": "engagement not found"}, 404
+            from scribble.models import AssessmentType  # local: keeps the module import list minimal
+
+            assessment_type = (
+                db.get(AssessmentType, assessment_type_id) if assessment_type_id is not None else None
+            )
+            group = findings_service.create_group(
+                db, engagement, name=name, assessment_type=assessment_type
+            )
+            body = _group_summary(group)
+            _audit(
+                db, "create_group", subject_type="finding_group", subject_id=group.id,
+                after={**body, "engagement_id": engagement_id},
+            )
+            db.commit()
+            return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+@machine_bp.patch("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@host.require_scope("write")
+@request_body(UpdateGroupRequest)
+def scribble_update_group(engagement_id: int, group_id: int):
+    """Rename a section, toggle whether it renders, or set its ordering mode.
+
+    ``order_mode: "auto_severity"`` is the documented way BACK from the manual ordering any move flips a
+    group into ("re-rank by severity").
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if _group_of(db, engagement_id, group_id) is None:
+            return _group_not_found()
+
+    data = request.get_json(silent=True) or {}
+    unknown = set(data) - {"name", "order_mode", "include_in_report", "idempotency_key"}
+    if unknown:
+        return _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
+    updates: dict[str, Any] = {}
+    if "name" in data:
+        name, err = _opt_str(data, "name")
+        if err:
+            return err
+        if not name:
+            return _bad_request("name cannot be empty")
+        updates["name"] = name
+    if "order_mode" in data:
+        raw = data.get("order_mode")
+        allowed = "|".join(m.value for m in OrderMode)
+        if not isinstance(raw, str):
+            return _bad_request(f"order_mode must be one of {allowed}")
+        try:
+            updates["order_mode"] = OrderMode(raw.strip().lower())
+        except ValueError:
+            return _bad_request(f"order_mode must be one of {allowed}")
+    if "include_in_report" in data:
+        if not isinstance(data["include_in_report"], bool):
+            return _bad_request("include_in_report must be true or false")
+        updates["include_in_report"] = data["include_in_report"]
+    if not updates:
+        return _bad_request("no updatable fields supplied")
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            group = _group_of(db, engagement_id, group_id)
+            if group is None:
+                return {"error": "not_found", "detail": "group not found on this engagement"}, 404
+            before = {field: _enum_value(getattr(group, field)) for field in updates}
+            for field, value in updates.items():
+                setattr(group, field, value)
+            body = _group_summary(group)
+            _audit(
+                db, "update_group", subject_type="finding_group", subject_id=group.id,
+                before=before, after={field: body[field] for field in updates},
+            )
+            db.commit()
+            return body, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+@machine_bp.delete("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@host.require_scope("write")
+def scribble_delete_group(engagement_id: int, group_id: int):
+    """Delete a report section. Its findings are DETACHED (``group_id`` -> NULL), not deleted — removing a
+    section must never silently destroy authored findings. See ``findings_service.delete_group``."""
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if _group_of(db, engagement_id, group_id) is None:
+            return _group_not_found()
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            group = _group_of(db, engagement_id, group_id)
+            if group is None:
+                return {"error": "not_found", "detail": "group not found on this engagement"}, 404
+            before = _group_summary(group)
+            detached = [f.id for f in group.findings]
+            findings_service.delete_group(db, group)
+            _audit(
+                db, "delete_group", subject_type="finding_group", subject_id=group_id,
+                before={**before, "detached_finding_ids": detached}, after=None,
+            )
+            db.commit()
+            return {"deleted": True, "group_id": group_id, "engagement_id": engagement_id,
+                    "detached_finding_ids": detached}, 200
+
+    body, status = _with_idempotency(_idempotency_key(request.get_json(silent=True) or {}), _produce)
+    return jsonify(body), status
+
+
+@machine_bp.post("/engagements/<int:engagement_id>/groups/reorder")
+@host.require_scope("write")
+@request_body(ReorderGroupsRequest)
+def scribble_reorder_groups(engagement_id: int):
+    """Set the section order for an engagement — ``{"order": [group_id, ...]}``.
+
+    Defensive, exactly as the cookie route is: a stale, foreign or duplicated id is ignored, and any
+    section the payload does not mention keeps its relative order at the end, so a partial payload never
+    drops a section or leaves it unpositioned (``findings_service.reorder_groups``).
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+    data = request.get_json(silent=True) or {}
+    order = data.get("order")
+    if not isinstance(order, list):
+        return _bad_request("order must be a list of group ids")
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                return {"error": "not_found", "detail": "engagement not found"}, 404
+            ordered_ids = findings_service.reorder_groups(engagement, order)
+            result = [{"id": gid, "order_index": index} for index, gid in enumerate(ordered_ids)]
+            _audit(
+                db, "reorder_groups", subject_type="engagement", subject_id=engagement_id,
+                after={"order": ordered_ids},
+            )
+            db.commit()
+            return {"engagement_id": engagement_id, "order": result}, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────
