@@ -444,7 +444,8 @@ def test_the_cover_and_contents_are_print_only(browser, session_factory, tmp_pat
     """The layout decision, pinned: on screen the sticky toolbar's section jumps and the filterable
     "Findings at a glance" index already do this navigation live, so a static duplicate adds nothing —
     and on paper both of those are gone (``.topbar`` is ``no-print``), which is where they earn their
-    place. Print-only also means adding them changed nothing about the on-screen report."""
+    place. Print-only also means these two blocks changed nothing on screen — the summary's front matter is
+    the only deliberate on-screen change in this issue."""
     page = _page_for(browser, tmp_path, _render(session_factory, _full_engagement(session_factory)))
     try:
         page.emulate_media(media="screen")

@@ -22,7 +22,8 @@ Blocks (keys dispatched in ``render_html._render_block_by_key``):
 ``cover`` and ``toc`` are ``display: none`` on screen and shown only in ``@media print``: on screen the
 sticky toolbar's section jumps and the "Findings at a glance" index already do this navigation live, while
 on paper both of those are gone (``.topbar`` is ``no-print``) — so the printed deliverable is the only
-place they add anything. That also means adding them changed nothing about the on-screen report.
+place they add anything. That also means adding these two blocks changed nothing on screen (the ``summary``
+block's front matter is a separate, deliberate on-screen change).
 
 Theme (stamped on ``<html data-theme=…>`` by ``render_html``):
 - ``auto``  — no stamp; follows the viewer's ``prefers-color-scheme`` (current default behavior).

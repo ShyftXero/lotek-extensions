@@ -303,8 +303,9 @@ straight into the executive summary before). Two blocks exist only in `@media pr
 | `toc` | Contents: sections at level 1, each section's top-level findings (with severity) at level 2. |
 
 Both are `display: none` on screen: the sticky toolbar's section jumps and the *Findings at a glance* index
-already do that navigation live, and on paper both of those are gone. So the on-screen report is exactly
-what it was. On paper the cover **replaces** the masthead (`body.has-cover .masthead`) — the masthead is a
+already do that navigation live, and on paper both of those are gone. So these two blocks change nothing on
+screen (the summary's front matter, below, is a deliberate on-screen change and the only one). On paper the
+cover **replaces** the masthead (`body.has-cover .masthead`) — the masthead is a
 `<header>` before `<main>`, so leaving it visible would print it ahead of the cover; a template with no
 `cover` block keeps its masthead and its title. The contents are **derived** from the template's block list
 plus the same conditions the block renderers use, so they cannot list a section the document lacks (and a

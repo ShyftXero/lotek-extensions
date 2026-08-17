@@ -629,7 +629,7 @@ def _render_cover(ctx: ReportContext) -> str:
         f'<dl class="cover-facts">{facts}</dl>'
         '<div class="cover-foot">'
         '<span class="cover-badge">Confidential</span>'
-        f'<p class="cover-handling">{_COVER_HANDLING}</p>'
+        f'<p class="cover-handling">{_esc(_COVER_HANDLING)}</p>'
         "</div></section>"
     )
 
@@ -663,7 +663,9 @@ def _render_front_matter(ctx: ReportContext) -> str:
     tiles and an index — all true, and none of it telling a reader what was assessed or what the report
     does and does not claim. This block is prose FIRST, with the dashboard below it as supporting detail.
     """
-    limits = "".join(f"<li>{text}</li>" for text in _LIMITATIONS)
+    # ``_esc`` even though these are module constants, matching ``_methodology_prose``: the escaping is
+    # what makes editing the prose safe for someone who reaches for an "&" or an angle bracket.
+    limits = "".join(f"<li>{_esc(text)}</li>" for text in _LIMITATIONS)
     narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
     return (
         '<div class="frontmatter">'
@@ -682,7 +684,7 @@ def _render_severity_definitions(rollup) -> str:
         return ""
     rows = "".join(
         f'<div class="sd-row"><span class="sev-tag sev-{s}">{_esc(_SEV_LABELS.get(s, s.title()))}</span>'
-        f'<span class="sd-text">{_SEVERITY_DEFINITIONS[s]}</span></div>'
+        f'<span class="sd-text">{_esc(_SEVERITY_DEFINITIONS[s])}</span></div>'
         for s in SEVERITY_ORDER
         if s in _SEVERITY_DEFINITIONS
     )
