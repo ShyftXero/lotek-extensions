@@ -12,6 +12,8 @@ INDISTINGUISHABLE to the extension end-to-end through the machine route.
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
@@ -208,6 +210,31 @@ def test_promote_finding_with_missing_job_fails_closed(client, stub_host):
     resp = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": 999999})
     assert resp.status_code == 404
     assert resp.get_json()["detail"] == "lotek finding not found"
+
+
+def test_promote_lotek_finding_accepts_a_uuid_core_id(client, stub_host, session_factory):
+    """A CORE finding id is a UUIDv7 under lotek v2, so `lotek_finding_id` must parse as a host id, not
+    an int. Parsed as an int, `int("0198…")` raised and the route answered 400 — promoting a scan
+    finding was unreachable on every v2 host, which is the whole reason the endpoint exists.
+
+    The re-post matters as much as the first: dedup compares the STORED `source_finding_id` against the
+    DTO's id, so it only holds if `SoftHostId` hands the UUID back as a `uuid.UUID` rather than its
+    string spelling — otherwise every retry would silently duplicate the finding instead of deduping.
+    """
+    core_id = uuid.uuid4()
+    stub_host.findings.add_job("job-3", owner_id=7, dtos=[FakeFindingDTO(id=core_id, title="RCE")])
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+
+    r1 = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": str(core_id)})
+    assert r1.status_code == 201, r1.get_json()
+    with session_factory() as db:
+        f = db.get(fm.EngagementFinding, r1.get_json()["finding_id"])
+        assert f.source_finding_id == core_id
+
+    r2 = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": str(core_id)})
+    assert r2.status_code == 200 and r2.get_json()["deduped"] is True
+    assert r2.get_json()["finding_id"] == r1.get_json()["finding_id"]
 
 
 def test_promote_lotek_finding_dedups_on_source_finding_id(client, stub_host, session_factory):

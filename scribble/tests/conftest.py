@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -118,7 +119,9 @@ class FakeFindingDTO:
     CONTRACT-FACTS §2/§3): callers set it directly to simulate a module's declared facts, exactly as
     `HostFindings._finding_dto` would have produced it."""
 
-    id: int
+    # A CORE finding id: an int on a legacy/standalone host, a `uuid.UUID` under lotek v2. Annotated as
+    # both so the harness is no kinder than the real host -- a test may hand either shape through.
+    id: int | uuid.UUID
     job_id: str = "job-1"
     title: str = "Untitled"
     category: str | None = None
