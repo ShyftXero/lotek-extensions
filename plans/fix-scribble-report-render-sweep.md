@@ -120,6 +120,30 @@ report-nav parent=<div class="wrap">  inside .topbar? true  inside .masthead? fa
 #sec-summary->LIVE | #sec-findings->LIVE | #sec-methodology->LIVE | #sec-evidence->LIVE
 ```
 
+## Verification (observed, at the branch tip)
+
+```sh
+uvx ruff check scribble                                    # All checks passed!
+cd scribble && uv run --extra dev pyrefly check \
+    scribble/reporting/render_html.py scribble/reporting/context.py \
+    scribble/reporting/templates.py scribble/api_pat.py \
+    tests/test_report_*.py tests/test_machine_artifacts.py  # 0 errors
+cd scribble && uv run --extra dev pytest -o addopts="" -q -rs
+# 649 passed, 2 skipped in 307.53s   (rc=0)
+#   SKIPPED tests/test_db_additive_migration.py:82  — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
+#   SKIPPED tests/test_db_additive_migration.py:136 — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
+```
+
+Both skips are pre-existing and unrelated to this branch (they belong to the SoftHostId retrofit and want
+a real Postgres). **Nothing in this branch skipped** — Chromium is present, so all 13 print-media browser
+tests ran, and poppler is present, so the rasterized-PDF comparison ran too. Note `pytest`'s
+`addopts = "-q"` in `pyproject.toml`: passing `-q` again suppresses the summary line, hence
+`-o addopts=""` above.
+
+Not run here, and not this branch's gate: the MOUNTED lotek-side suite (`lotek/tests/test_scribble_*`).
+Nothing in this change touches the host seam or an authorization path — the API change is two additive
+response fields — but the re-pin into lotek is where that gets exercised.
+
 ## Red-then-green
 Every guard was watched fail against a deliberately broken build, then pass once restored
 (`git checkout HEAD -- <file>`). Commands as run, from `scribble/`:
