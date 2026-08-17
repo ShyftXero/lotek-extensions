@@ -76,7 +76,10 @@ first four.
   rating definitions directly beneath it — the legend showed counts and never said what a rating means,
   which is half of the client's "three plain columns of numbers". The risk banner, bar, tiles and index are
   unchanged and now sit *below* the prose.
-- [x] Tests: 4 new modules (13 + 12 + 10 + 27) + 5 cases on `tests/test_machine_artifacts.py`.
+- [x] Tests: 4 new modules (13 + 12 + 10 + 28) + 5 cases on `tests/test_machine_artifacts.py`, and
+  `tests/test_report_print_media.py`'s rasterized-PDF guard adapted to the new pagination (it counted
+  page 1; the cover page moved the severity bar to page 3, so it now counts every page — re-proved
+  RED against ext#39's defect, transcript 22 below).
 - [x] Docs: `scribble/docs/SCRIBBLE.md` — where evidence renders, methodology/nav behaviour, the print
   colour contract, the upload response's new fields, and the cover/contents/front-matter contract.
 
@@ -189,6 +192,42 @@ Browser probe (`.report-nav` placement + every toolbar link resolved), after:
 ```
 report-nav parent=<div class="wrap">  inside .topbar? true  inside .masthead? false
 #sec-summary->LIVE | #sec-findings->LIVE | #sec-methodology->LIVE | #sec-evidence->LIVE
+```
+
+`repro_report.py` after the ext#43 pass — items 2 and 3 flip:
+
+```
+PRESENT  item 2  cover page                 ['class="cover"']
+PRESENT  item 3  table of contents          ['class="toc"']
+ABSENT   item 1  exec-summary boilerplate   ['engagement overview']
+ABSENT   item 22 vector diagram embed       ['attackpath']     <- ext#48, correctly still absent
+```
+
+**Item 1 reads ABSENT and the front matter is nonetheless there** — the needle is a case-sensitive guess by
+the triage author. The rendered document carries `Engagement overview`, `Scope and limitations` and `How
+these ratings are used`; it does not carry the lower-case phrase. (It briefly *did*, from a stylesheet
+comment — the sheet ships inside the document, so the grep matched a comment rather than the prose. The
+comment was reworded rather than left to fake a pass, and the same trap is now noted in the sheet.)
+
+**The client-visible artifact, before → after.** BEFORE is the real client-era PDF kept in the triage
+evidence (`evidence/report_nobg.pdf`); AFTER is the same shape of engagement rendered at this branch tip,
+both printed the way the client's dialog defaults (`print_background=False`, Letter):
+
+```
+BEFORE  Pages: 2
+        page 1: REPRO CLIENT  Checklist repro external assessment  CONFIDENTIAL  EXECUTIVE SUMMARY
+                OVERALL RISK  1 high  High  This assessment of Repro Co identified 1 finding …
+                FINDINGS BY SEVERITY  1  Critical 0  High 1  Medium 0 …
+
+AFTER   Pages: 5
+        page 1: REPRO CLIENT  Checklist repro  external assessment  CLIENT  ASSESSMENT TYPE  Repro Client
+                external  TESTING WINDOW  ASSESSOR  2026-08-03 – 2026-08-12  e.mcrae  REPORT DATE
+                ENGAGEMENT REFERENCE  2026-08-17  #1  CO N F I D E N T I A L  This report describes …
+        page 2: CONTENTS  Executive Summary  External  A finding  Methodology  HIGH
+        page 3: EXECUTIVE SUMMARY  ENGAGEMENT OVERVIEW  This report covers an external assessment of
+                Repro Co. Testing was carried out over 2026-08-03 – 2026-08-12. The assessment was
+                performed by e.mcrae. This assessment of Repro Co identified 1 finding … SCOPE AND
+                LIMITATIONS  This report describes the environment as …
 ```
 
 ## Verification (observed, at the branch tip)
@@ -310,6 +349,154 @@ RED   5 failed, 22 passed   tests/test_machine_artifacts.py
       test_an_idempotent_replay_echoes_the_STORED_attachment
 GREEN 27 passed
 ```
+
+### ext#43 pass (second pass, on top of 1–8 above)
+
+Same discipline, same command, run from `scribble/`: break the production code, watch it fail, restore with
+`git checkout HEAD -- scribble/reporting/render_html.py`, watch it pass. Module unless stated:
+`tests/test_report_cover_and_toc.py` (**GREEN 27 passed** for every one of them).
+
+**9. cover page — `_render_cover` returns `""` (the pre-#43 state: no cover at all)**
+```
+RED   6 failed, 21 passed
+      FAILED …test_the_document_carries_a_cover_page_before_everything_else
+             assert 'class="cover"' in '<!doctype html>…'
+      FAILED …test_the_cover_omits_facts_the_engagement_does_not_record   no cover page in the document
+      FAILED …test_the_cover_escapes_engagement_and_client_names          no cover page in the document
+      FAILED …test_the_cover_and_contents_are_print_only   assert 'MISSING:.cover' == 'none'
+      FAILED …test_the_masthead_gives_way_to_the_cover_on_paper_only   assert 'block' == 'none'
+      FAILED …test_the_printed_pdf_opens_on_the_cover_then_the_contents
+             assert 'Treat it as confidential' in 'TEAMSPLUS Web Portal …'   <- page 1 is the masthead
+```
+
+**10. cover facts — every row always, empty ones as an em-dash**
+```
+RED   1 failed, 26 passed
+      FAILED …test_the_cover_omits_facts_the_engagement_does_not_record
+             assert 'Testing window' not in '<section cl…v></section>'
+```
+
+**11. contents — `_render_toc` returns `""`**
+```
+RED   15 failed, 12 passed
+      "no table of contents in the document" ×11 (order, per-template link resolution ×3, per-template
+      completeness ×3, template order, dropped block, nested children, no-evidence, escaping, no-findings)
+      FAILED …test_the_cover_and_contents_are_print_only   assert 'MISSING:.toc' == 'none'
+      FAILED …test_the_printed_pdf_opens_on_the_cover_then_the_contents
+             assert 'CONTENTS' in 'EXECUTIVE SUMMARY ENGAGEMENT OVERVIEW…'
+```
+
+**12. contents DRIFT — the `evidence` branch dropped from `_toc_entries` (a section that forgot to register)**
+```
+RED   4 failed, 23 passed
+      FAILED …test_the_contents_list_every_section_and_finding_in_document_order
+             AssertionError: the contents omit 'Evidence'
+      FAILED …test_every_anchored_section_in_the_document_appears_in_the_contents[default]
+             these sections are in the document but not in the contents: ['sec-evidence']
+             (also [compliance], [dark])
+```
+This is the guard that matters most: it is the *reverse* direction, and it is the exact failure mode ext#42
+and ext#43 are both about — a section going quietly missing from navigation.
+
+**13. contents DANGLING — the Compliance Attestation entry emitted unconditionally**
+```
+RED   1 failed, 26 passed
+      FAILED …test_an_engagement_with_no_findings_has_no_dangling_contents_entries
+             assert 'id="sec-compliance"' in '<!doctype html>…'
+```
+Honest note: the three parametrized `…link_targets_an_anchor…` cases stayed GREEN here, because the full
+fixture genuinely *has* a compliance checklist, so that anchor exists for it. The no-findings case is what
+catches the dangling link, which is why both exist.
+
+**14. `body.has-cover .masthead { display: none }` removed from `@media print`**
+```
+RED   2 failed, 25 passed
+      FAILED …test_the_masthead_gives_way_to_the_cover_on_paper_only   assert 'block' == 'none'
+      FAILED …test_the_printed_pdf_opens_on_the_cover_then_the_contents
+             assert 'Treat it as confidential' in 'TEAMSPLUS Web Portal …'
+```
+
+**15. `has-cover` stamped unconditionally (the other side of the same rule)**
+```
+RED   2 failed, 25 passed
+      FAILED …test_a_template_without_a_cover_block_renders_none_and_keeps_its_masthead
+             assert '<body>' in '<!doctype html>…'
+      FAILED …test_a_coverless_template_still_prints_its_masthead   assert 'none' != 'none'
+```
+
+**16. `.cover, .toc { display: block }` — the print-only blocks leaking onto the screen**
+```
+RED   1 failed, 26 passed
+      FAILED …test_the_cover_and_contents_are_print_only   assert 'block' == 'none'
+```
+
+**17. front matter — `_render_summary` back to the pre-#43 narrative-only body**
+```
+RED   3 failed, 31 passed   cover_and_toc + tests/test_report_html.py
+      FAILED …test_the_summary_leads_with_prose_and_not_the_dashboard
+             assert 'class="frontmatter"' in '<!doctype html>…'
+      FAILED …test_the_overview_omits_clauses_for_data_the_engagement_lacks
+      FAILED …test_the_overview_article_follows_the_scope_word
+```
+`test_report_html.py` was included deliberately: its narrative test passes against BOTH shapes, which is
+the point — the generated narrative was kept, not replaced.
+
+**18. overview — every clause always, with placeholders for missing data**
+```
+RED   1 failed, 26 passed
+      FAILED …test_the_overview_omits_clauses_for_data_the_engagement_lacks
+             assert 'Testing was…ied out over' not in '<!doctype h…>\n</html>\n'
+```
+
+**19. severity definitions — the `rollup.total <= 0` gate removed**
+```
+RED   1 failed, 26 passed
+      FAILED …test_a_clean_engagement_defines_no_ratings
+             assert 'class="sev-defs"' not in '<!doctype h…>\n</html>\n'
+```
+
+**20. contents — the entry label interpolated unescaped**
+```
+RED   1 failed, 26 passed
+      FAILED …test_the_contents_escape_a_finding_title
+             assert '&lt;img src=x' in '<nav class="toc" id="sec-toc" …'
+```
+
+**21. group anchor — `id="group-<id>"` removed from `_render_group`**
+```
+RED   3 failed, 24 passed
+      FAILED …test_every_contents_link_targets_an_anchor_in_the_document[default]
+             the contents link #group-1 but nothing carries that id     (also [compliance], [dark])
+```
+
+**22. RE-VERIFICATION of ext#39 through the adapted PDF guard** — the cover page moved the severity bar off
+page 1, so `tests/test_report_print_media.py` now counts painted pixels across EVERY page
+(`_pdf_pages_rgb`) instead of page 1. A guard whose fixture assumption changed has to be re-proved, not
+assumed: `print-color-adjust: exact` was deleted again and the adapted test still fails hard.
+```
+RED   8 failed, 5 passed   tests/test_report_print_media.py
+      assert 'economy' == 'exact' ×6
+      FAILED …test_pdf_printed_without_background_graphics_keeps_the_severity_fills[critical]
+             printing with background graphics off lost the critical fill: 2174 painted pixels vs 8445
+             with them on — this is what the client received
+      FAILED …[high]  436 painted pixels vs 6702
+GREEN 13 passed
+```
+(The counts differ from the first pass's 504-vs-6774 because the measurement is now the whole document and
+the document grew; the ratio is 0.26 and 0.07 against a 0.9 threshold, so the signal is if anything
+louder.)
+
+**23. group anchor — `_group_anchor` returns `f"group-{group.id}"`, i.e. `group-None` for the synthetic
+*Ungrouped* bucket**
+```
+RED   1 failed, 27 passed
+      FAILED …test_the_synthetic_ungrouped_bucket_is_listed_and_linkable
+             assert 'href="#group-ungrouped"' in '<nav class="toc" id="sec-toc" …'
+GREEN 28 passed
+```
+Worth stating why this case needs its own test: `_group_anchor` is shared by the section and the contents
+*on purpose*, so breaking it breaks both sides consistently and the link-resolution guard stays GREEN. The
+anchor of the one group that has no database id is therefore asserted literally.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
