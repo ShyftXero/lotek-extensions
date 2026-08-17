@@ -1,35 +1,220 @@
 # Plan: fix/scribble-report-render-sweep
 
 - **Branch:** `fix/scribble-report-render-sweep`  (worktree: `.claude/worktrees/ux-report-sweep`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** not opened yet (the orchestrator opens it)
+- **Status:** 🟢 ready to merge
 
 ## Purpose
-Four **client-reported, reproduced** defects in scribble's HTML report renderer, surfaced by an agent
-driving the lotek PROD instance over a PAT to author a real TeamsPlus deliverable. Triage notes +
-repro scripts + PDF/PNG evidence: `~/tmp/teamsplus_lotek_notes/lotek_triage/`.
+Four **client-reported, reproduced** defects in scribble's HTML report renderer, surfaced when an agent
+drove the lotek PROD instance over a PAT to author a real TeamsPlus deliverable and the client sent back a
+UX punch list. Triage notes + repro scripts + PDF/PNG evidence:
+`~/tmp/teamsplus_lotek_notes/lotek_triage/`.
 
 | issue | defect |
 |---|---|
-| ext#39 | the severity block loses all colour in print/PDF (`@media print` never sets `print-color-adjust`; `--sev-*` not pinned for paper) |
+| ext#39 | the severity block loses all colour in print/PDF (`@media print` never set `print-color-adjust`; `--sev-*` not pinned for paper) |
 | ext#42 | Methodology vanishes with no checklist, leaving a live nav link to an empty anchor |
 | ext#45 | back-nav (`← Dashboard` / `← Back to engagement`) sits inside the document masthead, not the toolbar |
 | ext#40 | image evidence never renders for a nested-CHILD finding, nor for an ENGAGEMENT-level artifact (`finding_id` null) — both silent, both 201 |
 
 ## Done
-- [ ] (filled in as each lands)
+- [x] **ext#39** — `print-color-adjust: exact` (+ `-webkit-`) scoped to the elements whose *background*
+  carries meaning: `.sevbar`/`.seg`, `.sevlegend .sw`, `.sev-tag`, `.sev-badge`, `.ck-badge`,
+  `.chip-toggle`, `.metrics` **and** `.metric` (both — the tile rules are the container's background
+  showing through a 1px gap; keeping one and dropping the other prints either no rules or one grey
+  block), plus the new `.mth-phases`/`.mth-phase`. **Not** on `*` — `body`/`main`/`.finding` are
+  asserted to stay `economy` so the paper ground is never forced.
+- [x] **ext#39, second half + more** — the print palette now pins the light `--sev-*` ramp AND is
+  selected at 0-2-0 (`:root:not([data-theme="dark"]), :root[data-theme="dark"]`). See "found on the
+  way" below: the *entire* print palette override was losing the cascade for a dark-mode viewer.
+- [x] **ext#42** — `_render_methodology` always renders: standing phased methodology + per-assessment-type
+  framing for the types this report's sections carry (`GroupCtx.type_slug`; prose condensed from
+  `skill/scribble-report-refine/references/methodology.md`) + an explicit "no engagement-specific
+  coverage checklist was recorded" note. Coverage checklists still own the section when present
+  ("Methodology and Coverage") and now own the `#sec-methodology` anchor (it was a bare empty `<div>`).
+- [x] **ext#42, the half that matters even if the default is disliked** — the toolbar's section links are
+  **derived from the anchors the blocks actually rendered**, in document order. A dangling link is now
+  structurally impossible, including for a template that drops a block.
+- [x] **ext#45** — back-links moved from `<header class="masthead">` into `.topbar`, ruled off from the
+  section jumps. The masthead is now purely the document's title block (eyebrow → title → dates/assessor
+  → Confidential), which is also the basis a cover page (ext#43) needs.
+- [x] **ext#40(b)** — a nested child's own artifacts render as a compact gallery inside that child's row
+  of the *Affected hosts* table (they had no renderer at all; the Evidence cell was the facts line).
+  A child row with neither shows `—` instead of a blank cell.
+- [x] **ext#40(a)** — `ReportContext` gains an **ADDITIVE** `artifacts` field (engagement-level evidence,
+  `finding_id` null) + a new `evidence` block key rendering an Evidence appendix, last in every shipped
+  template, absent when there is nothing unattached.
+- [x] **ext#40(c)** — the machine upload response echoes `finding_id` + `finding_id_dropped`. Tenancy
+  behaviour unchanged (a foreign `finding_id` is still dropped, not 404'd — the comment at the check
+  explains why); only its observability changed. The idempotent replay reports the **stored**
+  attachment, not what the retry asked for.
+- [x] Tests: 3 new modules (13 + 12 + 10) + 5 cases on `tests/test_machine_artifacts.py`.
+- [x] Docs: `scribble/docs/SCRIBBLE.md` — where evidence renders, methodology/nav behaviour, the print
+  colour contract, and the upload response's new fields.
 
 ## Remaining
-- [ ] #39 print colour
-- [ ] #42 methodology default + conditional nav link
-- [ ] #45 nav into the toolbar
-- [ ] #40 child gallery + engagement-level evidence + effective `finding_id` echo
+- [ ] Nothing owed for these four issues. See "explicitly out of scope" below.
 
 ## Notes / gotchas
-- (to be filled)
+
+### 🔴 `ReportContext` is a frozen contract and was extended — additively, loudly
+`ReportContext.artifacts: list[ArtifactCtx] = field(default_factory=list)` is a **new field with an empty
+default**; nothing was renamed, reordered or removed, and every existing consumer (both renderers, the
+report routes, the docx path) is unaffected. It exists because the renderers could only ever reach
+`finding.artifacts`, so an upload with no `finding_id` was stored, answered `201` with a URL, and could
+never appear in any deliverable. `templates.BLOCK_KEYS` also gained `"evidence"` and all three shipped
+templates now end with it.
+
+### 🔴 Found on the way: the whole print palette was losing the cascade in dark mode
+Bigger than ext#39 as filed, same block. The dark palette is declared on
+`:root:not([data-theme="light"])` (0-2-0) and `:root[data-theme="dark"]` (0-2-0); the `@media print`
+override used a plain `:root` (0-1-0), so **later source order could not save it**. Measured before the
+fix, printing from a dark-mode browser: `body { color: rgb(231,238,245) }` — the dark near-white ink — on
+unpainted white paper, for the entire document, not one widget. The print block is now 0-2-0. Guarded by
+`test_print_uses_the_paper_palette_from_a_dark_viewer` and
+`test_a_dark_template_still_prints_on_paper_colours`.
+
+### 🔴 A PDF-operator check for this defect is VACUOUS — measure pixels
+The first version of the PDF test read the fill operators (`r g b rg`) out of the (Flate-compressed)
+content streams and asserted the severity colours were present. It **passed against the broken build**:
+the same colour is also the finding card's left border and severity-coloured text, and borders/text print
+with background graphics off. The test now prints the page twice and compares *painted pixels* of each
+ramp colour (poppler `pdftoppm` → P6 PPM, parsed by hand — no image library; skip-clean without poppler):
+`print_background=False` must not lose what `True` has. On the fixture: **broken 504 vs 6774; fixed 6773
+vs 6774**.
+
+### Toolbar layout had to change with ext#45
+Moving the back-links in made three groups + the actions exceed the 1080px measure and Chrome clipped
+`← Back to engagement` and `Methodology` mid-word at a 1500px viewport. `.topbar .wrap` now wraps
+(`min-height: 52px`, `flex-wrap`), each group is `flex: 0 0 auto`, and `.btn` is `white-space: nowrap`, so
+a squeeze moves a whole group to a second line instead of breaking a label. Verified by screenshot.
+
+### Explicitly out of scope (other issues, not silently skipped)
+- **Cover page / TOC / richer exec summary** — ext#43. `repro_report.py` still reports `class="cover"` and
+  `class="toc"` ABSENT, correctly.
+- **Vector diagram embed** — ext#48. Note it interacts with this branch: attaching `export.html` as an
+  engagement artifact now at least *reaches* the deliverable (Evidence appendix) instead of vanishing.
+- **`render_docx`** — the `.docx` renderer was NOT given the standing methodology prose, child-evidence
+  images, or the engagement-level appendix. All four issues are about the HTML/PDF deliverable the client
+  read; docx parity is a separate change and a separate risk surface (docxtpl template edits).
+- **Checklist-editor styling** (ext#44), **findings CRUD parity** (ext#41), **invoice number** (ext#46),
+  **onboarding message** (ext#47) — different tracks.
+
+### Acceptance checks (the triage repro scripts, run for real)
+`repro/repro_report.py` — the four-artifact matrix, before → after:
+
+```
+BEFORE                                            AFTER
+PRESENT  control image on PARENT                  PRESENT  control image on PARENT
+ABSENT   image on CHILD                           PRESENT  image on CHILD
+ABSENT   ENGAGEMENT-level image                   PRESENT  ENGAGEMENT-level image
+PRESENT  text artifact on parent                  PRESENT  text artifact on parent
+ABSENT   print-color-adjust in print CSS          PRESENT  print-color-adjust in print CSS
+<td class="child-evidence"></td>                  <td class="child-evidence"><div class="evidence">…<img …>
+```
+
+Browser probe (`.report-nav` placement + every toolbar link resolved), after:
+
+```
+report-nav parent=<div class="wrap">  inside .topbar? true  inside .masthead? false
+#sec-summary->LIVE | #sec-findings->LIVE | #sec-methodology->LIVE | #sec-evidence->LIVE
+```
 
 ## Red-then-green
-- (to be filled)
+Every guard was watched fail against a deliberately broken build, then pass once restored
+(`git checkout HEAD -- <file>`). Commands as run, from `scribble/`:
+
+```sh
+uv run --extra dev pytest -o addopts="" -p no:randomly --tb=line -W "ignore::pytest.PytestWarning" <module>
+```
+
+**1. ext#39 — remove the `print-color-adjust: exact` rule from `@media print`**
+```
+RED   8 failed, 5 passed   tests/test_report_print_media.py
+      assert 'economy' == 'exact'   ×6
+      FAILED …test_meaningful_fills_are_marked_print_exact[.sevbar .seg]  (+ .sevlegend .sw, .sev-tag,
+             .sev-badge, .metrics, .metric)
+      FAILED …test_pdf_printed_without_background_graphics_keeps_the_severity_fills[critical]
+             AssertionError: printing with background graphics off lost the critical fill: 504 painted
+             pixels vs 6774 with them on — this is what the client received
+      FAILED …[high]  17 painted pixels vs 6283
+GREEN 13 passed
+```
+
+**2. ext#39 — print palette back to plain `:root`, `--sev-*` pin removed**
+```
+RED   3 failed, 10 passed
+      FAILED …test_print_uses_the_light_severity_ramp_from_a_dark_viewer
+             printed the wrong severity ramp: rgb(239, 138, 68)
+      FAILED …test_print_uses_the_paper_palette_from_a_dark_viewer
+             printed the dark ink rgb(231, 238, 245) (paper ink is rgb(16, 32, 46)) onto white paper
+      FAILED …test_a_dark_template_still_prints_on_paper_colours
+             assert 'rgb(231, 238, 245)' == 'rgb(16, 32, 46)'
+GREEN 13 passed
+```
+
+**3. ext#42 — `_render_methodology` returns the pre-fix empty `<div id="sec-methodology"></div>`**
+```
+RED   3 failed, 9 passed   tests/test_report_nav_and_methodology.py
+      FAILED …test_methodology_renders_with_no_checklist_at_all
+             assert '<section class="sec group" id="sec-methodology">' in …
+      FAILED …test_the_methodology_anchor_is_a_section_not_an_empty_div
+      FAILED …test_framing_covers_only_the_assessment_types_this_report_carries
+GREEN 12 passed
+```
+
+**4. ext#42 — nav back to a fixed list (`nav_keys = tuple(_NAV_LABELS)`)**
+```
+RED   5 failed, 17 passed   nav_and_methodology + evidence_targets
+      FAILED …test_every_toolbar_section_link_targets_an_anchor_in_the_document[default]
+             toolbar links #sec-evidence but no element carries that id     (also [compliance], [dark])
+      FAILED …test_a_template_that_drops_the_methodology_block_emits_no_methodology_link
+      FAILED …test_no_engagement_artifacts_means_no_evidence_section_and_no_nav_link
+GREEN 22 passed
+```
+
+**5. ext#45 — back-links emitted inside `<header class="masthead">` again**
+```
+RED   2 failed, 10 passed
+      FAILED …test_back_links_render_in_the_toolbar
+      FAILED …test_back_links_are_not_in_the_document_masthead
+             assert 'report-nav' not in '<header cla…iv></header>'
+GREEN 12 passed
+```
+
+**6. ext#40(b) — child evidence cell back to the facts line only**
+```
+RED   4 failed, 6 passed   tests/test_report_evidence_targets.py
+      FAILED …test_artifact_on_a_nested_child_finding_renders
+             child-attached evidence is missing from the report
+      FAILED …test_every_matrix_row_is_present_exactly_where_expected  on-child.png rendered 0 time(s)
+      FAILED …test_child_row_with_no_evidence_shows_a_dash_not_a_blank_cell
+      FAILED …test_export_zip_carries_child_and_engagement_evidence
+GREEN 10 passed
+```
+
+**7. ext#40(a) — `build_report_context(...)` passes `artifacts=[]`**
+```
+RED   4 failed, 6 passed
+      FAILED …test_engagement_level_artifact_renders_in_the_evidence_appendix
+             no engagement-level evidence section rendered
+      FAILED …test_every_matrix_row_is_present_exactly_where_expected
+             engagement-level.png rendered 0 time(s)
+      FAILED …test_context_lists_only_unattached_artifacts   assert [] == ['engagement-level.png']
+      FAILED …test_export_zip_carries_child_and_engagement_evidence
+GREEN 10 passed
+```
+
+**8. ext#40(c) — the four response lines echoing `finding_id`/`finding_id_dropped` deleted**
+```
+RED   5 failed, 22 passed   tests/test_machine_artifacts.py
+      KeyError: 'finding_id'  ×5 — test_the_201_echoes_the_effective_finding_id,
+      test_an_engagement_level_upload_reports_a_null_finding_id,
+      test_a_foreign_finding_id_is_dropped_AND_the_caller_is_told,
+      test_a_missing_finding_id_is_dropped_the_same_way,
+      test_an_idempotent_replay_echoes_the_STORED_attachment
+GREEN 27 passed
+```
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md

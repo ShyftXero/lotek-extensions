@@ -174,7 +174,7 @@ user is operator/admin, not a demoted viewer.
 | `GET /scribble/machine/templates` | read | List active library templates. Filters: `?q=` (name contains), `?category=`, `?severity=`. |
 | `GET /scribble/machine/templates/<template_id>` | read | One template with full `content_json`, CVSS and references. 404 if missing or retired. |
 | `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id` **or** by promoting one `lotek_finding_id`. Optional `group_id`, `target_host`, `target_port`, `target_url`. |
-| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. |
+| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. |
 | `POST /scribble/machine/engagements/<engagement_id>/promote-job/<job_id>` | write | **Bulk-promote every finding of a scan job** into the engagement. |
 | `POST /scribble/machine/vuln-map` | write | Curate a scan-finding → template mapping. `template_id` required, plus at least one of `source`, `title_pattern`, `dedupe_prefix`. |
 | `GET /scribble/machine/vuln-map` | read | List the mappings. |
@@ -232,7 +232,8 @@ Promotion behaviour worth relying on:
   that write-up) or, failing a match, is bridged verbatim from the scan finding's own prose.
 - **Aggregating.** Findings that resolve to the same template are nested one level: a parent finding
   carries the write-up, per-host children carry their own target and evidence. The report renders that
-  nesting. (Nesting is produced by promotion; there is no drag-to-nest control on the board.)
+  nesting — including each child's own attached evidence, inside that child's row (see *Reports*).
+  (Nesting is produced by promotion; there is no drag-to-nest control on the board.)
 
 ### VulnMap resolution order
 
@@ -281,8 +282,33 @@ the group's own mode, `include_in_report` respected at group, finding **and** ar
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
 into the report.
 
+**Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before):
+
+| attached to | where it renders |
+|---|---|
+| a top-level finding | that finding's evidence gallery |
+| a nested per-host **child** finding | inside that child's row of the parent's *Affected hosts* table |
+| the **engagement** (no `finding_id`) | the **Evidence** appendix section, last in the document |
+
+An engagement-level artifact is exposed to the renderers as `ReportContext.artifacts` (an additive field
+on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
+link — are absent when there is nothing unattached, which is the normal case.
+
+**Methodology always renders.** With coverage checklists it is *Methodology and Coverage* and they are the
+record; with none it is *Methodology* carrying a standing phased description plus framing for the
+assessment types this report's sections actually use, and an explicit note that no engagement-specific
+coverage checklist was recorded (so the default cannot be misread as an attestation). The toolbar's
+section links are derived from the anchors the blocks actually rendered, so a link into an empty or absent
+section is structurally impossible (ext#42) — the toolbar also carries the back-links, leaving the
+masthead as the document's own title block (ext#45).
+
 There is **no server-side PDF renderer**. The HTML is a print-to-PDF deliverable; the `.docx` is the
-editable hand-off.
+editable hand-off. The print stylesheet marks the elements whose BACKGROUND carries meaning
+(severity bar and legend, severity tags/badges, the metric and methodology tiles) `print-color-adjust:
+exact`, so they survive Chrome's *Background graphics: off* — the print-dialog default, under which the
+severity block used to print blank (ext#39). It also pins the light paper palette at a specificity that
+beats the dark-theme selectors, so printing from a dark-mode browser does not put near-white ink on white
+paper.
 
 Both renderers read artifact bytes through a reader confined to Scribble's artifact directory
 (`<instance>/artifacts/`), so a crafted `storage_path` cannot escape it, and the `.docx` renderer skips
