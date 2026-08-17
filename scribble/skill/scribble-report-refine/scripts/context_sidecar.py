@@ -109,7 +109,30 @@ def build_sidecar_dict(
     """
     engagement = _find_engagement(session, engagement_id=engagement_id, engagement_name=engagement_name)
     context = build_report_context(engagement)
-    return asdict(context)
+    return _jsonable(asdict(context))
+
+
+def _jsonable(value):
+    """Recursively render a value plain-JSON-serializable, stringifying UUIDs (and dates).
+
+    The docstring above promises "the plain-dict, JSON-serializable sidecar the skill's input contract
+    promises", and since lotek#335 every Scribble id in that context is a ``uuid.UUID`` — which
+    ``json.dumps`` refuses outright. Stringifying at the boundary keeps the promise where it is made,
+    rather than leaving each consumer to discover the exception; ids are opaque handles to the skill,
+    so their textual form loses nothing.
+    """
+    import datetime as _dt
+    import uuid as _uuid
+
+    if isinstance(value, _uuid.UUID):
+        return str(value)
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
 
 
 def main(args: list[str]) -> int:
@@ -124,7 +147,8 @@ def main(args: list[str]) -> int:
         ),
     )
     parser.add_argument("--db", required=True, help="Path to the Scribble SQLite database file.")
-    parser.add_argument("--engagement-id", type=int, default=None, help="Engagement id to look up.")
+    # UUIDv7 since lotek#335 — `type=int` made the CLI reject every real id with SystemExit(2).
+    parser.add_argument("--engagement-id", type=str, default=None, help="Engagement id to look up.")
     parser.add_argument(
         "--engagement-name",
         default=None,
@@ -138,7 +162,11 @@ def main(args: list[str]) -> int:
             session, engagement_id=ns.engagement_id, engagement_name=ns.engagement_name
         )
 
-    Path(ns.out).write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    # `default=str` because a report context carries uuid.UUID ids (and dates); without it this
+    # raises "Object of type UUID is not JSON serializable" and writes nothing.
+    Path(ns.out).write_text(
+        json.dumps(data, indent=2, sort_keys=True, default=str), encoding="utf-8"
+    )
     return 0
 
 
