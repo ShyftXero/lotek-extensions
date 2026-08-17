@@ -229,9 +229,7 @@ def _render_artifact_gallery(
     if not artifacts:
         return ""
     items = "".join(_render_gallery_item(a, resolver) for a in artifacts)
-    cap = (
-        f'<div class="evidence-label">{_esc(label)} ({len(artifacts)})</div>' if label else ""
-    )
+    cap = f'<div class="evidence-label">{_esc(label)} ({len(artifacts)})</div>' if label else ""
     return f'<div class="evidence">{cap}<div class="evidence-grid">{items}</div></div>'
 
 
@@ -481,7 +479,7 @@ def _render_header(
     section_links = "".join(
         f'<a href="#sec-{key}">{_esc(_NAV_LABELS[key])}</a>' for key in nav_keys if key in _NAV_LABELS
     )
-    section_nav = f"<nav class=\"tb-sections\">{section_links}</nav>" if section_links else ""
+    section_nav = f'<nav class="tb-sections">{section_links}</nav>' if section_links else ""
 
     topbar = (
         '<div class="topbar no-print"><div class="wrap">'
@@ -689,11 +687,12 @@ def _render_checklist_compliance(cl) -> str:
 
 
 # The standing methodology description: what the assessment process WAS, in phases, plus how severity is
-# arrived at. Rendered whenever the engagement has no coverage checklist of its own, because the
-# alternative shipped for months and is what a client complained about: the whole Methodology section
-# silently absent, with a live toolbar link into an empty anchor (ext#42). Deliberately says nothing
-# about which specific tools ran or which hosts were touched — that is per-engagement fact and belongs to
-# the findings, the coverage checklist and the scope statement, not to standing boilerplate.
+# arrived at. Always rendered (a coverage checklist ADDS its record below it, and is not a substitute for
+# describing the approach), because the alternative shipped for months and is what a client complained
+# about: the whole Methodology section silently absent, with a live toolbar link into an empty anchor
+# (ext#42). Deliberately says nothing about which specific tools ran or which hosts were touched — that is
+# per-engagement fact and belongs to the findings, the coverage checklist and the scope statement, not to
+# standing boilerplate.
 _METHODOLOGY_PHASES: tuple[tuple[str, str], ...] = (
     (
         "Scoping and rules of engagement",
@@ -803,11 +802,12 @@ def _render_methodology(ctx: ReportContext) -> str:
     """The Methodology section — ALWAYS non-empty, and always the owner of the ``#sec-methodology``
     anchor the toolbar links to.
 
-    With coverage/reminder checklists that opted into the report it is "Methodology and Coverage" and the
-    checklists are the record. With none, it is "Methodology" and carries the standing description
-    (:func:`_methodology_prose`) plus an explicit note that no engagement-specific coverage record
-    exists — so the default can never be misread as an attestation of coverage that nobody recorded.
-    Compliance checklists render as their own Compliance Attestation appendix, unchanged.
+    It always carries the standing description (:func:`_methodology_prose`). With coverage/reminder
+    checklists that opted into the report it is titled "Methodology and Coverage" and renders them below
+    the description as the coverage record; with none it is titled "Methodology" and adds an explicit note
+    that no engagement-specific coverage record exists — so the standing text can never be misread as an
+    attestation of coverage nobody recorded. Compliance checklists render as their own Compliance
+    Attestation appendix, unchanged.
     """
     coverage = [c for c in ctx.checklists if c.kind != "compliance"]
     compliance = [c for c in ctx.checklists if c.kind == "compliance"]
