@@ -332,6 +332,24 @@ def test_the_contents_escape_a_finding_title(session_factory):
     assert "<img" not in toc
 
 
+def test_the_synthetic_ungrouped_bucket_is_listed_and_linkable(session_factory):
+    """``build_report_context`` appends a synthetic *Ungrouped* group (``id is None``) for findings with no
+    group. Its anchor is ``group-ungrouped``, which is the one anchor not derived from a database id."""
+    with session_factory() as db:
+        eng = Engagement(name="Loose findings", company_name="Acme")
+        EngagementFinding(
+            engagement=eng, title="Directory Listing Enabled", severity=Severity.low, order_index=0,
+            content_json={"description": _block("Listing on /assets.")},
+        )
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    html = _render(session_factory, eid)
+    assert 'href="#group-ungrouped"' in _toc(html)
+    assert 'id="group-ungrouped"' in html
+    assert "Directory Listing Enabled" in _toc(html)
+
+
 def test_an_engagement_with_no_findings_has_no_dangling_contents_entries(session_factory):
     """``_render_groups`` emits an id-less placeholder section when there are no groups; the contents must
     not invent a link for it."""
