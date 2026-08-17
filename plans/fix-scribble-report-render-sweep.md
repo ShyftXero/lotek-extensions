@@ -239,16 +239,22 @@ cd scribble && uv run --extra dev pyrefly check \
     scribble/reporting/templates.py scribble/api_pat.py \
     tests/test_report_*.py tests/test_machine_artifacts.py  # 0 errors
 cd scribble && uv run --extra dev pytest -o addopts="" -q -rs
-# 649 passed, 2 skipped in 307.53s   (rc=0)
+# first pass  (13ae528): 649 passed, 2 skipped in 307.53s   (rc=0)
+# ext#43 pass (22cc9da): 677 passed, 2 skipped in 332.10s   (rc=0)
 #   SKIPPED tests/test_db_additive_migration.py:82  — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 #   SKIPPED tests/test_db_additive_migration.py:136 — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 ```
 
 Both skips are pre-existing and unrelated to this branch (they belong to the SoftHostId retrofit and want
 a real Postgres). **Nothing in this branch skipped** — Chromium is present, so all 13 print-media browser
-tests ran, and poppler is present, so the rasterized-PDF comparison ran too. Note `pytest`'s
-`addopts = "-q"` in `pyproject.toml`: passing `-q` again suppresses the summary line, hence
-`-o addopts=""` above.
+tests plus the 4 browser cases and the PDF-page check in `test_report_cover_and_toc.py` ran, and poppler is
+present (`pdftoppm` + `pdftotext`), so the rasterized-PDF comparison and the page-1/page-2 text check ran
+too. Note `pytest`'s `addopts = "-q"` in `pyproject.toml`: passing `-q` again suppresses the summary line,
+hence `-o addopts=""` above.
+
+The printed pages were also **looked at**, not only asserted on: pages 1–3 of the probe PDF rasterized at
+80 dpi (cover / contents / executive summary). The severity bar's orange fill is painted on page 3 of a
+`print_background=False` PDF, which is ext#39 still holding at the new pagination.
 
 Not run here, and not this branch's gate: the MOUNTED lotek-side suite (`lotek/tests/test_scribble_*`).
 Nothing in this change touches the host seam or an authorization path — the API change is two additive
