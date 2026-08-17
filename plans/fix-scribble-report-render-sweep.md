@@ -5,7 +5,7 @@
 - **Status:** 🟢 ready to merge
 
 ## Purpose
-Four **client-reported, reproduced** defects in scribble's HTML report renderer, surfaced when an agent
+Five **client-reported, reproduced** defects in scribble's HTML report renderer, surfaced when an agent
 drove the lotek PROD instance over a PAT to author a real TeamsPlus deliverable and the client sent back a
 UX punch list. Triage notes + repro scripts + PDF/PNG evidence:
 `~/tmp/teamsplus_lotek_notes/lotek_triage/`.
@@ -16,6 +16,11 @@ UX punch list. Triage notes + repro scripts + PDF/PNG evidence:
 | ext#42 | Methodology vanishes with no checklist, leaving a live nav link to an empty anchor |
 | ext#45 | back-nav (`← Dashboard` / `← Back to engagement`) sits inside the document masthead, not the toolbar |
 | ext#40 | image evidence never renders for a nested-CHILD finding, nor for an ENGAGEMENT-level artifact (`finding_id` null) — both silent, both 201 |
+| ext#43 | no cover page, no table of contents, and an executive summary that is one generated sentence plus a dashboard |
+
+They are one branch because they are one file: all five edit `scribble/reporting/render_html.py`, so
+parallel worktrees would have fought over it. ext#43 was implemented in a second pass, on top of the
+first four.
 
 ## Done
 - [x] **ext#39** — `print-color-adjust: exact` (+ `-webkit-`) scoped to the elements whose *background*
@@ -48,12 +53,37 @@ UX punch list. Triage notes + repro scripts + PDF/PNG evidence:
   behaviour unchanged (a foreign `finding_id` is still dropped, not 404'd — the comment at the check
   explains why); only its observability changed. The idempotent replay reports the **stored**
   attachment, not what the retry asked for.
-- [x] Tests: 3 new modules (13 + 12 + 10) + 5 cases on `tests/test_machine_artifacts.py`.
+- [x] **ext#43(a) — cover page.** A new `cover` block key, first in every shipped template: client
+  eyebrow, engagement title, assessment kind, and a fact table (Client · Assessment type · Testing window ·
+  Assessor · Report date · Engagement reference) built ONLY from `ReportContext` fields the masthead
+  already carried — a row whose field is empty is omitted, not printed as `—`. Plus the `Confidential`
+  badge and a standing handling notice. `break-after: page` in `@media print`.
+- [x] **ext#43(a), the part that is not cosmetic** — the cover REPLACES the masthead on paper
+  (`body.has-cover .masthead { display: none }` in `@media print`). `header.masthead` sits *before*
+  `main`, so leaving it visible printed it ahead of the cover and page 1 still would not have been the
+  title page. The `has-cover` class is stamped by the renderer only when a cover actually rendered, so a
+  template that drops the `cover` block keeps its masthead and still has a title on paper.
+- [x] **ext#43(b) — table of contents.** A new `toc` block key: sections at level 1, each section's
+  top-level findings (with severity) at level 2. **Derived** from the template's own block list and the
+  same conditions the block renderers use, so it lists what the document has and nothing else — reorder or
+  drop a block and the contents follow. Group sections gained `id="group-<id>"` (they had only
+  `data-group-id`, i.e. nothing to link) and the Compliance Attestation section gained
+  `id="sec-compliance"`.
+- [x] **ext#43(c) — the executive summary reads as a document, not a dashboard.** The summary now opens on
+  front matter: an *Engagement overview* (factual clauses assembled from `scope_type` / dates / `ASSESSOR`,
+  each omitted when the field is empty, followed by the existing generated narrative) and a *Scope and
+  limitations* statement (point-in-time, absence-of-evidence, non-destructive). The severity bar gained
+  rating definitions directly beneath it — the legend showed counts and never said what a rating means,
+  which is half of the client's "three plain columns of numbers". The risk banner, bar, tiles and index are
+  unchanged and now sit *below* the prose.
+- [x] Tests: 4 new modules (13 + 12 + 10 + 27) + 5 cases on `tests/test_machine_artifacts.py`.
 - [x] Docs: `scribble/docs/SCRIBBLE.md` — where evidence renders, methodology/nav behaviour, the print
-  colour contract, and the upload response's new fields.
+  colour contract, the upload response's new fields, and the cover/contents/front-matter contract.
 
 ## Remaining
-- [ ] Nothing owed for these four issues. See "explicitly out of scope" below.
+- [ ] Nothing owed for these five issues. See "explicitly out of scope" below — in particular, the
+  **editable** per-engagement prose block (ext#43's third part beyond boilerplate) is deliberately NOT
+  half-built here; the exact remaining work is written out below.
 
 ## Notes / gotchas
 
@@ -89,14 +119,55 @@ Moving the back-links in made three groups + the actions exceed the 1080px measu
 (`min-height: 52px`, `flex-wrap`), each group is `flex: 0 0 auto`, and `.btn` is `white-space: nowrap`, so
 a squeeze moves a whole group to a second line instead of breaking a label. Verified by screenshot.
 
+### 🔴 ext#43: what was NOT built — the editable engagement prose field
+The issue asks for three things and the third has two halves. **Standing boilerplate** (front matter that is
+true of every engagement) is shipped: it lives in module constants next to `_METHODOLOGY_PHASES`
+(`_COVER_HANDLING`, `_LIMITATIONS`, `_SEVERITY_DEFINITIONS`), which is *template-level* prose — one place to
+edit, no per-engagement data. **An operator-authored engagement overview is not**, and was not faked:
+
+- There is no field for it anywhere in the model. `Engagement` has `name`/`scope_type`/`company_name`/dates/
+  `status`/`guid`/`distribution_list`/`created_by` — and `distribution_list` (`Text`) is itself **dead**:
+  declared, never read, never written by any route, so it is not a hook, it is a stub.
+- The variable store looks like a shortcut and is not one. `scribble_variables` + `scribble_variable_values`
+  do hold engagement-scoped text, and `ReportContext.variables` already reaches them — but there is **no
+  route anywhere** (cookie UI or machine API) that creates a custom `TemplateVariable` or sets a
+  `VariableValue`. `known_variable_keys` is read once, to populate the editor's token list. So a
+  `ctx.variables["ENGAGEMENT_OVERVIEW"]` hook would have been a hook nobody can reach — shipped-and-dead,
+  which is worse than absent because it reads as done.
+- Doing it properly is: a ProseMirror doc column on `Engagement` (the finding editor's autosave/sanitize
+  plumbing is reusable, `prosemirror_sanitize` + `autosave_api`), an editor surface on the engagement page,
+  a machine route so a PAT client can author it, a `ReportContext` field, renderer support in **both**
+  `render_html` and `render_docx`, and a fallback to the generated narrative. That is a schema + editor +
+  API change and belongs in its own branch.
+
+The generated narrative therefore remains the only per-engagement prose in the summary — but it is now the
+*second* sentence of a titled overview rather than the whole section.
+
+### 🔴 The standing prose is a JUDGEMENT CALL — read it before merging
+Same flag the ext#42 methodology text carries, for the same reason. `_LIMITATIONS`, `_COVER_HANDLING` and
+`_SEVERITY_DEFINITIONS` in `render_html.py` assert things about how this practice works ("Testing was
+non-destructive", "anything outside the agreed scope was not touched", what each severity means and how
+urgently to fix it). They are true of this practice and are deliberately tool-free, host-free and
+engagement-fact-free — every engagement-specific clause on the cover and in the overview comes from a
+`ReportContext` field and disappears when the field is empty. But they are boilerplate a human should sign
+off on, because they now appear in a client deliverable over the assessor's name. The parts of ext#43 that
+are *not* a judgement call — the cover page, the contents, the two-way TOC completeness guard — hold
+whatever you do to the prose.
+
+### The printed contents carry no page numbers
+Not an oversight: page numbers in a CSS-paginated TOC need `target-counter()`, which Chrome's print engine
+does not implement — and Chrome is what renders this PDF (`page.pdf()` / the browser's own print dialog).
+The entries are real anchors, so they are live links in the PDF; what the printed contents give a reader is
+the document's shape and order. Baking numbers in would mean a paged-media renderer (WeasyPrint/Prince),
+which is a much bigger dependency decision than this issue.
+
 ### Explicitly out of scope (other issues, not silently skipped)
-- **Cover page / TOC / richer exec summary** — ext#43. `repro_report.py` still reports `class="cover"` and
-  `class="toc"` ABSENT, correctly.
 - **Vector diagram embed** — ext#48. Note it interacts with this branch: attaching `export.html` as an
   engagement artifact now at least *reaches* the deliverable (Evidence appendix) instead of vanishing.
 - **`render_docx`** — the `.docx` renderer was NOT given the standing methodology prose, child-evidence
-  images, or the engagement-level appendix. All four issues are about the HTML/PDF deliverable the client
-  read; docx parity is a separate change and a separate risk surface (docxtpl template edits).
+  images, the engagement-level appendix, the cover page, the contents or the summary front matter. All five
+  issues are about the HTML/PDF deliverable the client read; docx parity is a separate change and a separate
+  risk surface (docxtpl template edits, and Word owns pagination and its own TOC field).
 - **Checklist-editor styling** (ext#44), **findings CRUD parity** (ext#41), **invoice number** (ext#46),
   **onboarding message** (ext#47) — different tracks.
 
