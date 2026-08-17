@@ -126,6 +126,76 @@ def test_upload_can_be_attached_to_a_finding(client, stub_host, session_factory)
         assert db.get(fm.Artifact, resp.get_json()["id"]).finding_id == fid
 
 
+# ── the response says WHERE the evidence actually landed (ext#40) ─────────────────────────────────
+
+
+def _finding_on(session_factory, engagement_id: int, title: str = "XSS") -> int:
+    with session_factory() as db:
+        finding = fm.EngagementFinding(engagement_id=engagement_id, title=title, severity="high")
+        db.add(finding)
+        db.commit()
+        return finding.id
+
+
+def test_the_201_echoes_the_effective_finding_id(client, stub_host, session_factory):
+    eid = _engagement(client, stub_host)
+    fid = _finding_on(session_factory, eid)
+    body = _upload_json(client, eid, finding_id=fid).get_json()
+    assert body["finding_id"] == fid
+    assert body["finding_id_dropped"] is False
+
+
+def test_an_engagement_level_upload_reports_a_null_finding_id(client, stub_host):
+    """Evidence attached to the engagement itself (no ``finding_id``) is legitimate — it renders in the
+    report's Evidence appendix (ext#40) — and the response says so explicitly rather than leaving the
+    caller to assume a finding attach happened."""
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid).get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is False
+
+
+def test_a_foreign_finding_id_is_dropped_AND_the_caller_is_told(client, stub_host, session_factory):
+    """The tenancy rule stays exactly as it was — a ``finding_id`` belonging to ANOTHER engagement is
+    dropped rather than 404'd, so an attacker-chosen image can never be bolted onto someone else's
+    finding — but the caller can now DETECT it. Before, both cases answered 201 with a URL and were
+    indistinguishable, and the dropped one silently became engagement-level evidence."""
+    eid = _engagement(client, stub_host)
+    other = _engagement(client, stub_host, name="Other engagement")
+    foreign_fid = _finding_on(session_factory, other, title="Someone else's finding")
+
+    resp = _upload_json(client, eid, finding_id=foreign_fid)
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["finding_id"] is None, "a foreign finding_id must not be honoured"
+    assert body["finding_id_dropped"] is True, "a dropped attachment must be visible to the caller"
+    with session_factory() as db:
+        assert db.get(fm.Artifact, body["id"]).finding_id is None
+        assert db.get(fm.EngagementFinding, foreign_fid).artifacts == []
+
+
+def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid, finding_id=999999).get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is True
+
+
+def test_an_idempotent_replay_echoes_the_STORED_attachment(client, stub_host, session_factory):
+    """A retry must report where the evidence actually sits, not what this request asked for: a replay
+    whose ``finding_id`` differs from the stored one is told the attachment was not applied."""
+    eid = _engagement(client, stub_host)
+    fid = _finding_on(session_factory, eid)
+    first = _upload_json(client, eid, idempotency_key="k1")  # engagement-level
+    assert first.get_json()["finding_id"] is None
+
+    replay = _upload_json(client, eid, idempotency_key="k1", finding_id=fid)
+    assert replay.status_code == 200
+    assert replay.get_json()["id"] == first.get_json()["id"]
+    assert replay.get_json()["finding_id"] is None
+    assert replay.get_json()["finding_id_dropped"] is True
+
+
 def test_explicit_kind_and_placement_are_honoured(client, stub_host, session_factory):
     eid = _engagement(client, stub_host)
     resp = _upload_json(client, eid, kind="file", placement="inline")
