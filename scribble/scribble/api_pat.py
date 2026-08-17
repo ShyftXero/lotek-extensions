@@ -1029,6 +1029,12 @@ def scribble_upload_artifact(engagement_id: int):
                 return jsonify({
                     "id": existing.id, "url": artifact_url(existing.id),
                     "kind": existing.kind.value, "filename": existing.filename,
+                    # Same effective-attachment echo as the 201 below: a replay must report where the
+                    # evidence ACTUALLY sits, and a retry whose finding_id differs from the stored one
+                    # (e.g. the first attempt's id was dropped as foreign) is told so rather than
+                    # reading a bare 200 as "attached, as asked".
+                    "finding_id": existing.finding_id,
+                    "finding_id_dropped": fid is not None and existing.finding_id != fid,
                 }), 200
 
     content_type = guess_content_type(filename, data)
@@ -1059,6 +1065,7 @@ def scribble_upload_artifact(engagement_id: int):
         # image and caption onto a finding in someone else's report, where it renders into that client's
         # deliverable. Silently dropping the association (rather than 404ing) matches the `group_id`
         # precedent: the artifact still lands on the engagement the URL named, unattached.
+        requested_fid = fid
         if fid is not None:
             target = db.get(EngagementFinding, fid)
             if target is None or target.engagement_id != engagement_id:
@@ -1083,6 +1090,14 @@ def scribble_upload_artifact(engagement_id: int):
         return jsonify({
             "id": artifact.id, "url": artifact_url(artifact.id),
             "kind": artifact.kind.value, "filename": artifact.filename,
+            # Echo the EFFECTIVE attachment, so a caller can tell an attach from a silent drop. The
+            # tenancy rule above deliberately does not 404 on a foreign `finding_id` (see its comment),
+            # which used to make the two cases indistinguishable at the wire: both answered 201 with a
+            # URL, and a dropped one then landed as engagement-level evidence. `finding_id` is what the
+            # artifact is actually attached to (null = the engagement itself) and `finding_id_dropped`
+            # says the request asked for one that was not honored.
+            "finding_id": artifact.finding_id,
+            "finding_id_dropped": requested_fid is not None and artifact.finding_id != requested_fid,
         }), 201
 
 

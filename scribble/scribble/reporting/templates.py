@@ -9,7 +9,9 @@ layout is just the ``default`` template.
 Blocks (keys dispatched in ``render_html._render_block_by_key``):
 - ``summary``     — Executive Summary (risk banner, narrative, severity bar, metrics, findings index).
 - ``findings``    — the filter bar + the finding groups.
-- ``methodology`` — the methodology / coverage / compliance checklists.
+- ``methodology`` — the standing methodology description + coverage / compliance checklists.
+- ``evidence``    — appendix of ENGAGEMENT-level evidence (artifacts with no ``finding_id``). Renders
+  nothing when there is none, which is the normal case; the toolbar link follows the rendered anchor.
 
 Theme (stamped on ``<html data-theme=…>`` by ``render_html``):
 - ``auto``  — no stamp; follows the viewer's ``prefers-color-scheme`` (current default behavior).
@@ -23,7 +25,7 @@ from dataclasses import dataclass
 
 # Every block key a template may reference. Kept here so an unknown key in a template is a caught
 # programming error, and so a future editor can offer the closed set.
-BLOCK_KEYS: tuple[str, ...] = ("summary", "findings", "methodology")
+BLOCK_KEYS: tuple[str, ...] = ("summary", "findings", "methodology", "evidence")
 THEMES: tuple[str, ...] = ("auto", "light", "dark")
 
 
@@ -40,13 +42,17 @@ class ReportTemplate:
             assert b in BLOCK_KEYS, f"unknown block {b!r}"
 
 
-_STANDARD_BLOCKS = ("summary", "findings", "methodology")
+# ``evidence`` sits LAST in every shipped template: it is an appendix of engagement-level material, so it
+# belongs after the findings and the methodology rather than interrupting either.
+_STANDARD_BLOCKS = ("summary", "findings", "methodology", "evidence")
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
 _TEMPLATES: tuple[ReportTemplate, ...] = (
     ReportTemplate("default", "Standard", "auto", _STANDARD_BLOCKS),
     # Methodology/coverage BEFORE findings — proves a template can reorder whole sections.
-    ReportTemplate("compliance", "Compliance-first", "auto", ("summary", "methodology", "findings")),
+    ReportTemplate(
+        "compliance", "Compliance-first", "auto", ("summary", "methodology", "findings", "evidence")
+    ),
     # Same layout, dark theme forced — proves a template can carry theme.
     ReportTemplate("dark", "Dark", "dark", _STANDARD_BLOCKS),
 )

@@ -53,6 +53,15 @@ SEVERITY_ORDER: tuple[str, ...] = tuple(s.value for s in _ENUM_SEVERITY_ORDER)  
 _BLOCK_LABELS = {"description": "Description", "remediation": "Remediation", "details": "Details"}
 _BLOCK_ORDER = ("description", "remediation", "details")
 
+# Toolbar label per top-level block key (``reporting.templates.BLOCK_KEYS``). A key is linked only when
+# its block actually rendered its ``id="sec-<key>"`` anchor — see ``_render_document``/``_render_header``.
+_NAV_LABELS = {
+    "summary": "Summary",
+    "findings": "Findings",
+    "methodology": "Methodology",
+    "evidence": "Evidence",
+}
+
 # A 1x1 transparent GIF — the fallback ``src`` for an inline image that can't be resolved (no bytes
 # available / not embedding), so the document never emits an empty/broken external-looking src.
 _BLANK_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
@@ -209,14 +218,21 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
 
 
 def _render_gallery(f: FindingCtx, resolver: _AssetResolver) -> str:
-    if not f.artifacts:
+    return _render_artifact_gallery(f.artifacts, resolver)
+
+
+def _render_artifact_gallery(
+    artifacts: list[ArtifactCtx], resolver: _AssetResolver, *, label: str | None = "Evidence"
+) -> str:
+    """An evidence grid for any artifact list. ``label=None`` drops the "Evidence (n)" caption, for a
+    gallery rendered somewhere that already says what it is (a child instance's table cell)."""
+    if not artifacts:
         return ""
-    items = "".join(_render_gallery_item(a, resolver) for a in f.artifacts)
-    n = len(f.artifacts)
-    return (
-        '<div class="evidence"><div class="evidence-label">'
-        f'Evidence ({n})</div><div class="evidence-grid">{items}</div></div>'
+    items = "".join(_render_gallery_item(a, resolver) for a in artifacts)
+    cap = (
+        f'<div class="evidence-label">{_esc(label)} ({len(artifacts)})</div>' if label else ""
     )
+    return f'<div class="evidence">{cap}<div class="evidence-grid">{items}</div></div>'
 
 
 def _affected_assets(f: FindingCtx) -> list[tuple[str, str | None]]:
@@ -322,14 +338,31 @@ def _child_summary_text(c: FindingCtx) -> str:
     return c.facts_line
 
 
-def _render_children(f: FindingCtx) -> str:
+def _render_child_evidence_cell(c: FindingCtx, resolver: _AssetResolver) -> str:
+    """The Evidence cell for one child instance: its per-host facts line AND its own attached artifacts.
+
+    The gallery half is ext#40: ``_render_finding`` gives a top-level finding's artifacts a gallery, but a
+    CHILD was only ever rendered through this table, whose Evidence column was the facts line alone. A
+    screenshot attached to a promoted per-host instance therefore produced an empty cell — and promoted
+    scan findings are exactly where nesting comes from (``scribble.promote.promote_job``), so per-host
+    evidence was the case most likely to be lost. An em-dash keeps a genuinely empty cell scannable
+    instead of blank."""
+    facts = _child_summary_text(c)
+    gallery = _render_artifact_gallery(c.artifacts, resolver, label=None)
+    if not facts and not gallery:
+        return '<span class="muted">—</span>'
+    facts_html = f'<div class="child-facts">{_esc(facts)}</div>' if facts else ""
+    return facts_html + gallery
+
+
+def _render_children(f: FindingCtx, resolver: _AssetResolver) -> str:
     """A COMPACT per-host list for a parent finding's children -- rendered once, collapsed by default,
     instead of one full finding card per instance (see module docstring header)."""
     if not f.children:
         return ""
     rows = "".join(
         f'<tr><td class="child-host">{_esc(_child_host_label(c))}</td>'
-        f'<td class="child-evidence">{_esc(_child_summary_text(c))}</td></tr>'
+        f'<td class="child-evidence">{_render_child_evidence_cell(c, resolver)}</td></tr>'
         for c in f.children
     )
     n = len(f.children)
@@ -359,7 +392,7 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         f'<div class="finding-badges">{badges}</div></div>'
         f'<div class="finding-body">{body}</div>'
         f"{_render_gallery(f, resolver)}"
-        f"{_render_children(f)}"
+        f"{_render_children(f, resolver)}"
         "</article>"
     )
 
@@ -402,12 +435,18 @@ def _render_header(
     ctx: ReportContext,
     template: ReportTemplate,
     *,
+    nav_keys: tuple[str, ...] = (),
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
 ) -> str:
-    """A sticky command bar (layout switcher + section jumps + print/expand/collapse) over a flat,
-    hairline-ruled masthead. All on-screen chrome carries ``no-print`` so the PDF opens straight on the
-    masthead."""
+    """A sticky command bar (back-links + section jumps + layout switcher + print/expand/collapse) over
+    a flat, hairline-ruled masthead. All on-screen chrome carries ``no-print`` so the PDF opens straight
+    on the masthead.
+
+    ``nav_keys`` are the block keys that actually rendered an ``id="sec-<key>"`` anchor into THIS
+    document, in document order — see ``_render_document``. Section links are emitted for those and only
+    those: a link to an anchor that isn't in the document reads as a broken report to the client clicking
+    it (ext#42, where a checklist-less engagement kept a live "Methodology" link to an empty anchor)."""
     opts = "".join(
         f'<option value="{_esc(t.name)}"{" selected" if t.name == template.name else ""}>'
         f"{_esc(t.label)}</option>"
@@ -428,6 +467,10 @@ def _render_header(
         sub_bits.append('<span class="dot">·</span>')
         sub_bits.append(f"<span>Assessor: {_esc(assessor)}</span>")
 
+    # Back-links live in the TOOLBAR, not in the masthead (ext#45). They are navigation, and the
+    # masthead is the document's own title block — client eyebrow, report title, dates, assessor,
+    # Confidential — which is also what a cover page is built from. Wedging app chrome above the client's
+    # name is what the client saw and complained about.
     back_links: list[str] = []
     if dashboard_url:
         back_links.append(f'<a href="{_esc(dashboard_url)}">← Dashboard</a>')
@@ -435,11 +478,16 @@ def _render_header(
         back_links.append(f'<a href="{_esc(engagement_url)}">← Back to engagement</a>')
     back_html = f'<nav class="report-nav no-print">{"".join(back_links)}</nav>' if back_links else ""
 
+    section_links = "".join(
+        f'<a href="#sec-{key}">{_esc(_NAV_LABELS[key])}</a>' for key in nav_keys if key in _NAV_LABELS
+    )
+    section_nav = f"<nav class=\"tb-sections\">{section_links}</nav>" if section_links else ""
+
     topbar = (
         '<div class="topbar no-print"><div class="wrap">'
         '<div class="tb-brand"><span class="tb-mark"></span> Scribble</div>'
-        '<nav><a href="#sec-summary">Summary</a><a href="#sec-findings">Findings</a>'
-        '<a href="#sec-methodology">Methodology</a></nav>'
+        f"{back_html}"
+        f"{section_nav}"
         f'<div class="tb-actions">{switcher}'
         '<button class="btn ghost" type="button" data-action="expand-all">Expand all</button>'
         '<button class="btn ghost" type="button" data-action="collapse-all">Collapse all</button>'
@@ -448,7 +496,6 @@ def _render_header(
     )
     masthead = (
         '<header class="masthead"><div class="wrap">'
-        f"{back_html}"
         '<div class="row"><div>'
         f'<div class="eyebrow">{eyebrow}</div><h1>{_esc(ctx.engagement_name)}</h1>'
         f'<div class="sub">{"".join(sub_bits)}</div></div>'
@@ -641,28 +688,171 @@ def _render_checklist_compliance(cl) -> str:
     return "".join(parts)
 
 
-def _render_checklists(ctx: ReportContext) -> str:
-    """Coverage/reminder checklists render a Methodology and Coverage section; compliance checklists
-    render a Compliance Attestation appendix grouped by framework. Only checklists that opted into the
-    report (``include_in_report``) reach here -- see ``build_report_context._build_checklists``."""
-    if not ctx.checklists:
-        return ""
+# The standing methodology description: what the assessment process WAS, in phases, plus how severity is
+# arrived at. Rendered whenever the engagement has no coverage checklist of its own, because the
+# alternative shipped for months and is what a client complained about: the whole Methodology section
+# silently absent, with a live toolbar link into an empty anchor (ext#42). Deliberately says nothing
+# about which specific tools ran or which hosts were touched — that is per-engagement fact and belongs to
+# the findings, the coverage checklist and the scope statement, not to standing boilerplate.
+_METHODOLOGY_PHASES: tuple[tuple[str, str], ...] = (
+    (
+        "Scoping and rules of engagement",
+        "The in-scope assets, the testing window and the permitted level of intrusiveness were agreed "
+        "before testing began, and testing stayed inside them.",
+    ),
+    (
+        "Reconnaissance and enumeration",
+        "In-scope assets were enumerated to establish what is actually reachable and what each exposed "
+        "service claims to be — the inventory every later phase is measured against.",
+    ),
+    (
+        "Vulnerability identification",
+        "Reachable services and applications were examined for known-vulnerable versions, weak "
+        "configuration and exposed functionality, using tooling to widen coverage rather than to decide "
+        "the result.",
+    ),
+    (
+        "Manual validation",
+        "Every candidate weakness was validated by hand before it was reported, so a finding in this "
+        "report is an observed condition in this environment rather than a scanner's guess. Candidates "
+        "that did not survive validation are not reported.",
+    ),
+    (
+        "Controlled exploitation and impact assessment",
+        "Where the rules of engagement permitted it, a validated weakness was exercised only as far as "
+        "was needed to establish its real impact. Activity was kept to the minimum that demonstrates the "
+        "consequence, and no destructive action was taken.",
+    ),
+    (
+        "Rating and reporting",
+        "Each finding was rated on impact and exploitability in the context of this environment. Where a "
+        "CVSS vector was available it is recorded on the finding; the severity shown is the assessor's "
+        "rating for this environment, which may differ from a vendor's generic score.",
+    ),
+)
+
+# Per-assessment-type framing, keyed on ``GroupCtx.type_slug`` — rendered only for the types this
+# engagement's report sections actually carry, so the section describes THIS report rather than a menu of
+# everything Scribble can do. Prose condensed from skill/scribble-report-refine/references/methodology.md
+# (the same framing the report-refine skill writes narratives against, so the two cannot contradict).
+_METHODOLOGY_FRAMING: dict[str, tuple[str, str]] = {
+    "internal": (
+        "Internal network",
+        "An internal assessment simulates an attacker who already has a foothold inside the network — a "
+        "compromised workstation, a malicious insider, an implant dropped by a phishing pretext "
+        "elsewhere. Findings in this section are framed as lateral movement and blast radius: what such "
+        "an attacker could reach, escalate to, or pivot through once already inside the perimeter.",
+    ),
+    "external": (
+        "External perimeter",
+        "An external assessment simulates an anonymous attacker on the open internet with no prior "
+        "access. Findings in this section are framed as initial access: what is reachable and "
+        "unauthenticated from outside, and what exploiting it hands an attacker as a first foothold.",
+    ),
+    "web-app": (
+        "Web application",
+        "A web application assessment targets the application's own logic and trust boundaries rather "
+        "than network-level exposure — authentication and authorization, injection, business-logic abuse, "
+        "client-side trust. Findings in this section are framed as what a legitimate-looking request can "
+        "be made to do that the application's designers did not intend.",
+    ),
+    "device-mobile": (
+        "Device and mobile",
+        "A device or mobile assessment covers a physical device and its companion application — local "
+        "storage, platform permission boundaries, on-device secrets, inter-process communication, "
+        "physical tampering. Findings in this section are framed as what someone holding the device can "
+        "extract or bypass, rather than what is reachable over the network.",
+    ),
+}
+
+
+def _methodology_prose(ctx: ReportContext) -> str:
+    """The standing methodology description + framing for each assessment type present in this report."""
+    phases = "".join(
+        f'<div class="mth-phase"><div class="mth-k">{_esc(name)}</div>'
+        f'<div class="mth-v">{_esc(text)}</div></div>'
+        for name, text in _METHODOLOGY_PHASES
+    )
+    parts = [
+        '<article class="mth">'
+        '<p class="mth-lead">Testing followed the phased approach below. Each phase feeds the next, and '
+        "nothing is reported that was not observed in this environment.</p>"
+        f'<div class="mth-phases">{phases}</div>'
+    ]
+    seen: set[str] = set()
+    framing: list[str] = []
+    for group in ctx.groups:
+        slug = group.type_slug or ""
+        if slug in seen or slug not in _METHODOLOGY_FRAMING:
+            continue
+        seen.add(slug)
+        label, text = _METHODOLOGY_FRAMING[slug]
+        framing.append(
+            f'<div class="mth-frame"><h3>{_esc(label)}</h3><p>{_esc(text)}</p></div>'
+        )
+    if framing:
+        parts.append(
+            '<div class="mth-framing"><div class="mth-frame-cap">Framing by section type</div>'
+            f'{"".join(framing)}</div>'
+        )
+    parts.append("</article>")
+    return "".join(parts)
+
+
+def _render_methodology(ctx: ReportContext) -> str:
+    """The Methodology section — ALWAYS non-empty, and always the owner of the ``#sec-methodology``
+    anchor the toolbar links to.
+
+    With coverage/reminder checklists that opted into the report it is "Methodology and Coverage" and the
+    checklists are the record. With none, it is "Methodology" and carries the standing description
+    (:func:`_methodology_prose`) plus an explicit note that no engagement-specific coverage record
+    exists — so the default can never be misread as an attestation of coverage that nobody recorded.
+    Compliance checklists render as their own Compliance Attestation appendix, unchanged.
+    """
     coverage = [c for c in ctx.checklists if c.kind != "compliance"]
     compliance = [c for c in ctx.checklists if c.kind == "compliance"]
-    out: list[str] = []
+    heading = "Methodology and Coverage" if coverage else "Methodology"
+    body = _methodology_prose(ctx)
     if coverage:
-        body = "".join(_render_checklist_coverage(c) for c in coverage)
-        out.append(
-            '<section class="sec group"><h2 class="sec-h">Methodology and Coverage '
-            f'<span class="chev">▾</span></h2><div class="sec-body">{body}</div></section>'
+        body += "".join(_render_checklist_coverage(c) for c in coverage)
+    else:
+        body += (
+            '<p class="mth-note muted">No engagement-specific coverage checklist was recorded for this '
+            "engagement; the description above is the standing methodology.</p>"
         )
+    out = [
+        f'<section class="sec group" id="sec-methodology"><h2 class="sec-h">{heading} '
+        f'<span class="chev">▾</span></h2><div class="sec-body">{body}</div></section>'
+    ]
     if compliance:
-        body = "".join(_render_checklist_compliance(c) for c in compliance)
+        attestation = "".join(_render_checklist_compliance(c) for c in compliance)
         out.append(
             '<section class="sec group"><h2 class="sec-h">Compliance Attestation '
-            f'<span class="chev">▾</span></h2><div class="sec-body">{body}</div></section>'
+            f'<span class="chev">▾</span></h2><div class="sec-body">{attestation}</div></section>'
         )
     return "\n".join(out)
+
+
+def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
+    """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
+    with no ``finding_id``.
+
+    Renders nothing when there are none, which is the normal case and is why the toolbar's Evidence link
+    is derived from the rendered anchor rather than hardcoded (see ``_render_document``). Before this
+    section existed, such an upload was accepted, stored, answered ``201`` with a URL, and then appeared
+    in no deliverable anywhere (ext#40) — the report is where that silence becomes visible again."""
+    if not ctx.artifacts:
+        return ""
+    gallery = _render_artifact_gallery(ctx.artifacts, resolver, label=None)
+    return (
+        '<section class="sec group" id="sec-evidence">'
+        '<h2 class="sec-h">Evidence <span class="chev">▾</span>'
+        f'<span class="count">{len(ctx.artifacts)} '
+        f'item{"s" if len(ctx.artifacts) != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Evidence recorded against this engagement '
+        'as a whole rather than against one finding.</p>'
+        f"{gallery}</div></section>"
+    )
 
 
 def _render_footer(ctx: ReportContext) -> str:
@@ -683,7 +873,9 @@ def _render_block_by_key(key: str, ctx: ReportContext, resolver: _AssetResolver)
             f"{_render_groups(ctx, resolver)}"
         )
     if key == "methodology":
-        return f'<div id="sec-methodology"></div>\n{_render_checklists(ctx)}'
+        return _render_methodology(ctx)
+    if key == "evidence":
+        return _render_evidence_appendix(ctx, resolver)
     return ""  # unknown key: templates.BLOCK_KEYS guards this; render nothing defensively
 
 
@@ -698,14 +890,24 @@ def _render_document(
     # A template's theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so
     # the report follows the viewer's prefers-color-scheme (the default behavior).
     theme_attr = f' data-theme="{template.theme}"' if template.theme in ("light", "dark") else ""
-    blocks = "\n".join(_render_block_by_key(k, ctx, resolver) for k in template.blocks)
+    # Render the blocks FIRST, then build the toolbar from what they produced: a section link is emitted
+    # only for a block that actually put its ``id="sec-<key>"`` anchor in this document, in document
+    # order. Deriving the nav from the rendered output (rather than from a fixed list, as it was until
+    # ext#42) is what makes a dangling link structurally impossible — a block that renders nothing, or a
+    # template that drops a block entirely, cannot leave a live link behind it.
+    rendered = [(k, _render_block_by_key(k, ctx, resolver)) for k in template.blocks]
+    blocks = "\n".join(html for _k, html in rendered if html)
+    nav_keys = tuple(k for k, html in rendered if f'id="sec-{k}"' in html)
+    header = _render_header(
+        ctx, template, nav_keys=nav_keys, engagement_url=engagement_url, dashboard_url=dashboard_url
+    )
     return (
         "<!doctype html>\n"
         f'<html lang="en"{theme_attr}>\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(ctx.engagement_name)} — Report</title>\n"
         f"<style>{_CSS}</style>\n</head>\n<body>\n"
-        f"{_render_header(ctx, template, engagement_url=engagement_url, dashboard_url=dashboard_url)}\n"
+        f"{header}\n"
         '<main class="wrap">\n'
         f"{blocks}\n"
         f"{_render_footer(ctx)}\n"
@@ -823,10 +1025,18 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
   background: color-mix(in srgb, var(--surface) 86%, transparent);
   backdrop-filter: saturate(1.4) blur(8px); border-bottom: 1px solid var(--line);
 }
-.topbar .wrap { display: flex; align-items: center; gap: 16px; height: 52px; }
+/* The bar now carries back-links AND section jumps AND the actions, which together can exceed the
+   1080px measure — so it WRAPS instead of clipping. (It did clip: the back-to-engagement link and the
+   Methodology jump were cut mid-word at a 1500px viewport once the back-links moved in here.) Each group is
+   flex: 0 0 auto so a squeeze pushes a whole group to the next line rather than breaking a label. */
+.topbar .wrap {
+  display: flex; align-items: center; gap: 8px 16px; min-height: 52px; padding-top: 7px;
+  padding-bottom: 7px; flex-wrap: wrap;
+}
+.tb-brand, .report-nav, .tb-sections, .tb-actions { flex: 0 0 auto; }
 .tb-brand { font-weight: 700; font-size: 14px; display: flex; gap: 8px; align-items: center; }
 .tb-mark { width: 9px; height: 18px; border-radius: 2px; background: var(--accent); }
-.topbar nav { display: flex; gap: 2px; margin-left: 4px; overflow-x: auto; }
+.topbar nav { display: flex; gap: 2px; overflow-x: auto; }
 .topbar nav a {
   font-size: 13px; font-weight: 550; color: var(--ink-2); text-decoration: none;
   padding: 6px 9px; border-radius: 6px; white-space: nowrap;
@@ -841,7 +1051,7 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px; font-family: inherit;
   font-size: 13px; font-weight: 650; cursor: pointer; border-radius: 7px;
-  padding: 7px 13px; border: 1px solid transparent;
+  padding: 7px 13px; border: 1px solid transparent; white-space: nowrap;
 }
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-ink); }
@@ -853,9 +1063,13 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 .masthead .row {
   display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap;
 }
-.report-nav { display: flex; gap: 14px; margin-bottom: 14px; font-size: 13px; font-weight: 600; }
-.report-nav a { text-decoration: none; }
-.report-nav a:hover { text-decoration: underline; }
+/* Back-links: a toolbar slot (see _render_header / ext#45), ruled off from the section jumps beside
+   them so "leave the report" and "jump within it" don't read as one undifferentiated row of links. */
+.report-nav {
+  display: flex; gap: 2px; align-items: center; font-size: 13px; font-weight: 600;
+  padding-right: 10px; border-right: 1px solid var(--line);
+}
+.report-nav a { white-space: nowrap; }
 .eyebrow {
   font-size: 12px; font-weight: 700; letter-spacing: .13em;
   text-transform: uppercase; color: var(--accent-ink);
@@ -1116,6 +1330,14 @@ table.index td.ix-cvss {
   white-space: nowrap; font-weight: 600; font-family: ui-monospace, Menlo, monospace;
 }
 .children-table td.child-evidence { color: var(--muted); }
+.children-table td.child-evidence .child-facts { margin-bottom: 6px; }
+/* A child instance's evidence gallery lives inside a table cell — tighter grid + shorter thumbs than the
+   full-width per-finding gallery, so a per-host screenshot fits the row it belongs to. */
+.children-table td.child-evidence .evidence { margin-top: 0; }
+.children-table td.child-evidence .evidence-grid {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px;
+}
+.children-table td.child-evidence .evidence-item img { height: 92px; }
 
 /* evidence gallery */
 .evidence { margin-top: 16px; }
@@ -1146,6 +1368,32 @@ table.index td.ix-cvss {
 .lightbox img {
   max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 8px 40px rgba(0, 0, 0, .6);
 }
+
+/* methodology (the standing description; see _render_methodology) */
+.mth { max-width: var(--measure); }
+.mth-lead { color: var(--ink-2); font-size: 14.5px; margin: 0 0 14px; }
+.mth-phases {
+  display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+}
+.mth-phase { background: var(--surface); padding: 11px 15px; }
+.mth-k {
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--accent-ink); font-weight: 700;
+}
+.mth-v { color: var(--ink-2); font-size: 14px; margin-top: 3px; }
+.mth-framing { margin-top: 20px; }
+.mth-frame-cap {
+  font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; margin-bottom: 8px;
+}
+.mth-frame { margin-bottom: 14px; }
+.mth-frame h3 { font-size: 14.5px; font-weight: 680; }
+.mth-frame p { color: var(--ink-2); font-size: 14px; margin: 4px 0 0; }
+.mth-note { font-size: 13px; margin-top: 16px; font-style: italic; }
+
+/* engagement-level evidence appendix */
+.evidence-intro { font-size: 14px; margin: 0 0 12px; }
 
 /* checklists */
 .ck-list {
@@ -1208,7 +1456,10 @@ table.index td.ix-cvss {
 
 @media (max-width: 760px) {
   .wrap { padding: 0 16px; }
-  .topbar nav { display: none; }
+  /* Narrow screens drop the in-document section jumps, but KEEP the back-links (.report-nav) — they
+     are the only way out of the report, and the toolbar has room for two. */
+  .topbar .tb-sections { display: none; }
+  .report-nav { border-right: none; padding-right: 0; }
   .masthead { padding: 30px 0 22px; }
   .masthead h1 { font-size: 25px; }
   .masthead .row { align-items: flex-start; }
@@ -1230,14 +1481,42 @@ table.index td.ix-cvss {
 
 @media print {
   .lightbox, .lightbox:target { display: none !important; }
-  :root {
+  /* SPECIFICITY IS LOAD-BEARING HERE, and getting it wrong is invisible on screen. The dark palette is
+     declared on `:root:not([data-theme="light"])` and `:root[data-theme="dark"]` — both 0-2-0 — so a
+     plain `:root` print override (0-1-0) LOSES to them no matter that it comes later in the sheet. That
+     is measurable: printing from a dark-mode browser computed `body { color: rgb(231,238,245) }` (the
+     dark near-white ink) on unpainted white paper. The two selectors below are 0-2-0 and between them
+     match every case — no stamp, `data-theme="light"`, `data-theme="dark"` — so paper always gets the
+     paper palette. A template that forces the dark theme still prints light: the sheet is white.
+     `--sev-*` is pinned here for the same reason (ext#39's second half): it was the one family the print
+     block never overrode at all, so a dark-mode viewer printed the dark severity ramp. */
+  :root:not([data-theme="dark"]), :root[data-theme="dark"] {
     --bg: #fff; --surface: #fff; --surface-2: #f4f6f8; --ink: #10202e; --ink-2: #33424f;
     --muted: #5a6b7b; --line: #dce2e8; --line-2: #c3ccd6;
+    --sev-critical: #b3261e; --sev-high: #c2410c; --sev-medium: #a16207;
+    --sev-low: #1d6fa5; --sev-info: #64748b;
+  }
+  /* Colour that CARRIES MEANING has to survive "Background graphics: off" — the Chrome print-dialog
+     DEFAULT, and what a client actually gets. An element left at the permissive `economy` default may
+     have its background fill dropped while its text colour is still painted, which is exactly how the
+     severity bar printed as an empty outline with #fff numerals on white paper and the legend swatches
+     vanished, leaving bare columns of digits. Scoped ON PURPOSE: a blanket `* { print-color-adjust:
+     exact }` would also force the page's own --bg onto the paper.
+     `.metrics` and `.metric` must be listed TOGETHER: the tile rules are the container's background
+     showing through a 1px grid gap, so keeping one background and dropping the other prints either no
+     rules at all or one solid grey block.
+     `.chip-toggle` is moot while `.filters` is display:none below — kept so the rule doesn't rot if the
+     filter chips are ever printed. */
+  .sevbar, .sevbar .seg, .sevlegend .sw,
+  .sev-tag, .sev-badge, .ck-badge, .chip-toggle,
+  .metrics, .metric, .mth-phases, .mth-phase {
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   body { font-size: 10.5pt; }
   .topbar, .filters, .sec-h .chev, .no-print, .toolbar, .report-nav { display: none !important; }
   .sec.collapsed .sec-body { display: block !important; }
   .finding, .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
+  .mth-phase, .mth-frame { break-inside: avoid; }
   .children-table { break-inside: avoid; }
   .sec-h { break-after: avoid; }
   .finding-body .block-body pre { max-height: none; overflow: visible; }
