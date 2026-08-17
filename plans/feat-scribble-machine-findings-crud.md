@@ -36,7 +36,7 @@ API (`scribble/api_pat.py`):
       `reorder_groups`, `create_group`, `delete_group`, `delete_finding`). Both surfaces now call it, so
       ordering/cascade behaviour cannot drift. The 56-test cookie board suite is the regression net for
       the extraction and stayed green throughout.
-- [x] **#41** — 10 new `machine_bp` routes (13 → 23), 61 tests in `tests/test_machine_findings_crud.py`.
+- [x] **#41** — 10 new `machine_bp` routes (13 → 23), 71 tests in `tests/test_machine_findings_crud.py`.
 - [x] **#41** — `tests/test_scribble_machine_tenancy.py`: new `_CHILD_ID_ARGS` classification so the
       existing DENY/ALLOW sweeps cover every new route, with children seeded per request.
 - [x] Docs: `docs/SCRIBBLE.md` — the machine-API table (was stale at "Nine routes"), a new "The board"
@@ -97,6 +97,12 @@ API (`scribble/api_pat.py`):
   the cookie autosave uses, so the editor/preview cache cannot drift from `content_json`. The report
   renders from `content_json` (`reporting/context.py:165`), so this is cache hygiene, not report
   correctness.
+- **String values are length-capped at the boundary** (`_PATCH_MAX_LEN`, `_GROUP_NAME_MAX_LEN`) and
+  `cvss_score` is bounded to 0.0–10.0. Found in self-review: these are `String(n)` columns, so on
+  Postgres — prod — an over-long value raises `StringDataRightTruncation` and the caller gets a 500 for a
+  bad request, while SQLite (this suite's backend) accepts it silently. Same shape as the uuid/Integer
+  trap. The range check on `cvss_score` also refuses the `NaN`/`Infinity` tokens Python's JSON parser
+  accepts by default.
 - **`_sev_value` → `_enum_value`** (pure rename, 3 call sites): the finding serializers needed the same
   enum unwrap for `confidence`/`status`/`order_mode`/`kind`, and four more copies of a one-liner was the
   alternative.
@@ -319,7 +325,53 @@ FAILED …::test_patch_merges_content_blocks_and_sanitizes_them
 1 passed in 1.43s
 ```
 
-### 11. #41 · every mutating route emits an audit row
+### 11. #41 · an over-long value is a 400 here, not a 500 from Postgres
+
+Found in self-review, not by a failing test — and it is the class of defect this suite structurally cannot
+see, because it runs on SQLite. Removed the `_too_long` enforcement:
+
+```
+--- RED (no column-width cap) ---
+>       assert over.status_code == 400, over.get_json()
+E       AssertionError: {'analyst_notes': None, 'artifacts': [], 'category': None, 'children': [], ...}
+E       assert 200 == 400
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[title-512]
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[category-255]
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[cvss_vector-255]
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[target_host-255]
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[target_port-16]
+FAILED …::test_patch_refuses_a_value_that_would_overflow_its_column[target_url-1024]
+6 failed, 1 passed in 4.00s
+
+--- GREEN ---
+7 passed in 4.70s
+```
+
+Be precise about what this proves and what it does not: the RED above is SQLite accepting the over-long
+value (200), so the test pins the boundary CHECK. It does not exercise the Postgres truncation error it
+exists to prevent — the two `SCRIBBLE_TEST_PG_URL` tests are the only Postgres-backed ones in this suite
+and they skip here.
+
+### 12. #41 · `cvss_score` is bounded to the CVSS range (which also refuses NaN/Infinity)
+
+```
+--- RED (no range check) ---
+>       assert resp.status_code == 400, (body, resp.get_json())
+E       AssertionError: ({'cvss_score': inf}, {'analyst_notes': None, 'artifacts': [], …})
+E       assert 200 == 400
+FAILED …::test_patch_rejects_malformed_input[body3]   # 11
+FAILED …::test_patch_rejects_malformed_input[body4]   # -1
+FAILED …::test_patch_rejects_malformed_input[body5]   # Infinity
+3 failed, 10 passed in 5.55s
+
+--- GREEN ---
+13 passed in 5.28s
+```
+
+Python's JSON parser accepts the `Infinity`/`NaN` tokens by default; both are floats, both reach the
+column, and both render into a client's deliverable as a severity number that means nothing.
+
+### 13. #41 · every mutating route emits an audit row
 
 Removed the `_audit` call from `POST /findings/<id>/move`:
 

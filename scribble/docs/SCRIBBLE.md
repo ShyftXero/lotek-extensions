@@ -243,6 +243,7 @@ them.
 | `client_id` omitted while mounted | **400**. A client-less engagement is readable by nobody, creator included, so creating one is a 201 for work that produced nothing usable. |
 | Job missing, or one you cannot view | **404**, decided inside the host, never by Scribble. |
 | Artifact over 25 MiB | **413**. |
+| A string longer than its column, or a `cvss_score` outside 0.0–10.0 | **400** at the boundary. Bounded in code, not left to the database: on Postgres an over-long `String(n)` value raises `StringDataRightTruncation` (a 500 for what is really a bad request), and SQLite hides it entirely. |
 
 ### Getting scan findings in
 

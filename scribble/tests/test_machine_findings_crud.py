@@ -343,11 +343,54 @@ def test_patch_points_group_id_and_order_index_at_the_move_route(client, token, 
 
 
 @pytest.mark.parametrize(
+    "field,cap",
+    [("title", 512), ("category", 255), ("cvss_vector", 255), ("target_host", 255),
+     ("target_port", 16), ("target_url", 1024)],
+)
+def test_patch_refuses_a_value_that_would_overflow_its_column(client, token, session_factory, field, cap):
+    """An over-long value must be a 400 at the boundary, not a 500 from the database.
+
+    These are `String(n)` columns: on Postgres — what prod runs — an over-long value raises
+    `StringDataRightTruncation`, so an agent sending a long title gets a 500 for what is really a bad
+    request. SQLite (this suite's backend) stores it happily, which is exactly why the cap has to be code
+    rather than something "the tests would have caught": a green run here proves nothing about the column
+    width. Same shape as the uuid/Integer trap that SQLite hid until real Postgres refused it.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid, title="Original")
+
+    at_cap = client.patch(f"{M}/findings/{fid}", json={field: "x" * cap})
+    assert at_cap.status_code == 200, at_cap.get_json()  # the cap itself must still be accepted
+
+    over = client.patch(f"{M}/findings/{fid}", json={field: "x" * (cap + 1)})
+    assert over.status_code == 400, over.get_json()
+    assert "too long" in over.get_json()["detail"]
+
+
+def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
+    """`FindingGroup.name` is String(128) — same reasoning as the finding fields above, on both the create
+    and the rename path."""
+    eid = _engagement(session_factory)
+    assert client.post(f"{M}/engagements/{eid}/groups", json={"name": "x" * 128}).status_code == 201
+    over = client.post(f"{M}/engagements/{eid}/groups", json={"name": "x" * 129})
+    assert over.status_code == 400 and "too long" in over.get_json()["detail"]
+
+    gid = _group(session_factory, eid, "Web")
+    renamed = client.patch(f"{M}/engagements/{eid}/groups/{gid}", json={"name": "y" * 129})
+    assert renamed.status_code == 400 and "too long" in renamed.get_json()["detail"]
+    with session_factory() as db:
+        assert db.get(fm.FindingGroup, gid).name == "Web"
+
+
+@pytest.mark.parametrize(
     "body",
     [
         {},                              # nothing to do — say so rather than 200 for a no-op
         {"title": "   "},                # a blank title would silently keep the old one on the cookie form
         {"severity": "catastrophic"},
+        {"cvss_score": 11},              # outside the CVSS range
+        {"cvss_score": -1},
+        {"cvss_score": float("inf")},    # Python's JSON parser accepts Infinity/NaN; the column would too
         {"confidence": 5},
         {"status": "wontfix"},
         {"cvss_score": "high"},

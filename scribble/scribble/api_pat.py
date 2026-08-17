@@ -1298,6 +1298,23 @@ def _group_summary(group: FindingGroup) -> dict:
 _ABSENT = object()
 
 _PATCH_TEXT_FIELDS = ("category", "cvss_vector", "target_host", "target_url", "analyst_notes")
+
+# Column-width caps, enforced at the boundary — NOT decoration. These are ``String(n)`` columns, so on
+# Postgres an over-long value raises ``StringDataRightTruncation`` and the caller gets a 500 for what is
+# really a 400. SQLite stores it silently, which is exactly why this needs to be checked in code rather
+# than trusted to "the tests pass": the extension's own suite runs on SQLite and cannot see the failure
+# (the same trap INV-INTEGRITY-03's uuid/Integer bug hid behind). ``analyst_notes`` is ``Text`` and is
+# deliberately absent — it has no width to exceed. Mirrors how core's own api_v1 length-bounds every
+# string it accepts.
+_PATCH_MAX_LEN = {
+    "title": 512,          # EngagementFinding.title       String(512)
+    "category": 255,       # …category                     String(255)
+    "cvss_vector": 255,    # …cvss_vector                  String(255)
+    "target_host": 255,    # …target_host                  String(255)
+    "target_port": 16,     # …target_port                  String(16)
+    "target_url": 1024,    # …target_url                   String(1024)
+}
+_GROUP_NAME_MAX_LEN = 128  # FindingGroup.name             String(128)
 _PATCH_CONTENT_FIELDS = ("description", "remediation", "references", "content_json")
 _PATCH_ALLOWED = (
     {"title", "severity", "confidence", "status", "cvss_score", "target_port",
@@ -1309,6 +1326,14 @@ _PATCH_ALLOWED = (
 
 def _bad_request(detail: str):
     return jsonify({"error": "bad_request", "detail": detail}), 400
+
+
+def _too_long(key: str, value: str):
+    """400 when a value would overflow its column — see ``_PATCH_MAX_LEN``. Returns None when it fits."""
+    cap = _PATCH_MAX_LEN.get(key)
+    if cap is not None and len(value) > cap:
+        return _bad_request(f"{key} too long (max {cap} characters)")
+    return None
 
 
 def _patch_content_blocks(data: dict):
@@ -1368,6 +1393,8 @@ def _parse_finding_patch(data: dict):
         if not isinstance(title, str) or not title.strip():
             return None, None, _bad_request("title must be a non-empty string")
         updates["title"] = title.strip()
+        if (err := _too_long("title", updates["title"])) is not None:
+            return None, None, err
 
     for key in _PATCH_TEXT_FIELDS:
         value = data.get(key, _ABSENT)
@@ -1379,6 +1406,8 @@ def _parse_finding_patch(data: dict):
         if not isinstance(value, str):
             return None, None, _bad_request(f"{key} must be a string or null")
         updates[key] = value.strip() or None
+        if updates[key] is not None and (err := _too_long(key, updates[key])) is not None:
+            return None, None, err
 
     port = data.get("target_port", _ABSENT)
     if port is not _ABSENT:
@@ -1388,6 +1417,9 @@ def _parse_finding_patch(data: dict):
             return None, None, _bad_request("target_port must be a string, an integer, or null")
         else:
             updates["target_port"] = str(port).strip() or None
+            if updates["target_port"] is not None:
+                if (err := _too_long("target_port", updates["target_port"])) is not None:
+                    return None, None, err
 
     score = data.get("cvss_score", _ABSENT)
     if score is not _ABSENT:
@@ -1395,6 +1427,11 @@ def _parse_finding_patch(data: dict):
             updates["cvss_score"] = None
         elif isinstance(score, bool) or not isinstance(score, (int, float)):
             return None, None, _bad_request("cvss_score must be a number or null")
+        elif not (0.0 <= float(score) <= 10.0):
+            # Bounded to the CVSS range, which also refuses the ``NaN``/``Infinity`` tokens Python's JSON
+            # parser accepts by default — both are floats, both survive to the column, and both render
+            # into a client's deliverable as a severity number that means nothing.
+            return None, None, _bad_request("cvss_score must be between 0.0 and 10.0")
         else:
             updates["cvss_score"] = float(score)
 
@@ -1809,6 +1846,10 @@ def scribble_create_group(engagement_id: int):
         return err
     if not name:
         return _bad_request("name is required")
+    if len(name) > _GROUP_NAME_MAX_LEN:
+        # `FindingGroup.name` is String(128) — see _PATCH_MAX_LEN for why this is checked here and not
+        # left to the database (Postgres 500s, SQLite silently truncates nothing at all).
+        return _bad_request(f"name too long (max {_GROUP_NAME_MAX_LEN} characters)")
     assessment_type_id, err = _opt_int(data, "assessment_type_id")
     if err:
         return err
@@ -1866,6 +1907,8 @@ def scribble_update_group(engagement_id: int, group_id: int):
             return err
         if not name:
             return _bad_request("name cannot be empty")
+        if len(name) > _GROUP_NAME_MAX_LEN:
+            return _bad_request(f"name too long (max {_GROUP_NAME_MAX_LEN} characters)")
         updates["name"] = name
     if "order_mode" in data:
         raw = data.get("order_mode")
