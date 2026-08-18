@@ -144,7 +144,14 @@ def dashboard():
                 # An unissued document has no number, and this cell is also the row's LINK — so a bare
                 # "—" here was a one-character click target with no identity (ext#46). `document_handle`
                 # falls back to a tail-truncated id: `draft …b839c91e20`.
-                "number": document_handle(d.number, d.status.value, d.id), "title": d.title,
+                #
+                # Named `handle`, NOT `number`, and deliberately so: `_view_meta` above keeps `number` as
+                # the raw NULL-until-issue column and publishes the display string separately, and one
+                # file cannot hold both conventions. A key called `number` whose value may be
+                # `draft …b839c91e20` is the trap that gets a synthesized identifier into a sort, a
+                # filter, or a JSON response someone builds out of these rows later — the machine surface
+                # reports `number: null` for a draft on purpose, and this must not quietly disagree.
+                "handle": document_handle(d.number, d.status.value, d.id), "title": d.title,
                 # Left as an em-dash on purpose: a blank bill-to is a MISSING FIELD, not a missing
                 # identifier. Substituting an id tail here would print the document's id under a column
                 # headed "Bill to", inventing an identity for a client record that may not exist yet.

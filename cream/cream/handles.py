@@ -50,8 +50,14 @@ def uuid_tail(value: uuid.UUID | str | None, length: int = TAIL_LEN) -> str:
     an identifier and is not one. Dashes are kept as-is (a UUID's last group is 12 hex characters, so a
     tail of 12 or fewer never straddles one) and an id shorter than ``length`` is returned whole, with no
     ``…`` — nothing was elided.
+
+    A non-positive ``length`` returns ``""`` for the same reason, and it needs saying because the naive
+    slice gets it backwards: ``text[-0:]`` is the WHOLE string, so ``…`` + the slice would hand back every
+    character of the id behind a marker promising some were removed — a *longer* value than the input,
+    presented as an abbreviation of it. Nothing passes ``length`` today; the guard is here so a call site
+    that later reads it from a setting cannot leak a full id under a truncation marker.
     """
-    if value is None:
+    if value is None or length <= 0:
         return ""
     text = str(value).strip()
     if not text:

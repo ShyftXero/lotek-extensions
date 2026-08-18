@@ -80,6 +80,19 @@ def test_an_id_shorter_than_the_tail_is_not_dressed_up_as_a_fragment():
     assert ELLIPSIS not in uuid_tail("abc")
 
 
+def test_a_nonpositive_length_elides_nothing_instead_of_marking_a_whole_id_a_fragment():
+    """The degenerate boundary, pinned because the obvious implementation gets it exactly backwards:
+    ``text[-0:]`` is the WHOLE string, so ``…`` + ``text[-length:]`` hands back every character of the id
+    behind a marker that promises characters were removed. That is the misleading-identifier failure this
+    module exists to prevent, and it is silent — the value still *looks* like a handle.
+
+    No call site passes ``length`` today; this pins the boundary before one computes it from a setting.
+    """
+    assert uuid_tail(REPORTED, 0) == ""
+    assert uuid_tail(REPORTED, -5) == ""
+    assert REPORTED not in uuid_tail(REPORTED, 0)
+
+
 # --- the same identity as a download filename -----------------------------------------------------
 
 

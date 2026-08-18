@@ -2,9 +2,10 @@
 
 - **Branch:** `fix/cream-draft-number-handle`  (worktree: `.claude/worktrees/ux-cream-number`, off `main`)
 - **PR:** not opened yet (the orchestrator opens it)
-- **Status:** 🟢 ready to merge — **adversarial review round 2 resolved** (verdict SHIP, 0 blocking,
-  1 CONCERN: the PDF-filename assertion sat in a branch the documented pre-PR command never reaches).
-  See "Review round 2" below. Round 1 (verdict REPAIR, 3 CONCERNs about *claims*) is resolved above.
+- **Status:** 🟢 ready to merge — **round 3 (the PR gate) resolved**: 2 findings fixed, 2 declared and
+  declined with reasons. See "Review round 3" below. Round 2 (verdict SHIP, 1 CONCERN: the PDF-filename
+  assertion sat in a branch the documented pre-PR command never reaches) and round 1 (verdict REPAIR,
+  3 CONCERNs about *claims*) are resolved above.
 
 ## Purpose
 
@@ -140,6 +141,197 @@ its docstring says where that guard went.
 
 Counts after: **168 passed** with `--extra dev` (was 167) and **168 passed** with `--extra dev --extra pdf`
 — the same number both ways, which is the point: nothing is now conditional on the optional dependency.
+
+## Review round 3 — the PR gate
+
+An independent security review + adversarial pass over the **whole** `origin/main...HEAD` diff at the
+branch tip, because rounds 1 and 2 bound their markers to HEADs that the repair commits have since moved.
+
+### Security review — no HIGH/MEDIUM findings
+
+This repo ships no invariant file of its own; core's `/home/shyft/Dropbox/code/lotek/INVARIANTS.md` is the
+contract, and the relevant IDs were walked rather than assumed:
+
+- **INV-EXT-05** (a document renderer never dereferences a content-supplied URL) — the diff touches the
+  exact `HTML(string=render_document_html(...))` construction this invariant names, but only to thread
+  `name` through to the page `<title>`. No `base_url` and no `url_fetcher` is added or removed, and the
+  hostile-line-item red path stays closed upstream of the renderer: `cream/markup.py` `html.escape`s the
+  whole string **before** applying its formatting regexes, so no author-typed `<img>`/`<iframe>` can reach
+  weasyprint at all. That invariant's still-owed proving test is neither satisfied nor undermined here.
+- **INV-INPUT-03** (nothing interpolated into an executable browser sink) — every new interpolation
+  (`{{ d.handle }}`, `{{ meta.handle }}`, `{{ doc.handle }}`, `title="{{ d.id }}"`, `title="{{ doc_id }}"`,
+  and the two `{% block title %}` uses) is an auto-escaped HTML text or attribute context. None is in a
+  `<script>` body or an `on*=` handler. `edit.html`'s pre-existing `const docId = "{{ doc_id }}"` is
+  untouched and is the constrained-UUID case that invariant's scan explicitly allows.
+- **INV-INPUT-04 / INV-EXT-02** — `api.py` and `api_pat.py` are not in the diff at all (`git diff
+  --name-only` confirms), so no machine route and no confirm-tier verb (`issue`/`void`) is touched.
+- **INV-TENANCY-\*** — `blueprint.dashboard`'s `if vis is not None and d.engagement_id not in vis:
+  continue` is byte-identical, `_load` is untouched, and the branch adds **no route** (every new `def` in
+  the diff is a helper or a test). No cross-engagement document becomes addressable, and no 404/403
+  asymmetry is introduced. Nothing in the diff parses a request body, so there is no authz-after-parse
+  ordering to get wrong.
+
+Traced in detail, all clean:
+
+- **The `Content-Disposition` sink** — the one genuinely new one. Pre-branch it interpolated
+  `(doc.number or "document")` **raw**; post-branch it interpolates `export_stem(...)`, whose charset after
+  `_UNSAFE_IN_FILENAME.sub("-")` + `.strip("-.")` is `[A-Za-z0-9._-]` only — no quote, semicolon, CR, LF,
+  space or non-ASCII. Strictly safer than what it replaced. `doc.number` has exactly **one** writer
+  (`service.py:336`, `_next_number`) and appears in none of `update_document`'s allowlists, so it was never
+  caller-controlled either way; the sanitizing is belt-to-braces at the point the name is built.
+- **The new `<title>` path** — `escape(f"{kind_label} {identity}".strip())` is `html.escape` (quote=True)
+  over the **raw** pieces, which also fixes a latent double-escape the old line had (`heading` was already
+  escaped, then escaped again). `name=` is reachable from exactly two call sites, both passing a
+  server-derived `document_handle`; the preview route (`api.py:418`) and the in-app viewer pass no `name`,
+  so no request body reaches it.
+- **Mass assignment via the new `handle` key in `_editor_payload`** — the round-1 claim verified against
+  the code rather than the comment: `service.update_document` writes only `_TEXT_FIELDS` (10 named),
+  `_LONGTEXT_FIELDS` (3), `_DATE_FIELDS` (4), plus `discount_pct`/`discount_amount`/`tax_pct`/
+  `authorization_required`. An explicit allowlist, no `setattr` loop over `data`. `handle` is in none of
+  them, and neither is `number` or `status`. All three writers that consume the editor's PUT-back
+  (`api.py:338`, `:363`, `:414`) go through that one function, so the extra key is inert on every path.
+
+### Findings FIXED this round
+
+1. **`uuid_tail(value, length)` with a non-positive `length` returned the WHOLE id behind a `…`.** ★ the
+   real one. `text[-0:]` is the entire string, so the naive slice produced
+   `…01a00ff7-8e63-70a9-9e7c-ddb839c91e20` — a value *longer* than the input, presented as an abbreviation
+   of it, which is precisely the misleading-identifier failure `handles.py`'s own module docstring says it
+   exists to prevent. It contradicted the function's documented contract, and it failed silently. Not
+   reachable today (no call site passes `length`), so this is a latent trap in a brand-new public helper
+   rather than a live bug — fixed anyway because the guard is one condition and the cost of finding it the
+   other way is a full id leaked under a truncation marker. Guard + red-then-green below.
+2. **The list row dict named a synthesized display string `number`.** `_view_meta`, twelve lines above in
+   the same file, deliberately keeps `number` as the raw NULL-until-issue column and publishes `handle`
+   separately — so one file carried both conventions, and the one that overloaded `number` is the one a
+   later sort, filter, or JSON response built out of these rows would pick up. The plan's own Notes argue
+   the principle ("a machine reader must not be handed a synthesized identifier"); the row dict quietly
+   disagreed with it. Renamed to `handle` in `blueprint.dashboard` + `list.html`. Pure rename, no rendered
+   output changes — and the existing rendered-cell guards prove they cover it (transcript 12 below).
+
+### Findings DECLARED and declined (with reasons, so a later change is deliberate)
+
+3. **The column header still reads `Number` while a draft's cell holds an id handle.** Noted because the
+   plan uses the *inverse* argument to leave bill-to as an em-dash ("printing an id tail under a column
+   headed 'Bill to' would invent an identity"). The distinction that makes it acceptable here: the handle
+   is prefixed with the document's **status** (`draft …b839c91e20`), so it does not read as a number — and
+   the em-dash it replaced was not a number either. Renaming a column header the client did not ask about
+   is a UX decision for the owner, not a gate fix. **Left for the human** — called out in the PR body.
+4. **The edit tab drops the kind (`CREAM — Edit draft …tail`) while the edit heading and the view tab keep
+   it (`Invoice draft …tail` / `CREAM — Invoice draft …tail`).** A real inconsistency. Declined: tab titles
+   truncate, the kind is on the heading immediately below, and ext#46 is about *distinguishability* — which
+   `test_two_open_drafts_have_four_distinguishable_browser_tabs` already pins at 4 distinct titles. Purely
+   cosmetic; not worth invalidating a green gate.
+
+### Honest limit on the PDF metadata-title guard (not a defect — a scope statement)
+
+The round-2 guard stubs `render_document_pdf` and pins the two halves that are the **route's** work: the
+`Content-Disposition` stem, and the `name` handed to the renderer. The renderer's own `name` → `<title>`
+step is pinned separately by `test_an_unnumbered_standalone_page_is_titled_by_the_name_it_is_given` and the
+`export.html` title assertion. The one link **no test in either environment proves** is weasyprint's
+`<title>` → PDF `/Title` mapping — that is third-party behaviour, verified by hand in round 2 by
+decompressing the object stream (`/Title (Invoice draft ZZTAILZZ)`). If weasyprint stopped doing it,
+nothing here would catch it. Stated rather than papered over.
+
+## Red-then-green — review round 3
+
+Run from `cream/`, output ANSI-stripped and trimmed.
+
+### 10. `uuid_tail` with a non-positive length (the new guard, red BEFORE the fix existed)
+
+```
+$ uv run --extra dev pytest -p no:warnings -rf --tb=short tests/test_handles.py
+E   AssertionError: assert '…01a00ff7-8e...-ddb839c91e20' == ''
+E     + …01a00ff7-8e63-70a9-9e7c-ddb839c91e20
+FAILED tests/test_handles.py::test_a_nonpositive_length_elides_nothing_instead_of_marking_a_whole_id_a_fragment
+1 failed, 17 passed in 0.57s
+```
+
+fix applied (`if value is None or length <= 0: return ""`) →
+
+```
+$ uv run --extra dev pytest -p no:warnings tests/test_handles.py
+18 passed in 0.10s
+```
+
+### 11. The PDF naming guard, re-measured at THIS head in the weasyprint-ABSENT venv
+
+The environment round 2's CONCERN was about — the one the documented pre-PR command actually runs in.
+Both halves fail independently, so neither assertion rides on the other.
+
+```
+$ uv run --no-sync python -c "…find_spec('weasyprint')…"      # after `uv sync --extra dev`
+weasyprint: ABSENT
+
+# revert export_pdf to `name = (doc.number or "document") + ".pdf"`, no name= kwarg
+$ uv run --no-sync pytest -p no:warnings -rf --tb=line tests/test_ui.py
+E   AssertionError: assert 'document.pdf' == 'invoice-draft-9adfc9ecb4.pdf'
+FAILED tests/test_ui.py::test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title
+1 failed, 22 passed in 6.65s
+
+# filename restored, ONLY the name= kwarg still dropped -> isolates the metadata title
+$ uv run --no-sync pytest -p no:warnings -rf --tb=line tests/test_ui.py
+E   AssertionError: assert [''] == ['draft …b8ebb9057f']
+FAILED tests/test_ui.py::test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title
+1 failed, 22 passed in 7.50s
+```
+
+### 12. The `number` → `handle` rename, done in two steps to prove the existing guards cover it
+
+`blueprint.dashboard` renamed first, `list.html` deliberately left reading `d.number` — which is what a
+half-finished rename looks like, and Jinja renders a missing key as the empty string rather than raising.
+
+```
+$ uv run --extra dev pytest -p no:warnings -rf --tb=line tests/test_ui.py
+FAILED tests/test_ui.py::test_a_draft_row_names_itself_with_a_tail_truncated_handle - assert '' == 'draft …286eec0acb'
+FAILED tests/test_ui.py::test_an_issued_row_shows_its_frozen_number_and_no_handle - assert '' == 'INV-2026-0001'
+FAILED tests/test_ui.py::test_a_voided_draft_is_not_labelled_a_draft - assert '' == 'void …788d0c86de'
+3 failed, 20 passed in 14.18s
+```
+
+`list.html` updated to `{{ d.handle }}` →
+
+```
+$ uv run --extra dev pytest -p no:warnings tests/test_ui.py
+23 passed in 12.79s
+```
+
+### 13. The reported defect itself, re-measured at THIS head
+
+```
+# put back `"handle": d.number or "—"`
+$ uv run --no-sync pytest -p no:warnings -rf --tb=line tests/test_ui.py tests/test_handles.py
+FAILED tests/test_ui.py::test_a_draft_row_names_itself_with_a_tail_truncated_handle - assert '—' == 'draft …ed7232c16c'
+FAILED tests/test_ui.py::test_a_voided_draft_is_not_labelled_a_draft - assert '—' == 'void …b0fb296234'
+2 failed, 39 passed in 7.11s
+```
+
+restored →
+
+```
+$ uv run --no-sync pytest -p no:warnings tests/test_ui.py tests/test_handles.py
+41 passed in 8.96s
+```
+
+### Whole suite, both environments, at the tip
+
+**169 passed / 0 skipped** in both — and *which branch* the PDF test took was measured, not assumed,
+because the venv's history and not the visible command line decides it:
+
+```
+$ uv run --extra dev python -c "…find_spec('weasyprint')…"   ->  PRESENT   (a prior --extra pdf run)
+$ uv run --extra dev pytest -p no:warnings -rs                    169 passed in 37.72s   # 200 branch
+$ uv run --extra dev --extra pdf pytest -p no:warnings -rs        169 passed in 30.89s   # 200 branch
+$ uv sync --extra dev                                             - weasyprint==69.0 …
+$ uv run --no-sync python -c "…"                             ->  ABSENT
+$ uv run --no-sync pytest -p no:warnings -rs                      169 passed in 24.31s   # 503 branch
+$ uvx ruff check .                                                All checks passed!
+$ uv run --no-sync pyrefly check <6 changed .py files>             INFO 0 errors (1 suppressed)
+```
+
+`-rs` printed no SKIPPED section in any run: the skip list is **empty**. Worth stating plainly, because
+this suite mounts cream on a stub host with SQLite and has no Postgres-gated or infra-gated cases at all —
+so "0 skipped" here means the whole suite ran, not that prerequisites were quietly degraded.
 
 ## Remaining
 
