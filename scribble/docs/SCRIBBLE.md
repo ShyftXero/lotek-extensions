@@ -174,7 +174,17 @@ user is operator/admin, not a demoted viewer.
 | `GET /scribble/machine/templates` | read | List active library templates. Filters: `?q=` (name contains), `?category=`, `?severity=`. |
 | `GET /scribble/machine/templates/<template_id>` | read | One template with full `content_json`, CVSS and references. 404 if missing or retired. |
 | `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id` **or** by promoting one `lotek_finding_id`. Optional `group_id`, `target_host`, `target_port`, `target_url`. |
-| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. A `finding_id` that does not **parse** as an integer (a core UUID, say — scribble's finding ids are sequential ints) is refused `400 invalid finding_id` rather than dropped, so `finding_id_dropped: false` cannot mean "your id was gibberish"; an empty/absent one still means engagement-level. |
+| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. A `finding_id` that is not a **whole number in range** is refused `400 invalid finding_id` rather than dropped, so `finding_id_dropped: false` cannot mean "your id was gibberish"; an empty/absent one still means engagement-level. That covers a core UUID (scribble's finding ids are sequential ints), a JSON float or boolean — `2.9` and `true` used to be coerced by `int()` to findings 2 and 1, i.e. a DIFFERENT finding than the caller named, reported as honoured — and an id wider than the column, which used to reach `db.get` and raise (`OverflowError` on SQLite, `DataError` on Postgres) after the bytes were already on disk. Also optional: `include_in_report` (default `true`) — send `false` for working material you are attaching but do not want in the client deliverable. The response echoes `include_in_report` alongside the two `finding_id` fields. |
+| `GET /scribble/machine/engagements/<engagement_id>/artifacts` | read | List the engagement's evidence — the review surface for what a report is about to publish. `?unattached=1` narrows to the engagement-level rows (`finding_id` null) the Evidence appendix ships. Each row carries `include_in_report`, `byte_size`, `caption`, `created_by`, `created_at`. |
+| `POST /scribble/machine/engagements/<engagement_id>/artifacts/<artifact_id>` | write | Change `include_in_report` and/or `caption` on one artifact; omitted fields are unchanged. The artifact is addressed THROUGH its engagement, so an id belonging to another engagement is 404 whatever the caller's grants are. |
+
+Every id in a machine route's PATH is a **bounded** converter (`int(min=1, max=2147483647)`, the `Integer`
+PK column's range — `api_pat._ID`). Werkzeug's bare `<int:>` has no maximum, so a 30-digit path segment used
+to route successfully and then 500 inside `db.get()` (`OverflowError` on SQLite; on Postgres a `DataError`
+that also poisons the open transaction). Out of range is now a routing refusal, which is also the right
+answer for "no such id", and `tests/test_scribble_machine_tenancy.py::test_every_machine_route_id_converter_is_BOUNDED`
+fails if a route is added with an unbounded one. 🔴 The **cookie** blueprints still use bare `<int:>` — same
+defect, session-authenticated, not swept here.
 | `POST /scribble/machine/engagements/<engagement_id>/promote-job/<job_id>` | write | **Bulk-promote every finding of a scan job** into the engagement. |
 | `POST /scribble/machine/vuln-map` | write | Curate a scan-finding → template mapping. `template_id` required, plus at least one of `source`, `title_pattern`, `dedupe_prefix`. |
 | `GET /scribble/machine/vuln-map` | read | List the mappings. |
@@ -298,16 +308,41 @@ An engagement-level artifact is exposed to the renderers as `ReportContext.artif
 on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
 link — are absent when there is nothing unattached, which is the normal case.
 
-🔴 **An engagement-level upload publishes by default and has no review surface yet.** Both upload routes
-set `include_in_report=True`, and there is no engagement-artifact **list** route and no UI listing them
-(only `GET /scribble/api/findings/<id>/artifacts`, which by definition cannot show them). So working
-material attached to the engagement rather than to a finding — a raw scan file, internal notes, a `.pcap`,
-vector's `export.html` — now reaches the client deliverable, where before this change it reached nothing.
-The rendered report is the only place it becomes visible: **read the Evidence appendix before you send the
-report.** To keep one out, take its id from the upload response (or the appendix item's URL) and
-`POST /scribble/api/artifacts/<id>` with `{"include_in_report": false}`, or `.../delete` it — both are
-tenancy-checked through `artifact_id` by the blueprint gate. A list route plus a per-artifact toggle on the
-engagement page is filed as its own change.
+**Only IMAGES are embedded in the HTML deliverable, and only within a budget.** `report.html` is a single
+self-contained file a client receives, and a base64 `data:` URI is 1.33x the file held whole in one string:
+three 5 MiB captures attached at engagement level rendered a 20.0 MiB document (measured), and since the
+upload cap is 25 MiB *per* artifact, twenty of them would build ~660 MB per report read. So a non-image
+artifact — a `.pcap`, a raw scan dump, vector's `export.html` — is **named** in the report (filename,
+caption, recorded size, marked *not embedded*) and its bytes are never read; an image over
+`_MAX_INLINE_ASSET_BYTES` (8 MiB), or past `_MAX_INLINE_TOTAL_BYTES` (48 MiB) for the whole render, gets the
+same chip. `export_zip` is the delivery path that carries non-image bytes: every artifact goes out as a real
+file under `artifacts/`. The appendix also lists at most 200 items and says how many it withheld — a
+truncated evidence list that did not admit it would be the same silent omission ext#40 is.
+
+🔴 **An engagement-level upload PUBLISHES by default — that is a decision, and it is reviewable.** ext#40
+changed what an unattached artifact means: it used to reach no deliverable at all, so "unattached" was in
+practice "not in the report", and after ext#40 the Evidence appendix ships it. The default is still to
+publish, because an agent attaching engagement-level evidence over the machine API is usually attaching
+evidence *for the report* and flipping the default would restore the exact silence ext#40 filed. What was
+added alongside it is the ability to decide and to check:
+
+- **Decide at upload.** `include_in_report: false` on the upload attaches the file without publishing it —
+  for working material (a raw scan file, internal notes, a `.pcap`, vector's `export.html`). The response
+  echoes `include_in_report` either way, so it is never a silent outcome.
+- **See the set.** `GET /scribble/machine/engagements/<id>/artifacts?unattached=1` lists exactly the rows
+  the appendix publishes, each with its `include_in_report`. Before this there was no such surface at all:
+  the cookie API only lists a FINDING's artifacts (`GET /scribble/api/findings/<id>/artifacts`), which by
+  construction cannot show a `finding_id`-null row, and there is no UI for them either — so the rendered
+  report was the only place they became visible.
+- **Take one back out.** `POST /scribble/machine/engagements/<id>/artifacts/<artifact_id>` with
+  `{"include_in_report": false}`, or from a session the cookie routes `POST /scribble/api/artifacts/<id>`
+  and `.../delete`.
+
+Note what still holds regardless: **rows that predate this change were created under the old meaning**, so
+the first render after upgrading publishes any engagement-level artifact an operator attached on the
+reasonable assumption that nothing rendered it. Use the list route on an existing engagement, and read the
+Evidence appendix, before sending a report. An engagement-artifact list + toggle on the engagement PAGE
+(the cookie/UI half) is still filed as its own change.
 
 **The printed deliverable opens like a document** (ext#43, 2026-08-17 — it opened on the masthead and then
 straight into the executive summary before). Two blocks exist only in `@media print`:
@@ -348,6 +383,14 @@ anything outside the agreed scope was not touched"* (replaced by a coverage boun
 **not** claim). Rules-of-engagement statements of that kind belong in the per-engagement prose field a human
 writes. The methodology lead now says so outright: it is *a standing description of method, not a log of
 what was done on this engagement.*
+
+The replacement for the second one then said it again in different words and had to be fixed twice:
+*"Systems, accounts and techniques outside them were not examined"* is the same past-tense assertion about
+conduct, and the phrase list in that test matched `was not touched` and sailed straight past it. The bullet
+now reads *"This report makes no claim about systems, accounts or techniques outside them"* — a fact about
+the document, true however the findings got here. Worth knowing when you edit this prose: **a phrase
+blacklist is a weak instrument**; a rewording is always one edit away from getting past it, so the standing
+text has to be read, not just tested.
 
 **Methodology always renders.** With coverage checklists it is *Methodology and Coverage* and they are the
 record; with none it is *Methodology* carrying a standing phased description plus framing for the

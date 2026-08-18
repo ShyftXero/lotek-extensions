@@ -2,7 +2,7 @@
 
 - **Branch:** `fix/scribble-report-render-sweep`  (worktree: `.claude/worktrees/ux-report-sweep`, off `main`)
 - **PR:** not opened yet (the orchestrator opens it)
-- **Status:** 🟢 ready to merge
+- **Status:** 🟢 ready to merge — second adversarial review answered (fourth pass, 2026-08-17: 1 BLOCK fixed, 5 CONCERNs, one of them partly pushed back on with the argument recorded below)
 
 ## Purpose
 Five **client-reported, reproduced** defects in scribble's HTML report renderer, surfaced when an agent
@@ -76,10 +76,26 @@ first four.
   rating definitions directly beneath it — the legend showed counts and never said what a rating means,
   which is half of the client's "three plain columns of numbers". The risk banner, bar, tiles and index are
   unchanged and now sit *below* the prose.
-- [x] Tests: 4 new modules (13 + 12 + 10 + 28) + 5 cases on `tests/test_machine_artifacts.py`, and
-  `tests/test_report_print_media.py`'s rasterized-PDF guard adapted to the new pagination (it counted
-  page 1; the cover page moved the severity bar to page 3, so it now counts every page — re-proved
-  RED against ext#39's defect, transcript 22 below).
+- [x] Tests: **5** new modules, and `tests/test_machine_artifacts.py` grown from 21 test functions on
+  `origin/main` to 47. Measured at the branch tip (node ids, i.e. after parametrisation, and the function
+  count where they differ):
+
+  | module | node ids | functions |
+  |---|---|---|
+  | `tests/test_report_print_media.py` | 19 | 10 |
+  | `tests/test_report_nav_and_methodology.py` | 12 | 10 |
+  | `tests/test_report_evidence_targets.py` | 18 | 18 |
+  | `tests/test_report_cover_and_toc.py` | 28 | 24 |
+  | `tests/test_report_standing_prose.py` | 14 | 5 |
+  | `tests/test_machine_artifacts.py` (grown, not new) | 67 | 48 |
+  | `tests/test_scribble_machine_tenancy.py` (grown, not new) | 17 | 17 |
+
+  (The earlier version of this line said "4 new modules (13 + 12 + 10 + 28)" — a stale count from before
+  the third and fourth passes added cases, flagged as a NIT by the second review. Counts above were
+  collected with `pytest --collect-only`, not estimated.) `tests/test_report_print_media.py`'s
+  rasterized-PDF guard was also adapted to the new pagination (it counted page 1; the cover page moved the
+  severity bar to page 3, so it now counts every page — re-proved RED against ext#39's defect, transcript
+  22 below).
 - [x] Docs: `scribble/docs/SCRIBBLE.md` — where evidence renders, methodology/nav behaviour, the print
   colour contract, the upload response's new fields, and the cover/contents/front-matter contract.
 
@@ -119,8 +135,102 @@ left behind, all found by reading the shipped output rather than the diff:
 uncommitted in the worktree. The work was reviewed, found coherent, verified (red-then-green transcripts
 24–26 below) and committed by the session that picked it up; nothing was discarded.
 
+**Fourth pass — the second adversarial review's findings, answered (2026-08-17).** Verdict was REPAIR with
+one BLOCK, and its diagnosis was right: the mechanism chosen for ext#40 (surface engagement-level artifacts
+in the report) shipped without the two guards it needed. Everything below was re-measured before it was
+fixed, not taken on trust.
+
+- [x] 🔴 **BLOCK — the Evidence appendix inlined EVERY artifact as a base64 `data:` URI.** Reproduced with
+  the reviewer's probe shape (three 5 MiB `application/vnd.tcpdump.pcap` artifacts attached at engagement
+  level, `inline_assets=True`): **branch tip `rendered HTML 20.0 MiB in 4.0s`, `origin/main` 0.0 MiB in 0.0s
+  — main never read those bytes at all.** Two separate defects in one line of code: raw working material
+  (pcaps, scan dumps, vector `export.html`) was shipped byte-for-byte inside a CLIENT deliverable, and since
+  the upload cap is 25 MiB *per* artifact with nothing capping the count, twenty of them build ~660 MB of
+  base64 in one string plus an nh3 pass on **every** report read (both report routes pass
+  `inline_assets=True`). Fixed in `_AssetResolver`: only **images** are ever embedded, within
+  `_MAX_INLINE_ASSET_BYTES` (8 MiB, checked against `ArtifactCtx.byte_size` *and* against the bytes
+  actually read, because the column is advisory) and a per-render `_MAX_INLINE_TOTAL_BYTES` (48 MiB).
+  Anything else takes the "not embedded" chip, which now carries the caption and the recorded size so the
+  report still SAYS what evidence exists — that is ext#40's point — without carrying it. `export_zip` is
+  unchanged and is the delivery path for non-image bytes (a zip entry is a real file). Same probe after the
+  fix: **`rendered HTML 0.0 MiB in 0.0s`, 0 data: URIs, and the pcap's bytes are never read.**
+  Belt-and-braces on the count as the reviewer asked: the appendix lists at most `_MAX_APPENDIX_ITEMS`
+  (200) and states how many it withheld — silently truncating a client deliverable's evidence list would be
+  the same silent omission ext#40 is.
+- [x] **CONCERN — `_finding_id_or_400` refused strings and accepted JSON numbers.** Confirmed by direct
+  probe: `2.9 -> (2, None)`, `True -> (1, None)`, `10**30` straight through. `int()` **coerces** rather than
+  validates, so `{"finding_id": 2.9}` attached the evidence to finding 2 — an id the caller never named —
+  and answered `finding_id_dropped: false`, i.e. the exact false reassurance the echo fields were added to
+  remove, over docs that promise gibberish is refused. The parse is now explicit (`bool` rejected first
+  because it is an `int` subclass; `int` accepted; a `str` only when it fully matches `\d+`; a float, list,
+  dict or `"1e3"` refused) and does not use `_as_int` at all.
+- [x] **CONCERN — an unbounded integer reached `db.get()` and 500'd.** `10**30` raised
+  `OverflowError: Python int too large to convert to SQLite INTEGER` (a `DataError` on Postgres, which also
+  poisons the open transaction) — and `save_bytes` had already run, so the failed request left an **orphan
+  file**. Bounded to `0 < fid <= 2**31 - 1` (`_MAX_FINDING_ID` — the column's bound, not a policy) in the
+  parse, which runs before the body is decoded, so the refusal is a clean 400 and nothing is written to the
+  table *or* to the artifact directory. `2**31 - 1` itself is still accepted and simply dropped as
+  nonexistent, so the bound cannot refuse a legal id.
+- [x] **Found on the way (same defect class, other input path): every machine route's `<int:>` id
+  converter was UNBOUNDED.** Werkzeug's bare integer converter has no max, so
+  `GET /scribble/machine/engagements/<30 digits>` ROUTED and then 500'd inside `db.get()` — measured 500 on
+  three routes. Pre-existing on `main`, but it is the *same* finding the review filed against the body's
+  `finding_id`, and fixing only the body path would have answered the letter and not the substance —
+  especially with two of the new routes adding fresh instances of it. All eight id converters in
+  `api_pat.py` now use a shared `_ID = "int(min=1, max=2147483647)"`, so an out-of-range id never reaches a
+  view: Werkzeug does not match the rule and answers a routing refusal (404, or 405 where a same-path rule
+  with another method exists) instead of 500. Two guards, because a rule expressed as a string constant is
+  only as good as the next person remembering it: an end-to-end one on the three measured URLs, and
+  `test_every_machine_route_id_converter_is_BOUNDED`, which walks the live `url_map` and inspects each
+  `NumberConverter.max`. **Scoped to the machine blueprint**: the cookie blueprints have the same unbounded
+  converters and are NOT fixed here — a session-authenticated 500 is a different (and much smaller) risk
+  surface than an agent-driven machine API, and sweeping every UI route is its own change.
+- [x] **CONCERN — publication by default with no review surface.** Partially accepted, partially pushed
+  back on; see "the publish default" below. What was built: `include_in_report` is now honoured on the
+  machine upload and echoed in the 201/200; a new `GET /engagements/<id>/artifacts` (`?unattached=1`) is
+  the review surface that did not exist; a new `POST /engagements/<id>/artifacts/<artifact_id>` flips
+  `include_in_report` (and fixes a caption) over a PAT, which the cookie route cannot do.
+- [x] **CONCERN — a tautological test presented as the ext#42 guard.** Correct, and correct about *why*:
+  `nav_keys` is derived as `f'id="sec-{k}"' in html`, so asserting the id is present asserted the
+  implementation's own predicate back at itself, and it was GREEN against the unfixed build. Rewritten as
+  `test_every_toolbar_section_link_LANDS_ON_CONTENT`: the region between the anchor and the next section
+  must contain real text. RED against the pre-fix empty `<div id="sec-methodology"></div>` (transcript 27),
+  and the docstring now says outright that the ext#42 invariant proper lives in two other guards.
+  Deliberately *not* the reviewer's suggested "assert an `<h2 class="sec-h">` and a non-empty `.sec-body`":
+  `findings` is anchored by a bare `<div id="sec-findings"></div>` on purpose (a scroll target above the
+  groups), so that shape would have been a false positive.
+- [x] **CONCERN — the third `_LIMITATIONS` bullet re-stated the deleted claim, past the guard.** Correct on
+  both halves. "Systems, accounts and techniques outside them **were not examined**" is the same past-tense
+  assertion about conduct as "was not touched", and the phrase blacklist matched the latter and missed the
+  former. The bullet now reads "…This report makes no claim about systems, accounts or techniques outside
+  them", both wordings are in `FORBIDDEN`, and there is a new guard asserting the ALLOWED wording (so a
+  revert cannot pass by deleting the bullet) plus the shape rule that every bullet names the *report* as
+  what it is limiting. The module now also says in as many words that a phrase blacklist is weak and has
+  already been slipped once — the compensating control is reading the prose.
+
+### 🔴 The publish default: what was NOT changed, and why
+The review asked for `include_in_report=False` on uploads with no `finding_id`. **Not done**, deliberately.
+That flips ext#40's symptom straight back on for the workflow that filed it: an agent driving the machine API
+uploads engagement-level evidence, gets a 201 with a URL, and it appears in no deliverable — which is
+verbatim the issue. So the default still publishes, and what was added instead is everything needed for it
+to be a *decision* rather than a silent one: `include_in_report` on the upload, echoed in the response; a
+list route (`?unattached=1`) that is the first surface anywhere on which that set can be reviewed; and a
+PAT-reachable toggle to take one back out.
+
+What that does **not** fix, stated plainly rather than papered over: rows created *before* this change were
+created under the old meaning ("unattached" == "not in the report"), and the first render after upgrade
+publishes them. There is no discriminator in the schema to tell them apart — no "published deliberately"
+column, and `created_at` versus a deploy timestamp would be a guess — so the honest answer is procedural and
+is now in `SCRIBBLE.md`: **run the list route on an existing engagement, and read the Evidence appendix,
+before sending a report.** The BLOCK fix narrows the exposure a long way on its own: no non-image working
+material can ship its bytes any more, only its name.
+
 ## Remaining
-- [ ] Nothing owed for these five issues. See "explicitly out of scope" below — in particular, the
+- [ ] Nothing owed for these five issues. Two things the fourth pass deliberately left, both written out
+  where they are decided: the **publish default** for engagement-level uploads (see "The publish default"
+  above — the review asked for `False`, the argument for keeping `True` plus a review surface is recorded
+  there), and the engagement-artifact list + toggle on the engagement **PAGE** (the cookie/UI half; the
+  machine half shipped here). See "explicitly out of scope" below — in particular, the
   **editable** per-engagement prose block (ext#43's third part beyond boilerplate) is deliberately NOT
   half-built here; the exact remaining work is written out below.
 
@@ -128,8 +238,11 @@ uncommitted in the worktree. The work was reviewed, found coherent, verified (re
 
 ### 🔴 `ReportContext` is a frozen contract and was extended — additively, loudly
 `ReportContext.artifacts: list[ArtifactCtx] = field(default_factory=list)` is a **new field with an empty
-default**; nothing was renamed, reordered or removed, and every existing consumer (both renderers, the
-report routes, the docx path) is unaffected. It exists because the renderers could only ever reach
+default**, and (fourth pass) `ArtifactCtx.byte_size: int | None = None` is a second one — what the row
+recorded for the file, so the renderer can decide whether to carry its bytes without reading them first.
+Both are appended with defaults; nothing was renamed, reordered or removed, and every existing consumer
+(both renderers, the report routes, the docx path) is unaffected. Two fields, then, not one — the earlier
+wording implied a single addition, flagged as a NIT by the second review. It exists because the renderers could only ever reach
 `finding.artifacts`, so an upload with no `finding_id` was stored, answered `201` with a URL, and could
 never appear in any deliverable. `templates.BLOCK_KEYS` also gained `"evidence"` and all three shipped
 templates now end with it.
@@ -284,11 +397,14 @@ uvx ruff check scribble                                    # All checks passed!
 cd scribble && uv run --extra dev pyrefly check \
     scribble/reporting/render_html.py scribble/reporting/context.py \
     scribble/reporting/templates.py scribble/api_pat.py \
-    tests/test_report_*.py tests/test_machine_artifacts.py  # 0 errors
+    scribble/api_schemas.py \
+    tests/test_report_*.py tests/test_machine_artifacts.py \
+    tests/test_scribble_machine_tenancy.py                 # 0 errors
 cd scribble && uv run --extra dev pytest -o addopts="" -q -rs
 # first pass  (13ae528): 649 passed, 2 skipped in 307.53s   (rc=0)
 # ext#43 pass (22cc9da): 677 passed, 2 skipped in 332.10s   (rc=0)
-# third pass (branch tip): 701 passed, 2 skipped in 916.44s (0:15:16)   (rc=0)
+# third pass (9fa3162): 701 passed, 2 skipped in 916.44s (0:15:16)   (rc=0)
+# fourth pass (branch tip): 746 passed, 2 skipped in 462.96s (0:07:42)   (rc=0)   <- +45
 #   SKIPPED tests/test_db_additive_migration.py:82  — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 #   SKIPPED tests/test_db_additive_migration.py:136 — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 ```
@@ -608,6 +724,77 @@ GREEN 34 passed
 ```
 `test_an_empty_finding_id_still_means_engagement_level` stayed GREEN on both sides **on purpose**: it pins
 the behaviour that must NOT change, so a fix that refused `""` as well would fail it.
+
+### Fourth pass (the second adversarial review's findings)
+
+Same discipline: break the production code, watch it fail, restore, watch it pass. Restores verified with
+`git diff --stat` before and after (identical). Commands from `scribble/`, `-o addopts="" -q`.
+
+**27. the nav guard — `_render_block_by_key` back to `origin/main`'s empty
+`<div id="sec-methodology"></div>`**
+```
+RED   3 failed, 9 deselected   tests/test_report_nav_and_methodology.py -k LANDS_ON_CONTENT
+      (all three shipped templates: default, compliance, dark)
+GREEN 3 passed
+```
+This is the transcript that matters most in this pass, because it is the one the review said could not
+exist: the OLD assertion (`id="sec-methodology"` appears somewhere) was GREEN in exactly this state.
+
+**28. the inlining budget — `_AssetResolver` back to inlining everything unbounded, appendix cap removed**
+```
+RED   7 failed, 11 passed   tests/test_report_evidence_targets.py
+      FAILED …test_a_non_image_artifact_is_NAMED_but_its_bytes_stay_out_of_the_document
+      FAILED …test_the_bytes_of_a_non_image_are_never_even_READ
+             AssertionError: the renderer read bytes it cannot embed: ['scan.xml', 'shot.png']
+      FAILED …test_an_image_over_the_PER_ASSET_budget_is_not_embedded
+      FAILED …test_a_LYING_byte_size_does_not_get_an_artifact_past_the_budget
+      FAILED …test_the_PER_RENDER_budget_bounds_a_document_full_of_legal_images
+             AssertionError: the render embedded 10 images, i.e. 40960 bytes
+      FAILED …test_the_appendix_lists_at_most_MAX_items_and_SAYS_how_many_it_withheld   assert 5 == 3
+      FAILED …test_the_not_embedded_chip_reports_the_size_it_is_not_carrying
+GREEN 18 passed
+```
+The 11 that stayed GREEN are the ext#40 matrix rows themselves — which is the control that matters here: the
+budget must not cost the issue its fix. Every image still renders where it did.
+
+**29. the `finding_id` parse — back to `int()` (the coercing parse the third pass shipped)**
+```
+RED   13 failed, 37 passed   tests/test_machine_artifacts.py
+      FAILED …test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped
+             [2.9] [0.0] [True] [False] [10**30] [2**31] [-1] [0] [1e3] [+7]   <- the ten new cases
+      FAILED …test_a_json_number_finding_id_does_not_attach_to_a_DIFFERENT_finding[2.9-2]  (and [True-1])
+      FAILED …test_an_out_of_range_finding_id_is_refused_BEFORE_the_bytes_are_stored
+      FAILED …test_a_multipart_upload_refuses_an_out_of_range_finding_id
+GREEN 50 passed
+```
+The four pre-existing string cases (`abc`, the UUID, `"12.5"`, `[]`) stayed GREEN on both sides — they were
+already refused, which is exactly why parametrising only strings masked the hole.
+
+**30. the two new review-surface routes — `can_view_engagement` stripped from both**
+```
+RED   1 failed, 15 passed   tests/test_scribble_machine_tenancy.py
+      FAILED …test_every_engagement_scoped_machine_route_denies_a_foreign_client
+             a token for another client was NOT denied on:
+             [('scribble_machine.scribble_list_artifacts', 'GET', '…/engagements/1/artifacts', 200),
+              ('scribble_machine.scribble_update_artifact', 'POST', '…/engagements/1/artifacts/1', 200)]
+GREEN 16 passed
+```
+The existing tenancy sweep covers the new routes automatically, and its `_build_url` refused to guess a value
+for the new `artifact_id` view arg rather than silently 404ing — so it needed a REAL artifact row seeded on
+the engagement (`_artifact_on`), which is what makes the 404 above a tenancy refusal and not "no such
+artifact". That gate working as designed is why this transcript exists at all.
+
+**31. the id converters — four machine routes back to a bare `<int:>`**
+```
+RED   1 failed, 66 deselected   tests/test_machine_artifacts.py -k huge_id_in_the_PATH
+      assert 500 in (404, 405)
+RED   1 failed, 16 passed        tests/test_scribble_machine_tenancy.py
+      machine route(s) with an unbounded integer id converter — use api_pat._ID, or a 30-digit path
+      segment 500s inside db.get(): [('scribble_machine.scribble_list_artifacts', 'engagement_id', None)]
+GREEN 84 passed                  both modules
+```
+The second one is the drift guard and was proved separately, by reverting ONE route: it names the offending
+endpoint and view arg, which is what makes it actionable rather than just red.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
