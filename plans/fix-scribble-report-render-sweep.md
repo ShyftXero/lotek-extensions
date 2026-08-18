@@ -83,6 +83,42 @@ first four.
 - [x] Docs: `scribble/docs/SCRIBBLE.md` — where evidence renders, methodology/nav behaviour, the print
   colour contract, the upload response's new fields, and the cover/contents/front-matter contract.
 
+**Third pass — the adversarial review's findings, answered (2026-08-17).** Four defects the second pass
+left behind, all found by reading the shipped output rather than the diff:
+
+- [x] **The print palette pinned five token families and missed `--accent*`.** `--accent-ink` is the colour
+  of the client name on the cover, of every front-matter / methodology / finding-block label, and the
+  *background* of the "Satisfied" attestation badge — which `print-color-adjust: exact` forces to actually
+  paint. A dark-mode viewer printed `#7ee0bc` on white paper: 1.6:1, against 8.3:1 for the paper accent, so
+  page 1 of the deliverable had no readable client name while the `--sev-high` badge beside it was fine.
+  The existing guard could not see it because it measured `body`, which does not use the accent. Fixed by
+  adding the family, plus **a drift guard that diffs the two rules' token sets**
+  (`test_the_print_palette_pins_EVERY_token_the_dark_theme_overrides`) so the next token cannot be
+  forgotten quietly, plus four per-widget assertions and one on the badge fill.
+- [x] **The standing prose asserted work nobody recorded.** See the judgement-call note below — the
+  methodology phase "Manual validation" is now "Validation" and is written in the present tense, the lead
+  says outright that it is *a standing description of method, not a log of what was done on this
+  engagement*, and the third limitations bullet is a coverage bound instead of a non-destructiveness claim.
+  New module `tests/test_report_standing_prose.py` (11 cases) pins the rule phrase-by-phrase, across all
+  three shipped templates, against a bulk-promoted engagement.
+- [x] **An unparseable `finding_id` on the machine upload was silently swallowed.** `_as_int` returned
+  `None`, the artifact landed as engagement-level evidence and the 201 answered `finding_id_dropped: false`
+  — "you did not ask for one" — about a request that plainly did, which is the exact false reassurance the
+  echo fields were added to remove. A core UUID is the value to expect here (scribble's finding ids are
+  sequential ints; the host's are UUIDv7). Now `400 invalid finding_id` on both the JSON and the multipart
+  surface and on the idempotent-replay path; absent/empty still means engagement-level, and a *well-formed*
+  id belonging to another engagement is still dropped rather than 404'd (that case would leak whether the
+  id exists; an unparseable one cannot leak anything).
+- [x] **Docs claimed more than the code does.** `scribble/docs/SCRIBBLE.md` now scopes the evidence table
+  to HTML/PDF and states the `.docx` gaps explicitly (child evidence and the engagement appendix are absent
+  — `_build_context` never reads `ctx.artifacts` and `_children_html` is a text-only list), and carries a
+  🔴 note that an engagement-level upload is `include_in_report=True` with **no list route and no UI**, so
+  the rendered Evidence appendix is the only place it becomes visible: read it before sending the report.
+
+🔴 **A previous session was interrupted mid-branch here** (API session limit) with this third pass sitting
+uncommitted in the worktree. The work was reviewed, found coherent, verified (red-then-green transcripts
+24–26 below) and committed by the session that picked it up; nothing was discarded.
+
 ## Remaining
 - [ ] Nothing owed for these five issues. See "explicitly out of scope" below — in particular, the
   **editable** per-engagement prose block (ext#43's third part beyond boilerplate) is deliberately NOT
@@ -148,14 +184,25 @@ The generated narrative therefore remains the only per-engagement prose in the s
 
 ### 🔴 The standing prose is a JUDGEMENT CALL — read it before merging
 Same flag the ext#42 methodology text carries, for the same reason. `_LIMITATIONS`, `_COVER_HANDLING` and
-`_SEVERITY_DEFINITIONS` in `render_html.py` assert things about how this practice works ("Testing was
-non-destructive", "anything outside the agreed scope was not touched", what each severity means and how
-urgently to fix it). They are true of this practice and are deliberately tool-free, host-free and
-engagement-fact-free — every engagement-specific clause on the cover and in the overview comes from a
-`ReportContext` field and disappears when the field is empty. But they are boilerplate a human should sign
-off on, because they now appear in a client deliverable over the assessor's name. The parts of ext#43 that
-are *not* a judgement call — the cover page, the contents, the two-way TOC completeness guard — hold
+`_SEVERITY_DEFINITIONS` in `render_html.py` assert things about how this practice works (what each severity
+means, how urgently to fix it, how the document should be handled). They are deliberately tool-free,
+host-free and engagement-fact-free — every engagement-specific clause on the cover and in the overview comes
+from a `ReportContext` field and disappears when the field is empty. But they are boilerplate a human should
+sign off on, because they now appear in a client deliverable over the assessor's name. The parts of ext#43
+that are *not* a judgement call — the cover page, the contents, the two-way TOC completeness guard — hold
 whatever you do to the prose.
+
+**Two of those claims did not survive that read, and are gone (third pass, see below).** The prose used to
+say "Every candidate weakness was validated by hand before it was reported" and "Testing was
+non-destructive … anything outside the agreed scope was not touched" — past-tense assertions about work
+performed on *this* engagement, in a document the renderer builds without knowing whether any of it
+happened. Scribble's headline workflow is `promote-job`, so a real deliverable can be forty findings lifted
+straight out of a scan, and there is no flag, field or template that removes the sentence (the template
+registry is frozen data, not an editor). The rule now is a hard one and is pinned by
+`tests/test_report_standing_prose.py`: standing prose may describe **method** (present tense) and may state
+**limitations** (what the report does not claim — under-claiming cannot be false); it may not assert that
+particular work was done. Rules-of-engagement statements belong in the per-engagement prose field that is
+still to be built.
 
 ### The printed contents carry no page numbers
 Not an oversight: page numbers in a CSS-paginated TOC need `target-counter()`, which Chrome's print engine
@@ -241,9 +288,17 @@ cd scribble && uv run --extra dev pyrefly check \
 cd scribble && uv run --extra dev pytest -o addopts="" -q -rs
 # first pass  (13ae528): 649 passed, 2 skipped in 307.53s   (rc=0)
 # ext#43 pass (22cc9da): 677 passed, 2 skipped in 332.10s   (rc=0)
+# third pass (branch tip): 701 passed, 2 skipped in 916.44s (0:15:16)   (rc=0)
 #   SKIPPED tests/test_db_additive_migration.py:82  — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 #   SKIPPED tests/test_db_additive_migration.py:136 — needs a real Postgres (SCRIBBLE_TEST_PG_URL)
 ```
+
+The third-pass run is the whole suite at the tip, after the working tree was restored byte-for-byte from
+the pre-transcript copy (`git diff` compared before and after: identical). It is slower than the earlier
+two because it was run alongside nothing else on a busier box, not because anything got heavier — the
+count is what matters: **+24** over the ext#43 pass — 11 standing-prose cases, 6 accent/drift-guard print
+cases (13 → 19 in that module), 7 upload `finding_id` cases (27 → 34). Still 2 skipped, still the same two,
+so nothing in the third pass skipped either.
 
 Both skips are pre-existing and unrelated to this branch (they belong to the SoftHostId retrofit and want
 a real Postgres). **Nothing in this branch skipped** — Chromium is present, so all 13 print-media browser
@@ -503,6 +558,56 @@ GREEN 28 passed
 Worth stating why this case needs its own test: `_group_anchor` is shared by the section and the contents
 *on purpose*, so breaking it breaks both sides consistently and the link-resolution guard stays GREEN. The
 anchor of the one group that has no database id is therefore asserted literally.
+
+### Third pass (the adversarial review's findings)
+
+Same discipline. The break here is the whole pre-fix file — `git show HEAD:<path> > <path>`, i.e. the build
+as the second pass left it — because that IS the state each new guard was written against. Restored from a
+byte-identical copy afterwards and re-verified (`git diff` before and after the exercise are identical).
+
+**24. standing prose — `render_html.py` back to its pre-third-pass state**
+```
+RED   11 failed   tests/test_report_standing_prose.py   (the whole module; nothing passed)
+      FAILED …test_the_report_asserts_no_unrecorded_work[was validated by hand]
+      FAILED …[Testing was non-destructive]  [was not touched]  [no destructive action was taken]
+      FAILED …[Testing followed]  [was not observed in this environment]
+      FAILED …test_no_shipped_template_can_reintroduce_the_claims[default]  (also [compliance], [dark])
+             AssertionError: template 'default' asserts 'was validated by hand'
+      FAILED …test_the_methodology_says_it_is_a_standing_description_not_a_work_log
+      FAILED …test_the_limitations_still_say_what_the_report_does_NOT_claim
+             assert 'bounded by the agreed scope' in '<!doctype html>…'
+```
+All six forbidden phrases were present in the shipped document, and all three templates carried them —
+which is the point of the per-template case: there is no template-level escape from this prose.
+
+**25. print palette — same pre-fix file, the `--accent*` family unpinned**
+```
+RED   7 failed, 12 passed   tests/test_report_print_media.py
+      FAILED …test_print_uses_the_paper_palette_from_a_dark_viewer
+             the CLIENT NAME on the printed title page came out rgb(126, 224, 188)
+      FAILED …test_accent_text_prints_in_the_paper_accent_from_a_dark_viewer[.cover-eyebrow]
+             (also [.fm-block h3], [.mth-k], [.finding-body .block-label]) — rgb(126, 224, 188)
+      FAILED …test_the_print_palette_pins_EVERY_token_the_dark_theme_overrides
+             the @media print palette does not pin ['--accent', '--accent-ink', '--accent-wash']
+      FAILED …test_the_compliance_badges_print_readably_from_a_dark_viewer
+             SATISFIED printed as white text on rgb(126, 224, 188)
+GREEN 42 passed   (standing_prose + print_media + nav_and_methodology, after restoring the file)
+```
+Note which 12 stayed GREEN: every `print-color-adjust` case and both severity-ramp cases. That is the
+omission's fingerprint — one family missing out of six, with the neighbouring badge printing correctly.
+
+**26. `finding_id` parse refusal — `api_pat.py` back to its pre-third-pass state**
+```
+RED   6 failed, 28 passed   tests/test_machine_artifacts.py
+      FAILED …test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped
+             [0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11]  [abc]  [12.5]  [bad3 = the empty list]
+             AssertionError: {'finding_id': None, 'finding_id_dropped': False, …}   <- the false 201
+      FAILED …test_a_multipart_upload_refuses_an_unparseable_finding_id
+      FAILED …test_an_unparseable_finding_id_is_refused_on_a_REPLAY_too
+GREEN 34 passed
+```
+`test_an_empty_finding_id_still_means_engagement_level` stayed GREEN on both sides **on purpose**: it pins
+the behaviour that must NOT change, so a fix that refused `""` as well would fail it.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
