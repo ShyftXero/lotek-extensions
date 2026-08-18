@@ -4,6 +4,12 @@
 - **PR:** not opened yet (the orchestrator opens it)
 - **Status:** 🟢 ready to merge — closes ext#41 and ext#47. **Adversarial review round 1 (2026-08-17):
   1 BLOCK + 4 CONCERNs, all five fixed** (see "Review round 1" below); nothing refuted.
+- **🔴 Session interrupted 2026-08-17.** The session doing round 1 was killed mid-flight by an API
+  limit while extending the string-boundary sweep to the LAST writer on the blueprint, the evidence-upload
+  route. Its work was sitting uncommitted in the worktree (`api_pat.py` + `test_machine_findings_crud.py`,
+  no untracked files) and was landed by the next session as commit "bound and type-check the evidence
+  upload's filename/caption". It was coherent but its cap was WRONG — see §24 — which the resumed
+  session found by adding the accepted-side assertion its sibling test already had.
 
 ## Purpose
 
@@ -43,6 +49,10 @@ API (`scribble/api_pat.py`):
 - [x] Docs: `docs/SCRIBBLE.md` — the machine-API table (was stale at "Nine routes"), a new "The board"
       section, the ordering semantics, three refusal-code rows, the drag-board note about the shared
       service, and the walkthrough's steps 4–5 (which previously implied a browser).
+- [x] **#41 (class, not instance)** — the evidence-upload route `POST /engagements/<eid>/artifacts`,
+      the last string writer on this blueprint, now type-checks `filename`/`caption` (a dict reached
+      `mimetypes.guess_type` and the `caption` `Text` column) and bounds `filename` — at the
+      FILESYSTEM's limit, not the column's. §24.
 - [x] Red-then-green transcript for every new guard, captured verbatim below.
 
 ## The new surface (10 routes, 13 → 23)
@@ -193,6 +203,15 @@ path.
   It would fail today on exactly the two routes above, i.e. it encodes a policy decision this branch is
   not making. The compensating control is the classification guard in
   `tests/test_scribble_machine_tenancy.py`, which does fail closed on a new machine route.
+- **Residual, and deliberately left for the reviewer: a unicode `filename` can still overrun `NAME_MAX`.**
+  The cap counts the caller's characters, but `save_bytes` stores `secure_filename(filename)`, and
+  `secure_filename` NFKD-normalizes — which can EXPAND. Measured:
+  `len(secure_filename("½" * 222)) == 444`, so that name passes the 222 cap and still raises
+  `ENAMETOOLONG` → 500. Closing it means either importing `secure_filename` into `api_pat` (duplicating
+  storage's naming rule in the API layer, where the constant already half-lives) or truncating `safe_name`
+  inside `artifacts_storage.save_bytes` — which is the right place and would fix the cookie upload path
+  too, but is a shared-module change this branch did not otherwise need. Not a regression: it is strictly
+  narrower than the hole that existed before the cap.
 - Anything mounted. Each extension's suite injects its own stub host, so the seam gap class
   (`g.principal`) is invisible here by construction — a mounted test in lotek's
   `tests/test_scribble_*` is still owed by whoever re-pins the extension, per CLAUDE.md.
@@ -716,6 +735,53 @@ FAILED …::test_every_create_route_on_this_blueprint_bounds_its_strings[/templa
 engagement and `String(512)` on a template, so one lookup keyed on the JSON field name would have applied
 one table's width to another's column. The two group-name checks now go through the same helper (identical
 message text) instead of open-coding the comparison.
+
+### 24. …and the evidence-upload route, the last string writer (found here, not reported)
+
+`POST /engagements/<eid>/artifacts` read `filename` and `caption` raw out of the JSON body, so a dict
+reached `mimetypes.guess_type` and the `caption` `Text` column — and no width check at all. Reverting the
+guard:
+
+```
+--- RED (filename/caption unbounded and untyped) ---
+FAILED …::test_artifact_upload_bounds_and_types_its_strings[body0-too long]  - assert 500 == 400
+FAILED …::test_artifact_upload_bounds_and_types_its_strings[body1-string]    - assert 500 == 400
+FAILED …::test_artifact_upload_bounds_and_types_its_strings[body2-string]    - assert 500 == 400
+3 failed, 102 deselected in 3.11s
+```
+
+All three are 500s, not 400s — `resp.get_json()` is `None` in every one, which is the HTML error page.
+
+**The cap is the FILESYSTEM's number, not the column's, and that is the part the interrupted session got
+wrong.** It set 512 (`Artifact.filename` is `String(512)`) which reads right and refuses almost nothing:
+`save_bytes` stores the bytes as `<uuid4hex>_<secure_filename>`, so the basename is 33 characters longer
+than what the caller sent and passes `NAME_MAX` (255) at **223**. Measured directly, not reasoned about:
+
+```
+PROBE n=216 -> 201    PROBE n=220 -> 201
+PROBE n=217 -> 201    PROBE n=222 -> 201
+PROBE n=218 -> 201    PROBE n=223 -> 500      # 32 + 1 + 223 == 256 > NAME_MAX
+PROBE n=219 -> 201
+```
+
+So a 300-character filename — well under 512 — still answered 500 WITH the guard in place. Cap is now
+`255 - 32 - 1 == 222`. Red-then-green on the cap value itself, by putting 512 back:
+
+```
+--- RED (cap = the column width, 512) ---
+FAILED …::test_artifact_upload_bounds_and_types_its_strings[body0-too long]  - assert 500 == 400
+1 failed, 3 passed, 102 deselected in 3.45s
+
+--- GREEN (cap = 222) ---
+4 passed, 102 deselected in 3.25s
+```
+
+**What let the wrong cap through is the missing half of the guard.** The parametrized test asserted only
+the REFUSED side, so it passed for any cap at or above 223 — including one that refuses nothing anybody
+was hitting. `test_every_create_route_on_this_blueprint_bounds_its_strings` (§23) already asserted
+`at_cap -> 201` alongside `over -> 400`; this route's test did not, and that is exactly the assertion that
+pins the number. Added as `test_artifact_upload_accepts_a_filename_AT_the_cap`. A one-sided boundary test
+is a boundary test in name only.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
