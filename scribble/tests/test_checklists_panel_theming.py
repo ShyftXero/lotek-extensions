@@ -23,9 +23,13 @@ only in a comment must never count as "defined"), then each rule is read as (sel
 declarations). Nested `@media` wrappers fall out of the scan — their inner rules are still matched
 individually — which is fine, nothing here depends on a media query.
 
-Honest limit: the browser tests drive the STANDALONE app, the only shell this repo can boot. They prove
-the plumbing and the rendering; that the same link lands in a real lotek page is pinned hermetically by
-`test_mounted_page_links_the_panel_stylesheet` against a base template shaped like the host's.
+The browser tests run in BOTH shells. `panel_page` boots the standalone app; `mounted_panel_page` boots
+the same board against `_HOST_BASE` — scribble's pages extending a base shaped like lotek's, where
+scribble.css is never linked — because that, not standalone, is where the layout was actually lost.
+
+Honest limit: `_HOST_BASE` is a stand-in, and its host serves no stylesheet of its own, so these tests
+cannot see a HOST rule that FIGHTS the panel; only the panel failing to supply its own. The real
+base.html + styles.css were driven by hand (ext#44, review round 2 notes in the plan file).
 """
 
 from __future__ import annotations
@@ -282,18 +286,48 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _boot(tmp, name: str):
-    """A real standalone scribble on its own sqlite, seeded. Returns (flask_app, session_factory)."""
-    flask_app = Flask(__name__)
+def _boot(tmp, name: str, *, mounted: bool = False):
+    """A real scribble on its own sqlite, seeded. Returns (flask_app, session_factory).
+
+    `mounted=False` is the standalone shell: pages extend `scribble/base.html`, which links scribble.css.
+    `mounted=True` is how PRODUCTION runs it: pages extend the HOST's `base.html` (`_HOST_BASE`), whose
+    only stylesheet hook is `head_extra` and which links nothing on the extension's behalf. The host's
+    own `/static/styles.css` is deliberately absent (404) so that anything the panel renders correctly in
+    this shell was rendered by the panel's OWN stylesheet and by nothing else.
+    """
+    if mounted:
+        templates = tmp / f"{name}.templates"
+        templates.mkdir()
+        (templates / "base.html").write_text(_HOST_BASE)
+        flask_app = Flask(__name__, template_folder=str(templates), static_folder=None)
+        base_template = "base.html"
+    else:
+        flask_app = Flask(__name__)
+        base_template = "scribble/base.html"
     flask_app.config["SECRET_KEY"] = "ckp-theming-test"
     engine = create_engine(f"sqlite:///{tmp / name}", future=True)
-    cfg = scribble.register(
-        flask_app, engine, instance_path=str(tmp), base_template="scribble/base.html"
-    )
+    cfg = scribble.register(flask_app, engine, instance_path=str(tmp), base_template=base_template)
     with cfg.session_factory() as db:
         seed_defaults(db)
         db.commit()
     return flask_app, cfg.session_factory
+
+
+def _board_with_checklist(session_factory):
+    """One engagement with one coverage checklist assigned — the same shape as the issue's repro script,
+    so the screenshots and these assertions describe one thing. Returns the engagement id."""
+    with session_factory() as db:
+        c = Client(name="Theming Client")
+        db.add(c)
+        db.flush()
+        eng = Engagement(name="Theming board", client_id=c.id, company_name="Theming Co")
+        db.add(eng)
+        db.commit()
+        tmpl = db.scalars(select(ChecklistTemplate).limit(1)).first()
+        assert tmpl is not None, "seed_defaults shipped no checklist template to assign"
+        assign_template(db, eng, tmpl, assigned_by="test")
+        db.commit()
+        return eng.id
 
 
 @contextmanager
@@ -319,22 +353,22 @@ def _serving(flask_app):
 
 @pytest.fixture(scope="module")
 def panel_app(tmp_path_factory):
-    """A board with one coverage checklist assigned — the same shape as the issue's repro script, so the
-    screenshots and these assertions describe one thing."""
+    """The board in scribble's OWN shell."""
     tmp = tmp_path_factory.mktemp("scribble-ckp-theming")
     flask_app, session_factory = _boot(tmp, "ckp.db")
-    with session_factory() as db:
-        c = Client(name="Theming Client")
-        db.add(c)
-        db.flush()
-        eng = Engagement(name="Theming board", client_id=c.id, company_name="Theming Co")
-        db.add(eng)
-        db.commit()
-        tmpl = db.scalars(select(ChecklistTemplate).limit(1)).first()
-        assert tmpl is not None, "seed_defaults shipped no checklist template to assign"
-        assign_template(db, eng, tmpl, assigned_by="test")
-        db.commit()
-        eid = eng.id
+    eid = _board_with_checklist(session_factory)
+    with _serving(flask_app) as base:
+        yield {"url": f"{base}/scribble/engagements/{eid}"}
+
+
+@pytest.fixture(scope="module")
+def mounted_panel_app(tmp_path_factory):
+    """The identical board MOUNTED — rendered inside a host-shaped base, which is what prod does and the
+    only shell in which the panel ever lost its layout. Its own app + db, so it shares no state with the
+    standalone lane."""
+    tmp = tmp_path_factory.mktemp("scribble-ckp-mounted-browser")
+    flask_app, session_factory = _boot(tmp, "mounted.db", mounted=True)
+    eid = _board_with_checklist(session_factory)
     with _serving(flask_app) as base:
         yield {"url": f"{base}/scribble/engagements/{eid}"}
 
@@ -378,6 +412,17 @@ def panel_page(browser, panel_app):
     page = browser.new_page(viewport={"width": 1400, "height": 1000})
     try:
         page.goto(panel_app["url"], wait_until="networkidle")
+        page.wait_for_selector("#checklist-panel .ckp-status")
+        yield page
+    finally:
+        page.close()
+
+
+@pytest.fixture(scope="module")
+def mounted_panel_page(browser, mounted_panel_app):
+    page = browser.new_page(viewport={"width": 1400, "height": 1000})
+    try:
+        page.goto(mounted_panel_app["url"], wait_until="networkidle")
         page.wait_for_selector("#checklist-panel .ckp-status")
         yield page
     finally:
@@ -455,10 +500,19 @@ def test_assign_tray_never_opens_as_an_empty_dashed_box(empty_tray_page):
     assert state["h"] > 18, f"tray is still the empty-height dashed sliver: {state!r}"
 
 
-def test_panel_rows_lay_out_beside_their_status_control(panel_page):
-    """The mounted panel lost `.ckp-item`'s flex layout entirely (select stacked ABOVE the item text
-    instead of beside it). Pin the geometry, not the rule: the control and the text share a row."""
-    boxes = panel_page.evaluate(
+@pytest.mark.parametrize("shell", ["panel_page", "mounted_panel_page"])
+def test_panel_rows_lay_out_beside_their_status_control(request, shell):
+    """`.ckp-item`'s flex row must survive into BOTH shells: the control and the text share a row.
+
+    The two lanes are not equal evidence, and the difference is the point (ext#44 review round 2). The
+    STANDALONE lane never showed this defect — scribble.css always carried `.ckp-item { display: flex }`
+    and scribble's own base always linked it — so that lane is a no-regression pin and nothing more. The
+    MOUNTED lane is where the layout was actually lost: the host's base links scribble.css nowhere, so
+    before this branch the row had no flex at all and the select stacked ABOVE its item text (measured on
+    lotek's real base.html: sel y=657, text y=677 — same x). Pin the geometry, not the rule, because
+    "the rule exists somewhere" is exactly the check that passed while the client's screen was broken."""
+    page = request.getfixturevalue(shell)
+    boxes = page.evaluate(
         """() => {
              const row = document.querySelector('#checklist-panel .ckp-item');
              const b = el => { const r = el.getBoundingClientRect(); return {x: r.x, y: r.y, h: r.height}; };
@@ -466,6 +520,6 @@ def test_panel_rows_lay_out_beside_their_status_control(panel_page):
            }"""
     )
     sel, text = boxes["sel"], boxes["text"]
-    assert text["x"] > sel["x"], f"item text is not to the right of the control: {boxes!r}"
+    assert text["x"] > sel["x"], f"[{shell}] item text is not to the right of the control: {boxes!r}"
     same_row = abs(text["y"] - sel["y"]) < max(sel["h"], text["h"])
-    assert same_row, f"control and text are not on one row: {boxes!r}"
+    assert same_row, f"[{shell}] control and text are not on one row: {boxes!r}"
