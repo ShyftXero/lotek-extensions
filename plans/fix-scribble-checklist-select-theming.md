@@ -2,10 +2,12 @@
 
 - **Branch:** `fix/scribble-checklist-select-theming`  (worktree: `.claude/worktrees/ux-checklist-theming`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟢 ready to merge — **adversarial review round 2 applied** (round 1: REPAIR, 0 blocking,
-  2 CONCERNs; round 2: REPAIR, 0 blocking, 1 CONCERN. All three accepted and fixed, none refuted — see
-  "Review round 1" / "Review round 2" below. Both rounds were run by an *independent agent reviewer*,
-  not by the author; the verdicts quoted here are theirs.)
+- **Status:** 🟢 ready to merge — **three review rounds applied.** Round 1: REPAIR, 0 blocking, 2
+  CONCERNs. Round 2: REPAIR, 0 blocking, 1 CONCERN. Round 3 (the PR gate): CONCERNS, 0 CRITICAL, 2
+  WARNINGs, security pass clean. All six findings accepted and fixed, none refuted — see "Review round
+  1" / "Review round 2" / "Review round 3" below. Every round was run by an *independent* reviewer, not
+  by the author; the verdicts quoted are theirs. Round 3 additionally re-measured rounds 1–2's central
+  claims from scratch rather than trusting the transcripts, and they reproduced exactly.
 - **Closes:** ShyftXero/lotek-extensions#44
 
 ## Purpose
@@ -31,6 +33,9 @@ view."*
 - [x] 14 new guards in `tests/test_checklists_panel_theming.py`, each watched fail (below)
 - [x] **(review round 2)** the browser lane now drives the **MOUNTED** shell as well as the standalone
       one, so the row-layout guard measures the geometry in the shell that actually lost it
+- [x] **(review round 3, PR gate)** the two conventions this fix newly depends on are now guarded rather
+      than merely documented: every page that renders a panel class must link the panel stylesheet, and
+      the injected stylesheet must stay panel-scoped (16 guards total, up from 14)
 - [x] visual after-shots: standalone (dark + light), tray open/closed, MOUNTED, library page,
       **empty tray before/after** (`/home/shyft/tmp/ck44_repair/empty_tray.png`)
 
@@ -40,6 +45,10 @@ view."*
       a mounted behaviour against lotek's suite too"). The round-2 reviewer did exactly this by hand and
       it passed, and this branch's new `mounted_panel_page` lane covers the panel-supplies-its-own-layout
       half — neither is the lotek-side run the rule asks for.
+- [ ] **follow-up, not blocking (round 3 NOTES):** `checklists.js`'s `suggest` fetch has no `.catch`, so
+      a failed request (or a null body) still leaves the assign button looking dead — #44's symptom class
+      closed for *empty*, open for *failed*; plus a benign double-click race where a late callback
+      re-opens a tray the operator just closed. One small change to that file's fetch handling.
 - [ ] nothing else for #44 — both of its sub-items are closed. Follow-ups filed in the hand-off report,
       not done here: `checklists_library.html` hardcodes scribble's own base instead of `scribble_base`
       (and moving it owes `.cklib-*` the same page-linked-stylesheet treatment `.ckp-*` just got — now
@@ -54,7 +63,7 @@ view."*
 | `scribble/templates/scribble/engagement.html` | links the panel stylesheet via `head_extra`. |
 | `scribble/templates/scribble/checklists_library.html` | same link (it renders `.ckp-kind`). |
 | `scribble/static/checklists.js` | `ckp-tmpl` dropped from the template buttons; **an empty tray now says why instead of opening blank** (round 1). |
-| `scribble/tests/test_checklists_panel_theming.py` | **new.** 9 hermetic guards + 5 browser cases — the browser lane runs in BOTH shells (`panel_page` standalone, `mounted_panel_page` against a host-shaped base). |
+| `scribble/tests/test_checklists_panel_theming.py` | **new.** 11 hermetic guards + 5 browser cases (16 total) — the browser lane runs in BOTH shells (`panel_page` standalone, `mounted_panel_page` against a host-shaped base); the last two guards are round 3's page-links-the-sheet and sheet-stays-panel-scoped drift guards. |
 
 ## Red-then-green
 Every guard was broken on purpose, run, and restored. Breakage script:
@@ -154,109 +163,55 @@ module-scoped `browser` fixture so the new empty-tray case gets its OWN app and 
 board fixture is module-scoped and shared, so hiding its templates in place would have leaked state into
 the other browser guards.
 
-### Round-1 evidence (kept — the tool counts moved into the single `## Checks` block at the end)
-```text
-repro/repro_checklist_ui.py (the triage script)           → re-run, panel still themed, no dashed box
-                                                            (/home/shyft/tmp/ck44_repair/repro_after/)
-MOUNTED against lotek's REAL base.html + styles.css       → /home/shyft/tmp/ck44_repair/
-  (mounted_empty_tray.py; the empty-tray fix where the       mounted_empty_tray.png. Links:
-   client actually is, not just standalone)                  flatpickr, /static/styles.css,
-                                                            /static/combobox.css,
-                                                            /scribble/static/checklists_panel.css
-                                                            (scribble.css correctly absent). Message
-                                                            colour rgb(143,164,184) == the host's own
-                                                            dark `--muted: #8fa4b8`, so the new rule
-                                                            adds no token the host lacks.
-```
-
-### Review round 2 (adversarial review, verdict REPAIR / 0 blocking / 1 CONCERN)
-
-**Accepted and fixed, not refuted.** The reviewer's finding was that
-`test_panel_rows_lay_out_beside_their_status_control` **passed against the unfixed tree** — they
-measured it by exporting `origin/main` and dropping the branch's test file in unchanged — so its
-docstring ("the mounted panel lost `.ckp-item`'s flex layout entirely") described coverage the test did
-not have. It drove `panel_page`, which boots `base_template="scribble/base.html"`, and in that shell
-scribble.css always supplied `.ckp-item { display: flex }`. The layout was only ever lost MOUNTED. The
-plan's breakage **C** reddened it only by deleting `display: flex`, which is not the bug.
-
-They offered a docstring reword as the cheap close. Taking the other option instead — **a real mounted
-browser lane** — because the reword would have left #44's actual failure mode measured by nothing:
-
-- `_boot(..., mounted=True)` boots the same board against `_HOST_BASE` (the host-shaped base the
-  hermetic tests already used) with `static_folder=None`, so `/static/styles.css` **404s**. Anything
-  laid out in that shell was laid out by the panel's own stylesheet and by nothing else — deliberately
-  harsher than prod, and it makes the attribution unarguable.
-- `mounted_panel_app` / `mounted_panel_page` get their own app + sqlite, so no state crosses lanes.
-- The guard is now `@pytest.mark.parametrize("shell", ["panel_page", "mounted_panel_page"])`, and its
-  docstring says plainly that the two lanes are **not** equal evidence: standalone is a no-regression
-  pin, mounted is the one that carries the defect.
-
-The one thing this lane still cannot see is a HOST rule that *fights* the panel — `_HOST_BASE` is a
-stand-in and serves no stylesheet. Said so in the module docstring rather than implying otherwise.
-
-**The mounted lane asserts GEOMETRY only, on purpose — do not add a theming assertion to it.** With no
-host stylesheet there are no `--field-bg`/`--ink` tokens, so `.ckp-status` and `.ckp-note` both fall
-back to transparent and "the select matches its row-mate" would pass *vacuously*, in exactly the shell
-where it would look most convincing. `display: flex` needs no tokens, which is why it is the property
-this lane can honestly measure. Theming stays pinned standalone (where the tokens are real) plus the
-by-hand mounted runs against lotek's actual `styles.css`. Synthesising lotek's tokens into the fixture
-would only create a second, drifting copy of values that live in another repo.
-
-```text
-M the whole production tree reverted to origin/main (`git archive origin/main scribble`), this branch's
-  test file copied in unchanged — i.e. the reviewer's own experiment, re-run against the repaired test
-
-  GREEN test_panel_rows_lay_out_beside_their_status_control[panel_page]        ← the reviewer's point,
-                                                                                 confirmed: standalone
-                                                                                 never had the defect
-  RED   test_panel_rows_lay_out_beside_their_status_control[mounted_panel_page]
-        AssertionError: [mounted_panel_page] item text is not to the right of the control:
-        {'sel': {'x': 8, 'y': 452.0625, 'h': 19}, 'text': {'x': 8, 'y': 471.0625, 'h': 18}}
-        assert 8 > 8
-                                        ← same x, 19px apart: the select stacked ABOVE its item text,
-                                          the exact symptom the docstring names
-  werkzeug log for that page: GET /static/styles.css → 404 (the host contributes nothing),
-                              GET /scribble/static/checklists_panel.css → absent on main
-
-  whole file against that unfixed tree:  12 failed, 2 passed
-    the 2 that pass are correct: [panel_page] above, and
-    test_mounted_library_page_still_ships_its_cklib_rules (it guards a reachability that HOLDS today —
-    see the `.cklib-*` note below — and reddens only when the library page moves to `scribble_base`)
-
-GREEN, tree restored:  14 passed  (tests/test_checklists_panel_theming.py)
-```
-
-Reviewer notes taken without a code change:
-- **"the trailing `## Checks` block still carries the pre-round-1 numbers."** Correct — it did. The two
-  blocks are now merged into the single current one below; there is no superseded copy left.
-- **"the lotek-side pin bump still owes one look at the real thing"** (the extensions CLAUDE.md rule:
-  prove a mounted behaviour against lotek's suite too). Still true and still owed — moved to Remaining.
-  The reviewer did run it against lotek's real `base.html` + `styles.css` and it passed, and the new
-  mounted lane narrows the gap, but neither is the lotek-side run this repo's rules ask for.
-
-## Checks
-Current as of review round 2. (This block used to repeat the pre-round-1 numbers alongside a newer
-"re-run after round 1" block; the reviewer flagged the stale copy, so there is now exactly one.)
+### Round-1 evidence (kept — the tool counts moved into the single `## Checks
+Current as of **review round 3 (the PR gate)**, all re-run on the branch tip that opens the PR. (This
+block previously repeated pre-round-1 numbers alongside a newer one; a reviewer flagged the stale copy,
+so there is exactly one.)
 ```text
 uvx ruff check scribble/tests/test_checklists_panel_theming.py scribble
                                                           → All checks passed!
 uv run --extra dev pyrefly check tests/test_checklists_panel_theming.py
                                                           → INFO 0 errors
 uv run --extra dev pytest tests/test_checklists_panel_theming.py
-                                                          → rc=0, 14 passed (was 13; +1 = the new
-                                                            [mounted_panel_page] parametrisation)
-uv run --extra dev pytest -q (whole scribble suite)        → rc=0. 625 tests collected (was 624):
-                                                            623 passed, 2 skipped, 0 failed, 0 errors.
-                                                            Both skips are the pre-existing pair in
-                                                            tests/test_db_additive_migration.py,
-                                                            "needs a real Postgres
-                                                            (SCRIBBLE_TEST_PG_URL)".
-                                                            (`addopts = "-q"` + `-q` suppresses the
-                                                            summary line; counted from the progress
-                                                            characters + `--collect-only`.)
-red-then-green, this round                                → transcript M in "Review round 2" above:
-                                                            the mounted lane fails on origin/main,
-                                                            the standalone lane passes there.
+                                                          → 16 passed  (was 14; +2 = round 3's two
+                                                            drift guards)
+uv run --extra dev pytest -rs   (whole scribble suite)     → rc=0. 625 passed, 2 skipped, 192 warnings
+                                                            in 1180.32s (19:40). 627 collected
+                                                            (was 625: +2, exactly the new guards).
+                                                            NOTE: run WITHOUT -q. scribble's
+                                                            pyproject sets addopts = "-q", so passing
+                                                            -q yields -qq and prints NO summary line
+                                                            at all — it ends on the warnings block and
+                                                            exits 0 whether or not anything failed.
+                                                            That is why this run used `-rs` instead.
+skip list (the WHOLE list — 2 of 627)                     → tests/test_db_additive_migration.py:82
+                                                            and :136, both "needs a real Postgres
+                                                            (SCRIBBLE_TEST_PG_URL)". Pre-existing and
+                                                            unrelated to this branch: they guard
+                                                            SoftHostId column typing, and this diff
+                                                            changes no model, column or query.
+                                                            Nothing else skipped — in particular the
+                                                            playwright/Chromium lane did NOT skip, so
+                                                            all 5 browser cases ran for real in BOTH
+                                                            the standalone and mounted shells.
+efficacy (not just linkage), re-measured from scratch     → origin/main production tree exported via
+                                                            `git archive`, this branch's test file
+                                                            copied in byte-identical (md5 52fae6b2…),
+                                                            fresh venv: 12 failed, 2 passed. The 2
+                                                            passers are exactly the 2 documented as
+                                                            expected-green. Includes the client-visible
+                                                            symptom: status control background
+                                                            rgb(239,239,239) != note rgb(13,23,34).
+host-token resolution (what the mounted lane CANNOT see)  → all 9 custom properties the panel sheet
+                                                            consumes are defined in lotek's real
+                                                            src/app/static/styles.css, 3 definitions
+                                                            each (all theme blocks). Dark
+                                                            --field-bg: #0d1722 = rgb(13,23,34) and
+                                                            light #ffffff match this plan's by-hand
+                                                            mounted measurements exactly.
+red-then-green, this round                                → transcripts N and O in "Review round 3";
+                                                            prod files byte-identical afterwards
+                                                            (`git diff -- scribble/scribble/` empty).
 ```
 
 ## Notes / gotchas

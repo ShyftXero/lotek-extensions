@@ -523,3 +523,86 @@ def test_panel_rows_lay_out_beside_their_status_control(request, shell):
     assert text["x"] > sel["x"], f"[{shell}] item text is not to the right of the control: {boxes!r}"
     same_row = abs(text["y"] - sel["y"]) < max(sel["h"], text["h"])
     assert same_row, f"[{shell}] control and text are not on one row: {boxes!r}"
+
+
+# ───────── PR-gate review round 3: guard the two CONVENTIONS this fix now depends on ──────────
+# Both of the below were comments-only contracts after round 2 — the panel stylesheet's own header
+# asserts them in prose. This repo's own lesson is that a rule behind a hook holds and a rule behind
+# intention drifts, so each gets a guard. Neither reflects a defect in the shipped behaviour: both
+# hold today (measured), and both are one careless edit away from silently restoring ext#44.
+
+
+def _panel_templates() -> dict[str, str]:
+    """Every scribble template whose PAGE renders a panel class — counting both the classes written in
+    its own markup and the ones emitted at runtime by the JS files it loads.
+
+    Following the JS is the point, not thoroughness for its own sake: `checklists_library.html` writes
+    no `.ckp-*` at all, and needs the stylesheet purely because `checklists_library.js` builds
+    `.ckp-kind` rows into it. A markup-only scan would call that page compliant while it rendered
+    unstyled pills, which is the very defect ext#44 is about.
+    """
+    tmpl_dir = _PKG / "templates" / "scribble"
+    class_attr = re.compile(r'class="([^"]*)"')
+    asset = re.compile(r"filename=['\"]([\w.-]+\.js)['\"]")
+    el_cls = re.compile(r'el\(\s*"[a-z]+"\s*,\s*"([^"]+)"')
+
+    def panel_classes(literals) -> set[str]:
+        return {
+            tok
+            for literal in literals
+            for tok in literal.split()
+            if tok.startswith("ckp-") or re.fullmatch(r"ck-[a-z_]+", tok)
+        }
+
+    out = {}
+    for path in sorted(tmpl_dir.glob("*.html")):
+        text = path.read_text()
+        emitted = panel_classes(class_attr.findall(text))
+        for js_name in asset.findall(text):
+            js = _PKG / "static" / js_name
+            if js.exists():
+                emitted |= panel_classes(el_cls.findall(js.read_text()))
+        if emitted:
+            out[path.name] = text
+    return out
+
+
+def test_every_template_rendering_panel_classes_links_the_panel_stylesheet():
+    """The fix is PER-PAGE opt-in: the panel's rules now travel with the page (via `head_extra`), not
+    with scribble.css. That is what makes it work mounted — and it means a NEW page that renders
+    `.ckp-*` and forgets the link reproduces ext#44 exactly, on that page only, with every existing
+    test still green. The two pages that exist are pinned individually above; this pins the RULE, so
+    page three cannot regress silently.
+
+    Deliberate limit: a page that renders panel classes from a JS file it does not itself reference
+    (e.g. one loaded by a shared base) is not seen here."""
+    pages = _panel_templates()
+    assert set(pages) >= {"engagement.html", "checklists_library.html"}, (
+        f"extraction broke, not the templates: {sorted(pages)}"
+    )
+    missing = sorted(name for name, text in pages.items() if _PANEL_CSS_LINK not in text)
+    assert not missing, (
+        f"templates render panel classes but never link {_PANEL_CSS_LINK}: {missing} — add "
+        "`{% block head_extra %}` with that stylesheet, or the panel is unstyled there when mounted "
+        "(ext#44 PR-gate review)"
+    )
+
+
+def test_panel_stylesheet_stays_scoped_to_the_panel():
+    """This stylesheet is injected into the HOST's `<head>` on every page that links it, so it must
+    only ever style panel classes. Its own header comment says exactly that — and the reason is not
+    cosmetic: one `body`, `:root`, `select` or `.card` rule in here would silently restyle lotek's
+    whole shell on every scribble page, which is precisely why linking scribble.css from a host page
+    was rejected. Assert the first compound of every selector is a `.ckp`/`.ck-` class, so a
+    descendant like `.ckp-head h2` is fine and a bare element rule is not."""
+    offenders = [
+        sel
+        for sel, _body in _rules(_PANEL_CSS.read_text())
+        for part in sel.split(",")
+        if not re.match(r"^\.(ckp|ck-)[\w-]*", part.strip())
+    ]
+    assert not offenders, (
+        f"{_PANEL_CSS.name} has selectors that are not scoped to a panel class: {offenders} — this "
+        "file is injected into the host's <head>, so an element/:root/shared-class rule here restyles "
+        "lotek itself (ext#44 PR-gate review)"
+    )
