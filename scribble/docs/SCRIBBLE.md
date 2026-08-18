@@ -74,6 +74,11 @@ Board order *is* document order.
   the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both — but
   **not its nested children**: a promoted parent is an umbrella over the vuln-DB write-up while each child
   holds the per-host evidence, so the children are detached (they become top-level findings) and survive.
+  The same split applies to everything else that points at a finding — six columns in all, enumerated at the
+  top of `scribble/findings_service.py`: its own state (co-editing CRDT doc, per-finding variable values,
+  tags, artifacts) goes with it, while a **checklist item** that linked to it survives with `finding_id`
+  cleared. Handling only *some* of that set is not a smaller bug: any surviving reference makes the DELETE an
+  FK violation, i.e. a 500 that deletes nothing, and the same applies to deleting a whole engagement.
 - Every rule above is enforced by `scribble/findings_service.py`, which the **machine API calls too** (see
   "The board" under the machine API). The browser and a PAT therefore place a finding identically; there is
   no second implementation of the ordering rules to drift.
@@ -203,10 +208,10 @@ also could not do. The board routes below share their mutation logic with the co
 |---|---|---|
 | `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order** — the flat board list (`groups[]` each with their `findings[]`, plus `ungrouped[]`). `count` is board rows; `top_level_count` is how many findings the **report** renders, which is the smaller number whenever promotion nested per-host children (see below). |
 | `GET /scribble/machine/findings/<finding_id>` | read | One finding in full: content blocks, evidence artifacts, and its promoted per-host `children`. |
-| `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized). Omitted = unchanged, explicit `null` = cleared, and an **empty** `description`/`remediation`/`references` (`""` / `[]`) **clears that prose block**. An **unknown field is a 400**, not a silent no-op. |
-| `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files). Nested per-host **children are detached, not deleted** — their ids come back in `detached_children` and they become top-level findings. |
+| `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized; each value must be a real ProseMirror doc (`{"type": "doc", …}`), and a value that is not one is a **400**, never a silently emptied block). Omitted = unchanged, explicit `null` = cleared, and an **empty** `description`/`remediation`/`references` (`""` / `[]`) **clears that prose block**. An **unknown field is a 400**, not a silent no-op. |
+| `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files), its co-editing CRDT state and its per-finding variable values. Nested per-host **children are detached, not deleted** — their ids come back in `detached_children` and they become top-level findings — and a checklist item that linked to it keeps its place with `finding_id` cleared. |
 | `POST /scribble/machine/findings/<finding_id>/move` | write | `{"group_id": <id\|null>, "order_index": <int>}` — set group + position. `group_id` is required (`null` = ungrouped). |
-| `POST /scribble/machine/engagements/<engagement_id>/findings/move` | write | **Bulk** move: `{"finding_ids": [...], "group_id": <id\|null>, "order_index": <int>}`, listed order preserved. Atomic — one id outside the engagement refuses the whole request. |
+| `POST /scribble/machine/engagements/<engagement_id>/findings/move` | write | **Bulk** move: `{"finding_ids": [...], "group_id": <id\|null>, "order_index": <int>}`, listed order preserved. Atomic — one id outside the engagement refuses the whole request. At most **500** ids per call (`order` on the reorder route likewise). |
 | `POST /scribble/machine/engagements/<engagement_id>/groups` | write | Create a report section. `name` required; optional `assessment_type_id`. |
 | `PATCH /scribble/machine/engagements/<engagement_id>/groups/<group_id>` | write | Rename (`name`), toggle `include_in_report`, or set `order_mode` (`auto_severity` \| `manual`). |
 | `DELETE /scribble/machine/engagements/<engagement_id>/groups/<group_id>` | write | Delete the section; its findings are **detached, not deleted** (they return to `ungrouped`). |
@@ -406,8 +411,12 @@ app origin. Uploads are capped at 25 MiB (checked after base64 decode, with a pr
 encoded string so an oversized payload is refused before it is buffered), filenames are sanitized and
 stored under a UUID-prefixed name inside a per-engagement directory. `filename` and `caption` are
 type-checked at the boundary (a non-string is a 400, not a 500), and `filename` is capped at **222
-characters** — the UUID prefix costs 33 of the filesystem's 255, so a longer name is `ENAMETOOLONG` on
-write rather than a truncated column.
+characters** — the UUID prefix costs 33 of the filesystem's 255, so a longer name is refused with a 400
+rather than truncated into the column. That cap counts the *caller's* characters and is therefore not the
+whole guard: `secure_filename` NFKD-normalizes, which can make a name **longer** (`"½"` → `"12"`), so a
+204-character unicode name passed the cap and still hit `ENAMETOOLONG` — a 500. The stored basename is
+bounded in `artifacts_storage.save_bytes`, after sanitization and preserving the extension, which is the
+layer that knows the final name and the one the cookie upload path also goes through.
 
 **Machine-surface hygiene.** The CSRF exemption on `/scribble/machine` is only sound because those
 routes accept no ambient session cookie. Never add a cookie fallback there, and never widen
