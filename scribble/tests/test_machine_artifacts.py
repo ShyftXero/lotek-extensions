@@ -181,6 +181,67 @@ def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
     assert body["finding_id_dropped"] is True
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11",  # a core UUIDv7 — the likeliest wrong value here
+        "abc",
+        "12.5",
+        [],
+    ],
+)
+def test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped(client, stub_host, bad):
+    """``_as_int`` returns None for anything non-integer, which used to make an unparseable ``finding_id``
+    indistinguishable from not sending one: the artifact landed as engagement-level evidence and the 201
+    said ``finding_id_dropped: false`` — "you did not ask for one" — which is the exact false reassurance
+    the echo fields were added to remove.
+
+    A UUID is the specific mistake to expect: scribble's finding ids are sequential integers while the
+    host's are UUIDv7, and mixing the two has cost this project real outages. Refusing it also keeps
+    ``finding_id_dropped`` honest: after this, ``finding_id: null`` with ``dropped: false`` really does
+    mean the caller asked for engagement-level. (A well-formed id belonging to ANOTHER engagement is still
+    dropped rather than refused — that case would leak whether the id exists; this one cannot.)"""
+    eid = _engagement(client, stub_host)
+    resp = _upload_json(client, eid, finding_id=bad)
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+
+
+def test_an_empty_finding_id_still_means_engagement_level(client, stub_host):
+    """A form/JSON field left blank is "I am not attaching this to a finding", not a malformed id — the
+    multipart surface in particular submits ``finding_id=""`` for an untouched field."""
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid, finding_id="").get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is False
+
+
+def test_a_multipart_upload_refuses_an_unparseable_finding_id(client, stub_host):
+    """Same rule on the multipart surface, where every field arrives as a string — so the JSON branch's
+    check being present says nothing about this one."""
+    eid = _engagement(client, stub_host)
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        data={
+            "file": (io.BytesIO(PNG), "shot.png"),
+            "finding_id": "0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11",
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+
+
+def test_an_unparseable_finding_id_is_refused_on_a_REPLAY_too(client, stub_host):
+    """The idempotent-replay branch reads the same parsed value, so an unparseable id there would answer
+    200 with ``finding_id_dropped: false`` about a request that asked for something meaningless."""
+    eid = _engagement(client, stub_host)
+    assert _upload_json(client, eid, idempotency_key="k9").status_code == 201
+    resp = _upload_json(client, eid, idempotency_key="k9", finding_id="not-an-int")
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+
+
 def test_an_idempotent_replay_echoes_the_STORED_attachment(client, stub_host, session_factory):
     """A retry must report where the evidence actually sits, not what this request asked for: a replay
     whose ``finding_id`` differs from the stored one is told the attachment was not applied."""

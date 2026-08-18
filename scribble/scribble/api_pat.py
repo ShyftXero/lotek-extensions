@@ -936,6 +936,33 @@ def scribble_engagement_report(engagement_id: int):
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────
 
 
+def _finding_id_or_400(raw) -> tuple[int | None, tuple[Response, int] | None]:
+    """``(finding_id, refusal)`` for a caller-supplied ``finding_id``. Exactly one is non-None.
+
+    Absent or empty means "engagement-level evidence" — a legitimate request (the appendix renders it),
+    and the multipart surface submits ``finding_id=""`` for an untouched field, so an empty string must
+    not be an error.
+
+    Anything else that does not parse as an int IS an error, and used to be swallowed: ``_as_int`` returned
+    None, the artifact silently landed as engagement-level evidence, and the 201 reported
+    ``finding_id_dropped: false`` — i.e. "you did not ask for one" — about a request that plainly did. A
+    UUID is the specific value to expect (scribble's finding ids are sequential ints while the host's core
+    ids are UUIDv7, and confusing the two has taken production down here before), and a runbook reading
+    that response cannot tell the difference between a deliberate engagement-level attach and its own bug.
+
+    Refusing it is also what keeps ``finding_id_dropped`` meaningful for the case that stays silent: a
+    WELL-FORMED id belonging to another engagement is still dropped to None rather than 404'd (see the
+    tenancy comment at the write), because answering differently would say whether that id exists. An
+    unparseable id cannot leak anything, so there is no reason to be quiet about it.
+    """
+    if raw is None or raw == "":
+        return None, None
+    fid = _as_int(raw)
+    if fid is None:
+        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
+    return fid, None
+
+
 @machine_bp.post("/engagements/<int:engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
@@ -970,7 +997,9 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = request.form.get("kind")
         placement_raw = request.form.get("placement")
         idempotency_key = request.form.get("idempotency_key")
-        fid = _as_int(request.form.get("finding_id"))
+        fid, bad_fid = _finding_id_or_400(request.form.get("finding_id"))
+        if bad_fid is not None:
+            return bad_fid
         filename = upload.filename or "artifact"
         data = upload.read(_MAX_ARTIFACT_BYTES + 1)  # bound the read; the len() check below rejects >max
     elif request.is_json:
@@ -979,7 +1008,9 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = payload.get("kind")
         placement_raw = payload.get("placement")
         idempotency_key = payload.get("idempotency_key")
-        fid = _as_int(payload.get("finding_id"))
+        fid, bad_fid = _finding_id_or_400(payload.get("finding_id"))
+        if bad_fid is not None:
+            return bad_fid
         filename = payload.get("filename") or "artifact"
         content_b64 = payload.get("content_base64") or payload.get("data_base64") or payload.get("data")
         if not content_b64:
@@ -1095,7 +1126,10 @@ def scribble_upload_artifact(engagement_id: int):
             # which used to make the two cases indistinguishable at the wire: both answered 201 with a
             # URL, and a dropped one then landed as engagement-level evidence. `finding_id` is what the
             # artifact is actually attached to (null = the engagement itself) and `finding_id_dropped`
-            # says the request asked for one that was not honored.
+            # says the request asked for one that was not honored. ``requested_fid`` is the PARSED id and
+            # is trustworthy because an unparseable one never reaches here (``_finding_id_or_400``): if it
+            # is None the caller really did ask for engagement-level evidence, so a false
+            # ``finding_id_dropped: false`` is not reachable through a malformed value.
             "finding_id": artifact.finding_id,
             "finding_id_dropped": requested_fid is not None and artifact.finding_id != requested_fid,
         }), 201
