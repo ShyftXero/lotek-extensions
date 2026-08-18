@@ -188,6 +188,25 @@ def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
         "abc",
         "12.5",
         [],
+        {},
+        # JSON NUMBER forms, which the first version of this parse let through because it delegated to
+        # ``int()``: ``int()`` coerces rather than validates, so 2.9 became finding 2 and True became
+        # finding 1 — a DIFFERENT finding than the caller named, reported as ``finding_id_dropped: false``
+        # (adversarial review, 2026-08-17). The string "12.5" above does NOT cover these: it fails
+        # ``int()`` outright, so parametrising only the string masked the hole.
+        2.9,
+        0.0,
+        True,
+        False,
+        # Out of range for the column. ``int()`` succeeds, ``db.get`` then raises inside the session —
+        # OverflowError on SQLite, DataError on Postgres — which is a 500 on caller-controlled input, and
+        # by then the bytes are already on disk.
+        10**30,
+        2**31,
+        -1,
+        0,
+        "1e3",
+        "+7",
     ],
 )
 def test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped(client, stub_host, bad):
@@ -230,6 +249,73 @@ def test_a_multipart_upload_refuses_an_unparseable_finding_id(client, stub_host)
     )
     assert resp.status_code == 400, resp.get_json()
     assert resp.get_json()["detail"] == "invalid finding_id"
+
+
+@pytest.mark.parametrize(("raw", "would_have_hit"), [(2.9, 2), (True, 1)])
+def test_a_json_number_finding_id_does_not_attach_to_a_DIFFERENT_finding(
+    client, stub_host, session_factory, raw, would_have_hit
+):
+    """The two values ``int()`` silently RESOLVED to a real, wrong finding — measured on this very route.
+
+    With findings 1 and 2 on the engagement, ``{"finding_id": 2.9}`` answered 201 with ``finding_id: 2``
+    and ``finding_id_dropped: false``: the evidence was attached to a finding the caller never named, and
+    the response asserted the attach was honoured exactly as asked. ``true`` did the same to finding 1
+    (``bool`` is an ``int`` subclass). Both are the precise false reassurance the echo fields were added to
+    remove, and ``SCRIBBLE.md`` promises a ``finding_id`` that does not parse is refused.
+
+    So the assertion is two-sided: refused with a 400, AND the finding it would have landed on is clean."""
+    eid = _engagement(client, stub_host)
+    first = _finding_on(session_factory, eid, title="finding one")
+    second = _finding_on(session_factory, eid, title="finding two")
+    assert (first, second) == (1, 2), "this guard is about the ids int() would coerce to"
+
+    resp = _upload_json(client, eid, finding_id=raw)
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+    with session_factory() as db:
+        assert db.get(fm.EngagementFinding, would_have_hit).artifacts == []
+        assert db.query(fm.Artifact).count() == 0
+
+
+def test_an_out_of_range_finding_id_is_refused_BEFORE_the_bytes_are_stored(
+    client, stub_host, session_factory, tmp_path
+):
+    """An id wider than the column raised INSIDE the session — ``OverflowError: Python int too large to
+    convert to SQLite INTEGER``, a DataError on Postgres — so the response was not JSON at all, and
+    ``save_bytes`` had already run, leaving an orphan file on disk behind the 500.
+
+    The bound lives in the parse, which runs before the body is even decoded, so the refusal is a clean 400
+    and nothing is written either to the table or to the artifact directory."""
+    eid = _engagement(client, stub_host)
+    resp = _upload_json(client, eid, finding_id=10**30)
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+    with session_factory() as db:
+        assert db.query(fm.Artifact).count() == 0
+    stored = [pth for pth in (tmp_path / "artifacts").rglob("*") if pth.is_file()]
+    assert stored == [], f"a refused upload left bytes on disk: {stored}"
+
+
+def test_a_multipart_upload_refuses_an_out_of_range_finding_id(client, stub_host):
+    """Same bound on the form surface, where every value arrives as a string."""
+    eid = _engagement(client, stub_host)
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        data={"file": (io.BytesIO(PNG), "shot.png"), "finding_id": str(2**31)},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid finding_id"
+
+
+def test_the_largest_id_the_column_holds_is_still_accepted(client, stub_host):
+    """The bound must not refuse a legal id: 2**31-1 is a value the column can hold, so it parses and is
+    then simply dropped as nonexistent (the normal not-found path), not refused as malformed."""
+    eid = _engagement(client, stub_host)
+    resp = _upload_json(client, eid, finding_id=2**31 - 1)
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["finding_id"] is None
+    assert resp.get_json()["finding_id_dropped"] is True
 
 
 def test_an_unparseable_finding_id_is_refused_on_a_REPLAY_too(client, stub_host):
@@ -422,3 +508,195 @@ def test_upload_fails_closed_with_no_host_mounted(client):
     resp = client.post(f"{M}/engagements/1/artifacts", json={"filename": "x", "content_base64": "eA=="})
     assert resp.status_code == 503
     assert resp.get_json()["error"] == "unavailable"
+
+
+# ── the review surface: publish is a DECISION, and the set that ships is listable ──────────────────
+#
+# ext#40 changed what an engagement-level artifact MEANS. Before it, an upload with no ``finding_id``
+# reached no deliverable at all, so "unattached" was in practice "not in the report"; after it, the report's
+# Evidence appendix publishes it. That is the behaviour the issue asked for, but shipped on its own it made
+# publication a side effect of an upgrade: every such row already on disk — working material an operator
+# attached precisely BECAUSE nothing rendered it — becomes client-facing on the next render, and there was
+# no route through which anyone could see the set first or take one back out (adversarial review,
+# 2026-08-17). The three routes below are that surface: decide at upload, list what is going to ship, flip
+# one afterwards. The DEFAULT is still to publish — see the plan file for why flipping it would restore
+# ext#40's symptom for the very PAT workflow that filed it.
+
+
+def test_the_upload_response_says_whether_the_evidence_will_SHIP(client, stub_host):
+    """The engagement-level upload is the one whose answer changed meaning, so the response has to say so
+    rather than leave the caller to infer it from a URL."""
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid).get_json()
+    assert body["finding_id"] is None
+    assert body["include_in_report"] is True
+
+
+def test_include_in_report_false_attaches_the_evidence_WITHOUT_publishing_it(
+    client, stub_host, session_factory
+):
+    """The decision an agent attaching working material needs: stored and addressable, absent from the
+    deliverable. ``_artifact_ctxs`` honours the flag, so the appendix never sees it."""
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid, include_in_report=False).get_json()
+    assert body["include_in_report"] is False
+    with session_factory() as db:
+        assert db.get(fm.Artifact, body["id"]).include_in_report is False
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("false", False), ("0", False), ("true", True), ("on", True)])
+def test_the_multipart_surface_takes_the_flag_as_a_WORD(client, stub_host, raw, expected):
+    """A form can only send text, and ``bool("false")`` is True — the wrong parse for a flag that decides
+    whether something reaches a client. The word forms are parsed explicitly."""
+    eid = _engagement(client, stub_host)
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        data={"file": (io.BytesIO(PNG), "shot.png"), "include_in_report": raw},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["include_in_report"] is expected
+
+
+def test_a_nonsense_include_in_report_is_refused_not_guessed_at(client, stub_host):
+    eid = _engagement(client, stub_host)
+    resp = _upload_json(client, eid, include_in_report="maybe")
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["detail"] == "invalid include_in_report"
+
+
+def test_a_replay_echoes_the_STORED_publish_decision(client, stub_host):
+    """Same rule as ``finding_id`` on the idempotent path: the reply describes the artifact that exists,
+    not what this retry asked for."""
+    eid = _engagement(client, stub_host)
+    first = _upload_json(client, eid, idempotency_key="p1", include_in_report=False)
+    assert first.get_json()["include_in_report"] is False
+    replay = _upload_json(client, eid, idempotency_key="p1", include_in_report=True)
+    assert replay.status_code == 200
+    assert replay.get_json()["include_in_report"] is False
+
+
+def test_the_list_route_shows_the_engagement_level_evidence_that_will_SHIP(
+    client, stub_host, session_factory
+):
+    """The gap the appendix opened: the cookie API lists a FINDING's artifacts, which by construction
+    cannot show a row whose ``finding_id`` is null, and there is no UI for them — so the rendered report
+    was the only place an operator could discover what was about to be published."""
+    eid = _engagement(client, stub_host)
+    fid = _finding_on(session_factory, eid)
+    attached = _upload_json(client, eid, finding_id=fid, filename="on-finding.png").get_json()["id"]
+    loose = _upload_json(client, eid, filename="loose.pcap", data=b"\xd4\xc3\xb2\xa1raw").get_json()["id"]
+
+    listing = client.get(f"{M}/engagements/{eid}/artifacts")
+    assert listing.status_code == 200
+    rows = {r["id"]: r for r in listing.get_json()["artifacts"]}
+    assert set(rows) == {attached, loose}
+    assert listing.get_json()["count"] == 2
+    assert rows[loose]["finding_id"] is None
+    assert rows[loose]["include_in_report"] is True   # ...which is exactly what needs reviewing
+    assert rows[loose]["filename"] == "loose.pcap"
+    assert rows[loose]["byte_size"] == 7
+
+    unattached = client.get(f"{M}/engagements/{eid}/artifacts?unattached=1")
+    assert [r["id"] for r in unattached.get_json()["artifacts"]] == [loose]
+
+
+def test_the_list_route_is_scoped_to_the_engagement_in_the_URL(client, stub_host, session_factory):
+    """Two engagements the same token can see: the listing must still be one engagement's."""
+    eid = _engagement(client, stub_host)
+    other = _engagement(client, stub_host, name="Other")
+    mine = _upload_json(client, eid, filename="mine.png").get_json()["id"]
+    _upload_json(client, other, filename="theirs.png")
+    rows = client.get(f"{M}/engagements/{eid}/artifacts").get_json()["artifacts"]
+    assert [r["id"] for r in rows] == [mine]
+
+
+def test_listing_an_invisible_engagement_is_the_same_404_as_a_missing_one(client, stub_host):
+    """No existence oracle, the same posture as every other route in this module."""
+    eid = _engagement(client, stub_host)
+    missing = client.get(f"{M}/engagements/999999/artifacts")
+    stub_host.actor = StubActor(id=2, username="other", role="operator")
+    stub_host.viewable_client_ids = set()
+    invisible = client.get(f"{M}/engagements/{eid}/artifacts")
+    assert missing.status_code == invisible.status_code == 404
+    assert missing.get_json() == invisible.get_json()
+
+
+def test_the_toggle_route_takes_an_artifact_back_OUT_of_the_deliverable(
+    client, stub_host, session_factory
+):
+    """The other half, and PAT-reachable on purpose: the cookie route needs a session cookie and CSRF, so
+    an agent that had just published working material had no way to undo it."""
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid, filename="working.pcap").get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"include_in_report": False})
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["include_in_report"] is False
+    with session_factory() as db:
+        assert db.get(fm.Artifact, aid).include_in_report is False
+    # ...and it is now visibly withheld on the review surface.
+    rows = client.get(f"{M}/engagements/{eid}/artifacts").get_json()["artifacts"]
+    assert rows[0]["include_in_report"] is False
+
+
+def test_the_toggle_route_can_also_fix_a_caption(client, stub_host, session_factory):
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid, caption="typo").get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"caption": "Scope diagram"})
+    assert resp.get_json()["caption"] == "Scope diagram"
+    assert resp.get_json()["include_in_report"] is True, "an omitted field must be left alone"
+    with session_factory() as db:
+        assert db.get(fm.Artifact, aid).caption == "Scope diagram"
+
+
+def test_the_toggle_route_refuses_an_artifact_from_ANOTHER_engagement(
+    client, stub_host, session_factory
+):
+    """The artifact is addressed THROUGH its engagement so authorization is the one predicate this module
+    uses everywhere. A well-formed id belonging elsewhere is 404 even for a token that can see both, so the
+    route cannot be used to reach into another engagement's evidence."""
+    eid = _engagement(client, stub_host)
+    other = _engagement(client, stub_host, name="Other")
+    foreign = _upload_json(client, other, filename="theirs.png").get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{foreign}", json={"include_in_report": False})
+    assert resp.status_code == 404, resp.get_json()
+    with session_factory() as db:
+        assert db.get(fm.Artifact, foreign).include_in_report is True, "the foreign row must be untouched"
+
+
+def test_the_toggle_route_refuses_an_invisible_engagement_before_reading_the_body(client, stub_host):
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid).get_json()["id"]
+    stub_host.actor = StubActor(id=2, username="other", role="operator")
+    stub_host.viewable_client_ids = set()
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"include_in_report": False})
+    assert resp.status_code == 404
+    assert resp.get_json()["error"] == "not_found"
+
+
+def test_the_toggle_route_refuses_a_nonsense_flag(client, stub_host):
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid).get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"include_in_report": "sometimes"})
+    assert resp.status_code == 400
+    assert resp.get_json()["detail"] == "invalid include_in_report"
+
+
+def test_a_huge_id_in_the_PATH_is_a_routing_refusal_not_a_500(client, stub_host):
+    """The same overflow as an out-of-range body ``finding_id``, reached through the URL instead.
+
+    Werkzeug's bare ``<int:x>`` is unbounded, so a 30-digit path segment ROUTED and then raised inside
+    ``db.get()``: measured 500 on all three of these before the converters were bounded (``DataError`` on
+    Postgres, which also poisons the open transaction). Now the rule simply does not match, so the answer is
+    a routing refusal — 404, or 405 where a same-path rule with another method exists — and no view runs.
+    ``tests/test_scribble_machine_tenancy.py::test_every_machine_route_id_converter_is_BOUNDED`` is the
+    drift guard that keeps this true for routes added later."""
+    eid = _engagement(client, stub_host)
+    huge = 10**30
+    for resp in (
+        client.get(f"{M}/engagements/{huge}"),
+        client.get(f"{M}/engagements/{huge}/artifacts"),
+        client.post(f"{M}/engagements/{eid}/artifacts/{huge}", json={"include_in_report": False}),
+        _upload_json(client, huge),
+    ):
+        assert resp.status_code in (404, 405), resp.status_code

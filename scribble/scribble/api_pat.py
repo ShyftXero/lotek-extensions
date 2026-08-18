@@ -45,6 +45,7 @@ from __future__ import annotations
 import base64
 import binascii
 import fnmatch
+import re
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -58,10 +59,11 @@ from scribble.api_schemas import (
     AddFindingRequest,
     CreateEngagementRequest,
     CreateTemplateRequest,
+    UpdateArtifactRequest,
     UploadArtifactRequest,
     request_body,
 )
-from scribble.artifacts_api import _as_int, artifact_url
+from scribble.artifacts_api import artifact_url
 from scribble.artifacts_storage import guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
@@ -92,6 +94,21 @@ machine_bp.before_request(host.authenticate)
 # screenshots/captures/small docs, so 25 MiB is generous while stopping a write token from exhausting
 # memory/disk with one giant payload.
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
+
+# A whole decimal integer and nothing else -- no sign, no exponent, no decimal point. See
+# ``_finding_id_or_400`` for why a plain ``int()`` is not good enough here.
+_INT_RE = re.compile(r"\d+")
+
+# URL converter for every id in this module's routes. Werkzeug's bare integer converter is UNBOUNDED --
+# ``regex=r"\d+"``, ``num_convert=int``, no max -- so ``/engagements/<30 digits>`` routed successfully and
+# then 500'd inside ``db.get()`` (measured: OverflowError on SQLite, DataError on Postgres, which also
+# poisons the open transaction). Same defect as an out-of-range ``finding_id`` in the BODY, reached through
+# the path instead, and a machine API is exactly where a caller-controlled id arrives. Bounding it in the
+# CONVERTER means an out-of-range id never reaches a view: Werkzeug does not match the rule and answers
+# 404, which is also the right answer for "no such id". The bound is the ``Integer`` PK column's, same as
+# ``_MAX_FINDING_ID``. ``tests/test_scribble_machine_tenancy.py`` fails if a machine route is added with an
+# unbounded one.
+_ID = "int(min=1, max=2147483647)"
 
 
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
@@ -374,7 +391,7 @@ def scribble_list_templates():
 # ── 3. GET /templates/<id> ───────────────────────────────────────────────────────────────────────────
 
 
-@machine_bp.get("/templates/<int:template_id>")
+@machine_bp.get(f"/templates/<{_ID}:template_id>")
 @host.require_scope("read")
 def scribble_get_template(template_id: int):
     with open_session() as db:
@@ -469,7 +486,7 @@ def scribble_create_template():
 # ── 4. POST /engagements/<id>/findings ───────────────────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/findings")
+@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
 def scribble_add_finding(engagement_id: int):
@@ -781,7 +798,7 @@ def scribble_resolve_template():
 # ── 8. POST /engagements/<id>/promote-job/<job_id> ──────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/promote-job/<job_id>")
+@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
 def scribble_promote_job(engagement_id: int, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
@@ -865,7 +882,7 @@ def scribble_list_engagements():
 # ── 8c. GET /engagements/<id> — one engagement the caller may see ────────────────────────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>")
+@machine_bp.get(f"/engagements/<{_ID}:engagement_id>")
 @host.require_scope("read")
 def scribble_get_engagement(engagement_id: int):
     actor = host.actor()
@@ -884,7 +901,7 @@ def scribble_get_engagement(engagement_id: int):
 # ── 8d. GET /engagements/<id>/report — stream the rendered deliverable (html|docx) ───────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>/report")
+@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/report")
 @host.require_scope("read")
 def scribble_engagement_report(engagement_id: int):
     """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
@@ -936,6 +953,13 @@ def scribble_engagement_report(engagement_id: int):
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────
 
 
+# A scribble finding id is a sequential 32-bit ``Integer`` PK. The bound is the COLUMN's, not a policy:
+# handing SQLAlchemy a wider integer raises inside the session rather than answering JSON -- OverflowError
+# ("Python int too large to convert to SQLite INTEGER") on SQLite, and on Postgres (the real backend) a
+# DataError "out of range for type integer" that also poisons the open transaction.
+_MAX_FINDING_ID = 2**31 - 1
+
+
 def _finding_id_or_400(raw) -> tuple[int | None, tuple[Response, int] | None]:
     """``(finding_id, refusal)`` for a caller-supplied ``finding_id``. Exactly one is non-None.
 
@@ -943,27 +967,79 @@ def _finding_id_or_400(raw) -> tuple[int | None, tuple[Response, int] | None]:
     and the multipart surface submits ``finding_id=""`` for an untouched field, so an empty string must
     not be an error.
 
-    Anything else that does not parse as an int IS an error, and used to be swallowed: ``_as_int`` returned
-    None, the artifact silently landed as engagement-level evidence, and the 201 reported
+    Anything else that is not a WHOLE NUMBER IN RANGE is an error, and used to be swallowed: ``_as_int``
+    returned None, the artifact silently landed as engagement-level evidence, and the 201 reported
     ``finding_id_dropped: false`` — i.e. "you did not ask for one" — about a request that plainly did. A
     UUID is the specific value to expect (scribble's finding ids are sequential ints while the host's core
     ids are UUIDv7, and confusing the two has taken production down here before), and a runbook reading
     that response cannot tell the difference between a deliberate engagement-level attach and its own bug.
 
-    Refusing it is also what keeps ``finding_id_dropped`` meaningful for the case that stays silent: a
-    WELL-FORMED id belonging to another engagement is still dropped to None rather than 404'd (see the
-    tenancy comment at the write), because answering differently would say whether that id exists. An
-    unparseable id cannot leak anything, so there is no reason to be quiet about it.
+    The parse is deliberately NOT ``int()``, which is why this does not use ``_as_int``. ``int()`` coerces
+    rather than validates, and JSON gives a caller two shapes that survive it while meaning something else
+    (adversarial review, 2026-08-17):
+
+    * ``2.9`` -> ``2``, so the evidence attaches to finding 2 — an id the caller never named — and the 201
+      answers ``finding_id_dropped: false``, asserting the attach was honored exactly as asked.
+    * ``true`` -> ``1``, bolting the screenshot onto finding #1, because ``bool`` is an ``int`` subclass.
+
+    Both are gibberish and neither could be refused by a check that asks "does ``int()`` succeed"; the
+    docs promise gibberish is refused, so the parse has to be the strict one. Out-of-range is refused for
+    a different reason — see ``_MAX_FINDING_ID`` — and refusing it HERE matters because this runs before
+    the upload's bytes are written, so a bad id no longer leaves an orphan file on disk behind a 500.
+
+    Refusing all of it is also what keeps ``finding_id_dropped`` meaningful for the case that stays
+    silent: a WELL-FORMED id belonging to another engagement is still dropped to None rather than 404'd
+    (see the tenancy comment at the write), because answering differently would say whether that id
+    exists. A malformed id cannot leak anything, so there is no reason to be quiet about it.
     """
+    def refuse() -> tuple[int | None, tuple[Response, int] | None]:
+        # Built lazily (``jsonify`` needs an app context) so the accept path stays callable as a plain
+        # function -- which is how its parse table is tested directly.
+        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
+
     if raw is None or raw == "":
         return None, None
-    fid = _as_int(raw)
-    if fid is None:
-        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
+    # ``bool`` first: it IS an ``int``, so the isinstance check below would accept True/False.
+    if isinstance(raw, bool):
+        return refuse()
+    if isinstance(raw, int):
+        fid = raw
+    elif isinstance(raw, str) and _INT_RE.fullmatch(raw.strip()):
+        fid = int(raw.strip())
+    else:
+        # A float (2.9), a list, a dict, a UUID, "12.5", "1e3" — anything that is not a whole number.
+        return refuse()
+    if not 0 < fid <= _MAX_FINDING_ID:
+        return refuse()
     return fid, None
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/artifacts")
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+_FALSE_WORDS = {"0", "false", "no", "off"}
+
+
+def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | None]:
+    """``(include_in_report, refusal)`` for the caller-supplied publish flag. None means "not specified".
+
+    Strict for the same reason ``_finding_id_or_400`` is: this flag decides whether an artifact appears in
+    a CLIENT deliverable, so ``bool(raw)`` -- under which the string ``"false"`` is True -- is the wrong
+    parse. JSON callers send a real boolean; the multipart surface can only send text, so the usual word
+    forms are accepted there and anything else is refused rather than guessed at.
+    """
+    if raw is None or raw == "":
+        return None, None
+    if isinstance(raw, bool):
+        return raw, None
+    if isinstance(raw, str):
+        word = raw.strip().lower()
+        if word in _TRUE_WORDS:
+            return True, None
+        if word in _FALSE_WORDS:
+            return False, None
+    return None, (jsonify({"error": "bad_request", "detail": "invalid include_in_report"}), 400)
+
+
+@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
 def scribble_upload_artifact(engagement_id: int):
@@ -1000,6 +1076,9 @@ def scribble_upload_artifact(engagement_id: int):
         fid, bad_fid = _finding_id_or_400(request.form.get("finding_id"))
         if bad_fid is not None:
             return bad_fid
+        publish, bad_publish = _include_in_report_or_400(request.form.get("include_in_report"))
+        if bad_publish is not None:
+            return bad_publish
         filename = upload.filename or "artifact"
         data = upload.read(_MAX_ARTIFACT_BYTES + 1)  # bound the read; the len() check below rejects >max
     elif request.is_json:
@@ -1011,6 +1090,9 @@ def scribble_upload_artifact(engagement_id: int):
         fid, bad_fid = _finding_id_or_400(payload.get("finding_id"))
         if bad_fid is not None:
             return bad_fid
+        publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
+        if bad_publish is not None:
+            return bad_publish
         filename = payload.get("filename") or "artifact"
         content_b64 = payload.get("content_base64") or payload.get("data_base64") or payload.get("data")
         if not content_b64:
@@ -1066,6 +1148,8 @@ def scribble_upload_artifact(engagement_id: int):
                     # reading a bare 200 as "attached, as asked".
                     "finding_id": existing.finding_id,
                     "finding_id_dropped": fid is not None and existing.finding_id != fid,
+                    # The STORED decision, not what this retry asked for -- same rule as finding_id above.
+                    "include_in_report": existing.include_in_report,
                 }), 200
 
     content_type = guess_content_type(filename, data)
@@ -1112,7 +1196,12 @@ def scribble_upload_artifact(engagement_id: int):
             byte_size=byte_size,
             sha256=sha256,
             caption=caption,
-            include_in_report=True,
+            # Whether this evidence SHIPS. Defaults True (the report has always published a finding's
+            # attached evidence, and since ext#40 it publishes engagement-level evidence too), but it is
+            # now the caller's to decide and the response says which way it went -- so working material can
+            # be attached without it turning up in a client deliverable. See
+            # ``_include_in_report_or_400`` and ``scribble_update_artifact`` (flip it afterwards).
+            include_in_report=publish if publish is not None else True,
             created_by=actor.username if actor else None,
             idempotency_key=idempotency_key,
         )
@@ -1132,7 +1221,101 @@ def scribble_upload_artifact(engagement_id: int):
             # ``finding_id_dropped: false`` is not reachable through a malformed value.
             "finding_id": artifact.finding_id,
             "finding_id_dropped": requested_fid is not None and artifact.finding_id != requested_fid,
+            # Whether this artifact will appear in the rendered report. Echoed for the same reason as the
+            # two fields above: an engagement-level upload is PUBLISHED by default (the Evidence appendix),
+            # so a caller attaching working material has to be able to see that it did, and fix it.
+            "include_in_report": artifact.include_in_report,
         }), 201
+
+
+# ── 9b. GET/POST /engagements/<id>/artifacts[/<artifact_id>] — the review surface ────────────────────
+
+
+def _machine_artifact_dict(a: Artifact) -> dict:
+    return {
+        "id": a.id,
+        "url": artifact_url(a.id),
+        "finding_id": a.finding_id,
+        "kind": a.kind.value,
+        "placement": a.placement.value,
+        "filename": a.filename,
+        "content_type": a.content_type,
+        "byte_size": a.byte_size,
+        "caption": a.caption or "",
+        "include_in_report": a.include_in_report,
+        "created_by": a.created_by,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/artifacts")
+@host.require_scope("read")
+def scribble_list_artifacts(engagement_id: int):
+    """List the engagement's evidence — the REVIEW surface for what a report is about to publish.
+
+    This exists because of what ext#40 changed. Evidence attached to the engagement itself
+    (``finding_id`` null) used to reach no deliverable at all, so "unattached" was in practice "not in the
+    report"; now the Evidence appendix publishes it, and an operator needs to be able to SEE that set
+    before sending the deliverable rather than discover it by reading the rendered report. There was no
+    such surface: the cookie API lists a FINDING's artifacts (``GET .../findings/<id>/artifacts``), which
+    by construction cannot show a row whose ``finding_id`` is null, and there is no UI for them either.
+
+    ``?unattached=1`` narrows to exactly the engagement-level rows the appendix publishes; the default is
+    every artifact on the engagement. Each row carries ``include_in_report``, so what does and does not
+    ship is visible in one call, and ``POST`` to the per-artifact route below changes it.
+    """
+    actor = host.actor()
+    unattached_only = (request.args.get("unattached") or "").strip().lower() in _TRUE_WORDS
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        # Missing and not-visible are the SAME 404 — no existence oracle (as everywhere in this module).
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+        rows = sorted(engagement.artifacts, key=lambda a: (a.order_index, a.id))
+        if unattached_only:
+            rows = [a for a in rows if a.finding_id is None]
+        out = [_machine_artifact_dict(a) for a in rows]
+    return jsonify({"artifacts": out, "count": len(out)})
+
+
+@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/artifacts/<{_ID}:artifact_id>")
+@host.require_scope("write")
+@request_body(UpdateArtifactRequest)
+def scribble_update_artifact(engagement_id: int, artifact_id: int):
+    """Change whether one artifact ships (``include_in_report``) and/or its ``caption``.
+
+    The other half of the review surface, and PAT-reachable on purpose: the cookie route
+    (``POST <url_prefix>/api/artifacts/<id>``) needs a session cookie and CSRF, so an agent that had just
+    attached working material at engagement level — which the Evidence appendix now publishes — had no way
+    to take it back out of the deliverable it had created.
+
+    The artifact is addressed THROUGH its engagement so authorization is the one predicate this module
+    uses everywhere (``can_view_engagement``) rather than a second, artifact-shaped rule: an id belonging
+    to another engagement answers 404 whatever the caller's grants are, so this route cannot be used to
+    probe or edit evidence outside the engagement named in the URL.
+    """
+    actor = host.actor()
+    payload = request.get_json(silent=True) or {}
+    publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
+    if bad_publish is not None:
+        return bad_publish
+    caption, bad_caption = _opt_str(payload, "caption")
+    if bad_caption is not None:
+        return bad_caption
+    with open_session() as db:
+        engagement = db.get(Engagement, engagement_id)
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+        artifact = db.get(Artifact, artifact_id)
+        if artifact is None or artifact.engagement_id != engagement_id:
+            return jsonify({"error": "not_found", "detail": "artifact not found"}), 404
+        if publish is not None:
+            artifact.include_in_report = publish
+        if "caption" in payload:
+            artifact.caption = caption
+        db.commit()
+        out = _machine_artifact_dict(artifact)
+    return jsonify(out)
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────

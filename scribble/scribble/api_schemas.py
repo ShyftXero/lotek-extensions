@@ -129,6 +129,23 @@ class UploadArtifactRequest(BaseModel):
     caption: str | None = Field(None, description="Human caption shown in the report.")
     kind: str | None = Field(None, description="'screenshot' | 'text' | 'file' (inferred if omitted).")
     placement: str | None = Field(None, description="'attached' (default) | 'inline'.")
+    include_in_report: bool | None = Field(
+        None,
+        description="Whether this evidence appears in the rendered report (default true). An artifact with "
+        "no finding_id is published in the report's engagement-level Evidence appendix, so send false for "
+        "working material you are attaching but do not want in the client deliverable.",
+    )
     idempotency_key: str | None = Field(
         None, description="Dedup key; a retry with the same key returns the original artifact (200)."
     )
+
+
+class UpdateArtifactRequest(BaseModel):
+    """JSON body of ``POST /scribble/machine/engagements/{engagement_id}/artifacts/{artifact_id}``
+    (write scope) — change whether one artifact ships, and/or its caption. Omitted fields are unchanged.
+    """
+
+    include_in_report: bool | None = Field(
+        None, description="Publish (true) or withhold (false) this artifact in the rendered report."
+    )
+    caption: str | None = Field(None, description="Human caption shown in the report.")
