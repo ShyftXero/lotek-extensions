@@ -100,10 +100,34 @@ def test_the_methodology_anchor_is_a_section_not_an_empty_div(session_factory):
     assert '<h2 class="sec-h">Methodology ' in html[anchor_index:]
 
 
+def _region_after(html: str, anchor: str) -> str:
+    """The slice of the document a reader LANDS ON when they follow ``#anchor``: from the anchor to the
+    next section anchor, or to the footer."""
+    start = html.index(f'id="{anchor}"')
+    rest = html[start + 1 :]
+    ends = [m.start() for m in re.finditer(r'id="sec-[a-z0-9-]+"|class="foot"', rest)]
+    return rest[: ends[0]] if ends else rest
+
+
 @pytest.mark.parametrize("template", [t.name for t in list_templates()])
-def test_every_toolbar_section_link_targets_an_anchor_in_the_document(session_factory, template):
-    """The general invariant behind ext#42, for every shipped template: a toolbar link must point at an
-    id this document actually contains."""
+def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, template):
+    """A toolbar link must lead somewhere a reader can read, for every shipped template.
+
+    NOT the ext#42 invariant, and it used to claim it was: ext#42's symptom was a live link to an anchor
+    with NO CONTENT — ``<div id="sec-methodology"></div>`` followed by an empty string — and "an element
+    carries that id" was already TRUE of the broken build, so the assertion could not fail in either
+    direction (second adversarial review, 2026-08-17). Worse, on the fixed code it is a tautology:
+    ``_render_document`` builds ``nav_keys`` as ``f'id="sec-{k}"' in html``, so asserting the id is present
+    asserts the implementation's own predicate back at itself.
+
+    What is asserted instead is the property the link is FOR: the region between the anchor and the next
+    section has real text in it. That is red against the broken build (the reported symptom is precisely an
+    empty region) and it is not derivable from ``nav_keys``. The two guards that pin ext#42 proper are
+    ``test_methodology_renders_with_no_checklist_at_all`` and
+    ``test_the_methodology_anchor_is_a_section_not_an_empty_div``.
+
+    ``findings`` is anchored by a bare ``<div id="sec-findings"></div>`` on purpose — it is a scroll target
+    placed above the groups — so the region, not the anchor's own markup, is what has to be measured."""
     eid = _engagement(session_factory)
     with session_factory() as db:
         html = render_report_html(build_report_context(db.get(Engagement, eid)), template=template)
@@ -111,6 +135,12 @@ def test_every_toolbar_section_link_targets_an_anchor_in_the_document(session_fa
     assert targets, "the toolbar has no section links at all"
     for target in targets:
         assert f'id="{target}"' in html, f'toolbar links #{target} but no element carries that id'
+        text = re.sub(r"<[^>]+>", " ", _region_after(html, target))
+        text = re.sub(r"\s+", " ", text).strip()
+        assert len(text) > 40, (
+            f"toolbar links #{target} but the region it scrolls to carries no content ({text!r}) — that is "
+            "ext#42's symptom, a live link into an empty anchor"
+        )
 
 
 def test_a_template_that_drops_the_methodology_block_emits_no_methodology_link(session_factory):

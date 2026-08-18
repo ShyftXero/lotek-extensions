@@ -34,14 +34,22 @@ import pytest
 from scribble.content import schema
 from scribble.models import Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
-from scribble.reporting.render_html import render_report_html
+from scribble.reporting.render_html import _LIMITATIONS, render_report_html
 from scribble.reporting.templates import list_templates
 
 # Past-tense assertions about work done on THIS engagement. Each one was in the shipped prose.
+#
+# 🔴 A PHRASE list is a weak instrument and has already been slipped once: the bullet that replaced
+# "anything outside the agreed scope was not touched" said the same thing as "Systems, accounts and
+# techniques outside them WERE NOT EXAMINED", which no entry here matched, so this module reported green
+# over exactly the class of sentence it exists to stop. Both wordings are listed now, but the real control
+# is reading the prose — a rewording is always one edit away from getting past a blacklist.
 FORBIDDEN = [
     "was validated by hand",
     "Testing was non-destructive",
     "was not touched",
+    "were not examined",
+    "was not examined",
     "no destructive action was taken",
     "Testing followed",
     "was not observed in this environment",
@@ -108,3 +116,23 @@ def test_the_limitations_still_say_what_the_report_does_NOT_claim(promoted_repor
     assert "describes the environment as it was during the testing window" in promoted_report
     assert "not proof that none exists" in promoted_report
     assert "bounded by the agreed scope" in promoted_report
+
+
+def test_the_coverage_bullet_makes_a_CLAIM_about_the_report_not_about_the_testing(promoted_report):
+    """The bullet this rule has now caught twice, pinned by its actual wording.
+
+    First it read "Testing was non-destructive … anything outside the agreed scope was not touched"; the
+    replacement said the same thing as "Systems, accounts and techniques outside them WERE NOT EXAMINED",
+    which the phrase list above did not match, so this module reported green over exactly the sentence it
+    exists to stop (second adversarial review, 2026-08-17). Both are assertions about how the engagement
+    was conducted, in a document the renderer builds without knowing. The wording that is allowed states
+    the same limitation as a property of the REPORT, which is true however the findings got here — and
+    asserting the allowed wording (not merely the absence of the bad one) is what stops a revert from
+    passing by deleting the bullet."""
+    assert "makes no claim about systems, accounts or techniques outside them" in promoted_report
+    for bullet in _LIMITATIONS:
+        assert "this report" in bullet.lower() or "the absence of a finding" in bullet.lower(), (
+            f"limitations bullet {bullet!r} names no subject it is limiting — every bullet here has to be "
+            "a statement about what THIS REPORT does or does not claim, which is the property that makes "
+            "the block safe to emit unconditionally over the assessor's name"
+        )
