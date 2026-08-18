@@ -174,7 +174,7 @@ user is operator/admin, not a demoted viewer.
 | `GET /scribble/machine/templates` | read | List active library templates. Filters: `?q=` (name contains), `?category=`, `?severity=`. |
 | `GET /scribble/machine/templates/<template_id>` | read | One template with full `content_json`, CVSS and references. 404 if missing or retired. |
 | `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id` **or** by promoting one `lotek_finding_id`. Optional `group_id`, `target_host`, `target_port`, `target_url`. |
-| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. |
+| `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. A `finding_id` that does not **parse** as an integer (a core UUID, say — scribble's finding ids are sequential ints) is refused `400 invalid finding_id` rather than dropped, so `finding_id_dropped: false` cannot mean "your id was gibberish"; an empty/absent one still means engagement-level. |
 | `POST /scribble/machine/engagements/<engagement_id>/promote-job/<job_id>` | write | **Bulk-promote every finding of a scan job** into the engagement. |
 | `POST /scribble/machine/vuln-map` | write | Curate a scan-finding → template mapping. `template_id` required, plus at least one of `source`, `title_pattern`, `dedupe_prefix`. |
 | `GET /scribble/machine/vuln-map` | read | List the mappings. |
@@ -231,8 +231,9 @@ Promotion behaviour worth relying on:
 - **Template-aware.** Each finding resolves through the VulnMap to a library template (rendered from
   that write-up) or, failing a match, is bridged verbatim from the scan finding's own prose.
 - **Aggregating.** Findings that resolve to the same template are nested one level: a parent finding
-  carries the write-up, per-host children carry their own target and evidence. The report renders that
-  nesting — including each child's own attached evidence, inside that child's row (see *Reports*).
+  carries the write-up, per-host children carry their own target and evidence. The **HTML/PDF** report
+  renders that nesting — including each child's own attached evidence, inside that child's row (see
+  *Reports*); the `.docx` renderer still emits a text-only *Affected Hosts* list with no child evidence.
   (Nesting is produced by promotion; there is no drag-to-nest control on the board.)
 
 ### VulnMap resolution order
@@ -282,17 +283,31 @@ the group's own mode, `include_in_report` respected at group, finding **and** ar
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
 into the report.
 
-**Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before):
+**Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before) — in
+the **HTML/PDF** report. `render_docx` is **not** covered by this and is the outstanding gap: it renders a
+top-level finding's gallery only, its *Affected Hosts* list is text-only, and `_build_context` never reads
+`ctx.artifacts`, so neither child evidence nor the engagement appendix exists in the editable hand-off:
 
-| attached to | where it renders |
-|---|---|
-| a top-level finding | that finding's evidence gallery |
-| a nested per-host **child** finding | inside that child's row of the parent's *Affected hosts* table |
-| the **engagement** (no `finding_id`) | the **Evidence** appendix section, last in the document |
+| attached to | where it renders (HTML/PDF) | `.docx` |
+|---|---|---|
+| a top-level finding | that finding's evidence gallery | yes |
+| a nested per-host **child** finding | inside that child's row of the parent's *Affected hosts* table | **no** |
+| the **engagement** (no `finding_id`) | the **Evidence** appendix section, last in the document | **no** |
 
 An engagement-level artifact is exposed to the renderers as `ReportContext.artifacts` (an additive field
 on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
 link — are absent when there is nothing unattached, which is the normal case.
+
+🔴 **An engagement-level upload publishes by default and has no review surface yet.** Both upload routes
+set `include_in_report=True`, and there is no engagement-artifact **list** route and no UI listing them
+(only `GET /scribble/api/findings/<id>/artifacts`, which by definition cannot show them). So working
+material attached to the engagement rather than to a finding — a raw scan file, internal notes, a `.pcap`,
+vector's `export.html` — now reaches the client deliverable, where before this change it reached nothing.
+The rendered report is the only place it becomes visible: **read the Evidence appendix before you send the
+report.** To keep one out, take its id from the upload response (or the appendix item's URL) and
+`POST /scribble/api/artifacts/<id>` with `{"include_in_report": false}`, or `.../delete` it — both are
+tenancy-checked through `artifact_id` by the blueprint gate. A list route plus a per-artifact toggle on the
+engagement page is filed as its own change.
 
 **The printed deliverable opens like a document** (ext#43, 2026-08-17 — it opened on the masthead and then
 straight into the executive summary before). Two blocks exist only in `@media print`:
@@ -321,6 +336,19 @@ the model: the standing text is template-level boilerplate in `render_html.py`
 (`_COVER_HANDLING`/`_LIMITATIONS`/`_SEVERITY_DEFINITIONS`), and an authored engagement overview needs a
 schema + editor change (see `plans/fix-scribble-report-render-sweep.md`).
 
+**Standing prose may describe METHOD and state LIMITATIONS; it may not assert that work was performed.**
+That is a hard rule, pinned by `tests/test_report_standing_prose.py`, and it exists because the renderer has
+no way to know: scribble's headline workflow bulk-promotes a whole scan job, so a deliverable can be forty
+promoted findings — and the prose is emitted over the assessor's name, next to a section titled *Compliance
+Attestation*, with no flag or template that removes it (the report-template registry is frozen data, not an
+editor). Two claims were dropped for exactly that reason on 2026-08-17: *"Every candidate weakness was
+validated by hand before it was reported"* (the methodology phase is now **Validation**, describing method
+in the present tense and saying what a tool-carried finding rests on) and *"Testing was non-destructive …
+anything outside the agreed scope was not touched"* (replaced by a coverage bound — what the report does
+**not** claim). Rules-of-engagement statements of that kind belong in the per-engagement prose field a human
+writes. The methodology lead now says so outright: it is *a standing description of method, not a log of
+what was done on this engagement.*
+
 **Methodology always renders.** With coverage checklists it is *Methodology and Coverage* and they are the
 record; with none it is *Methodology* carrying a standing phased description plus framing for the
 assessment types this report's sections actually use, and an explicit note that no engagement-specific
@@ -336,8 +364,16 @@ editable hand-off — and the cover page, the contents and the summary front mat
 (severity bar and legend, severity tags/badges, the metric and methodology tiles) `print-color-adjust:
 exact`, so they survive Chrome's *Background graphics: off* — the print-dialog default, under which the
 severity block used to print blank (ext#39). It also pins the light paper palette at a specificity that
-beats the dark-theme selectors, so printing from a dark-mode browser does not put near-white ink on white
-paper.
+beats the dark-theme selectors (`:root:not([data-theme="dark"]), :root[data-theme="dark"]`, 0-2-0 — a plain
+`:root` loses to them however late it appears), so printing from a dark-mode browser does not put near-white
+ink on white paper.
+
+That rule must redeclare **every** token the dark theme does, and a test diffs the two rules' token sets
+rather than trusting the list. The first version of it pinned `--bg`/`--surface`/`--ink`/`--line`/`--sev-*`
+and left the `--accent*` family on its dark values, which no assertion caught because the guard measured
+`body` — while `--accent-ink` is the colour of the client name on the cover, of every front-matter,
+methodology and finding-block label, and the *background* of the "Satisfied" attestation badge. Printing
+from a dark-mode browser put `#7ee0bc` on white paper: 1.6:1, against 8.3:1 for the paper accent.
 
 Both renderers read artifact bytes through a reader confined to Scribble's artifact directory
 (`<instance>/artifacts/`), so a crafted `storage_path` cannot escape it, and the `.docx` renderer skips
