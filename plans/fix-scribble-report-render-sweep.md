@@ -225,6 +225,54 @@ is now in `SCRIBBLE.md`: **run the list route on an existing engagement, and rea
 before sending a report.** The BLOCK fix narrows the exposure a long way on its own: no non-image working
 material can ship its bytes any more, only its name.
 
+**Fifth pass — the PR-gate review's findings, answered (2026-08-18).** The gate run's own security +
+adversarial pass, from zero markers (a previous attempt was killed by a transient classifier error before
+recording anything). Two findings fixed, three filed as follow-ups rather than half-built at gate time.
+
+- [x] **The "strict" `finding_id` parse accepted NON-ASCII decimal digits.** `_INT_RE` was `\d+`, and
+  `re`'s `\d` is Unicode-aware: `"\u0667"` (Arabic-Indic seven) and `"\uff17"` (fullwidth seven) both
+  matched, `int()` coerced them to 7, and — measured — the upload answered **201** with `finding_id: null`,
+  i.e. the id was resolved to a finding that does not exist in that engagement and then silently dropped to
+  engagement-level evidence, which the Evidence appendix now PUBLISHES. Exactly the coercion class `2.9 ->
+  2` and `True -> 1` were refused for in the fourth pass, in the parse whose whole claim is that it
+  validates rather than converts. Now `[0-9]+`, with both digits added to the refusal parametrisation
+  (transcript 32).
+- [x] **`scribble_update_artifact` parsed the body BEFORE the tenancy gate — and its test's name said the
+  opposite.** `test_the_toggle_route_refuses_an_invisible_engagement_before_reading_the_body` sent a
+  *well-formed* body, so it asserted the 404 and could not detect the ordering it is named for; measured,
+  a malformed body on an engagement the token cannot see answered **400 `invalid include_in_report`**. Not
+  exploitable — both parsers are pure and their refusal depends only on the body, so nothing about the
+  engagement leaks — but it is the same class as the fourth pass's tautological-guard finding (a name
+  asserting a property the code does not have), and authz-before-body is the discipline the rest of the
+  blueprint follows. `can_view_engagement` now runs first and the test proves it with a MALFORMED body
+  (transcript 32).
+
+Filed rather than fixed, because each is a design decision rather than a defect, and gate time is the wrong
+place to make one:
+
+- **ext#61 — the render budget silently blanks an INLINE content image.** `_AssetResolver.inlined_bytes` is
+  shared by `resolve_gallery` and `resolve_inline`. Over budget, a gallery item gets the honest "not
+  embedded" chip naming the file and its size (that is the fourth pass's BLOCK fix); `resolve_inline`
+  returns `_BLANK_PIXEL` — a 1x1 transparent GIF — with no note anywhere, so a screenshot pasted into a
+  finding's description becomes an invisible gap in a client deliverable. The fallback is pre-existing, but
+  before this branch its only trigger was "no bytes available"; the budget is a NEW trigger this branch
+  introduces, and `resolve_inline`/`_BLANK_PIXEL` appear in no test in the suite — the budget's coverage
+  stops at the gallery. An honest chip needs the substitution to replace the whole `<img>` tag rather than
+  its `src`, which is a bigger change than a gate-time fix.
+- **ext#62 — `_MAX_APPENDIX_ITEMS` is applied in `zip` mode too, so `export_zip` omits the excess FILES.**
+  `resolver.manifest` is populated only for the items `_render_evidence_appendix` actually renders, and it
+  truncates to `ctx.artifacts[:200]` in every mode. In inline mode the cap saves bytes and nh3 passes and
+  the note says how many were withheld; in zip mode the withheld artifacts are simply missing from
+  `artifacts/` in the delivered archive, with only that aggregate count in the HTML to hint at it — the
+  same silent-omission class as ext#40 itself, on the delivery path.
+- **ext#63 — the artifact write routes emit no audit row.** `scribble_update_artifact` changes whether
+  evidence appears in a client deliverable, over a PAT, and calls no `_audit`; nor does the pre-existing
+  `scribble_upload_artifact`. Every other write route in the module does (`create_engagement`,
+  `create_template`, `add_finding`, `create_vuln_map`, `promote_job`). Consistent with its immediate
+  neighbour, so this branch regresses nothing — but lotek core's **INV-AUDIT-03** names deliverable content
+  in its asset list, and the trail cannot answer "who took that evidence out of the report". Covering both
+  routes is one change and belongs together.
+
 ## Remaining
 - [ ] Nothing owed for these five issues. Two things the fourth pass deliberately left, both written out
   where they are decided: the **publish default** for engagement-level uploads (see "The publish default"
@@ -795,6 +843,24 @@ GREEN 84 passed                  both modules
 ```
 The second one is the drift guard and was proved separately, by reverting ONE route: it names the offending
 endpoint and view arg, which is what makes it actionable rather than just red.
+
+### Fifth pass (the PR-gate review)
+
+**32. both fixes, proved against the code as the fourth pass left it**
+```
+RED   3 failed, 15 passed, 51 deselected
+      tests/test_machine_artifacts.py -k "does_not_PARSE or invisible_engagement_before_reading"
+      FAILED …test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped[\u0667]
+      FAILED …[\uff17]
+             AssertionError: {'filename': 'shot.png', 'finding_id': None, 'finding_id_dropped': ...}
+             <- a 201, not the 400 the parse promises: coerced to 7, then dropped to engagement level
+      FAILED …test_the_toggle_route_refuses_an_invisible_engagement_before_reading_the_body
+             AssertionError: a malformed body was parsed BEFORE the tenancy gate: 400 {...}
+GREEN 86 passed   tests/test_machine_artifacts.py + tests/test_scribble_machine_tenancy.py
+```
+Both RED assertions are on the *behaviour*, not on the shape of the code: the digit cases fail because the
+upload SUCCEEDS, and the ordering case fails because the status is 400 rather than 404. Neither can pass
+against the pre-fix build.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
      it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md

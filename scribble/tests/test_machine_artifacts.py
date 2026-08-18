@@ -207,6 +207,13 @@ def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
         0,
         "1e3",
         "+7",
+        # NON-ASCII decimal digits. ``re``'s ``\\d`` is Unicode-aware, so ``\\d+`` matched these and
+        # ``int()`` then coerced them to an ASCII value: "\u0667" (Arabic-Indic seven) and "\uff17" (fullwidth
+        # seven) both became finding 7. Benign in effect -- it resolves to the id the caller arguably named
+        # -- but it is the same COERCION the 2.9/True cases above were refused for, in a parse whose whole
+        # claim is that it validates rather than converts, so the class is closed rather than argued about.
+        "\u0667",
+        "\uff17",
     ],
 )
 def test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped(client, stub_host, bad):
@@ -665,6 +672,13 @@ def test_the_toggle_route_refuses_an_artifact_from_ANOTHER_engagement(
 
 
 def test_the_toggle_route_refuses_an_invisible_engagement_before_reading_the_body(client, stub_host):
+    """The tenancy gate runs FIRST, and the body is parsed only after it passes.
+
+    The assertion that proves the ordering is the MALFORMED body: if the parse ran first it would answer
+    ``400 invalid include_in_report`` and tell a caller with no grant on this engagement something about
+    its own request that it should not get to learn here -- and, worse, the same 400 whether the engagement
+    exists or not is the shape a reader mistakes for "the id is fine, fix your body". A well-formed body
+    alone cannot detect the ordering at all, which is what this test used to assert."""
     eid = _engagement(client, stub_host)
     aid = _upload_json(client, eid).get_json()["id"]
     stub_host.actor = StubActor(id=2, username="other", role="operator")
@@ -672,6 +686,13 @@ def test_the_toggle_route_refuses_an_invisible_engagement_before_reading_the_bod
     resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"include_in_report": False})
     assert resp.status_code == 404
     assert resp.get_json()["error"] == "not_found"
+
+    bad = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={"include_in_report": "sometimes"})
+    assert bad.status_code == 404, (
+        "a malformed body was parsed BEFORE the tenancy gate: "
+        f"{bad.status_code} {bad.get_json()}"
+    )
+    assert bad.get_json()["error"] == "not_found"
 
 
 def test_the_toggle_route_refuses_a_nonsense_flag(client, stub_host):

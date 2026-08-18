@@ -95,9 +95,14 @@ machine_bp.before_request(host.authenticate)
 # memory/disk with one giant payload.
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
-# A whole decimal integer and nothing else -- no sign, no exponent, no decimal point. See
+# A whole ASCII decimal integer and nothing else -- no sign, no exponent, no decimal point. See
 # ``_finding_id_or_400`` for why a plain ``int()`` is not good enough here.
-_INT_RE = re.compile(r"\d+")
+#
+# ``[0-9]`` rather than ``\d`` ON PURPOSE: ``re``'s ``\d`` is Unicode-aware, so it matched "\u0667"
+# (Arabic-Indic seven) and "\uff17" (fullwidth seven), which ``int()`` then coerced to 7 -- an artifact
+# attached to, or dropped from, a finding the caller wrote in another script. That is the same coercion
+# 2.9 -> 2 was refused for, in a parse whose whole claim is that it validates rather than converts.
+_INT_RE = re.compile(r"[0-9]+")
 
 # URL converter for every id in this module's routes. Werkzeug's bare integer converter is UNBOUNDED --
 # ``regex=r"\d+"``, ``num_convert=int``, no max -- so ``/engagements/<30 digits>`` routed successfully and
@@ -1296,16 +1301,21 @@ def scribble_update_artifact(engagement_id: int, artifact_id: int):
     """
     actor = host.actor()
     payload = request.get_json(silent=True) or {}
-    publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
-    if bad_publish is not None:
-        return bad_publish
-    caption, bad_caption = _opt_str(payload, "caption")
-    if bad_caption is not None:
-        return bad_caption
     with open_session() as db:
         engagement = db.get(Engagement, engagement_id)
         if engagement is None or not can_view_engagement(engagement, actor):
             return _engagement_not_found()
+        # Parsed AFTER the tenancy gate, deliberately: a caller with no grant on this engagement gets the
+        # one answer this module ever gives it (404) and never a 400 about its own body, which would be the
+        # same reply whether or not the engagement exists and reads as "the id is fine, fix your body".
+        # Both parsers are pure -- no DB, no disk -- so the ordering costs nothing to have the right way
+        # round, and authz-before-body is the discipline the rest of the blueprint follows.
+        publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
+        if bad_publish is not None:
+            return bad_publish
+        caption, bad_caption = _opt_str(payload, "caption")
+        if bad_caption is not None:
+            return bad_caption
         artifact = db.get(Artifact, artifact_id)
         if artifact is None or artifact.engagement_id != engagement_id:
             return jsonify({"error": "not_found", "detail": "artifact not found"}), 404
