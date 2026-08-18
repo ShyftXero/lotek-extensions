@@ -88,6 +88,31 @@ _ASSET_ATTRS = {
 }
 _ASSET_URL_SCHEMES = {"http", "https", "mailto", "data"}
 
+# Inlining budget for ``mode="inline"`` -- the single self-contained ``report.html``.
+#
+# A base64 ``data:`` URI is 1.33x the file and is held whole in one Python string, so what gets embedded
+# has to be bounded on BOTH axes. It was not: three 5 MiB captures attached at engagement level rendered a
+# 20.0 MiB document (measured), and since the upload cap is 25 MiB PER artifact with nothing capping the
+# COUNT, twenty of them would build ~660 MB in memory on every report read. Two rules bound it -- and the
+# first is about disclosure at least as much as size:
+#
+#  * ONLY images are ever embedded. A ``.pcap``, a raw scan dump, vector's ``export.html`` is working
+#    material: embedding it puts the whole file inside a CLIENT deliverable, and the document cannot even
+#    render it -- it becomes a download chip. A non-image now gets the "not embedded" chip, so the report
+#    still SAYS the evidence exists (which is ext#40's point) without carrying its bytes. ``export_zip``
+#    keeps writing them as real files under ``artifacts/``; that is the delivery path for a non-image.
+#  * A per-asset cap and a per-RENDER total. A screenshot is far under 8 MiB, and one document embeds at
+#    most 48 MiB of them; anything over either bound degrades to the same "not embedded" chip rather than
+#    silently ballooning the response.
+_MAX_INLINE_ASSET_BYTES = 8 * 1024 * 1024
+_MAX_INLINE_TOTAL_BYTES = 48 * 1024 * 1024
+
+# Upper bound on the items the engagement Evidence appendix lists (ext#40). Belt-and-braces next to the
+# byte budget above: that one bounds the BYTES, this one bounds the number of DOM nodes + nh3 passes a
+# caller with a write token can force per report read. Over the bound the section says how many it is not
+# listing -- a truncated evidence list that did not admit it would be the same silent omission ext#40 is.
+_MAX_APPENDIX_ITEMS = 200
+
 
 def make_inline_artifact_url(storage_path: str | None) -> str:
     """Build the placeholder ``src`` for an inline (``inlineImage``) content node.
@@ -129,27 +154,38 @@ def _safe_name_from_path(storage_path: str) -> str:
     return f"{digest}-{base}"
 
 
-def _fetch_data_uri(
-    artifact_bytes: ArtifactBytes | None, storage_path: str | None, content_type: str | None
-) -> str | None:
+def _fetch_bytes(artifact_bytes: ArtifactBytes | None, storage_path: str | None) -> bytes | None:
     if not artifact_bytes or not storage_path:
         return None
     try:
         data = artifact_bytes(storage_path)
     except Exception:
         return None
-    if not data:
-        return None
-    mime = content_type or mimetypes.guess_type(storage_path)[0]
-    return _data_uri(mime, data)
+    return data or None
+
+
+def _is_image(content_type: str | None) -> bool:
+    return (content_type or "").startswith("image/")
+
+
+def _human_bytes(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MiB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KiB"
+    return f"{size} bytes"
 
 
 class _AssetResolver:
     """Resolves evidence-gallery + inline-content assets to hrefs for one render pass.
 
-    ``mode="inline"``: embed real bytes as ``data:`` URIs (self-contained report).
+    ``mode="inline"``: embed IMAGE bytes as ``data:`` URIs (self-contained report), within
+                       ``_MAX_INLINE_ASSET_BYTES`` per asset and ``_MAX_INLINE_TOTAL_BYTES`` per render
+                       — see those constants for why both bounds and the image-only rule exist.
     ``mode="zip"``:    point at a relative ``artifacts/<name>`` path and record it in ``manifest`` so
-                       :func:`export_zip` can write the bytes alongside ``report.html``.
+                       :func:`export_zip` can write the bytes alongside ``report.html``. Every artifact
+                       goes out this way, images or not: a zip entry is a real file, not 1.33x of itself
+                       inside the document.
     ``mode="none"``:   no bytes available/wanted — degrade gracefully (missing-asset placeholder /
                        blank pixel). Used for structure-only rendering (e.g. tests, previews).
     """
@@ -158,10 +194,42 @@ class _AssetResolver:
         self.mode = mode
         self.artifact_bytes = artifact_bytes
         self.manifest: dict[str, str] = {}  # safe_name -> storage_path (zip mode)
+        self.inlined_bytes = 0  # running total against _MAX_INLINE_TOTAL_BYTES, per render pass
+
+    def _inline_uri(
+        self, storage_path: str | None, content_type: str | None, *, declared_size: int | None = None
+    ) -> str | None:
+        """A ``data:`` URI for ``storage_path``, or None when the inlining budget refuses it.
+
+        ``declared_size`` (``Artifact.byte_size``, via ``ArtifactCtx``) is a cheap pre-check that skips
+        reading a file this render is not going to embed anyway; it is advisory, so the length of the bytes
+        actually read is checked as well and is what the running total counts.
+        """
+        if declared_size is not None and declared_size > _MAX_INLINE_ASSET_BYTES:
+            return None
+        if self.inlined_bytes >= _MAX_INLINE_TOTAL_BYTES:
+            return None
+        data = _fetch_bytes(self.artifact_bytes, storage_path)
+        if data is None:
+            return None
+        if len(data) > _MAX_INLINE_ASSET_BYTES:
+            return None
+        if self.inlined_bytes + len(data) > _MAX_INLINE_TOTAL_BYTES:
+            return None
+        self.inlined_bytes += len(data)
+        mime = content_type or (mimetypes.guess_type(storage_path or "")[0] if storage_path else None)
+        return _data_uri(mime, data)
 
     def resolve_gallery(self, artifact: ArtifactCtx) -> str | None:
         if self.mode == "inline":
-            return _fetch_data_uri(self.artifact_bytes, artifact.storage_path, artifact.content_type)
+            # Non-image evidence is never embedded — see _MAX_INLINE_ASSET_BYTES. Returning None puts
+            # ``_render_gallery_item`` on its "not embedded" chip, which names the file (and its size)
+            # without shipping it.
+            if not _is_image(artifact.content_type):
+                return None
+            return self._inline_uri(
+                artifact.storage_path, artifact.content_type, declared_size=artifact.byte_size
+            )
         if self.mode == "zip":
             name = _safe_name_from_path(f"{artifact.id}/{artifact.filename}")
             self.manifest[name] = artifact.storage_path
@@ -170,7 +238,10 @@ class _AssetResolver:
 
     def resolve_inline(self, storage_path: str) -> str:
         if self.mode == "inline":
-            return _fetch_data_uri(self.artifact_bytes, storage_path, None) or _BLANK_PIXEL
+            # An ``inlineImage`` node is an <img> by construction, so the image-only rule above is already
+            # satisfied by the placement; the BYTE budget still applies (this is the other path that can
+            # push a file's bytes into the document).
+            return self._inline_uri(storage_path, None) or _BLANK_PIXEL
         if self.mode == "zip":
             name = _safe_name_from_path(storage_path)
             self.manifest[name] = storage_path
@@ -196,7 +267,7 @@ def _substitute_inline_placeholders(fragment: str, resolver: _AssetResolver) -> 
 def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str:
     href = resolver.resolve_gallery(artifact)
     cap = _esc(artifact.caption or artifact.filename)
-    is_image = (artifact.content_type or "").startswith("image/")
+    is_image = _is_image(artifact.content_type)
     if href and is_image:
         raw = (
             f'<figure class="evidence-item">'
@@ -213,9 +284,17 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
             f'<div class="cap">{cap}</div></div>'
         )
     else:
+        # The evidence is NAMED but its bytes are not in the document: no reader available, over the
+        # inlining budget, or a non-image (never embedded — see _MAX_INLINE_ASSET_BYTES). The caption and
+        # the recorded size are carried here precisely because this is the branch a deliberately
+        # un-embedded artifact takes, so the chip has to say what the file is, not just that it is absent.
+        detail = "not embedded"
+        if artifact.byte_size:
+            detail += f" · {_human_bytes(artifact.byte_size)}"
+        caption = f'<div class="cap">{cap}</div>' if artifact.caption else ""
         raw = (
             f'<div class="evidence-item file missing">\U0001f4c4 {_esc(artifact.filename)} '
-            f'<span class="cap">(not embedded)</span></div>'
+            f'<span class="cap">({detail})</span>{caption}</div>'
         )
     return _sanitize_asset_html(raw)
 
@@ -543,14 +622,20 @@ _COVER_HANDLING = (
 # document signed with the assessor's name. Rules-of-engagement statements of that kind belong in the
 # per-engagement prose field that is still to be built, written by the assessor — not in a renderer
 # constant. ``tests/test_report_standing_prose.py`` pins the rule so it cannot drift back in.
+#
+# The replacement bullet then said it again in different words — "Systems, accounts and techniques outside
+# them WERE NOT EXAMINED" is the same past-tense assertion about this engagement's conduct, and the phrase
+# blacklist that was supposed to pin the rule caught "was not touched" and sailed straight past it (second
+# adversarial review, same day). It is now written the way every other bullet here is: as something the
+# REPORT does not claim, which is a fact about the document and true however the findings got here.
 _LIMITATIONS: tuple[str, ...] = (
     "This report describes the environment as it was during the testing window. A change made after "
     "testing — a deployment, a configuration change, a newly published vulnerability — is not reflected "
     "here.",
     "The absence of a finding means a weakness was not observed in the time and scope available. It is "
     "not proof that none exists.",
-    "Coverage was bounded by the agreed scope and testing window. Systems, accounts and techniques "
-    "outside them were not examined, and this report makes no claim about them.",
+    "Coverage was bounded by the agreed scope and testing window. This report makes no claim about "
+    "systems, accounts or techniques outside them.",
 )
 
 # What each severity level MEANS, so the severity bar and the findings index are legible to a reader who
@@ -1068,18 +1153,35 @@ def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> s
     Renders nothing when there are none, which is the normal case and is why the toolbar's Evidence link
     is derived from the rendered anchor rather than hardcoded (see ``_render_document``). Before this
     section existed, such an upload was accepted, stored, answered ``201`` with a URL, and then appeared
-    in no deliverable anywhere (ext#40) — the report is where that silence becomes visible again."""
+    in no deliverable anywhere (ext#40) — the report is where that silence becomes visible again.
+
+    Two bounds apply and both are visible in the output rather than silent: the gallery embeds only IMAGE
+    bytes and only within the inlining budget (see ``_MAX_INLINE_ASSET_BYTES`` — everything else is named
+    with a "not embedded" chip), and the list itself is capped at ``_MAX_APPENDIX_ITEMS`` with a note
+    saying how many items are not shown. The heading always reports the TRUE total."""
     if not ctx.artifacts:
         return ""
-    gallery = _render_artifact_gallery(ctx.artifacts, resolver, label=None)
+    total = len(ctx.artifacts)
+    shown = ctx.artifacts[:_MAX_APPENDIX_ITEMS]
+    withheld = total - len(shown)
+    gallery = _render_artifact_gallery(shown, resolver, label=None)
+    # Say so when the list is truncated. The count in the heading is the TRUE total either way, so the
+    # section can never under-report how much engagement-level evidence the engagement holds.
+    note = (
+        f'<p class="muted evidence-intro">{withheld} further item'
+        f'{"s are" if withheld != 1 else " is"} recorded against this engagement and not listed here '
+        f"(this appendix lists at most {_MAX_APPENDIX_ITEMS}).</p>"
+        if withheld > 0
+        else ""
+    )
     return (
         '<section class="sec group" id="sec-evidence">'
         '<h2 class="sec-h">Evidence <span class="chev">▾</span>'
-        f'<span class="count">{len(ctx.artifacts)} '
-        f'item{"s" if len(ctx.artifacts) != 1 else ""}</span></h2>'
+        f'<span class="count">{total} '
+        f'item{"s" if total != 1 else ""}</span></h2>'
         '<div class="sec-body"><p class="muted evidence-intro">Evidence recorded against this engagement '
         'as a whole rather than against one finding.</p>'
-        f"{gallery}</div></section>"
+        f"{gallery}{note}</div></section>"
     )
 
 
@@ -1231,10 +1333,14 @@ def render_report_html(
 ) -> str:
     """Render a full, self-contained HTML report for ``ctx``.
 
-    ``inline_assets=True`` embeds evidence-gallery + inline-content images as ``data:`` URIs via the
+    ``inline_assets=True`` embeds evidence-gallery + inline-content IMAGES as ``data:`` URIs via the
     ``artifact_bytes(storage_path) -> bytes`` callback, so the returned document has zero external
     dependencies. With the default ``inline_assets=False`` (or a missing/failing ``artifact_bytes``),
-    assets degrade gracefully to a "not embedded" placeholder rather than a broken reference.
+    assets degrade gracefully to a "not embedded" placeholder rather than a broken reference — and so do a
+    non-image artifact and anything over the inlining budget even when ``inline_assets=True``
+    (``_MAX_INLINE_ASSET_BYTES`` / ``_MAX_INLINE_TOTAL_BYTES``: this document is a client deliverable held
+    whole in one string, so it does not carry raw working material or grow without bound). Use
+    :func:`export_zip` to deliver non-image assets as real files.
 
     ``engagement_url``/``dashboard_url`` (both optional) render a small nav bar (``<nav
     class="report-nav no-print">``, hidden from print/PDF output) linking back to the engagement board

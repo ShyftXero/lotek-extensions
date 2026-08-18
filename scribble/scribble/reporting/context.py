@@ -27,6 +27,10 @@ class ArtifactCtx:
     caption: str
     content_type: str | None
     storage_path: str
+    # What the row recorded for this file, so a renderer can decide whether to carry its bytes WITHOUT
+    # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the
+    # authority, and the field is additive + defaulted, so an existing consumer is unaffected.
+    byte_size: int | None = None
 
 
 @dataclass
@@ -162,6 +166,7 @@ def _artifact_ctxs(artifacts) -> list[ArtifactCtx]:
             caption=a.caption or "",
             content_type=a.content_type,
             storage_path=a.storage_path,
+            byte_size=a.byte_size,
         )
         for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))
         if a.include_in_report and a.placement.value == "attached"
