@@ -1864,10 +1864,20 @@ table.index td.ix-cvss {
      match every case — no stamp, `data-theme="light"`, `data-theme="dark"` — so paper always gets the
      paper palette. A template that forces the dark theme still prints light: the sheet is white.
      `--sev-*` is pinned here for the same reason (ext#39's second half): it was the one family the print
-     block never overrode at all, so a dark-mode viewer printed the dark severity ramp. */
+     block never overrode at all, so a dark-mode viewer printed the dark severity ramp.
+     THIS RULE MUST REDECLARE EVERY TOKEN THE DARK THEME DOES — the two families below were the proof.
+     `--accent*` was left out of the first version of this fix and nothing caught it: the guard measured
+     `body`, which does not use the accent, while `--accent-ink` is the colour of the CLIENT NAME on the
+     cover, of every front-matter and methodology and finding-block label, and the BACKGROUND of the
+     "Satisfied" attestation badge (forced to paint by `print-color-adjust: exact` above). Printing from a
+     dark-mode browser put `#7ee0bc` on white paper — 1.6:1, against 8.3:1 for the paper accent — so page
+     one of the deliverable had no readable client name while the `--sev-high` badge beside it was fine.
+     `tests/test_report_print_media.py::test_the_print_palette_pins_EVERY_token_the_dark_theme_overrides`
+     now diffs the two rules' token sets, so the next family cannot be forgotten quietly. */
   :root:not([data-theme="dark"]), :root[data-theme="dark"] {
     --bg: #fff; --surface: #fff; --surface-2: #f4f6f8; --ink: #10202e; --ink-2: #33424f;
     --muted: #5a6b7b; --line: #dce2e8; --line-2: #c3ccd6;
+    --accent: #0f7a52; --accent-ink: #0a5b3d; --accent-wash: #e7f3ed;
     --sev-critical: #b3261e; --sev-high: #c2410c; --sev-medium: #a16207;
     --sev-low: #1d6fa5; --sev-info: #64748b;
   }
