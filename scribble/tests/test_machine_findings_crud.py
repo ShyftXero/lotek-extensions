@@ -630,6 +630,38 @@ def test_artifact_upload_accepts_a_filename_AT_the_cap(client, token, session_fa
     assert resp.status_code == 201, resp.get_json()
 
 
+def test_artifact_upload_stores_a_unicode_filename_that_secure_filename_EXPANDS(
+    client, token, session_factory, app
+):
+    """A name UNDER the 222 cap that `secure_filename` makes LONGER must still store, not 500.
+
+    The cap counts the CALLER's characters; `artifacts_storage.save_bytes` writes
+    `"<uuid4hex>_" + secure_filename(name)`, and `secure_filename` NFKD-normalizes — which EXPANDS: "½"
+    becomes "1⁄2" -> "12". So 200 "½" plus ".png" is 204 characters, passes the cap, and came out 404
+    characters long: `OSError: [Errno 36] File name too long`, a **500** with no artifact stored, reachable
+    from any write-scoped PAT and from the cookie upload too.
+
+    Fixed in `save_bytes` rather than at the API boundary, because that is the layer that knows the final
+    name (and the only one the cookie path also goes through) — the API cap stays as the fast 400. Asserted on
+    the stored basename against the real `NAME_MAX`, so a cap that is merely *different* from the filesystem's
+    would not pass: the bytes have to be on disk and the extension has to survive.
+    """
+    eid = _engagement(session_factory)
+    name = "\u00bd" * 200 + ".png"
+    assert len(name) <= ARTIFACT_FILENAME_CAP  # the caller's characters DO fit — that is the trap
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        json={"filename": name, "content_base64": base64.b64encode(PNG).decode()},
+    )
+    assert resp.status_code == 201, resp.get_json()
+    cfg = app.extensions["scribble"]
+    with session_factory() as db:
+        on_disk = resolve_path(cfg, db.get(fm.Artifact, resp.get_json()["id"]).storage_path)
+    assert on_disk.is_file()
+    assert len(on_disk.name.encode()) <= 255, len(on_disk.name)
+    assert on_disk.name.endswith(".png")
+
+
 def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
     """`FindingGroup.name` is String(128) — same reasoning as the finding fields above, on both the create
     and the rename path."""
@@ -660,6 +692,13 @@ def test_group_name_that_would_overflow_its_column_is_refused(client, token, ses
         {"include_in_report": "yes"},
         {"category": {"nested": 1}},
         {"content_json": "not-an-object"},
+        # …and the same check ONE LEVEL DOWN. The container's type was guarded and its VALUES were not, so
+        # each of these answered 200 after replacing that block's prose with an empty doc.
+        {"content_json": {"description": "Updated description text"}},
+        {"content_json": {"description": {"type": "paragraph", "content": []}}},
+        {"content_json": {"impact": 42}},
+        {"content_json": {"description": ["a", "b"]}},
+        {"content_json": {"description": None}},
         {"references": "not-a-list"},
     ],
 )
@@ -671,6 +710,108 @@ def test_patch_rejects_malformed_input(client, token, session_factory, body):
     assert resp.get_json()["error"] == "bad_request"
     with session_factory() as db:
         assert db.get(fm.EngagementFinding, fid).title == "Original"
+
+
+def test_patch_refuses_a_non_doc_block_INSTEAD_of_emptying_the_prose(client, token, session_factory):
+    """A `content_json` value that is not a ProseMirror doc must be REFUSED, not silently stored as empty.
+
+    `sanitize_prosemirror` replaces any non-`doc` root with `schema.empty_doc()` — deliberately, so an
+    untrusted caller cannot smuggle a non-doc root past the walker. Validating only that `content_json` was a
+    dict therefore made this route answer **200** for `{"content_json": {"description": "Updated text"}}`
+    after overwriting the vuln write-up with `{"type": "doc", "content": []}`, and echo the emptied doc back
+    as if that were the edit: a client's authored prose destroyed, irreversibly, by the likeliest mistake an
+    agent makes here (`content_json` is the only way to write a non-default block, and this same route takes
+    `description` as plain TEXT one key over).
+
+    The cookie twin is asserted alongside on the SAME input, because "the two surfaces must not diverge" is
+    the branch's own principle and this is where they did: `autosave_api.autosave_block` gates on
+    `schema.is_doc` and answers 400 for exactly this body.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    with session_factory() as db:
+        before = db.get(fm.EngagementFinding, fid).content_json["description"]
+    assert schema.plain_text(before) == "original prose"
+
+    resp = client.patch(f"{M}/findings/{fid}", json={"content_json": {"description": "Updated text"}})
+    assert resp.status_code == 400, resp.get_json()
+    assert "ProseMirror doc" in resp.get_json()["detail"]
+    assert "description" in resp.get_json()["detail"]
+
+    # The cookie route, same value, same verdict.
+    twin = client.post(f"/scribble/api/findings/{fid}/blocks/description", json="Updated text")
+    assert twin.status_code == 400, twin.get_json()
+
+    with session_factory() as db:
+        # Nothing was written: the prose is byte-identical to what the author had.
+        assert db.get(fm.EngagementFinding, fid).content_json["description"] == before
+
+
+def test_patch_still_accepts_a_real_prosemirror_doc_for_a_NON_default_block(
+    client, token, session_factory
+):
+    """The accepted side of the guard above — without it the refusal could be over-broad and pass anyway.
+
+    `impact` is not one of the default blocks and has no plain-text twin on this route, so `content_json` is
+    the ONLY way to author it: if the new check refused a well-formed doc under a custom block name, the
+    guard would have closed the loss by closing the feature.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    resp = client.patch(
+        f"{M}/findings/{fid}",
+        json={"content_json": {"impact": schema.doc_from_text("Full domain compromise.")}},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    with session_factory() as db:
+        stored = db.get(fm.EngagementFinding, fid).content_json
+    assert schema.plain_text(stored["impact"]) == "Full domain compromise."
+    assert schema.plain_text(stored["description"]) == "original prose"  # untouched
+
+
+def test_create_routes_refuse_a_non_doc_block_too(client, token, session_factory):
+    """The same element check on the CREATE routes, because a 201 for prose that was never stored is the
+    same silent success as a 200 — and a cap/guard that only one of two writers consults is not a boundary
+    (the lesson `_COLUMN_MAX_LEN` is named for)."""
+    eid = _engagement(session_factory)
+    finding = client.post(
+        f"{M}/engagements/{eid}/findings",
+        json={"title": "Authored", "severity": "high", "content_json": {"description": "raw text"}},
+    )
+    assert finding.status_code == 400 and "ProseMirror doc" in finding.get_json()["detail"]
+
+    template = client.post(
+        f"{M}/templates", json={"name": "T", "content_json": {"description": "raw text"}}
+    )
+    assert template.status_code == 400 and "ProseMirror doc" in template.get_json()["detail"]
+
+    with session_factory() as db:
+        assert db.scalars(select(fm.EngagementFinding)).all() == []
+
+
+@pytest.mark.parametrize("field", ["title", "analyst_notes", "target_host"])
+def test_patch_escapes_a_NUL_byte_that_postgres_would_refuse(client, token, session_factory, field):
+    """A NUL (0x00) in an accepted string is ESCAPED at the boundary, mirroring core's `nul_safe`.
+
+    Postgres refuses a bind containing NUL outright (`psycopg`: "A string literal cannot contain NUL (0x00)
+    characters"), so on prod this was a **500** for what is a bad request — while this suite, on SQLite,
+    stored it and answered 200. That is the same blindness the length caps were added for, one class over:
+    SQLite cannot see either failure, so both have to be checked in code. Scan output is where a stray NUL
+    comes from, and `analyst_notes` is the widest door (`Text`, no length cap at all).
+
+    Escaped rather than deleted or refused, exactly as core does it: the count survives in the marker, the
+    substitution is visible in the report, and an agent is not blocked from filing a finding over a byte it
+    does not control. Asserted on the STORED value, so this test is about what reaches the column.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    resp = client.patch(f"{M}/findings/{fid}", json={field: "scan\x00banner"})
+    assert resp.status_code == 200, resp.get_json()
+    with session_factory() as db:
+        stored = getattr(db.get(fm.EngagementFinding, fid), field)
+    assert "\x00" not in stored, stored
+    assert stored.startswith("scan\u2400banner")
+    assert "1 NUL byte replaced" in stored
 
 
 # ── 3. delete ────────────────────────────────────────────────────────────────────────────────────────
@@ -775,6 +916,116 @@ def test_deleting_a_parent_is_recorded_with_the_children_it_detached(
 
     row = next(r for r in recorded if r[0] == "ext:scribble:delete_finding")
     assert row[4] == {"detached_children": [child]}
+
+
+def test_delete_finding_clears_every_row_that_references_it(client, token, session_factory, app):
+    """DELETE must succeed for a finding referenced by ANY of the six FK columns that point at it.
+
+    `detach_children` fixed ONE of them (`parent_id`) and the docstring claimed the cascade was complete, so
+    `DELETE /findings/<id>` — the headline capability of ext#41 — still answered **500**
+    (`sqlite3.IntegrityError` here, `ForeignKeyViolation` on prod Postgres; transaction rolled back, finding
+    not deleted, audit row lost) for a whole class of findings. Adversarial review round 2 reproduced three:
+
+    * a `CollabDoc`, which the live co-editing room's `_persist_room` writes the moment a HUMAN opens that
+      block in the browser — i.e. any finding anybody has edited in the editor,
+    * an `EngagementChecklistItem.finding_id`, set through the supported checklist route,
+    * a finding-scoped `VariableValue`, which promotion writes per host.
+
+    So this asserts the whole set in one go, and each disposition separately, because "it returns 200" is not
+    the property — WHICH rows died is. Owned state goes (the CRDT blob, the per-finding variable binding, the
+    artifact + its bytes); the checklist item SURVIVES with `finding_id` NULL, because a coverage checklist
+    must not lose an item just because the finding documenting it was deleted; the child is detached, not
+    deleted. `FindingTag` is here to VERIFY, not to assume, that the ORM's `secondary` cascade on
+    `EngagementFinding.tags` really does remove the association row — it is the one referrer that was already
+    safe, and the only way to know that is to assert it.
+    """
+    cfg = app.extensions["scribble"]
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid, title="Parent")
+    child_id = _finding(session_factory, eid, title="10.0.0.5", parent_id=fid)
+
+    upload = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        json={"filename": "evidence.png", "content_base64": base64.b64encode(PNG).decode(),
+              "finding_id": fid},
+    )
+    assert upload.status_code == 201, upload.get_json()
+    artifact_id = upload.get_json()["id"]
+
+    with session_factory() as db:
+        db.add(fm.CollabDoc(finding_id=fid, block="description", ydoc_state=b"\x00\x01ydoc"))
+        tag = fm.Tag(name="internal")
+        variable = fm.TemplateVariable(key="PER_FINDING_HOST", label="Host")  # not a seeded key
+        checklist = fm.EngagementChecklist(engagement_id=eid, name="Coverage")
+        db.add_all([tag, variable, checklist])
+        db.flush()
+        db.add_all([
+            fm.FindingTag(finding_id=fid, tag_id=tag.id),
+            fm.VariableValue(variable_id=variable.id, finding_id=fid, value="10.0.0.5"),
+            fm.EngagementChecklistItem(
+                engagement_checklist_id=checklist.id, text="SMB signing reviewed", finding_id=fid
+            ),
+        ])
+        db.commit()
+        item_id = db.scalars(select(fm.EngagementChecklistItem.id)).one()
+        on_disk = resolve_path(cfg, db.get(fm.Artifact, artifact_id).storage_path)
+
+    resp = client.delete(f"{M}/findings/{fid}")
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json() == {
+        "deleted": True, "finding_id": fid, "engagement_id": eid, "detached_children": [child_id],
+    }
+
+    with session_factory() as db:
+        assert db.get(fm.EngagementFinding, fid) is None
+        # Owned state died with it — rows AND, for the artifact, the bytes.
+        assert db.scalars(select(fm.CollabDoc)).all() == []
+        assert db.scalars(select(fm.VariableValue)).all() == []
+        assert db.scalars(select(fm.FindingTag)).all() == []
+        assert db.get(fm.Artifact, artifact_id) is None
+        # The cross-link survived, unlinked: the checklist keeps its item.
+        item = db.get(fm.EngagementChecklistItem, item_id)
+        assert item is not None and item.finding_id is None
+        # The child survived, detached and top-level.
+        child = db.get(fm.EngagementFinding, child_id)
+        assert child is not None and child.parent_id is None
+    assert not on_disk.is_file()
+
+
+def test_every_column_referencing_a_finding_has_a_declared_delete_disposition():
+    """The GUARD: enumerate the FK set from the metadata and fail when a member is unclassified.
+
+    Both blocking findings of review round 2 were the same omission — a guard checked against ONE member of a
+    set (`parent_id`) rather than against the set. This is the check that makes the seventh referrer loud
+    instead of a prod 500: add a column pointing at `scribble_findings.id` and this test fails until
+    `findings_service` says which of DELETE / NULL / handled-elsewhere it is.
+
+    Deliberately derived from `Base.metadata` rather than from a hand-written list of tables, so it sees a new
+    column the moment the model declares it — a hand-written list would be the same class of defect it exists
+    to catch.
+    """
+    from scribble import findings_service as svc
+    from scribble.models import Base
+
+    referrers = {
+        (table.name, column.name)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        for fk in column.foreign_keys
+        if fk.column.table.name == "scribble_findings" and fk.column.name == "id"
+    }
+    assert len(referrers) == 6, referrers  # pinned: a change here is a schema change, read it
+
+    declared = (
+        {(m.__tablename__, "finding_id") for m in svc._FINDING_OWNED_STATE}
+        | {(m.__tablename__, "finding_id") for m in svc._FINDING_CROSSLINKS}
+        | set(svc._FINDING_FK_HANDLED_ELSEWHERE)
+    )
+    assert referrers == declared, (
+        "a column referencing scribble_findings.id has no delete disposition: "
+        f"{referrers ^ declared} — classify it in findings_service (DELETE with the finding, NULL the link, "
+        "or document who already handles it) or deleting a finding will 500 on Postgres"
+    )
 
 
 def test_delete_finding_twice_is_a_404_the_second_time(client, token, session_factory):
@@ -1019,6 +1270,66 @@ def test_bulk_move_rejects_malformed_input(client, token, session_factory, body)
     eid = _engagement(session_factory)
     resp = client.post(f"{M}/engagements/{eid}/findings/move", json=body)
     assert resp.status_code == 400, (body, resp.get_json())
+
+
+def test_bulk_move_refuses_an_unbounded_id_list_and_pre_checks_in_ONE_query(
+    client, token, session_factory, app
+):
+    """`finding_ids` is capped, and the membership pre-check costs one query however many ids arrive.
+
+    The uncapped version did one `db.get` per id BEFORE it could refuse: 20,000 nonexistent ids measured
+    **12.7s** of database work on SQLite (~0.64ms/id), and `MAX_CONTENT_LENGTH` defaults to 256 MiB on the
+    host, so a ~7 MB body carried ~1M ids — ten minutes of a gevent worker and its DB connection, for a
+    write-scoped PAT with membership on ONE engagement. This branch built a whole boundary layer for
+    unbounded input and left the one list that costs a query per element uncapped.
+
+    Both halves are asserted, because either alone leaves the amplification: the cap (a 400 before the list is
+    walked) and the query count (asserted by counting real statements, so the pre-check cannot quietly go back
+    to N round trips). The `order` list on the group reorder is capped by the same constant — cheap per
+    element is not a bound.
+    """
+    from sqlalchemy import event
+
+    eid = _engagement(session_factory)
+    over = client.post(
+        f"{M}/engagements/{eid}/findings/move",
+        json={"finding_ids": list(range(1, 502)), "group_id": None},
+    )
+    assert over.status_code == 400, over.get_json()
+    assert "at most 500" in over.get_json()["detail"]
+
+    reorder = client.post(
+        f"{M}/engagements/{eid}/groups/reorder", json={"order": list(range(1, 502))}
+    )
+    assert reorder.status_code == 400 and "at most 500" in reorder.get_json()["detail"]
+
+    # …and the query count, on a payload that DISCRIMINATES. 20 real ids followed by one that does not
+    # exist: the per-id version walks all 21 before it can refuse (21 SELECTs), the single-query version
+    # refuses after one. A list of ids that are ALL missing would prove nothing — the old loop returned on
+    # the first one, so it too cost exactly one query. (The first version of this assertion made that
+    # mistake and stayed green when the per-id loop was restored, which is why the payload is spelled out.)
+    real_ids = [_finding(session_factory, eid, title=f"F{n}", order_index=n) for n in range(20)]
+    selects: list[str] = []
+
+    @event.listens_for(app.extensions["scribble"].engine, "before_cursor_execute")
+    def _count(conn, cursor, statement, params, context, executemany):  # noqa: ARG001
+        if statement.lstrip().upper().startswith("SELECT") and "scribble_findings" in statement:
+            selects.append(statement)
+
+    missing = client.post(
+        f"{M}/engagements/{eid}/findings/move",
+        json={"finding_ids": [*real_ids, 99999], "group_id": None},
+    )
+    event.remove(app.extensions["scribble"].engine, "before_cursor_execute", _count)
+    assert missing.status_code == 404, missing.get_json()
+    assert len(selects) == 1, f"{len(selects)} SELECTs on scribble_findings, expected 1"
+
+    # …and nothing moved: the refusal happens before any placement.
+    with session_factory() as db:
+        assert [f.order_index for f in db.scalars(
+            select(fm.EngagementFinding).where(fm.EngagementFinding.id.in_(real_ids)).order_by(
+                fm.EngagementFinding.id)
+        ).all()] == list(range(20))
 
 
 # ── 6. groups ────────────────────────────────────────────────────────────────────────────────────────

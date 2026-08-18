@@ -34,6 +34,39 @@ _MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
 )
 
 
+# The FILESYSTEM's limit on one path component, and the budget left for the caller's part of the name once
+# ``save_bytes`` has prefixed "<uuid4hex>_". NAME_MAX is 255 bytes on Linux/ext4 (and 255 on APFS/HFS+);
+# ``secure_filename`` returns pure ASCII (it NFKD-normalizes then ``encode("ascii", "ignore")``), so
+# characters and bytes are the same count by the time we measure.
+_NAME_MAX = 255
+_SAFE_NAME_MAX = _NAME_MAX - 32 - 1  # len(uuid4().hex) + len("_")
+# Longest trailing ".<ext>" worth preserving through a truncation; anything longer is not an extension, it
+# is the tail of a very long name, and keeping it would eat the whole budget.
+_EXT_MAX = 16
+
+
+def _bounded_name(safe_name: str) -> str:
+    """Truncate a post-``secure_filename`` basename to what the filesystem will actually accept, keeping a
+    short trailing extension so the stored file still looks like a ``.png``.
+
+    ``secure_filename`` NFKD-normalizes, and normalization can EXPAND: "½" becomes "1⁄2" -> "12", so a
+    204-character unicode filename comes out 404 characters long. Bounding the CALLER's characters at the API
+    boundary therefore cannot close this — 200 "½" plus ".png" passes a 222-character cap and still overran
+    ``NAME_MAX``, and ``target.write_bytes`` raised ``OSError: [Errno 36] File name too long`` -> a 500 with
+    no artifact stored. Measured, reproduced, and fixed HERE rather than at the boundary because this is the
+    layer that knows the final name: the same expansion reached this function from the cookie upload route
+    too, which no API-side cap covers at all. The API's own 222 cap stays, as the fast, honest 400 for a
+    caller that sends an absurd name.
+    """
+    if len(safe_name) <= _SAFE_NAME_MAX:
+        return safe_name
+    stem, dot, ext = safe_name.rpartition(".")
+    if not dot or not ext or len(ext) > _EXT_MAX:
+        return safe_name[:_SAFE_NAME_MAX]
+    keep = _SAFE_NAME_MAX - len(ext) - 1
+    return f"{stem[:keep]}.{ext}" if keep > 0 else safe_name[:_SAFE_NAME_MAX]
+
+
 def safe_join(root: Path, rel: str) -> Path:
     """Resolve ``rel`` under ``root``, raising ``ValueError`` if it would escape (``..`` traversal,
     absolute-path override, symlink games, etc.). Mirrors Lotek's ``files_api.safe_join``."""
@@ -73,7 +106,9 @@ def save_bytes(cfg: Any, engagement_id: int, filename: str, data: bytes) -> tupl
     root = Path(cfg.artifact_root)
     root.mkdir(parents=True, exist_ok=True)
 
-    safe_name = secure_filename(filename) or "artifact"
+    # Bounded AFTER secure_filename, because that is the step that can make the name LONGER (see
+    # ``_bounded_name``) — an unbounded value here is ENAMETOOLONG, i.e. a 500 on a legitimate upload.
+    safe_name = _bounded_name(secure_filename(filename) or "artifact")
     unique_name = f"{uuid.uuid4().hex}_{safe_name}"
     storage_path = f"{int(engagement_id)}/{unique_name}"
 

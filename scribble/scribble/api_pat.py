@@ -196,15 +196,55 @@ def _client_not_found():
     )
 
 
+# U+2400 SYMBOL FOR NULL — a visible control PICTURE no scan tool emits, so the substitution below can never
+# be mistaken for a tool's literal output (a tool can legitimately print the four characters "\x00").
+_NUL_SYMBOL = "\u2400"
+
+
+def _nul_safe(value: str) -> str:
+    """Replace NUL (0x00) with ``\u2400``, appending a marker saying how many — core's ``nul_safe`` rule.
+
+    Postgres REFUSES a bind containing NUL (``psycopg`` raises "A string literal cannot contain NUL (0x00)
+    characters"), so an otherwise-valid ``PATCH`` carrying one answers **500** for what is a bad request.
+    SQLite stores it without complaint, which is why this extension's own suite cannot see the failure — the
+    identical blind spot ``_COLUMN_MAX_LEN`` exists for, and the reason both are checked in code instead of
+    trusted to a green run. Scan-tool output is exactly where a stray NUL comes from (a partial write, a
+    UTF-16 artefact, a raw banner), and ``POST …/promote-job`` is what puts that text in front of the agent
+    that then PATCHes it into ``analyst_notes``.
+
+    ESCAPED, not deleted, and not refused: deleting bytes would make a client's evidence silently differ from
+    what the tool emitted, and a 400 would leave an agent unable to file a finding over a byte it does not
+    control. The count survives in the marker and the substitution is visible in the report.
+
+    A local mirror of core's ``app/text_safety.py::nul_safe`` (same symbol, same marker), duplicated rather
+    than imported because scribble must boot standalone with no host to import from — see its docstring for
+    the incident that produced it. Applied BEFORE any length cap, so the marker cannot push a value past the
+    cap unnoticed.
+    """
+    n = value.count("\x00")
+    if not n:
+        return value
+    plural = "" if n == 1 else "s"
+    return (
+        value.replace("\x00", _NUL_SYMBOL)
+        + f" \u2026[{n} NUL byte{plural} replaced with {_NUL_SYMBOL}]"
+    )
+
+
 def _opt_str(data: dict, key: str):
     """Validate an OPTIONAL string JSON field -> (stripped_value_or_None, error_response_or_None). A
-    non-string (list/dict/number) yields a clean 400 instead of an AttributeError on .strip()."""
+    non-string (list/dict/number) yields a clean 400 instead of an AttributeError on .strip().
+
+    Every string this blueprint accepts funnels through here or through ``_parse_finding_patch`` (PATCH does
+    its own parsing to tell "absent" from "explicit null"), so those two are where ``_nul_safe`` is applied —
+    the boundary mirrors core's api_v1 on NUL bytes as well as on length.
+    """
     v = data.get(key)
     if v is None:
         return None, None
     if not isinstance(v, str):
         return None, (jsonify({"error": "bad_request", "detail": f"{key} must be a string"}), 400)
-    return (v.strip() or None), None
+    return (_nul_safe(v).strip() or None), None
 
 
 def _bad_request(detail: str):
@@ -243,6 +283,17 @@ _TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
 # Linux/ext4) at 223 — measured, not assumed: 222 stores, 223 raises ``ENAMETOOLONG`` and the caller
 # gets a 500. Cap at the SMALLER of the two limits, or the guard would still 500 on everything between.
 _ARTIFACT_FILENAME_MAX_LEN = 255 - 32 - 1  # NAME_MAX - len(uuid4().hex) - len("_") == 222
+
+# Bound on a client-supplied ID LIST (``finding_ids`` on the bulk move, ``order`` on the group reorder). The
+# length caps above bound one string; this bounds the one input whose LENGTH costs work per element, which is
+# the amplification the caps alone left open: 20,000 nonexistent ids in ``finding_ids`` measured **12.7s** of
+# database round trips before the request could be refused (one ``db.get`` per id), and ``MAX_CONTENT_LENGTH``
+# defaults to 256 MiB on the host, so a ~7 MB body carried ~1M ids — ten minutes of a gevent worker and its
+# DB connection, for a write-scoped PAT with membership on ONE engagement. The per-id query is gone (one
+# ``select … WHERE id IN (…)`` now), but a cap is still owed: ``place_finding`` re-derives the destination's
+# display order for every finding placed, so a bulk move is O(N²) in the CPU regardless of query count.
+# 500 is far above any real multi-select drag or agent re-organisation and far below where either cost bites.
+_BULK_ID_LIST_MAX = 500
 
 
 def _too_long(key: str, value: str, *, cap: int | None = None):
@@ -383,6 +434,39 @@ def _inline_url_factory(engagement: Engagement, make_inline_artifact_url) -> Cal
         return make_inline_artifact_url(by_id.get(artifact_id))
 
     return _url
+
+
+def _non_doc_blocks_error(supplied: Any):
+    """400 naming the first block in a ``content_json`` MAPPING whose value is not a ProseMirror ``doc``.
+
+    ``None`` when every value is a doc — and ``None`` for anything that is not a mapping at all, because
+    "is the container even an object?" is the CALLER's check: ``PATCH`` refuses a non-object (and an explicit
+    ``null``), while a CREATE treats one as "no content supplied". Folding those two different contracts in
+    here would silently change create's.
+
+    Why this exists at all: ``sanitize_prosemirror`` replaces anything whose root is not a ``doc`` node with
+    an EMPTY document — deliberately, so an untrusted caller cannot smuggle a non-``doc`` root past the
+    walker. Validating only the CONTAINER's type therefore made ``PATCH /findings/<id>`` answer **200** for
+    ``{"content_json": {"description": "Updated description text"}}`` after replacing the vuln write-up with
+    ``{"type": "doc", "content": []}``, and echo the emptied doc back as if that were the edit: a client's
+    authored prose destroyed, irreversibly, by a body the cookie twin REFUSES (``autosave_api.autosave_block``
+    gates on this exact ``schema.is_doc`` and answers 400). A bare string, or a ``{"type": "paragraph", …}``
+    node where a ``doc`` root belongs, is the likeliest mistake an agent makes here — ``content_json`` is the
+    ONLY way to write a non-default block (there is no plain-text twin for e.g. ``impact``) and this same
+    route takes ``description`` as plain TEXT one key over.
+
+    The container check and this one are the same omission one level apart: the type of the collection was
+    guarded, the type of its ELEMENTS was not.
+    """
+    if not isinstance(supplied, dict):
+        return None
+    for name, doc in supplied.items():
+        if not schema.is_doc(doc):
+            return _bad_request(
+                f"content_json[{name!r}] must be a ProseMirror doc: "
+                "{'type': 'doc', 'content': [...]}"
+            )
+    return None
 
 
 def _author_content_json(data: dict) -> dict:
@@ -600,6 +684,10 @@ def scribble_create_template():
     references = [str(r) for r in references] if isinstance(references, list) else []
     # description/remediation are packed into content_json blocks and sanitized (references live in the
     # template's own ``references`` column, so they are NOT folded into a content block here).
+    # Same element-level check the PATCH route makes: a block whose value is not a ``doc`` would be stored
+    # as an EMPTY doc behind a 201, i.e. a template created with the prose silently dropped.
+    if (err := _non_doc_blocks_error(data.get("content_json"))) is not None:
+        return err
     content_json = _author_content_json({
         "description": data.get("description"),
         "remediation": data.get("remediation"),
@@ -808,6 +896,10 @@ def scribble_add_finding(engagement_id: int):
         if author_cvss_vector is not None:
             if (err := _too_long("cvss_vector", author_cvss_vector)) is not None:
                 return err
+        # See ``_non_doc_blocks_error``: without this a supplied block whose value is not a ``doc`` is
+        # stored as an EMPTY doc and the 201 reports prose that was never saved.
+        if (err := _non_doc_blocks_error(data.get("content_json"))) is not None:
+            return err
         author_content_json = _author_content_json(data)
         author_group_pk = group.id if group is not None else None
         author_order = len(siblings)
@@ -1476,6 +1568,8 @@ def _patch_content_blocks(data: dict):
     supplied = data.get("content_json", _ABSENT)
     if supplied is not _ABSENT and not isinstance(supplied, dict):
         return {}, _bad_request("content_json must be an object of {block_name: prosemirror_doc}")
+    if (err := _non_doc_blocks_error(supplied)) is not None:
+        return {}, err
     for key in ("description", "remediation"):
         value = data.get(key, _ABSENT)
         if value is not _ABSENT and not isinstance(value, str):
@@ -1526,7 +1620,7 @@ def _parse_finding_patch(data: dict):
         # silent no-op is worse than a refusal — the caller cannot tell its edit was dropped.
         if not isinstance(title, str) or not title.strip():
             return None, None, _bad_request("title must be a non-empty string")
-        updates["title"] = title.strip()
+        updates["title"] = _nul_safe(title).strip()
         if (err := _too_long("title", updates["title"])) is not None:
             return None, None, err
 
@@ -1539,7 +1633,7 @@ def _parse_finding_patch(data: dict):
             continue
         if not isinstance(value, str):
             return None, None, _bad_request(f"{key} must be a string or null")
-        updates[key] = value.strip() or None
+        updates[key] = _nul_safe(value).strip() or None
         if updates[key] is not None and (err := _too_long(key, updates[key])) is not None:
             return None, None, err
 
@@ -1550,7 +1644,7 @@ def _parse_finding_patch(data: dict):
         elif isinstance(port, bool) or not isinstance(port, (int, str)):
             return None, None, _bad_request("target_port must be a string, an integer, or null")
         else:
-            updates["target_port"] = str(port).strip() or None
+            updates["target_port"] = _nul_safe(str(port)).strip() or None
             if updates["target_port"] is not None:
                 if (err := _too_long("target_port", updates["target_port"])) is not None:
                     return None, None, err
@@ -1944,6 +2038,10 @@ def scribble_move_findings(engagement_id: int):
         raw_ids = data.get("finding_ids")
         if not isinstance(raw_ids, list) or not raw_ids:
             return _bad_request("finding_ids must be a non-empty list of finding ids")
+        # Bounded BEFORE the list is walked — see ``_BULK_ID_LIST_MAX``. Counted on the raw list, not on the
+        # de-duplicated one, because the work this refuses is the walk itself.
+        if len(raw_ids) > _BULK_ID_LIST_MAX:
+            return _bad_request(f"finding_ids may contain at most {_BULK_ID_LIST_MAX} ids")
         finding_ids: list[int] = []
         for raw in raw_ids:
             if isinstance(raw, bool) or not isinstance(raw, (int, str)):
@@ -1963,10 +2061,19 @@ def scribble_move_findings(engagement_id: int):
         # Membership of the URL's engagement is checked for EVERY id before anything moves. Note this
         # cannot leak: the engagement itself was already authorized above, so the only thing an id
         # confirms is whether it is in a report the caller can already read in full.
-        for fid in finding_ids:
-            candidate = db.get(EngagementFinding, fid)
-            if candidate is None or candidate.engagement_id != engagement_id:
-                return _finding_not_found()
+        #
+        # ONE query, not one per id: this loop used to ``db.get`` each id, which turned a single request into
+        # N round trips BEFORE it could refuse (measured 12.7s for 20,000 nonexistent ids — the caller pays
+        # nothing, the database pays everything). Same refusal, same atomicity: the set difference is empty
+        # only if every id belongs to this engagement.
+        present = set(db.scalars(
+            select(EngagementFinding.id).where(
+                EngagementFinding.id.in_(finding_ids),
+                EngagementFinding.engagement_id == engagement_id,
+            )
+        ).all())
+        if len(present) != len(finding_ids):
+            return _finding_not_found()
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
@@ -2176,6 +2283,11 @@ def scribble_reorder_groups(engagement_id: int):
     order = data.get("order")
     if not isinstance(order, list):
         return _bad_request("order must be a list of group ids")
+    # The cheaper sibling of the bulk move's list (no query per element — ``reorder_groups`` walks it in
+    # memory), capped by the same constant anyway: an engagement has a handful of sections, so any list this
+    # long is a mistake or an attempt, and "cheap per element" is not a bound.
+    if len(order) > _BULK_ID_LIST_MAX:
+        return _bad_request(f"order may contain at most {_BULK_ID_LIST_MAX} ids")
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:

@@ -25,10 +25,74 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from scribble.enums import OrderMode, severity_rank
-from scribble.models import Engagement, EngagementFinding, FindingGroup
+from scribble.models import (
+    CollabDoc,
+    Engagement,
+    EngagementChecklistItem,
+    EngagementFinding,
+    FindingGroup,
+    ReportRender,
+    VariableValue,
+)
+
+# ── every FK column in the schema that references ``scribble_findings.id`` ───────────────────────────
+#
+# THE SET, enumerated, because handling one member of it is indistinguishable from handling all of them
+# until prod hits the one you missed. ``detach_children`` fixed ``parent_id`` and nothing else, and a
+# ``DELETE`` of any finding a human had merely OPENED in the editor still answered 500
+# (``sqlite3.IntegrityError``/``ForeignKeyViolation``, whole transaction rolled back, audit row lost) —
+# adversarial review round 2 reproduced it for three of the five siblings. None of these columns carries an
+# ``ondelete`` and only ``Artifact``/``tags`` have an ORM relationship, so nothing clears them for us.
+#
+# The classification is the decision, and it is the same one ``delete_group``/``detach_children`` make: a
+# row that IS this finding's state dies with it; a row that merely POINTS AT the finding from a structure
+# of its own survives with the link cleared. Getting that backwards destroys an author's work either way
+# (a deleted checklist, or a leaked CRDT blob that resurrects prose into the next finding to reuse the id).
+#
+#   scribble_collab_docs.finding_id       -> DELETE. Yjs CRDT state for one of THIS finding's blocks; the
+#                                            prose it encodes is going with the finding.
+#   scribble_variable_values.finding_id   -> DELETE. A per-finding variable binding (the per-host values
+#                                            promotion writes); scoped to the finding, meaningless without.
+#   scribble_engagement_checklist_items   -> NULL. The item belongs to a CHECKLIST, and a coverage
+#     .finding_id                            checklist must not lose an item because the finding that
+#                                            documented it was deleted — it reverts to "no finding linked".
+#   scribble_findings.parent_id           -> NULL, by :func:`detach_children` (see it for why children
+#                                            survive), or :func:`flatten_nesting` on the engagement path.
+#   scribble_artifacts.finding_id         -> DELETE, by :func:`delete_finding` itself, which also hands the
+#                                            on-disk paths back to its caller to unlink post-commit.
+#   scribble_finding_tags.finding_id      -> DELETE, by the ORM: ``EngagementFinding.tags`` is a
+#                                            ``secondary`` relationship, and SQLAlchemy removes the
+#                                            association rows when the parent goes. VERIFIED, not assumed
+#                                            (``test_delete_finding_clears_every_referring_row``); it is the
+#                                            one referrer that was already safe.
+#
+# ``_FINDING_FK_HANDLED_ELSEWHERE`` exists so the guard test can assert the union of these three sets is
+# EXACTLY the FK set in ``Base.metadata`` — a SIXTH referrer added later fails that test loudly instead of
+# becoming the next prod 500.
+_FINDING_OWNED_STATE = (CollabDoc, VariableValue)
+_FINDING_CROSSLINKS = (EngagementChecklistItem,)
+_FINDING_FK_HANDLED_ELSEWHERE = frozenset({
+    ("scribble_findings", "parent_id"),          # detach_children / flatten_nesting
+    ("scribble_artifacts", "finding_id"),        # delete_finding, explicitly (rows AND files)
+    ("scribble_finding_tags", "finding_id"),     # ORM secondary cascade on EngagementFinding.tags
+})
+
+# …and the SAME question one table over, asked because asking it about ``scribble_findings`` and stopping
+# there would repeat the exact mistake this enumeration exists to fix. Six columns reference
+# ``scribble_engagements.id``; five are covered by an ``Engagement`` relationship cascading
+# ``delete-orphan`` (groups, findings, artifacts, variable_values, checklists). The sixth,
+# ``scribble_report_renders.engagement_id``, has NO relationship and NO cascade, so a single row made
+# ``POST /engagements/<id>/delete`` an FK violation — reproduced at 500. It is LATENT today (nothing
+# instantiates ``ReportRender``; the table is schema-frozen for a later phase), which is precisely why it
+# would have shipped: the first code to write one would have broken engagement delete, far from here.
+#
+# Obligation for whoever writes the first ``ReportRender``: ``path`` names a file, and this deletes only the
+# ROW. Collect the paths before the cascade and unlink after the commit, exactly as ``engagement_delete``
+# already does for ``Artifact`` — see :func:`delete_finding`'s contract for why that order matters.
+_ENGAGEMENT_UNCASCADED = (ReportRender,)
 
 
 def _coerce_int(value) -> int | None:
@@ -276,6 +340,58 @@ def detach_children(db, finding: EngagementFinding) -> list[int]:
     return [child.id for child in children]
 
 
+def clear_finding_referrers(db, finding_ids) -> None:
+    """Clear every OTHER table's reference to ``finding_ids`` so the findings can be DELETEd.
+
+    Handles the non-``parent_id``, non-``artifact`` members of the FK set enumerated at the top of this
+    module: ``_FINDING_OWNED_STATE`` rows are deleted, ``_FINDING_CROSSLINKS`` rows keep their own identity
+    with ``finding_id`` set to NULL. Callers: :func:`delete_finding` (one id) and
+    :func:`prepare_engagement_delete` (every finding in an engagement).
+
+    Core statements, not per-object assignment, for :func:`flatten_nesting`'s reason: on the engagement path
+    the findings are already marked deleted and the unit of work emits no UPDATE for an object it is
+    deleting, so an ORM-level assignment would simply be dropped and the FK would fail anyway. ``in_`` over
+    the whole id list keeps this ONE statement per referring table however many findings are going.
+
+    Flushed, like :func:`detach_children` and for the same reason: these statements must reach the database
+    BEFORE the caller's DELETE, and ``session.execute`` on a Core statement does not by itself order itself
+    against a later unit-of-work flush.
+    """
+    ids = [fid for fid in finding_ids if fid is not None]
+    if not ids:
+        return
+    for model in _FINDING_OWNED_STATE:
+        db.execute(delete(model).where(model.finding_id.in_(ids)))
+    for model in _FINDING_CROSSLINKS:
+        db.execute(update(model).where(model.finding_id.in_(ids)).values(finding_id=None))
+    db.flush()
+
+
+def prepare_engagement_delete(db, engagement: Engagement) -> None:
+    """Everything that must happen BEFORE ``db.delete(engagement)`` — call this, not the pieces.
+
+    ``Engagement`` cascades ``delete-orphan`` to its groups/findings/artifacts/variable_values/checklists,
+    which covers the rows the ORM knows are the engagement's. It does NOT cover a row that references a
+    FINDING from outside that graph: a ``CollabDoc`` (no engagement column at all — the live co-editing room
+    writes one the moment a human opens a block), a finding-scoped ``VariableValue`` whose ``engagement_id``
+    is NULL, or an ``EngagementChecklistItem.finding_id`` whose own DELETE the ORM has no dependency edge to
+    order against the findings'. Each of those made ``POST /engagements/<id>/delete`` a 500 — the engagement
+    could not be deleted at all, the same shape :func:`flatten_nesting` was added for one referrer earlier.
+
+    It also clears ``_ENGAGEMENT_UNCASCADED`` — the one column referencing ``scribble_engagements.id`` that no
+    relationship covers (see that constant). Latent today, and fixed anyway: the enumeration above would be
+    theatre if it were only ever applied to the table that had already bitten us.
+
+    So it is one named entry point rather than three calls a future engagement-delete route has to remember,
+    because "remembered one of them" is precisely how this defect was shipped.
+    """
+    flatten_nesting(db, engagement)
+    clear_finding_referrers(db, [f.id for f in engagement.findings])
+    for model in _ENGAGEMENT_UNCASCADED:
+        db.execute(delete(model).where(model.engagement_id == engagement.id))
+    db.flush()
+
+
 def flatten_nesting(db, engagement: Engagement) -> None:
     """Clear every ``parent_id`` in ``engagement`` so a cascade delete of the whole engagement is
     ordering-independent.
@@ -324,10 +440,17 @@ def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:
 
     Nested CHILDREN are the opposite case and go the other way — see :func:`detach_children` for why they
     survive, and for why omitting that step made this an outright 500 on any promoted finding.
+
+    ``Artifact`` and ``parent_id`` are TWO of the SIX columns that reference ``scribble_findings.id``, and
+    handling only those two left this route answering 500 for any finding a human had opened in the editor
+    (``CollabDoc``) or a checklist had linked to. The full set, its classification and who clears each
+    member are enumerated at the top of this module; :func:`clear_finding_referrers` does the rest of them
+    here, and a guard test fails if a seventh referrer is added without a decision.
     """
     storage_paths = [a.storage_path for a in finding.artifacts]
     for artifact in list(finding.artifacts):
         db.delete(artifact)
+    clear_finding_referrers(db, [finding.id])
     detached_child_ids = detach_children(db, finding)
     db.delete(finding)
     return DeletedFinding(storage_paths, detached_child_ids)

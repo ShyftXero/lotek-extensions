@@ -368,11 +368,14 @@ def register(api_bp, bp) -> None:
             # bytes on disk are not the ORM's to clean up -- collect the paths before the cascade delete,
             # then best-effort remove the files afterward, same as delete_finding does per-finding.
             storage_paths = [a.storage_path for a in engagement.artifacts]
-            # Clear the finding->finding parent_id links FIRST: the delete-orphan cascade below emits its
-            # finding DELETEs in one unordered batch, and a child still pointing at its parent makes that
-            # batch violate the self-FK -- i.e. an engagement holding any promoted aggregation could not be
-            # deleted at all. See findings_service.flatten_nesting.
-            findings_service.flatten_nesting(db, engagement)
+            # Clear everything that references a FINDING of this engagement from OUTSIDE the cascade
+            # graph, FIRST: the delete-orphan cascade below emits its finding DELETEs in one unordered
+            # batch, so a surviving reference makes that batch violate an FK and the engagement cannot be
+            # deleted AT ALL. That is the self-FK parent_id link (a promoted aggregation), and equally a
+            # CollabDoc (written by the co-editing room the moment a human opens a block), a
+            # finding-scoped VariableValue, or a checklist item's finding_id. See
+            # findings_service.prepare_engagement_delete, which owns the whole set.
+            findings_service.prepare_engagement_delete(db, engagement)
             db.delete(engagement)  # cascades to groups/findings/artifacts/variable_values (delete-orphan)
             db.commit()
         for storage_path in storage_paths:
