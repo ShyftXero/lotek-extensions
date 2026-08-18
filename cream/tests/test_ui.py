@@ -215,16 +215,53 @@ def test_pdf_export_is_a_pdf_or_an_honest_503(client, make_doc):
     Which branch runs depends on the environment: weasyprint is in cream's ``pdf`` extra, NOT ``dev``, so
     a plain ``uv run --extra dev pytest`` takes the **503** branch and proves nothing about PDF rendering.
     ``uv run --extra dev --extra pdf pytest`` takes the 200 branch. Read the branch, not the green dot.
+
+    Nothing about *naming* is asserted here, for exactly that reason — see the test below.
     """
     doc = make_doc()
     res = client.get(f"/cream/documents/{doc['id']}/export.pdf")
     if res.status_code == 200:
         assert res.mimetype == "application/pdf"
         assert res.get_data()[:5] == b"%PDF-"
-        assert _attachment_filename(res) == f"invoice-draft-{doc['id'][-10:]}.pdf"
     else:
         assert res.status_code == 503
         assert "weasyprint" in res.get_data(as_text=True)
+
+
+def test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title(
+    client, make_doc, monkeypatch,
+):
+    """ext#46 on the PDF route: the download is ``invoice-draft-<tail>.pdf``, and the renderer is handed
+    the same handle the browser tab shows — weasyprint reads a page's ``<title>`` into the PDF's own
+    metadata title, which is what a PDF reader puts in its window and its recent-files list.
+
+    The obvious home for this was the 200-branch of the test above. It cannot live there: that branch is
+    unreachable under the documented pre-PR command (``uv run --extra dev pytest`` — weasyprint is in the
+    ``pdf`` extra), so an assertion parked in it is green whether the code is right or not. Measured, not
+    assumed: reverting ``export_pdf`` to ``name = (doc.number or "document") + ".pdf"`` left that command
+    at 167 passed, with every draft downloading as ``document.pdf`` again.
+
+    So the optional dependency is stubbed and the guard RUNS everywhere, rather than skipping in the one
+    environment that matters. Only the weasyprint call is replaced; both things pinned here are the
+    route's own work, above that seam — and the metadata title is not observable from the returned bytes
+    without decompressing the PDF's object stream, which is the other reason it could not be asserted
+    below.
+    """
+    handed_to_the_renderer: list[str] = []
+
+    def _stub_pdf(_view, *, name: str = "") -> bytes:
+        handed_to_the_renderer.append(name)
+        return b"%PDF-1.7 stub"
+
+    monkeypatch.setattr("cream.blueprint.render_document_pdf", _stub_pdf)
+    doc = make_doc()
+    tail = doc["id"][-10:]
+    res = client.get(f"/cream/documents/{doc['id']}/export.pdf")
+    assert res.status_code == 200
+    assert _attachment_filename(res) == f"invoice-draft-{tail}.pdf"
+    # `render_document_html` turns this into the page title `Invoice draft …<tail>`; that step is pinned
+    # by the HTML export's own title test, which needs no optional dependency to run.
+    assert handed_to_the_renderer == [f"draft …{tail}"]
 
 
 def test_branding_page_renders_the_singleton(client):

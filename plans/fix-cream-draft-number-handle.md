@@ -2,8 +2,9 @@
 
 - **Branch:** `fix/cream-draft-number-handle`  (worktree: `.claude/worktrees/ux-cream-number`, off `main`)
 - **PR:** not opened yet (the orchestrator opens it)
-- **Status:** 🟢 ready to merge — **adversarial review round 1 resolved** (verdict REPAIR, 0 blocking,
-  3 CONCERNs, all three about *claims*, none about the list fix). See "Review round 1" below.
+- **Status:** 🟢 ready to merge — **adversarial review round 2 resolved** (verdict SHIP, 0 blocking,
+  1 CONCERN: the PDF-filename assertion sat in a branch the documented pre-PR command never reaches).
+  See "Review round 2" below. Round 1 (verdict REPAIR, 3 CONCERNs about *claims*) is resolved above.
 
 ## Purpose
 
@@ -94,6 +95,51 @@ issued (01a010c4-1312-7427-bfa5-9b7fbbcca661)
 Before this branch the same run gave `—` / `—` / `INV-2026-0001` in the list, `Invoice (draft)` +
 `CREAM — Document` on both view pages, `Invoice draft` + `CREAM — Edit document` on both editors, and
 `document.html` / `document.pdf` titled `Invoice` for both drafts.
+
+## Review round 2 — the dead assertion
+
+Verdict **SHIP**, one CONCERN, and it was right: `test_pdf_export_is_a_pdf_or_an_honest_503` is a
+two-branch test, and the round-1 filename assertion was parked in the **200** branch — which the
+documented pre-PR command never enters, because weasyprint is in cream's `pdf` extra, not `dev`.
+Reproduced before touching anything:
+
+```
+$ uv run --extra dev python -c "import importlib.util; print(importlib.util.find_spec('weasyprint') is not None)"
+False
+$ uv run --extra dev --extra pdf python -c "...same..."
+True
+```
+
+So `export_pdf` could lose its naming entirely and `uv run --extra dev pytest` would still say 167 passed.
+An honest docstring warning ("read the branch, not the green dot") is documentation, not a guard.
+
+**Fixed, one step past what was asked.** The reviewer proposed splitting the assertion out behind
+`pytest.importorskip("weasyprint")`, which converts a silent green into a visible SKIP. A skip is better
+reporting, but it is still not a guard in the environment that gates the PR — and this repo has already
+written down that *a skip is not proof anything executed*. So the new
+`test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title` **stubs the optional dependency
+instead** (`monkeypatch.setattr("cream.blueprint.render_document_pdf", …)`) and therefore RUNS under
+`--extra dev`, `--extra pdf`, and anywhere else.
+
+Only the weasyprint call is replaced. Both things it pins are the route's own work, above that seam, and
+they are the two halves of the ext#46 fix on this route:
+
+- the `Content-Disposition` filename (`invoice-draft-<tail>.pdf`), and
+- the `name` handed to the renderer — the handle weasyprint writes into the PDF's **metadata title**,
+  i.e. what a PDF reader shows in its window and its recent-files list.
+
+The second one is why stubbing beats `importorskip` on substance as well as on reporting: that title is
+**not observable from the returned bytes** without decompressing the PDF's object stream (the reviewer had
+to do exactly that by hand to confirm `/Title (Invoice draft ZZTAILZZ)`). A real-weasyprint test asserting
+only the filename — the fix as prescribed — would stay green while the metadata title regressed to a bare
+`Invoice`. The stub catches it; measured below.
+
+`test_pdf_export_is_a_pdf_or_an_honest_503` is otherwise left exactly as it was (real PDF **or** honest
+503, never HTML under a `.pdf` name); it just no longer carries a naming assertion it cannot reach, and
+its docstring says where that guard went.
+
+Counts after: **168 passed** with `--extra dev` (was 167) and **168 passed** with `--extra dev --extra pdf`
+— the same number both ways, which is the point: nothing is now conditional on the optional dependency.
 
 ## Remaining
 
@@ -383,4 +429,47 @@ $ uv run --extra dev --extra pdf pytest -p no:warnings      # weasyprint present
 167 passed in 12.72s
 $ uv sync --extra dev && uv run --no-sync pytest -p no:warnings   # weasyprint absent -> 503 branch
 167 passed in 10.43s
+```
+
+## Red-then-green — review round 2
+
+One guard added, so two induced breakages — one per half of the fix it protects. Both run under the
+**default** `--extra dev` command, which is the whole point of the change: the same reverts previously
+left that command green. Output ANSI-stripped and trimmed.
+
+### 7. Revert `export_pdf` to its pre-ext#46 naming (`name = (doc.number or "document") + ".pdf"`, no `name=` kwarg)
+
+```
+$ uv run --extra dev pytest tests/test_ui.py
+>       assert _attachment_filename(res) == f"invoice-draft-{tail}.pdf"
+E       AssertionError: assert 'document.pdf' == 'invoice-draft-215f88c73a.pdf'
+tests/test_ui.py:261: AssertionError
+FAILED tests/test_ui.py::test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title
+1 failed, 22 passed in 5.04s
+```
+
+### 8. Restore the filename, drop ONLY the `name=document_handle(...)` kwarg — isolating the metadata title
+
+```
+$ uv run --extra dev pytest tests/test_ui.py
+FAILED tests/test_ui.py::test_the_pdf_export_names_a_draft_in_its_filename_and_its_metadata_title
+  - AssertionError: assert [''] == ['draft …049baf1717']
+1 failed, 22 passed in 5.88s
+```
+
+Each half fails on its own, so neither assertion is riding on the other. Restored (`git diff` on
+`cream/cream/blueprint.py` empty) →
+
+```
+$ uv run --extra dev pytest
+168 passed in 25.76s
+
+$ uv run --extra dev --extra pdf pytest
+168 passed in 31.40s
+
+$ uvx ruff check tests/test_ui.py
+All checks passed!
+
+$ uv run --extra dev pyrefly check tests/test_ui.py
+INFO 0 errors
 ```
