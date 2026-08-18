@@ -404,7 +404,10 @@ host's `Job.owner_id`, as an access key.
 **Evidence is untrusted input.** Artifacts always download as attachments, never render inline in the
 app origin. Uploads are capped at 25 MiB (checked after base64 decode, with a preflight cap on the
 encoded string so an oversized payload is refused before it is buffered), filenames are sanitized and
-stored under a UUID-prefixed name inside a per-engagement directory.
+stored under a UUID-prefixed name inside a per-engagement directory. `filename` and `caption` are
+type-checked at the boundary (a non-string is a 400, not a 500), and `filename` is capped at **222
+characters** — the UUID prefix costs 33 of the filesystem's 255, so a longer name is `ENAMETOOLONG` on
+write rather than a truncated column.
 
 **Machine-surface hygiene.** The CSRF exemption on `/scribble/machine` is only sound because those
 routes accept no ambient session cookie. Never add a cookie fallback there, and never widen
