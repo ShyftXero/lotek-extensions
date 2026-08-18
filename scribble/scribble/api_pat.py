@@ -237,6 +237,12 @@ _ENGAGEMENT_NAME_MAX_LEN = 255  # Engagement.name                String(255)
 _SCOPE_TYPE_MAX_LEN = 64        # Engagement.scope_type          String(64)
 _COMPANY_NAME_MAX_LEN = 255     # Engagement.company_name        String(255)
 _TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
+# NOT the column width: ``Artifact.filename`` is String(512), but the FILESYSTEM binds first.
+# ``artifacts_storage.save_bytes`` writes the bytes under "<uuid4hex>_<secure_filename>", so the
+# basename is 33 characters longer than the name the caller sent and overruns ``NAME_MAX`` (255 on
+# Linux/ext4) at 223 — measured, not assumed: 222 stores, 223 raises ``ENAMETOOLONG`` and the caller
+# gets a 500. Cap at the SMALLER of the two limits, or the guard would still 500 on everything between.
+_ARTIFACT_FILENAME_MAX_LEN = 255 - 32 - 1  # NAME_MAX - len(uuid4().hex) - len("_") == 222
 
 
 def _too_long(key: str, value: str, *, cap: int | None = None):
@@ -1143,12 +1149,20 @@ def scribble_upload_artifact(engagement_id: int):
         data = upload.read(_MAX_ARTIFACT_BYTES + 1)  # bound the read; the len() check below rejects >max
     elif request.is_json:
         payload = request.get_json(silent=True) or {}
-        caption = payload.get("caption")
         kind_raw = payload.get("kind")
         placement_raw = payload.get("placement")
         idempotency_key = payload.get("idempotency_key")
         fid = _as_int(payload.get("finding_id"))
-        filename = payload.get("filename") or "artifact"
+        # Type-checked, unlike the form branch (where Werkzeug hands back a str either way): a dict
+        # ``filename`` reached ``mimetypes.guess_type`` and a dict ``caption`` bound straight to a Text
+        # column, both 500s for a bad request.
+        filename, err = _opt_str(payload, "filename")
+        if err:
+            return err
+        filename = filename or "artifact"
+        caption, err = _opt_str(payload, "caption")
+        if err:
+            return err
         content_b64 = payload.get("content_base64") or payload.get("data_base64") or payload.get("data")
         if not content_b64:
             return jsonify({"error": "bad_request", "detail": "content_base64 is required"}), 400
@@ -1168,6 +1182,12 @@ def scribble_upload_artifact(engagement_id: int):
     else:
         return jsonify({"error": "bad_request", "detail": "expected a multipart file or a JSON body"}), 400
 
+    # An over-long filename is a 500 twice over — ``ENAMETOOLONG`` from the filesystem first, a Postgres
+    # truncation of ``Artifact.filename``/``storage_path`` behind it — so it is refused here, for the
+    # multipart branch too (``upload.filename`` is just as caller-supplied). See the cap's comment for why
+    # it is the filesystem's number and not the column's.
+    if (err := _too_long("filename", filename, cap=_ARTIFACT_FILENAME_MAX_LEN)) is not None:
+        return err
     if not data:
         return jsonify({"error": "bad_request", "detail": "empty upload"}), 400
     # Bound the artifact so one authenticated write token can't exhaust memory/disk with a giant blob.

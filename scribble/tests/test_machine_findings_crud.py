@@ -581,6 +581,55 @@ def test_every_create_route_on_this_blueprint_bounds_its_strings(
     assert wrong_type.status_code == 400, wrong_type.get_json()
 
 
+ARTIFACT_FILENAME_CAP = 222  # NAME_MAX(255) - len(uuid4().hex) - len("_") — see `_ARTIFACT_FILENAME_MAX_LEN`
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ({"filename": "x" * (ARTIFACT_FILENAME_CAP + 1)}, "too long"),
+        ({"filename": {"name": "x.png"}}, "string"),    # reached mimetypes.guess_type -> 500
+        ({"caption": {"text": "hi"}}, "string"),        # a dict bound to a Text column
+    ],
+)
+def test_artifact_upload_bounds_and_types_its_strings(client, token, session_factory, body, expected):
+    """The evidence-upload route is the last string writer on this blueprint, and it was unguarded too.
+
+    `filename`/`caption` were read raw from the JSON body, so a dict reached `mimetypes.guess_type` and the
+    `caption` `Text` column respectively — a 500 for a request that should never have reached either. An
+    over-long `filename` is a 500 as well: `save_bytes` stores the bytes as `<uuid4hex>_<secure_filename>`,
+    so the basename passes `NAME_MAX` at 223 caller-supplied characters and the write raises
+    `ENAMETOOLONG` (`Artifact.filename` is `String(512)`, so the column would truncate later still — the
+    filesystem is the binding limit, which is why the cap is 222 and not 512). Same class as the
+    create-route caps, found by asking which OTHER routes on this blueprint write a string.
+    """
+    eid = _engagement(session_factory)
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        json={"filename": "evidence.png", "content_base64": base64.b64encode(PNG).decode(), **body},
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert expected in resp.get_json()["detail"]
+
+
+def test_artifact_upload_accepts_a_filename_AT_the_cap(client, token, session_factory):
+    """The cap has to be the number the filesystem actually enforces, so assert the accepted side too.
+
+    Without this half the guard passes with ANY cap — including one above the real limit, which refuses
+    nothing that was failing and leaves every name between the two numbers still answering 500. The cap
+    was 512 (the column width) until this test was written and a 300-character name still 500'd.
+    """
+    eid = _engagement(session_factory)
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts",
+        json={
+            "filename": "x" * ARTIFACT_FILENAME_CAP,
+            "content_base64": base64.b64encode(PNG).decode(),
+        },
+    )
+    assert resp.status_code == 201, resp.get_json()
+
+
 def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
     """`FindingGroup.name` is String(128) — same reasoning as the finding fields above, on both the create
     and the rename path."""
