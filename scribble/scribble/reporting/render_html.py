@@ -533,14 +533,24 @@ _COVER_HANDLING = (
     "transmit it accordingly."
 )
 
+# EVERY bullet here states what this report does NOT claim. That constraint is deliberate and is what
+# makes the block safe to emit unconditionally: under-claiming cannot be false, whereas an assertion that
+# particular work WAS performed can be — and this block is emitted from inside ``_render_summary``, so
+# unlike the methodology block it cannot even be dropped without dropping the Executive Summary.
+# A third bullet used to read "Testing was non-destructive ... anything outside the agreed scope was not
+# touched." It was removed (adversarial review, 2026-08-17): scribble's headline workflow bulk-promotes a
+# whole scan job, so for a real deliverable that sentence asserted process facts nobody recorded, in a
+# document signed with the assessor's name. Rules-of-engagement statements of that kind belong in the
+# per-engagement prose field that is still to be built, written by the assessor — not in a renderer
+# constant. ``tests/test_report_standing_prose.py`` pins the rule so it cannot drift back in.
 _LIMITATIONS: tuple[str, ...] = (
     "This report describes the environment as it was during the testing window. A change made after "
     "testing — a deployment, a configuration change, a newly published vulnerability — is not reflected "
     "here.",
     "The absence of a finding means a weakness was not observed in the time and scope available. It is "
     "not proof that none exists.",
-    "Testing was non-destructive. A validated weakness was exercised only as far as was needed to "
-    "establish its impact, and anything outside the agreed scope was not touched.",
+    "Coverage was bounded by the agreed scope and testing window. Systems, accounts and techniques "
+    "outside them were not examined, and this report makes no claim about them.",
 )
 
 # What each severity level MEANS, so the severity bar and the findings index are legible to a reader who
@@ -884,39 +894,46 @@ def _render_checklist_compliance(cl) -> str:
 # (ext#42). Deliberately says nothing about which specific tools ran or which hosts were touched — that is
 # per-engagement fact and belongs to the findings, the coverage checklist and the scope statement, not to
 # standing boilerplate.
+# PRESENT TENSE, throughout, and that is not a style choice — see ``tests/test_report_standing_prose.py``.
+# These phases describe the METHOD an assessment of this kind is conducted by. They used to be written as
+# past-tense assertions about the engagement in hand ("Every candidate weakness was validated by hand
+# before it was reported"), which the renderer cannot know: a report assembled by ``promote_job`` from a
+# scan job's findings had the document assert hand-validation of all forty of them. Describing the standard
+# method is honest and is what a Methodology section is for; asserting unrecorded work is neither, and no
+# operator control exists to remove it (the report-template registry is frozen data, not an editor).
 _METHODOLOGY_PHASES: tuple[tuple[str, str], ...] = (
     (
         "Scoping and rules of engagement",
-        "The in-scope assets, the testing window and the permitted level of intrusiveness were agreed "
-        "before testing began, and testing stayed inside them.",
+        "The in-scope assets, the testing window and the permitted level of intrusiveness are agreed "
+        "before testing begins, and testing stays inside them.",
     ),
     (
         "Reconnaissance and enumeration",
-        "In-scope assets were enumerated to establish what is actually reachable and what each exposed "
+        "In-scope assets are enumerated to establish what is actually reachable and what each exposed "
         "service claims to be — the inventory every later phase is measured against.",
     ),
     (
         "Vulnerability identification",
-        "Reachable services and applications were examined for known-vulnerable versions, weak "
+        "Reachable services and applications are examined for known-vulnerable versions, weak "
         "configuration and exposed functionality, using tooling to widen coverage rather than to decide "
         "the result.",
     ),
     (
-        "Manual validation",
-        "Every candidate weakness was validated by hand before it was reported, so a finding in this "
-        "report is an observed condition in this environment rather than a scanner's guess. Candidates "
-        "that did not survive validation are not reported.",
+        "Validation",
+        "Candidate weaknesses are validated before they are reported. Where a finding is carried over "
+        "from tool output it is reported with the evidence that supports it and with the assessor's "
+        "rating rather than the tool's, so a reader can see what a given finding rests on.",
     ),
     (
         "Controlled exploitation and impact assessment",
-        "Where the rules of engagement permitted it, a validated weakness was exercised only as far as "
-        "was needed to establish its real impact. Activity was kept to the minimum that demonstrates the "
-        "consequence, and no destructive action was taken.",
+        "Where the rules of engagement permit it, a validated weakness is exercised only as far as is "
+        "needed to establish its real impact — kept to the minimum that demonstrates the consequence, "
+        "and short of destructive action.",
     ),
     (
         "Rating and reporting",
-        "Each finding was rated on impact and exploitability in the context of this environment. Where a "
-        "CVSS vector was available it is recorded on the finding; the severity shown is the assessor's "
+        "Each finding is rated on impact and exploitability in the context of this environment. Where a "
+        "CVSS vector is available it is recorded on the finding; the severity shown is the assessor's "
         "rating for this environment, which may differ from a vendor's generic score.",
     ),
 )
@@ -963,10 +980,16 @@ def _methodology_prose(ctx: ReportContext) -> str:
         f'<div class="mth-v">{_esc(text)}</div></div>'
         for name, text in _METHODOLOGY_PHASES
     )
+    # The lead is load-bearing and has to hold WITH a coverage checklist as well as without one (the
+    # "no engagement-specific coverage checklist was recorded" note below only appears when there is
+    # none). Without it, present-tense method prose still reads to a client as a description of what was
+    # done on their engagement — which for a bulk-promoted report it is not.
     parts = [
         '<article class="mth">'
-        '<p class="mth-lead">Testing followed the phased approach below. Each phase feeds the next, and '
-        "nothing is reported that was not observed in this environment.</p>"
+        '<p class="mth-lead">An assessment of this kind is conducted in the phases below, each feeding '
+        "the next. This is a standing description of method, not a log of what was done on this "
+        "engagement: what a given engagement covered is recorded on its coverage record and on the "
+        "findings themselves.</p>"
         f'<div class="mth-phases">{phases}</div>'
     ]
     seen: set[str] = set()

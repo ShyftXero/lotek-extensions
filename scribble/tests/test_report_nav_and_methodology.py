@@ -81,7 +81,10 @@ def test_methodology_renders_with_no_checklist_at_all(session_factory):
     assert '<section class="sec group" id="sec-methodology">' in html
     assert "Methodology" in html
     # the standing description, and an explicit statement of what it is
-    assert "Manual validation" in html
+    # ("Manual validation" until 2026-08-17: the phase is now "Validation", because a heading asserting
+    # hand-validation is the same unrecorded claim its body used to make — see
+    # tests/test_report_standing_prose.py)
+    assert "Validation" in html
     assert "Controlled exploitation and impact assessment" in html
     assert "No engagement-specific coverage checklist was recorded" in html
 
