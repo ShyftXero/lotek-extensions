@@ -789,6 +789,105 @@ def test_create_routes_refuse_a_non_doc_block_too(client, token, session_factory
         assert db.scalars(select(fm.EngagementFinding)).all() == []
 
 
+def test_every_content_writer_bounds_the_content_json_BLOCK_COUNT(client, token, session_factory):
+    """`content_json`'s block COUNT is bounded, on every route that writes it.
+
+    The gap this closes, measured on this branch before the cap: a 204 KB `PATCH` carrying 5,000
+    `content_json` blocks answered **200**, ran `render_block` 5,000 times, and PERSISTED 5,001 blocks —
+    after which every later render of that finding (report HTML, docx, editor preview, on both the cookie
+    and machine surfaces) walked all of them again. The id-list cap review round 2 added bounds work that
+    ends with the request; this bounds work that outlives it, in a client's deliverable.
+
+    Swept over all three writers deliberately: `_COLUMN_MAX_LEN` and `_non_doc_blocks_error` both shipped
+    covering one writer while a sibling on the same blueprint wrote the same column unguarded, and each
+    time the guard the commit existed for was still reachable one route over.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    with session_factory() as db:
+        templates_before = len(db.scalars(select(fm.VulnerabilityTemplate)).all())
+    over = {f"b{i}": {"type": "doc", "content": []} for i in range(65)}
+
+    calls = [
+        ("PATCH", f"{M}/findings/{fid}", {"content_json": over}),
+        ("POST", f"{M}/engagements/{eid}/findings",
+         {"title": "Authored", "severity": "high", "content_json": over}),
+        ("POST", f"{M}/templates", {"name": "T", "content_json": over}),
+    ]
+    unbounded = []
+    for method, url, body in calls:
+        resp = client.open(url, method=method, json=body)
+        if resp.status_code != 400 or "at most 64 blocks" not in resp.get_json().get("detail", ""):
+            unbounded.append((method, url, resp.status_code, resp.get_json()))
+    assert unbounded == [], f"a writer accepted an over-cap content_json: {unbounded}"
+
+    # …and nothing was stored by any of the three refusals. Counted against a BEFORE snapshot, not
+    # against zero: `seed_defaults` ships a vuln-template library, so an == [] assertion here would fail
+    # for a reason that has nothing to do with the guard.
+    with session_factory() as db:
+        assert len(db.get(fm.EngagementFinding, fid).content_json) == 1  # the seeded "description"
+        assert len(db.scalars(select(fm.EngagementFinding)).all()) == 1  # no finding was created
+        assert len(db.scalars(select(fm.VulnerabilityTemplate)).all()) == templates_before
+
+
+def test_every_content_writer_bounds_the_REFERENCES_LIST(client, token, session_factory):
+    """The same, for `references` — the other input whose length costs per-element work that persists.
+
+    Measured before the cap: `PATCH {"references": [<200,000 urls>]}` answered **200** and stored
+    **22.2 MB** of joined text into ONE finding's `content_json`. `references` is `str()`-coerced per
+    element and then wrapped into a doc, so the count has to be refused before the list is walked.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    with session_factory() as db:
+        templates_before = len(db.scalars(select(fm.VulnerabilityTemplate)).all())
+    over = ["http://example.com/cve"] * 501
+
+    calls = [
+        ("PATCH", f"{M}/findings/{fid}", {"references": over}),
+        ("POST", f"{M}/engagements/{eid}/findings",
+         {"title": "Authored", "severity": "high", "references": over}),
+        ("POST", f"{M}/templates", {"name": "T", "references": over}),
+    ]
+    unbounded = []
+    for method, url, body in calls:
+        resp = client.open(url, method=method, json=body)
+        if resp.status_code != 400 or "at most 500 entries" not in resp.get_json().get("detail", ""):
+            unbounded.append((method, url, resp.status_code, resp.get_json()))
+    assert unbounded == [], f"a writer accepted an over-cap references list: {unbounded}"
+
+    with session_factory() as db:
+        assert schema.plain_text(
+            db.get(fm.EngagementFinding, fid).content_json["description"]
+        ) == "original prose"
+        assert "references" not in db.get(fm.EngagementFinding, fid).content_json
+        assert len(db.scalars(select(fm.EngagementFinding)).all()) == 1  # no finding was created
+        assert len(db.scalars(select(fm.VulnerabilityTemplate)).all()) == templates_before
+
+
+def test_a_body_AT_the_content_caps_is_ACCEPTED_and_stored(client, token, session_factory):
+    """The accepted side, asserted because a cap test without it can hold the WRONG number and still pass.
+
+    That is not hypothetical here: the artifact-filename cap shipped at a value one session had chosen
+    without an accepted-side assertion, and the next session found it wrong precisely by adding this half
+    (see the plan's §24). Exactly AT each cap must store — a boundary that is off by one refuses a
+    legitimate deliverable, which is the failure a length guard is most likely to introduce.
+    """
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid)
+    at_cap = {f"b{i}": schema.doc_from_text(f"block {i}") for i in range(64)}
+    resp = client.patch(f"{M}/findings/{fid}", json={"content_json": at_cap})
+    assert resp.status_code == 200, resp.get_json()
+
+    resp = client.patch(f"{M}/findings/{fid}", json={"references": ["http://x/cve"] * 500})
+    assert resp.status_code == 200, resp.get_json()
+
+    with session_factory() as db:
+        stored = db.get(fm.EngagementFinding, fid).content_json
+    assert len(stored) == 66  # 64 authored + the seeded "description" + the "references" block
+    assert schema.plain_text(stored["b63"]) == "block 63"
+
+
 @pytest.mark.parametrize("field", ["title", "analyst_notes", "target_host"])
 def test_patch_escapes_a_NUL_byte_that_postgres_would_refuse(client, token, session_factory, field):
     """A NUL (0x00) in an accepted string is ESCAPED at the boundary, mirroring core's `nul_safe`.

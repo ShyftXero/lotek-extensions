@@ -295,6 +295,27 @@ _ARTIFACT_FILENAME_MAX_LEN = 255 - 32 - 1  # NAME_MAX - len(uuid4().hex) - len("
 # 500 is far above any real multi-select drag or agent re-organisation and far below where either cost bites.
 _BULK_ID_LIST_MAX = 500
 
+# Bounds on the CONTENT one write may author. ``_COLUMN_MAX_LEN`` bounds one string and
+# ``_BULK_ID_LIST_MAX`` bounds one id list; these bound the two content inputs whose LENGTH costs work per
+# element AND whose cost is PERSISTENT — they land in ``content_json``, so every later render of that
+# finding (HTML and docx, cookie board and machine report alike) walks them again. Measured on this branch
+# before the caps existed: a 204 KB ``PATCH`` carrying 5,000 ``content_json`` blocks answered **200** and
+# stored 5,001 blocks, one ``render_block`` per block; a ``references`` list of 200,000 entries answered
+# **200** and stored **22.2 MB** into a single finding's ``content_json``. That is the same class review
+# round 2 closed for ``finding_ids`` — and it was still open one field over, on a route this branch adds.
+#
+# Applied to every writer that reaches ``_author_content_json`` (``PATCH …/findings/<id>``,
+# ``POST …/findings``, ``POST /templates``) for ``_COLUMN_MAX_LEN``'s reason: a check only one of several
+# writers consults is not a boundary.
+#
+# The numbers are far above any real deliverable — ``schema.DEFAULT_BLOCKS`` is three, a custom block is
+# named by a human in the editor, and a finding citing 500 references does not exist. Deliberately NOT a
+# byte cap on a single block's prose: a long write-up is legitimate, ``analyst_notes`` is an unbounded
+# ``Text`` column by design, and the request body is already bounded by the host's ``MAX_CONTENT_LENGTH``.
+# What is bounded here is per-element work that outlives the request.
+_CONTENT_BLOCK_MAX = 64
+_REFERENCE_LIST_MAX = 500
+
 
 def _too_long(key: str, value: str, *, cap: int | None = None):
     """400 when a value would overflow its column — see ``_COLUMN_MAX_LEN``. None when it fits.
@@ -466,6 +487,28 @@ def _non_doc_blocks_error(supplied: Any):
                 f"content_json[{name!r}] must be a ProseMirror doc: "
                 "{'type': 'doc', 'content': [...]}"
             )
+    return None
+
+
+def _content_bounds_error(data: dict):
+    """400 when a body carries more ``content_json`` blocks or ``references`` entries than any real
+    finding does — see ``_CONTENT_BLOCK_MAX`` / ``_REFERENCE_LIST_MAX``. ``None`` when it fits.
+
+    Takes the WHOLE body, not one field, because the two inputs live at the same level of it and every
+    caller owes both checks; handing this a single field is how the second one gets forgotten. Counted
+    BEFORE either value is walked — ``references`` is ``str()``-coerced per element and each
+    ``content_json`` block is sanitized and re-rendered, so the walk IS the work being refused.
+
+    Non-mappings/non-lists are ignored here: their TYPE is the caller's business (``PATCH`` refuses a
+    non-object ``content_json`` and a non-list ``references``; a create treats either as "not supplied"),
+    and folding those different contracts in here would silently change create's.
+    """
+    supplied = data.get("content_json")
+    if isinstance(supplied, dict) and len(supplied) > _CONTENT_BLOCK_MAX:
+        return _bad_request(f"content_json may contain at most {_CONTENT_BLOCK_MAX} blocks")
+    refs = data.get("references")
+    if isinstance(refs, list) and len(refs) > _REFERENCE_LIST_MAX:
+        return _bad_request(f"references may contain at most {_REFERENCE_LIST_MAX} entries")
     return None
 
 
@@ -680,6 +723,8 @@ def scribble_create_template():
             400,
         )
 
+    if (err := _content_bounds_error(data)) is not None:
+        return err
     references = data.get("references")
     references = [str(r) for r in references] if isinstance(references, list) else []
     # description/remediation are packed into content_json blocks and sanitized (references live in the
@@ -899,6 +944,8 @@ def scribble_add_finding(engagement_id: int):
         # See ``_non_doc_blocks_error``: without this a supplied block whose value is not a ``doc`` is
         # stored as an EMPTY doc and the 201 reports prose that was never saved.
         if (err := _non_doc_blocks_error(data.get("content_json"))) is not None:
+            return err
+        if (err := _content_bounds_error(data)) is not None:
             return err
         author_content_json = _author_content_json(data)
         author_group_pk = group.id if group is not None else None
@@ -1569,6 +1616,8 @@ def _patch_content_blocks(data: dict):
     if supplied is not _ABSENT and not isinstance(supplied, dict):
         return {}, _bad_request("content_json must be an object of {block_name: prosemirror_doc}")
     if (err := _non_doc_blocks_error(supplied)) is not None:
+        return {}, err
+    if (err := _content_bounds_error(data)) is not None:
         return {}, err
     for key in ("description", "remediation"):
         value = data.get(key, _ABSENT)

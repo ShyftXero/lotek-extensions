@@ -258,6 +258,7 @@ them.
 | Job missing, or one you cannot view | **404**, decided inside the host, never by Scribble. |
 | Artifact over 25 MiB | **413**. |
 | A string longer than its column, or a `cvss_score` outside 0.0–10.0 | **400** at the boundary. Bounded in code, not left to the database: on Postgres an over-long `String(n)` value raises `StringDataRightTruncation` (a 500 for what is really a bad request), and SQLite hides it entirely. |
+| More than **64** `content_json` blocks, or more than **500** `references` entries | **400** at the boundary, on every route that writes content (`PATCH …/findings/<id>`, `POST …/findings`, `POST /templates`). These are the two content inputs whose *length* costs work per element and whose cost is **persistent** — they land in `content_json`, so every later render of that finding walks them again. Measured before the cap: 5,000 blocks in one 204 KB `PATCH` stored 5,001 blocks; a 200,000-entry `references` list stored 22.2 MB into a single finding. A real deliverable uses three blocks and a handful of references, so the caps are far above legitimate use. A single block's *prose length* is deliberately NOT capped (a long write-up is legitimate; the request body is already bounded by the host's `MAX_CONTENT_LENGTH`). |
 
 ### Getting scan findings in
 

@@ -1,7 +1,7 @@
 # Plan: feat/scribble-machine-findings-crud
 
 - **Branch:** `feat/scribble-machine-findings-crud`  (worktree: `.claude/worktrees/ux-findings-crud`, off `main`)
-- **PR:** not opened yet (the orchestrator opens it)
+- **PR:** opened by the PR-gate pass (2026-08-18) — see "Review round 3"
 - **Status:** 🟢 ready to merge — closes ext#41 and ext#47. **Adversarial review round 1 (2026-08-17):
   1 BLOCK + 4 CONCERNs, all five fixed** (see "Review round 1" below); nothing refuted.
   **Adversarial review round 2 (2026-08-17): 2 BLOCKs + 3 CONCERNs. All five reproduced and fixed**
@@ -11,6 +11,13 @@
   set instead of against the set (the FK columns pointing at a finding; the values inside `content_json`) —
   so the pattern was then applied where nobody had reported it, which turned up (and fixed) a latent
   engagement-delete 500 in `scribble_report_renders`.
+  **Review round 3 — the PR gate (2026-08-18): 1 WARNING, fixed; nothing else found.** Both required
+  reviews were re-run against the CURRENT diff, and before any of the earlier claims were trusted, SEVEN of
+  this branch's own guards were removed one at a time and watched go red (§35) — all seven efficacious,
+  including the bulk-move query-count assertion whose first version had been vacuous. The one new finding was
+  the same amplification class round 2 closed for id lists, still open on the two CONTENT collections
+  (`content_json`'s block count, `references`' length) and this time PERSISTENT: 5,000 blocks and a
+  200,000-entry reference list both answered 200 and landed in the row. Capped at all three writers.
 - **🔴 Session interrupted 2026-08-17.** The session doing round 1 was killed mid-flight by an API
   limit while extending the string-boundary sweep to the LAST writer on the blueprint, the evidence-upload
   route. Its work was sitting uncommitted in the worktree (`api_pat.py` + `test_machine_findings_crud.py`,
@@ -77,7 +84,13 @@ API (`scribble/api_pat.py`):
 - [x] **#41 (round 2, unreported)** — the same enumeration applied to `scribble_engagements.id`:
       `ReportRender` rows are cleared in `prepare_engagement_delete` (a latent 500) and a second guard test
       requires every engagement referrer to be cascade-covered or declared.
-- [x] Red-then-green transcript for every new guard, captured verbatim below.
+- [x] **#41 (round 3)** — `content_json`'s block COUNT and `references`' LENGTH bounded
+      (`_CONTENT_BLOCK_MAX = 64`, `_REFERENCE_LIST_MAX = 500`, `_content_bounds_error`) at all THREE writers
+      that reach `_author_content_json`, checked before either collection is walked. Round 2's id-list cap
+      bounded transient work; this bounds per-element work that PERSISTS in the row and is re-paid by every
+      later render. Measured, both refused and accepted sides asserted. §36.
+- [x] Red-then-green transcript for every new guard, captured verbatim below — plus §35, the efficacy audit
+      that breaks SEVEN of the earlier rounds' guards to prove each one's test is not merely present.
 
 ## The new surface (10 routes, 13 → 23)
 
@@ -94,12 +107,22 @@ API (`scribble/api_pat.py`):
 | `DELETE /engagements/<eid>/groups/<gid>` | write |
 | `POST /engagements/<eid>/groups/reorder` | write |
 
-## Verified (round 2, 2026-08-17)
+## Verified (round 3 — the PR gate, 2026-08-18)
+
+```
+cd scribble && uv run --extra dev pytest -W ignore -rs   744 passed, 2 skipped   RC=0
+uvx ruff check <changed files>                           All checks passed!
+uv run --extra dev pyrefly check <changed .py files>     0 errors
+```
+
+Both SKIPs are `tests/test_db_additive_migration.py` needing a real Postgres (`SCRIBBLE_TEST_PG_URL` unset) —
+which is exactly the blind spot the column-width and NUL guards exist for, and why both are checked in code
+rather than trusted to a green run. Round 3 adds 3 collected tests (741 -> 744).
+
+### Round 2's own numbers, kept for the record
 
 ```
 cd scribble && uv run --extra dev pytest -W ignore      741 passed, 2 skipped in 320.42s   RC=0
-uvx ruff check <6 changed files>                        All checks passed!
-uv run --extra dev pyrefly check <6 changed files>      0 errors
 ```
 
 Round 2 adds 18 collected tests across the two modules — `pytest --co -q` now reports
@@ -346,6 +369,65 @@ the second one hid: fixing it and writing the test made the area look settled.
 row's stored `engagement_id`, byte-identical refusals, authorization before body parsing, real scope
 enforcement, the audit/idempotency seams, the `findings_service` extraction being behaviour-identical) was
 checked and left alone. The two out-of-scope parity routes stay out of scope for round 1's reasons.
+
+## Review round 3 — the PR gate, 2026-08-18 (1 WARNING, fixed; nothing else found)
+
+The PR-gate pass re-ran BOTH required reviews against the CURRENT diff (the round-1/2 markers were stale —
+repair commits moved HEAD) and, before trusting any of the earlier claims, **broke seven of this branch's
+own guards and watched each one go red**, because a fix recorded in a plan file is a claim about a test, not
+a test. All seven are efficacious (§35). One new finding survived.
+
+1. **WARNING · the two CONTENT inputs whose length costs work per element are still unbounded — on a route
+   this branch adds, and this time the cost PERSISTS.** Round 2 closed the amplification class for id lists
+   (`_BULK_ID_LIST_MAX`) and stopped at the field that had been reported. Asking the same question about the
+   other client-supplied collections on the same route reproduces it twice, measured here before any code
+   moved:
+
+   * `PATCH /findings/<id>` with **5,000** `content_json` blocks (a 204 KB body) → **200**, 5,000
+     `render_block` calls, and **5,001 blocks PERSISTED**.
+   * `PATCH /findings/<id>` with a **200,000-entry** `references` list → **200**, and **22.2 MB** of joined
+     text stored into ONE finding's `content_json`.
+
+   The id-list cost ends with the request; this one lands in the row, so every later render of that finding —
+   report HTML, docx, editor preview, cookie board and machine surface alike — walks it again, and the
+   client's deliverable carries it. `POST …/findings` and `POST /templates` write the same columns with the
+   same absent bound, which is exactly the "a check only one of several writers consults is not a boundary"
+   shape `_COLUMN_MAX_LEN` and `_non_doc_blocks_error` were each renamed/extended for.
+   - **Fix:** `_CONTENT_BLOCK_MAX = 64` / `_REFERENCE_LIST_MAX = 500`, checked by `_content_bounds_error`
+     BEFORE either collection is walked (the walk IS the work being refused), applied at all THREE writers
+     that reach `_author_content_json`. Deliberately NOT a byte cap on one block's prose: a long write-up is
+     legitimate, `analyst_notes` is an unbounded `Text` column by design, and the body is already bounded by
+     the host's `MAX_CONTENT_LENGTH`. What is bounded is per-element work that outlives the request.
+   - **Both sides asserted**, per §24's lesson: the refusal on all three writers (with a "nothing was
+     stored" check counted against a BEFORE snapshot, because `seed_defaults` ships a template library), AND
+     a body exactly AT each cap storing — a cap test without the accepted side can hold the wrong number and
+     still pass, which is how the artifact-filename cap shipped wrong once already.
+   - `docs/SCRIBBLE.md` gets the refusal row, with the measured numbers.
+
+**What round 3 did NOT change, and why.** Recorded because "reviewed and found nothing" is only useful when
+it names what was walked:
+
+- **Every claimed round-1/2 fix holds, proven by breaking it** — see §35.
+- **Tenancy, scope, oracle, audit and the seams.** All ten routes carry `host.require_scope` (INV-INPUT-04);
+  `_visible_finding` anchors on the row's stored `engagement_id` (INV-TENANCY-01); missing and not-visible are
+  byte-identical; authorization precedes `get_json()` on all ten; all eight mutating routes emit through
+  core's single `audit.record` seam in the change's own transaction.
+- **Stored XSS into a client deliverable: closed, and PATCH does not widen it.** PATCH routes through the
+  same `sanitize_content_json` closed allowlist (8 node types, 4 marks, http(s)-only link `href`, depth cap
+  64); `render_block` re-sanitizes with `nh3`; `inlineImage`/`figure`/`image` are not in the allowlist at all
+  for an untrusted caller, so INV-EXT-05's content-supplied-URL class cannot arise from this surface. Block
+  NAMES are caller-controlled and were checked on BOTH render paths: `render_html._render_block` escapes the
+  label (`_esc`), and `render_docx._label_run_xml` escapes it via docxtpl's `RichText.add` (verified in the
+  installed library's source, not assumed). No scribble template uses `|safe`.
+- **NUL bytes in prose are not a Postgres 500.** `_nul_safe` covers the two string funnels; prose that goes
+  into `content_json` does not need it, because that is a `JSON` column and `json.dumps` escapes NUL to
+  `\u0000` before the bind — no literal NUL reaches psycopg. `analyst_notes` (a `Text` column) IS covered.
+
+**Residual, cross-repo, filed rather than fixed here.** The eight new `ext:scribble:*` audit verbs are not in
+core's `audit.REQUIRED_ACTIONS`, which is what populates `/admin/audit`'s action-filter dropdown — so the rows
+are written and readable but not selectable by that filter. This is INV-AUDIT-03's "registered vocabulary"
+half, it is unmet for the extension's PRE-EXISTING verbs too (`add_finding`, `create_engagement`, …), and it
+cannot be fixed from this repo. The branch introduces no regression; it adds instances of an existing gap.
 
 ## Out of scope (deliberate decisions, not oversights)
 
@@ -1163,3 +1245,71 @@ FAILED tests/test_board.py::test_every_column_referencing_an_engagement_is_casca
 
 `cascaded` is derived from `Engagement.__mapper__.relationships` (which of them cascade `delete-orphan`), not
 from a list of table names, so adding a relationship is enough to satisfy it and adding a bare FK is not.
+
+## Red-then-green — review round 3 (the PR gate)
+
+### 35. the EFFICACY audit — seven of this branch's own guards, broken and watched fail
+
+A guard recorded in a plan file is a claim about a test. Before trusting round 1's and round 2's claims, each
+one's guard was removed and its test run; every one went red, and every file was restored with
+`git checkout` afterwards (`git status --porcelain` clean between steps).
+
+```
+1. clear_finding_referrers -> early return (the round-2 BLOCK's fix)
+   FAILED test_delete_finding_clears_every_row_that_references_it - AssertionError: None
+2. _FINDING_OWNED_STATE = (VariableValue,)   # CollabDoc dropped from the declared set
+   FAILED test_every_column_referencing_a_finding_has_a_declared_delete_disposition
+     - AssertionError: a column referencing scribble_findings.id has no delete dis...
+3. _non_doc_blocks_error's loop neutered (the other round-2 BLOCK)
+   FAILED test_patch_refuses_a_non_doc_block_INSTEAD_of_emptying_the_prose
+   FAILED test_create_routes_refuse_a_non_doc_block_too - assert (201 == 400)
+   2 failed, 1 passed          # the "still accepts a real doc" positive control stayed green
+4a. the _BULK_ID_LIST_MAX check deleted
+   FAILED test_bulk_move_refuses_an_unbounded_id_list_and_pre_checks_in_ONE_query
+     - AssertionError: {'detail': 'finding not found', 'error': 'not_found'}
+4b. the ONE-query pre-check reverted to one db.get per id  (the half that had been VACUOUS once)
+   FAILED test_bulk_move_refuses_an_unbounded_id_list_and_pre_checks_in_ONE_query
+     - AssertionError: 21 SELECTs on scribble_findings, expected 1
+5. artifacts_storage._bounded_name bypassed
+   OSError: [Errno 36] File name too long: '.../a1b9914e…_121212…12.png'
+   FAILED test_artifact_upload_stores_a_unicode_filename_that_secure_filename_EXPANDS
+6. PATCH /findings/<id> re-stamped require_scope("read")
+   FAILED test_read_token_cannot_reach_any_new_write_route
+     - AssertionError: a read-only token reached write route(s): [('PATCH', '/scri...
+7. _visible_finding's `can_view_engagement` check deleted (the tenancy anchor)
+   FAILED test_a_foreign_finding_and_a_missing_one_are_byte_identical[PATCH-…] - assert (200, …) == (404, …)
+   FAILED test_a_foreign_finding_and_a_missing_one_are_byte_identical[DELETE-…] - assert (200, …) == (404, …)
+   FAILED test_a_foreign_finding_and_a_missing_one_are_byte_identical[POST-…/move-…] - assert (200, …) == (404, …)
+   FAILED test_every_engagement_scoped_machine_route_denies_a_foreign_client
+     - AssertionError: a token for another client was NOT denied on: [('scribble_m...
+   9 failed, 6 passed
+```
+
+4b is the one worth keeping: that assertion is the half a previous round shipped vacuous, and it is now the
+half that catches a silent regression from one query back to N.
+
+### 36. the round-3 WARNING · content_json's BLOCK COUNT and references' LENGTH are bounded, on every writer
+
+RED — the three `_content_bounds_error` call sites removed, the same three tests run:
+
+```
+$ uv run --extra dev pytest tests/test_machine_findings_crud.py -k 'BLOCK_COUNT or REFERENCES_LIST or AT_the_content_caps'
+FAILED …::test_every_content_writer_bounds_the_content_json_BLOCK_COUNT
+  - AssertionError: a writer accepted an over-cap content_json: [('PATCH', '/scribble/machine/findings/1', 200
+FAILED …::test_every_content_writer_bounds_the_REFERENCES_LIST
+  - AssertionError: a writer accepted an over-cap references list: [('PATCH', '/scribble/machine/findings/1', 200
+2 failed, 1 passed, 121 deselected
+```
+
+All THREE writers appear in each failure list — `PATCH …/findings/<id>` 200, `POST …/findings` 201,
+`POST /templates` 201 — which is the point of sweeping them rather than testing the route that was reported.
+The one that PASSED in the red state is `test_a_body_AT_the_content_caps_is_ACCEPTED_and_stored`, and that is
+correct and deliberate: it asserts the cap does not refuse a legitimate deliverable, so it must pass with and
+without the cap. It exists to catch the OTHER failure — a cap set to the wrong number — which is why it is not
+evidence of the guard working and is recorded here as such.
+
+GREEN — guard restored, nothing else touched:
+
+```
+3 passed, 121 deselected in 14.78s
+```
