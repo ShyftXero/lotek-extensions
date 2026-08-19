@@ -1624,6 +1624,18 @@ def scribble_upload_artifact(engagement_id: str):
             idempotency_key=idempotency_key,
         )
         db.add(artifact)
+        db.flush()  # populate artifact.id before the audit row references it
+        _audit(
+            db, "upload_artifact", subject_type="artifact", subject_id=artifact.id,
+            after={
+                "engagement_id": engagement_id,
+                "finding_id": artifact.finding_id,
+                "filename": artifact.filename,
+                "kind": artifact.kind.value,
+                "include_in_report": artifact.include_in_report,
+                "sha256": sha256,
+            },
+        )
         db.commit()
         return jsonify({
             "id": artifact.id, "url": artifact_url(artifact.id),
@@ -1732,10 +1744,21 @@ def scribble_update_artifact(engagement_id: int, artifact_id: int):
         artifact = db.get(Artifact, artifact_id)
         if artifact is None or artifact.engagement_id != engagement_id:
             return jsonify({"error": "not_found", "detail": "artifact not found"}), 404
+        before = {"include_in_report": artifact.include_in_report, "caption": artifact.caption or ""}
+        changed = publish is not None or "caption" in payload
         if publish is not None:
             artifact.include_in_report = publish
         if "caption" in payload:
             artifact.caption = caption
+        # Only when the request actually asked to change something -- an empty/no-op body (nothing to
+        # toggle, no caption key) must not write a before==after row that says nothing happened; that is
+        # audit-log noise indistinguishable from a real (if idempotent) edit.
+        if changed:
+            _audit(
+                db, "update_artifact", subject_type="artifact", subject_id=artifact.id,
+                before=before,
+                after={"include_in_report": artifact.include_in_report, "caption": artifact.caption or ""},
+            )
         db.commit()
         out = _machine_artifact_dict(artifact)
     return jsonify(out)
