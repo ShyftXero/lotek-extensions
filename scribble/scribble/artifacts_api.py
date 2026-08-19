@@ -51,7 +51,13 @@ import re
 
 from flask import jsonify, request, send_file, url_for
 
-from scribble.artifacts_storage import delete_file, guess_content_type, resolve_path, save_bytes
+from scribble.artifacts_storage import (
+    SAFE_NAME_MAX,
+    delete_file,
+    guess_content_type,
+    resolve_path,
+    save_bytes,
+)
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
@@ -188,6 +194,17 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
         if engagement_id is None:
             return jsonify(error="engagement_id is required"), 400
+        # An over-long filename is a 500 twice over here: ``ENAMETOOLONG`` from the filesystem (guarded
+        # against regardless, by ``save_bytes``'s own post-``secure_filename`` truncation), and a Postgres
+        # ``StringDataRightTruncation`` on ``Artifact.filename`` (String(512)) behind it, since THIS route
+        # stores the caller's raw filename, not the secured/truncated on-disk name. This mirrors the same
+        # cap the machine upload route (api_pat.py) already applies — that route was fixed first and this
+        # one was flagged as almost certainly the same hole (issue #55); ``SAFE_NAME_MAX`` (222) is the
+        # single shared source both routes cap against, so they cannot drift apart. (A non-``str``
+        # ``filename`` from a JSON body is a separate, pre-existing gap this route already had before
+        # this fix and is out of scope for #55 — ``isinstance`` just keeps this new check from raising.)
+        if isinstance(filename, str) and len(filename) > SAFE_NAME_MAX:
+            return jsonify(error=f"filename too long (max {SAFE_NAME_MAX} characters)"), 400
         if not data:
             return jsonify(error="empty upload"), 400
 

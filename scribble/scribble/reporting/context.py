@@ -60,6 +60,19 @@ class FindingCtx:
 
 
 @dataclass
+class DiagramCtx:
+    """A linked vector attack-path diagram, ready to embed (ext#48). ``embed_html`` is a self-contained
+    HTML snapshot (vector's ``export.html``) — the renderer puts it straight into a sandboxed iframe,
+    never parses or re-fetches it. See ``scribble.models.EngagementDiagram`` for why this is a stored
+    snapshot rather than a live cross-extension fetch."""
+
+    id: int
+    diagram_ref: str
+    caption: str
+    embed_html: str
+
+
+@dataclass
 class GroupCtx:
     id: int | None
     name: str
@@ -120,6 +133,11 @@ class ReportContext:
     # evidence. Existing consumers are unaffected: new field, defaults empty, nothing reordered or
     # renamed. Rendered by ``render_html``'s Evidence appendix block.
     artifacts: list[ArtifactCtx] = field(default_factory=list)
+    # ADDITIVE (2026-08-19, ext#48): linked vector attack-path diagrams. Defaults empty — an engagement
+    # with none renders BYTE-IDENTICALLY to before this field existed (see
+    # ``render_html._render_diagrams``/``_render_document``'s empty-block filter, and
+    # ``tests/test_report_attack_path.py`` which pins that guarantee).
+    diagrams: list[DiagramCtx] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -180,6 +198,22 @@ def _artifact_ctxs(artifacts, *, engagement_id=None) -> list[ArtifactCtx]:
         if a.include_in_report
         and a.placement.value == "attached"
         and (engagement_id is None or a.engagement_id == engagement_id)
+    ]
+
+
+def _diagram_ctxs(diagrams) -> list[DiagramCtx]:
+    """``DiagramCtx``\\s for the report's Attack Paths block, in board order, honoring
+    ``include_in_report`` and skipping any row whose snapshot never got attached (``embed_html`` empty
+    — e.g. a link record created before the snapshot POST completed)."""
+    return [
+        DiagramCtx(
+            id=d.id,
+            diagram_ref=d.diagram_ref or "",
+            caption=d.caption or "",
+            embed_html=d.embed_html,
+        )
+        for d in sorted(diagrams, key=lambda d: (d.order_index, d.id))
+        if d.include_in_report and d.embed_html
     ]
 
 
@@ -414,6 +448,8 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         artifacts=_artifact_ctxs(
             [a for a in engagement.artifacts if a.finding_id is None], engagement_id=engagement.id
         ),
+        artifacts=_artifact_ctxs([a for a in engagement.artifacts if a.finding_id is None]),
+        diagrams=_diagram_ctxs(engagement.diagrams),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
