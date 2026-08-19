@@ -182,6 +182,53 @@ def _engagement_not_found():
     return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
 
 
+def _resolve_engagement(db, raw_id, actor):
+    """Address an engagement by EITHER id space (#49): its own integer PK, or the core host's
+    engagement id it was created with (``Engagement.core_engagement_id`` — int or UUID; see models.py).
+
+    Returns the ``Engagement`` if it exists AND ``can_view_engagement`` allows ``actor`` to see it,
+    else ``None`` — callers translate a ``None`` to ``_engagement_not_found()`` exactly as they already
+    did for a plain missing/unauthorized integer id, so this introduces no new oracle: unknown id,
+    malformed id, and "exists but not visible" all collapse to the same 404.
+
+    A garbage path segment (neither a digit string nor a parseable UUID) returns ``None`` -> the same
+    404, rather than raising — the ``<engagement_id>`` URL converter is now a bare string converter
+    (widened from ``<int:engagement_id>``), so anything can reach here. That includes an out-of-range
+    integer string, which the OLD bounded ``_ID`` converter used to 404 before a view ever saw it (see
+    ``_ID``'s docstring) -- re-checked here against the same ``Integer`` PK bound so a huge digit string
+    can't reach ``db.get`` and raise (``OverflowError`` on SQLite, ``DataError`` on Postgres) instead of
+    404ing cleanly.
+    """
+    text = str(raw_id).strip()
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        int_id = int(text)
+        if not 0 < int_id <= 2147483647:
+            return None
+        eng = db.get(Engagement, int_id)
+    else:
+        try:
+            core_id = uuid.UUID(text)
+        except (ValueError, AttributeError):
+            return None
+        # No UNIQUE constraint on core_engagement_id (models.py: index=True, not unique=True — a
+        # pre-existing table can't be retrofitted with one). A write-scoped token could deliberately (or
+        # accidentally) set the SAME core_engagement_id on two engagements, including under a client it
+        # holds no grant under; deterministic first-match (oldest id) rather than scalar_one_or_none()
+        # is what keeps a collision an ordinary lookup instead of a 500 that a caller could trigger
+        # against a DIFFERENT tenant's addressing (availability, not disclosure -- can_view_engagement
+        # below still gates what the resolved row exposes).
+        stmt = (
+            select(Engagement)
+            .where(Engagement.core_engagement_id == core_id)
+            .order_by(Engagement.id)
+            .limit(1)
+        )
+        eng = db.execute(stmt).scalar_one_or_none()
+    if eng is None or not can_view_engagement(eng, actor):
+        return None
+    return eng
+
+
 def _client_not_found():
     """The ONE refusal for a client the caller may not create an engagement under — and the STATIC
     next-step hint that keeps it from being a dead end.
@@ -596,6 +643,12 @@ def scribble_create_engagement():
     client_id, err = _opt_host_id(data, "client_id")
     if err:
         return err
+    # Soft ref to the CORE engagement id (#49) -- optional, int-or-UUID, same parser as client_id. Not a
+    # tenancy field: it just records the addressing alias (see _resolve_engagement) for a caller that
+    # only holds the core id back from POST /api/v1/engagements.
+    core_engagement_id, err = _opt_host_id(data, "core_engagement_id")
+    if err:
+        return err
     actor = host.actor()
 
     # The client an engagement is created under IS its tenancy, and it arrives in the request body — so
@@ -633,10 +686,17 @@ def scribble_create_engagement():
                 # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so
                 # it cannot be older than itself (no more capability-gating on the mounted schema).
                 owner_id=actor.id if actor else None,
+                core_engagement_id=core_engagement_id,
             )
             db.add(eng)
             db.flush()  # assign the PK so the audit row + response can reference it
-            body = {"id": eng.id, "name": eng.name}
+            body = {
+                "id": eng.id,
+                "name": eng.name,
+                "core_engagement_id": (
+                    str(eng.core_engagement_id) if eng.core_engagement_id is not None else None
+                ),
+            }
             _audit(db, "create_engagement", subject_type="engagement", subject_id=eng.id, after=body)
             db.commit()
             return body, 201
@@ -792,21 +852,21 @@ def scribble_create_template():
 # ── 4. POST /engagements/<id>/findings ───────────────────────────────────────────────────────────────
 
 
-@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/findings")
+@machine_bp.post("/engagements/<engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
-def scribble_add_finding(engagement_id: int):
+def scribble_add_finding(engagement_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
         # DESTINATION tenancy FIRST — before the body is even parsed. Authorizing ahead of validation
         # keeps the refusal for a foreign engagement identical no matter what the body says, so a caller
-        # can't map the id space by diffing 400s against 404s.
-        engagement = db.get(Engagement, engagement_id)
+        # can't map the id space by diffing 400s against 404s. Addressable by EITHER id space (#49) —
+        # see _resolve_engagement; a missing/unauthorized/malformed id all collapse to the same 404.
+        engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
-        if not can_view_engagement(engagement, actor):
-            return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         data = request.get_json(silent=True) or {}
         template_id, err = _opt_int(data, "template_id")
@@ -1116,9 +1176,9 @@ def scribble_resolve_template():
 # ── 8. POST /engagements/<id>/promote-job/<job_id> ──────────────────────────────────────────────────
 
 
-@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/promote-job/<job_id>")
+@machine_bp.post("/engagements/<engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
-def scribble_promote_job(engagement_id: int, job_id: str):
+def scribble_promote_job(engagement_id: str, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
 
     This route spans TWO tenancy domains and must check both, which is exactly what it failed to do until
@@ -1136,11 +1196,10 @@ def scribble_promote_job(engagement_id: int, job_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
+        engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
-        if not can_view_engagement(engagement, actor):
-            return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         findings_ns = host.findings()
         job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
@@ -1177,6 +1236,11 @@ def _engagement_summary(engagement: Engagement) -> dict:
         "id": engagement.id,
         "name": engagement.name,
         "client_id": str(engagement.client_id) if engagement.client_id is not None else None,
+        # Discoverable mapping (#49): a caller may address this engagement by either id (see
+        # _resolve_engagement); surfacing it here means it doesn't have to guess or cross-reference.
+        "core_engagement_id": (
+            str(engagement.core_engagement_id) if engagement.core_engagement_id is not None else None
+        ),
         "scope_type": engagement.scope_type,
         "company_name": engagement.company_name,
         "status": engagement.status,
@@ -1200,14 +1264,15 @@ def scribble_list_engagements():
 # ── 8c. GET /engagements/<id> — one engagement the caller may see ────────────────────────────────────
 
 
-@machine_bp.get(f"/engagements/<{_ID}:engagement_id>")
+@machine_bp.get("/engagements/<engagement_id>")
 @host.require_scope("read")
-def scribble_get_engagement(engagement_id: int):
+def scribble_get_engagement(engagement_id: str):
     actor = host.actor()
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        # Missing and not-visible are the SAME 404 — no existence oracle over the id space.
-        if engagement is None or not can_view_engagement(engagement, actor):
+        # Missing, not-visible, AND unaddressable-by-either-id-space are the SAME 404 — no existence
+        # oracle over either id space (#49 — see _resolve_engagement).
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
         summary = _engagement_summary(engagement)
         summary["finding_count"] = len(engagement.findings)
@@ -1219,9 +1284,9 @@ def scribble_get_engagement(engagement_id: int):
 # ── 8d. GET /engagements/<id>/report — stream the rendered deliverable (html|docx) ───────────────────
 
 
-@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/report")
+@machine_bp.get("/engagements/<engagement_id>/report")
 @host.require_scope("read")
-def scribble_engagement_report(engagement_id: int):
+def scribble_engagement_report(engagement_id: str):
     """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
     pdf. Reuses the SAME ``build_report_context`` + renderers the cookie report routes use (artifact bytes
     embedded), so the machine deliverable is byte-identical to the browser one.
@@ -1238,9 +1303,10 @@ def scribble_engagement_report(engagement_id: int):
     cfg = get_config()
     reader = _artifact_bytes_reader(cfg.artifact_root)
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        if engagement is None or not can_view_engagement(engagement, actor):
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for the audit row below
 
         if fmt == "docx":
             from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
@@ -1357,10 +1423,10 @@ def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | 
     return None, (jsonify({"error": "bad_request", "detail": "invalid include_in_report"}), 400)
 
 
-@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/artifacts")
+@machine_bp.post("/engagements/<engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
-def scribble_upload_artifact(engagement_id: int):
+def scribble_upload_artifact(engagement_id: str):
     """Attach an evidence file (screenshot, capture, document) to an engagement — the PAT counterpart of
     the cookie ``POST <url_prefix>/api/artifacts``, so an agent can supply report evidence.
 
@@ -1381,9 +1447,10 @@ def scribble_upload_artifact(engagement_id: int):
     # anything checked whether it was allowed to write here at all — work done on behalf of a tenant with
     # no grant. The re-read below is what the write itself uses.
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        if engagement is None or not can_view_engagement(engagement, actor):
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
     upload = request.files.get("file")
     if upload is not None:

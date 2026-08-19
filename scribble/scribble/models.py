@@ -92,6 +92,14 @@ class Engagement(Base, TimestampMixin):
     end_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="in_progress")
     guid: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Soft ref (#49) to the CORE engagement id core handed back from ``POST /api/v1/engagements``
+    # (a UUIDv7 in Lotek v2, a sequential int on older/standalone hosts) -- lets a PAT caller that only
+    # holds the core id address this scribble engagement without first discovering its own integer PK.
+    # No FK (same soft-ref pattern as ``client_id``/``owner_id`` above): the host may not even be Lotek.
+    # ``index=True``, NOT ``unique=True`` -- ``scribble.db.create_all``'s additive path can retrofit an
+    # index on a pre-existing table but cannot retrofit a UNIQUE constraint; duplicates are prevented
+    # only by the single-writer assumption at create time (see ``_resolve_engagement`` in api_pat.py).
+    core_engagement_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
     distribution_list: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(128))
     # Ownership attribution: the host user id who created this engagement (SOFT ref to the host's users
