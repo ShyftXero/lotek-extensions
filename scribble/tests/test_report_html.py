@@ -335,10 +335,10 @@ def _inline_image_block(artifact_id: int, alt: str = "inline evidence") -> dict:
 
 
 def _artifact_url_factory(engagement):
-    by_id = {a.id: a.storage_path for a in engagement.artifacts}
+    by_id = {str(a.id): a.storage_path for a in engagement.artifacts}
 
     def _url(artifact_id):
-        return make_inline_artifact_url(by_id.get(artifact_id))
+        return make_inline_artifact_url(by_id.get(str(artifact_id)) if artifact_id is not None else None)
 
     return _url
 
@@ -526,7 +526,7 @@ def test_unresolvable_inline_image_yields_honest_chip_not_blank_pixel(session_fa
             title="Inline Finding",
             severity=Severity.medium,
             order_index=0,
-            content_json={"description": _inline_image_block(artifact.id)},
+            content_json={"description": _inline_image_block(str(artifact.id))},
         )
         db.add(finding)
         db.commit()

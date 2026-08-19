@@ -511,7 +511,7 @@ def register(api_bp, bp) -> None:
 
     sock = Sock()
 
-    @sock.route("/ws/findings/<int:finding_id>/blocks/<string:block>", bp=bp)
+    @sock.route("/ws/findings/<uuid:finding_id>/blocks/<string:block>", bp=bp)
     def collab_ws(ws, finding_id: int, block: str) -> None:  # pragma: no cover - needs a real socket
         if not authorize_connection(finding_id, block):
             ws.close()
@@ -549,7 +549,7 @@ def register(api_bp, bp) -> None:
             with open_session() as session:
                 manager.disconnect(session, finding_id, block, conn_id)
 
-    @api_bp.get("/findings/<int:finding_id>/blocks/<string:block>/collab-status")
+    @api_bp.get("/findings/<uuid:finding_id>/blocks/<string:block>/collab-status")
     def collab_status(finding_id: int, block: str):
         room = manager.get_room(finding_id, block)
         lock_ctx = room._lock if room is not None else contextlib.nullcontext()

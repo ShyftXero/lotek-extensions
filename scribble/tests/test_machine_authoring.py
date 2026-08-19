@@ -21,6 +21,7 @@ scribble's OWN proofs against the ``stub_host`` fixture (see ``tests/conftest.py
 from __future__ import annotations
 
 import functools
+import uuid
 
 from flask import jsonify
 
@@ -29,10 +30,14 @@ from scribble.content import schema
 from scribble.enums import Severity
 from tests.conftest import StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
-ACME = 501          # a client the (admin) fixture actor can always see
-OTHER_CLIENT = 777  # a second client, for the list-scoping test
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # a client the (admin) fixture actor can always see
+OTHER_CLIENT = uuid.uuid7()  # a second client, for the list-scoping test
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
@@ -190,7 +195,7 @@ def test_create_template_persists_severity_refs_and_sanitized_content(client, st
         },
     )
     assert resp.status_code == 201, resp.get_json()
-    tid = resp.get_json()["id"]
+    tid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         t = db.get(fm.VulnerabilityTemplate, tid)
         assert t is not None and t.name == "Missing HSTS" and t.category == "web"
@@ -221,7 +226,7 @@ def test_create_template_sanitizes_a_malicious_content_block(client, stub_host, 
         },
     )
     assert resp.status_code == 201, resp.get_json()
-    tid = resp.get_json()["id"]
+    tid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         desc = db.get(fm.VulnerabilityTemplate, tid).content_json["description"]
     assert "html" not in _node_types(desc)
@@ -242,7 +247,7 @@ def test_list_engagements_is_scoped_to_the_tokens_clients(client, stub_host, ses
     stub_host.viewable_client_ids = {ACME}
 
     body = client.get(f"{M}/engagements").get_json()
-    ids = {e["id"] for e in body["items"]}
+    ids = {uuid.UUID(e["id"]) for e in body["items"]}
     assert ids == {mine}
     assert body["count"] == 1
     assert body["items"][0]["client_id"] == str(ACME)  # host id is stringified on the wire
@@ -252,7 +257,7 @@ def test_list_engagements_admin_sees_all(client, stub_host, session_factory):
     a = _make_engagement(session_factory, name="a", client_id=ACME)
     b = _make_engagement(session_factory, name="b", client_id=OTHER_CLIENT)
     # default fixture actor is admin
-    ids = {e["id"] for e in client.get(f"{M}/engagements").get_json()["items"]}
+    ids = {uuid.UUID(e["id"]) for e in client.get(f"{M}/engagements").get_json()["items"]}
     assert {a, b} <= ids
 
 
@@ -263,7 +268,7 @@ def test_get_engagement_returns_counts(client, stub_host, session_factory):
     eid = _make_engagement(session_factory)
     _finding_with_body(session_factory, eid, title="F1")
     body = client.get(f"{M}/engagements/{eid}").get_json()
-    assert body["id"] == eid
+    assert uuid.UUID(body["id"]) == eid
     assert body["finding_count"] == 1
     assert body["group_count"] == 0
     assert body["artifact_count"] == 0
@@ -277,7 +282,7 @@ def test_get_engagement_foreign_and_missing_are_the_same_404(client, stub_host, 
     stub_host.viewable_client_ids = set()  # no grants at all
 
     r_foreign = client.get(f"{M}/engagements/{foreign}")
-    r_missing = client.get(f"{M}/engagements/999999")
+    r_missing = client.get(f"{M}/engagements/{_MISSING_ID}")
     assert r_foreign.status_code == r_missing.status_code == 404
     assert r_foreign.get_json() == r_missing.get_json()
 
@@ -437,4 +442,6 @@ def test_artifact_cannot_be_attached_to_another_engagements_finding(session_fact
 
     assert _resolved(foreign_fid, mine_id) is None, "a foreign finding must not be attachable"
     assert _resolved(own_fid, mine_id) == own_fid, "the caller's OWN finding still attaches"
-    assert _resolved(10_000_000, mine_id) is None, "a nonexistent finding id is dropped, not persisted"
+    assert _resolved(uuid.uuid7(), mine_id) is None, (
+        "a nonexistent finding id is dropped, not persisted"
+    )

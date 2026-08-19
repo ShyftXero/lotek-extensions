@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import uuid
 
 import pytest
 from flask import jsonify
@@ -40,8 +41,11 @@ from tests.conftest import StubActor
 
 M = "/scribble/machine"
 
-ACME = 701          # the client the token under test holds
-OTHER_CLIENT = 702  # a client it does not
+# lotek#335 -- the standalone `Client` model is UUID-keyed since the PK migration, so a host client id
+# (even one this file never inserts a row for -- `resolve_client` just needs a well-formed id to query)
+# is a UUID, not the small int this file used before.
+ACME = uuid.uuid7()          # the client the token under test holds
+OTHER_CLIENT = uuid.uuid7()  # a client it does not
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
@@ -61,32 +65,34 @@ def token(stub_host):
     return stub_host
 
 
-def _engagement(session_factory, *, client_id=ACME, name="Q3 external") -> int:
+def _engagement(session_factory, *, client_id=ACME, name="Q3 external") -> str:
     with session_factory() as db:
         eng = fm.Engagement(name=name, scope_type="external", client_id=client_id)
         db.add(eng)
         db.commit()
-        return eng.id
+        # str(): lotek#335 -- ids are UUIDv7, and the JSON responses this file compares against
+        # round-trip a UUID as its string form, not a `uuid.UUID` object.
+        return str(eng.id)
 
 
-def _group(session_factory, engagement_id: int, name: str, *, order_index: int = 0) -> int:
+def _group(session_factory, engagement_id: str, name: str, *, order_index: int = 0) -> str:
     with session_factory() as db:
         group = fm.FindingGroup(engagement_id=engagement_id, name=name, order_index=order_index)
         db.add(group)
         db.commit()
-        return group.id
+        return str(group.id)
 
 
 def _finding(
     session_factory,
-    engagement_id: int,
+    engagement_id: str,
     *,
     title: str = "SMB signing not required",
     severity: Severity = Severity.medium,
-    group_id: int | None = None,
+    group_id: str | None = None,
     order_index: int = 0,
     **kw,
-) -> int:
+) -> str:
     with session_factory() as db:
         finding = fm.EngagementFinding(
             engagement_id=engagement_id,
@@ -99,7 +105,7 @@ def _finding(
         )
         db.add(finding)
         db.commit()
-        return finding.id
+        return str(finding.id)
 
 
 def _install_scope_enforcing_gate(app, stub_host) -> None:
@@ -996,7 +1002,7 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
             child = db.get(fm.EngagementFinding, cid)
             assert child is not None, "a per-host child must survive its parent's delete"
             assert child.parent_id is None, "a surviving child must be detached, not dangling"
-            assert child.group_id == gid  # stays where the board already showed it
+            assert str(child.group_id) == gid  # stays where the board already showed it
         assert db.get(fm.Artifact, child_artifact) is not None
     assert child_file.is_file(), "the child's evidence file must not be swept up by the parent's delete"
 
@@ -1014,7 +1020,9 @@ def test_deleting_a_parent_is_recorded_with_the_children_it_detached(
     assert client.delete(f"{M}/findings/{parent}").status_code == 200
 
     row = next(r for r in recorded if r[0] == "ext:scribble:delete_finding")
-    assert row[4] == {"detached_children": [child]}
+    # The audit row carries the raw ORM ids (uuid.UUID), not their JSON-string form -- stringify to
+    # compare against the fixture id.
+    assert [str(cid) for cid in row[4]["detached_children"]] == [child]
 
 
 def test_delete_finding_clears_every_row_that_references_it(client, token, session_factory, app):
@@ -1157,7 +1165,7 @@ def test_move_finding_into_a_group_and_flip_it_to_manual(client, token, session_
     with session_factory() as db:
         group = db.get(fm.FindingGroup, gid)
         assert group.order_mode == OrderMode.manual
-        assert [f.id for f in sorted(group.findings, key=lambda f: f.order_index)] == [fid, existing]
+        assert [str(f.id) for f in sorted(group.findings, key=lambda f: f.order_index)] == [fid, existing]
 
 
 def test_move_finding_to_ungrouped(client, token, session_factory):
@@ -1200,7 +1208,7 @@ def test_move_into_a_foreign_engagements_group_is_404_and_moves_nothing(client, 
     resp = client.post(f"{M}/findings/{fid}/move", json={"group_id": foreign_group})
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).group_id == home  # still where it was
+        assert str(db.get(fm.EngagementFinding, fid).group_id) == home  # still where it was
 
 
 def test_the_group_refusal_is_identical_for_foreign_and_nonexistent(client, token, session_factory):
@@ -1211,7 +1219,10 @@ def test_the_group_refusal_is_identical_for_foreign_and_nonexistent(client, toke
     fid = _finding(session_factory, mine)
 
     foreign = client.post(f"{M}/findings/{fid}/move", json={"group_id": foreign_group})
-    missing = client.post(f"{M}/findings/{fid}/move", json={"group_id": 987654})
+    # A well-formed id with no row anywhere -- NOT a malformed one (lotek#335: group ids are UUIDs now,
+    # so an int literal here would hit the parse-error 400 path instead of the not-found 404 this test
+    # is actually about).
+    missing = client.post(f"{M}/findings/{fid}/move", json={"group_id": str(uuid.uuid7())})
     assert (foreign.status_code, foreign.data) == (missing.status_code, missing.data)
 
 
@@ -1239,7 +1250,7 @@ def test_bulk_move_preserves_the_listed_order(client, token, session_factory):
     with session_factory() as db:
         group = db.get(fm.FindingGroup, gid)
         ordered = sorted(group.findings, key=lambda f: f.order_index)
-        assert [f.id for f in ordered] == [b, c, a]
+        assert [str(f.id) for f in ordered] == [b, c, a]
         assert [f.order_index for f in ordered] == [0, 1, 2]  # no gaps, no duplicates
 
 
@@ -1266,7 +1277,7 @@ def test_bulk_move_reports_the_order_index_it_actually_persisted(client, token, 
 
     with session_factory() as db:
         persisted = {
-            f.id: f.order_index
+            str(f.id): f.order_index
             for f in db.scalars(
                 select(fm.EngagementFinding).where(fm.EngagementFinding.engagement_id == eid)
             )
@@ -1417,7 +1428,9 @@ def test_bulk_move_refuses_an_unbounded_id_list_and_pre_checks_in_ONE_query(
 
     missing = client.post(
         f"{M}/engagements/{eid}/findings/move",
-        json={"finding_ids": [*real_ids, 99999], "group_id": None},
+        # A well-formed id with no row -- NOT a malformed one (lotek#335: an int literal here would hit
+        # the parse-error 400 path before the membership pre-check this assertion is actually about).
+        json={"finding_ids": [*real_ids, str(uuid.uuid7())], "group_id": None},
     )
     event.remove(app.extensions["scribble"].engine, "before_cursor_execute", _count)
     assert missing.status_code == 404, missing.get_json()
@@ -1581,7 +1594,10 @@ def test_a_foreign_finding_and_a_missing_one_are_byte_identical(client, token, s
     fid = _finding(session_factory, foreign_engagement)
 
     foreign = client.open(template.format(M=M, fid=fid), method=method, json=body)
-    missing = client.open(template.format(M=M, fid=987654), method=method, json=body)
+    # A well-formed id with no row -- NOT a malformed one (lotek#335: an int literal here fails to MATCH
+    # the `<uuid:...>` route at all, so Werkzeug's own 404 page answers instead of the view's JSON 404,
+    # which is a different assertion than the one this test is about).
+    missing = client.open(template.format(M=M, fid=uuid.uuid7()), method=method, json=body)
     assert (foreign.status_code, foreign.data) == (missing.status_code, missing.data)
 
 

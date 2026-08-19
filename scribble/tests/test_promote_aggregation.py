@@ -11,13 +11,17 @@ that PROMOTE carries `dto.target_host` through to the child row).
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
 M = "/scribble/machine"
 
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 
 def _engagement(client, stub_host, name: str = "E") -> int:
@@ -32,13 +36,13 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
-def _first_template_id(client) -> int:
+def _first_template_id(client) -> uuid.UUID:
     items = client.get(f"{M}/templates").get_json()["items"]
     assert items, "expected the seeded scribble library to have >=1 template"
-    return items[0]["id"]
+    return uuid.UUID(items[0]["id"])
 
 
 def _map_source(client, *, source, template_id) -> None:
@@ -125,7 +129,7 @@ def test_promote_different_templates_get_separate_parents(
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     items = client.get(f"{M}/templates").get_json()["items"]
     assert len(items) >= 2
-    tid_a, tid_b = items[0]["id"], items[1]["id"]
+    tid_a, tid_b = uuid.UUID(items[0]["id"]), uuid.UUID(items[1]["id"])
     _map_source(client, source="enum4linux", template_id=tid_a)
     _map_source(client, source="dalfox", template_id=tid_b)
 

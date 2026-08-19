@@ -26,13 +26,17 @@ persisted row instead of 404/400 + nothing).
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import StubUser, _StubRole
 
 UI = "/scribble"
 
-ACME = 501          # the client the actor holds a grant under
-OTHER_CLIENT = 502  # a client it does not
+# Scribble's own client PK is a UUIDv7 since lotek#335, and ACME doubles as the HOST client
+# id the stub grants on -- so both halves have to move together or the grant stops matching.
+ACME = uuid.uuid7()          # the client the actor holds a grant under
+OTHER_CLIENT = uuid.uuid7()  # a client it does not
 
 
 def _clients(session_factory) -> None:

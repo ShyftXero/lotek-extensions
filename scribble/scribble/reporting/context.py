@@ -448,7 +448,6 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         artifacts=_artifact_ctxs(
             [a for a in engagement.artifacts if a.finding_id is None], engagement_id=engagement.id
         ),
-        artifacts=_artifact_ctxs([a for a in engagement.artifacts if a.finding_id is None]),
         diagrams=_diagram_ctxs(engagement.diagrams),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),

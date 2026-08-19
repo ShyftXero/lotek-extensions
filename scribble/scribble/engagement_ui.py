@@ -99,6 +99,9 @@ _REGISTERED = False
 # --------------------------------------------------------------------------------- small helpers
 
 
+from scribble.artifacts_api import _as_uuid  # noqa: E402  -- one shared body-id parser (lotek#335)
+
+
 def _as_int(value) -> int | None:
     try:
         return int(value)
@@ -310,7 +313,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: edit / delete
 
-    @bp.get("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit_page")
+    @bp.get("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit_page")
     def engagement_edit_page(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -323,7 +326,7 @@ def register(api_bp, bp) -> None:
                 error=None,
             )
 
-    @bp.post("/engagements/<int:engagement_id>/edit", endpoint="engagement_edit")
+    @bp.post("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit")
     def engagement_edit(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -356,7 +359,7 @@ def register(api_bp, bp) -> None:
             db.commit()
         return redirect(url_for("scribble.engagements"))
 
-    @bp.post("/engagements/<int:engagement_id>/delete", endpoint="engagement_delete")
+    @bp.post("/engagements/<uuid:engagement_id>/delete", endpoint="engagement_delete")
     def engagement_delete(engagement_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -384,7 +387,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: board (detail)
 
-    @bp.get("/engagements/<int:engagement_id>", endpoint="engagement_board")
+    @bp.get("/engagements/<uuid:engagement_id>", endpoint="engagement_board")
     def engagement_board(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -434,7 +437,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: groups
 
-    @bp.post("/engagements/<int:engagement_id>/groups", endpoint="create_group")
+    @bp.post("/engagements/<uuid:engagement_id>/groups", endpoint="create_group")
     def create_group(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -442,13 +445,13 @@ def register(api_bp, bp) -> None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
             if name:
-                assessment_type_id = _as_int(request.form.get("assessment_type_id"))
+                assessment_type_id = _as_uuid(request.form.get("assessment_type_id"))
                 at = db.get(AssessmentType, assessment_type_id) if assessment_type_id is not None else None
                 findings_service.create_group(db, engagement, name=name, assessment_type=at)
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
-    @bp.post("/engagements/<int:engagement_id>/groups/<int:group_id>/delete", endpoint="delete_group")
+    @bp.post("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>/delete", endpoint="delete_group")
     def delete_group(engagement_id: int, group_id: int):
         with open_session() as db:
             group = db.get(FindingGroup, group_id)
@@ -461,17 +464,17 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: add finding
 
-    @bp.post("/engagements/<int:engagement_id>/findings", endpoint="add_finding")
+    @bp.post("/engagements/<uuid:engagement_id>/findings", endpoint="add_finding")
     def add_finding(engagement_id: int):
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
 
-            template_id = _as_int(request.form.get("template_id"))
+            template_id = _as_uuid(request.form.get("template_id"))
             template = db.get(VulnerabilityTemplate, template_id) if template_id is not None else None
             if template is not None:
-                group_id = _as_int(request.form.get("group_id"))
+                group_id = _as_uuid(request.form.get("group_id"))
                 group = db.get(FindingGroup, group_id) if group_id is not None else None
                 if group is not None and group.engagement_id != engagement_id:
                     group = None  # defensive: never attach to another engagement's group
@@ -495,7 +498,7 @@ def register(api_bp, bp) -> None:
     # =============================================================================== UI: delete finding
 
     @bp.post(
-        "/engagements/<int:engagement_id>/findings/<int:finding_id>/delete", endpoint="delete_finding"
+        "/engagements/<uuid:engagement_id>/findings/<uuid:finding_id>/delete", endpoint="delete_finding"
     )
     def delete_finding(engagement_id: int, finding_id: int):
         cfg = get_config()
@@ -516,7 +519,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== UI: finding detail
 
-    @bp.route("/findings/<int:finding_id>", methods=["GET", "POST"], endpoint="finding_detail")
+    @bp.route("/findings/<uuid:finding_id>", methods=["GET", "POST"], endpoint="finding_detail")
     def finding_detail(finding_id: int):
         with open_session() as db:
             finding = db.get(EngagementFinding, finding_id)
@@ -579,7 +582,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: reorder groups
 
-    @api_bp.post("/engagements/<int:engagement_id>/groups/reorder")
+    @api_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
     def reorder_groups(engagement_id: int):
         payload = request.get_json(silent=True) or {}
         order = payload.get("order")
@@ -592,7 +595,8 @@ def register(api_bp, bp) -> None:
                 return jsonify(error="engagement not found"), 404
 
             # Stale/foreign/duplicate ids are ignored and unmentioned groups keep their relative order at
-            # the end — see findings_service.reorder_groups.
+            # the end — see findings_service.reorder_groups (UUID-aware since lotek#335 — it parses each
+            # client-supplied id with the same `_as_uuid` this module uses, not `int`).
             ordered_ids = findings_service.reorder_groups(engagement, order)
             db.commit()
 
@@ -601,7 +605,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: move finding
 
-    @api_bp.post("/findings/<int:finding_id>/move")
+    @api_bp.post("/findings/<uuid:finding_id>/move")
     def move_finding(finding_id: int):
         payload = request.get_json(silent=True) or {}
         if "group_id" not in payload:
@@ -619,9 +623,9 @@ def register(api_bp, bp) -> None:
 
             target_group = None
             if raw_group_id is not None:
-                target_group_id = _as_int(raw_group_id)
+                target_group_id = _as_uuid(raw_group_id)
                 if target_group_id is None:
-                    return jsonify(error="group_id must be an integer or null"), 400
+                    return jsonify(error="group_id must be a UUID or null"), 400
                 target_group = db.get(FindingGroup, target_group_id)
                 if target_group is None or target_group.engagement_id != finding.engagement_id:
                     return jsonify(error=f"group {target_group_id} not found on this engagement"), 404
@@ -656,7 +660,7 @@ def register(api_bp, bp) -> None:
 
     # =============================================================================== API: update group
 
-    @api_bp.post("/groups/<int:group_id>")
+    @api_bp.post("/groups/<uuid:group_id>")
     def update_group(group_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:

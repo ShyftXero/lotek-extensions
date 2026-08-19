@@ -21,6 +21,8 @@ survived a refused delete) rather than just an HTTP status code.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from flask import Flask
 from sqlalchemy import create_engine, event, select
@@ -31,6 +33,8 @@ from scribble.api import api_bp
 from scribble.blueprint import bp
 from scribble.models import AssessmentType, Client, Engagement, FindingGroup
 from scribble.seed import seed_defaults
+
+_FORCED_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 API_PREFIX = "/scribble/api"
 
@@ -179,7 +183,7 @@ def test_create_persists_row_with_given_fields(client, session_factory):
 def test_create_auto_derives_slug_from_name_when_omitted(client, session_factory):
     resp = client.post(f"{API_PREFIX}/assessment-types", json={"name": "zzCloud Native!!"})
     assert resp.status_code == 201
-    new_id = resp.get_json()["id"]
+    new_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         t = db.get(AssessmentType, new_id)
@@ -258,7 +262,7 @@ def test_update_renames_same_row_in_place(client, session_factory):
 
     resp = client.post(f"{API_PREFIX}/assessment-types/{type_id}", json={"name": "zzRenamed"})
     assert resp.status_code == 200
-    assert resp.get_json()["id"] == type_id
+    assert uuid.UUID(resp.get_json()["id"]) == type_id
 
     with session_factory() as db:
         assert db.query(AssessmentType).count() == count_before
@@ -303,7 +307,7 @@ def test_update_rejects_rename_to_existing_name(client, session_factory):
 
 
 def test_update_missing_id_404(client):
-    resp = client.post(f"{API_PREFIX}/assessment-types/999999", json={"name": "zzNope"})
+    resp = client.post(f"{API_PREFIX}/assessment-types/{_FORCED_ID}", json={"name": "zzNope"})
     assert resp.status_code == 404
 
 
@@ -386,7 +390,7 @@ def test_delete_removes_unreferenced_type(client, session_factory):
 
 
 def test_delete_missing_id_404(client):
-    resp = client.post(f"{API_PREFIX}/assessment-types/999999/delete")
+    resp = client.post(f"{API_PREFIX}/assessment-types/{_FORCED_ID}/delete")
     assert resp.status_code == 404
 
 
@@ -434,15 +438,15 @@ def test_create_ignores_client_supplied_id(client, session_factory):
     # A caller-supplied "id" must NOT be honored -- the DB assigns the primary key.
     resp = client.post(
         f"{API_PREFIX}/assessment-types",
-        json={"id": 999999, "name": "zzMassAssignCreate", "slug": "zzmass-assign-create"},
+        json={"id": str(_FORCED_ID), "name": "zzMassAssignCreate", "slug": "zzmass-assign-create"},
     )
     assert resp.status_code == 201
-    new_id = resp.get_json()["id"]
-    assert new_id != 999999
+    new_id = uuid.UUID(resp.get_json()["id"])
+    assert new_id != _FORCED_ID
 
     with session_factory() as db:
         # No row landed at the attacker-chosen id.
-        assert db.get(AssessmentType, 999999) is None
+        assert db.get(AssessmentType, _FORCED_ID) is None
         created = db.scalar(
             select(AssessmentType).where(AssessmentType.slug == "zzmass-assign-create")
         )
@@ -461,11 +465,11 @@ def test_update_ignores_client_supplied_id(client, session_factory):
         json={"id": 999999, "name": "zzMassAssignRenamed"},
     )
     assert resp.status_code == 200
-    assert resp.get_json()["id"] == type_id  # same row
+    assert uuid.UUID(resp.get_json()["id"]) == type_id  # same row
 
     with session_factory() as db:
         assert db.query(AssessmentType).count() == count_before  # no phantom row
-        assert db.get(AssessmentType, 999999) is None
+        assert db.get(AssessmentType, _FORCED_ID) is None
         reloaded = db.get(AssessmentType, type_id)
         assert reloaded.id == type_id
         assert reloaded.name == "zzMassAssignRenamed"
@@ -584,7 +588,7 @@ def test_create_accepts_hex_color(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        t = db.get(AssessmentType, resp.get_json()["id"])
+        t = db.get(AssessmentType, uuid.UUID(resp.get_json()["id"]))
         assert t.color == "#Ab12Ef"
 
 
@@ -594,7 +598,7 @@ def test_create_allows_blank_color_as_none(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        assert db.get(AssessmentType, resp.get_json()["id"]).color is None
+        assert db.get(AssessmentType, uuid.UUID(resp.get_json()["id"])).color is None
 
 
 def test_update_rejects_non_hex_color_and_leaves_row_unchanged(client, session_factory):

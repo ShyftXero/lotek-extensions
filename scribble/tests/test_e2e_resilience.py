@@ -29,6 +29,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -221,6 +222,19 @@ def _block_doc(session_factory, finding_id: int, block: str):
     with session_factory() as session:
         finding = session.get(EngagementFinding, finding_id)
         return (finding.content_json or {}).get(block) if finding is not None else None
+
+
+def _is_real_artifact_id(value) -> bool:
+    """A server-assigned artifact id: a parseable UUID (or a legacy int), never a placeholder."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _inline_images(doc) -> list[dict]:
@@ -497,12 +511,16 @@ def test_editor_inline_paste_transient_fail_then_persists_with_real_artifact_id(
         def has_real_inline():
             doc = _block_doc(live_app["session_factory"], finding_id, block)
             imgs = _inline_images(doc)
-            return imgs if imgs and isinstance((imgs[0].get("attrs") or {}).get("artifactId"), int) else None
+            # A REAL artifactId is a UUID string since lotek#335 (it was an int). The property under
+            # test is unchanged: the node carries a server-assigned id, not a placeholder.
+            aid = (imgs[0].get("attrs") or {}).get("artifactId") if imgs else None
+            return imgs if _is_real_artifact_id(aid) else None
 
         imgs = _poll(page, has_real_inline, timeout=15.0)
-        assert imgs, "no inlineImage with a real integer artifactId ever persisted"
+        assert imgs, "no inlineImage with a real (UUID) artifactId ever persisted"
         artifact_id = imgs[0]["attrs"]["artifactId"]
-        assert isinstance(artifact_id, int) and artifact_id > 0
+        # A server-assigned id, not a client placeholder — a UUID since lotek#335 (was an int).
+        assert _is_real_artifact_id(artifact_id), artifact_id
 
         # Final end-state: exactly the real inline image, and never a blank one.
         final = _block_doc(live_app["session_factory"], finding_id, block)

@@ -35,10 +35,14 @@ from flask import url_for
 import scribble.models as fm
 from tests.conftest import StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
-ACME = 501          # the client the token under test holds a grant under
-OTHER_CLIENT = 502  # a client it does not
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()          # the client the token under test holds a grant under
+OTHER_CLIENT = uuid.uuid7()  # a client it does not
 
 # Machine routes with no engagement axis AT ALL: the vulnerability-template library and the VulnMap that
 # indexes it are single, shared, tenant-free tables (the same reason `library_ui.py`'s routes carry no
@@ -393,7 +397,7 @@ def test_add_finding_refusal_is_identical_for_foreign_and_missing(client, stub_h
     _foreign_token(stub_host)
 
     foreign = client.post(f"{M}/engagements/{eid}/findings", json={"template_id": tid})
-    missing = client.post(f"{M}/engagements/999999/findings", json={"template_id": tid})
+    missing = client.post(f"{M}/engagements/{_MISSING_ID}/findings", json={"template_id": tid})
     assert (foreign.status_code, foreign.get_json()) == (missing.status_code, missing.get_json())
 
 

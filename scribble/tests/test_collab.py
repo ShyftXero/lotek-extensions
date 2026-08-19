@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import threading
 import time as _time
+import uuid
 
 import pycrdt as Y
 import pytest
@@ -825,7 +826,7 @@ def test_authorize_connection_denies_when_hook_raises(app):
 def test_open_room_rejects_nonexistent_finding_and_creates_no_room(session_factory):
     """W5 memory-DoS guard: a room is never spun up for a finding id that doesn't exist."""
     manager = crdt.RoomManager()
-    missing_id = 999999
+    missing_id = uuid.uuid7()  # well-formed, absent — a UUID column cannot be asked about 999999
     with session_factory() as session:
         with pytest.raises(LookupError):
             manager.open_room(session, missing_id, BLOCK)

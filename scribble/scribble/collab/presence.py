@@ -97,7 +97,7 @@ def register(api_bp, bp) -> None:
     if _REGISTERED:
         return
 
-    @api_bp.post("/findings/<int:finding_id>/blocks/<string:block>/presence")
+    @api_bp.post("/findings/<uuid:finding_id>/blocks/<string:block>/presence")
     def presence_heartbeat(finding_id: int, block: str):
         body = request.get_json(silent=True) or {}
         user = _clean_user(body.get("user"))
@@ -107,7 +107,7 @@ def register(api_bp, bp) -> None:
             editors = registry.heartbeat(finding_id, block, user)
         return jsonify(ok=True, editors=editors, count=len(editors))
 
-    @api_bp.get("/findings/<int:finding_id>/blocks/<string:block>/presence")
+    @api_bp.get("/findings/<uuid:finding_id>/blocks/<string:block>/presence")
     def presence_list(finding_id: int, block: str):
         editors = registry.active(finding_id, block)
         return jsonify(ok=True, editors=editors, count=len(editors))

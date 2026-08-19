@@ -9,7 +9,25 @@ import uuid
 import pytest
 from sqlalchemy import String, create_engine, inspect, text
 
-from scribble.db import create_all, soft_host_id_columns_typed_integer
+from scribble.db import (
+    _additive_column_sync,
+    _widen_soft_host_id_columns,
+    soft_host_id_columns_typed_integer,
+)
+
+
+def create_all(engine):
+    """The legacy mount path these tests pin, called directly.
+
+    `scribble.db.create_all` now delegates to `run_migrations`, which after adoption also
+    applies the UUID revision -- so calling it here would no longer isolate the one-shots
+    under test, it would migrate the very schema the test just constructed.
+    """
+    from scribble.db import Base
+
+    Base.metadata.create_all(engine)
+    _additive_column_sync(engine)
+    _widen_soft_host_id_columns(engine)
 
 #: A real Postgres to prove the widening against, e.g.
 #: ``SCRIBBLE_TEST_PG_URL=postgresql+psycopg://scribble:scribble@127.0.0.1:55432/scribble``.
@@ -142,6 +160,11 @@ def test_a_failed_widening_degrades_instead_of_unmounting_the_extension(caplog):
     strictly worse failure than the broken column it was trying to fix (and a far colder trail). Failure
     is injected the way Postgres actually produces it: a VIEW depending on the column, which makes
     ``ALTER COLUMN … TYPE`` refuse outright.
+
+    The view is dropped in a ``finally``: these tests share one scratch database, and a view left behind
+    by a failing assertion blocks every later ``DROP TABLE scribble_findings`` with
+    ``DependentObjectsStillExist`` — turning one real failure into a cascade of unrelated ones in files
+    that never touched it.
     """
     import logging
 
@@ -156,14 +179,18 @@ def test_a_failed_widening_degrades_instead_of_unmounting_the_extension(caplog):
         c.execute(text("CREATE VIEW scribble_findings_pin AS SELECT source_finding_id FROM "
                        "scribble_findings"))
 
-    with caplog.at_level(logging.ERROR, logger="scribble"):
-        create_all(eng)  # must NOT raise
+    try:
+        with caplog.at_level(logging.ERROR, logger="scribble"):
+            create_all(eng)  # must NOT raise
 
-    assert "could not widen" in caplog.text
-    assert "ALTER TABLE" in caplog.text  # the message carries the exact SQL to run by hand
-    # the column is genuinely still broken -- the point is the honest degrade, not a pretended repair
-    assert ("scribble_findings", "source_finding_id") in soft_host_id_columns_typed_integer(eng)
-
-    with eng.begin() as c:
-        c.execute(text("DROP VIEW scribble_findings_pin"))
-    Base.metadata.drop_all(eng)
+        assert "could not widen" in caplog.text
+        assert "ALTER TABLE" in caplog.text  # the message carries the exact SQL to run by hand
+        # the column is genuinely still broken -- the point is the honest degrade, not a pretended repair
+        assert ("scribble_findings", "source_finding_id") in soft_host_id_columns_typed_integer(eng)
+    finally:
+        # ALWAYS, even on a failed assertion above: these PG-gated tests share one scratch database, and
+        # a leaked view blocks every later `DROP TABLE scribble_findings` with DependentObjectsStillExist
+        # — turning one real failure into a cascade of unrelated ones in files that never touched it.
+        with eng.begin() as c:
+            c.execute(text("DROP VIEW IF EXISTS scribble_findings_pin"))
+        Base.metadata.drop_all(eng)

@@ -47,7 +47,20 @@ def _mounted_ctx(host_model):
 def _seed_standalone(engine, host_model):
     """scribble tables + a host clients table, planted with a NAME collision: scribble client id 1 =
     'Acme', but host client id 1 = 'Zeta' (the attacker's); the real host 'Acme' is id 5."""
-    sdb.Base.metadata.create_all(engine)
+    # Build the INT-PK schema by hand, not from `Base.metadata`. This test pins behaviour from BEFORE
+    # the UUID migration (lotek#335): `_remap_standalone_client_ids` runs during Alembic adoption, on a
+    # legacy standalone database whose PKs are still integers. Today's metadata would create UUID
+    # columns, and the int ids below would be stored as text — a world that never existed.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE scribble_clients (id INTEGER PRIMARY KEY, name VARCHAR(255), "
+            "created_at DATETIME, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE scribble_engagements (id INTEGER PRIMARY KEY, client_id VARCHAR(64), "
+            "name VARCHAR(255), scope_type VARCHAR(64), status VARCHAR(32), "
+            "created_at DATETIME, updated_at DATETIME)"
+        ))
     host_model.metadata.create_all(engine)
     ts = "2026-01-01 00:00:00"  # raw SQL bypasses the ORM's utcnow() default; supply the NOT-NULL stamps
     with engine.begin() as conn:
@@ -86,7 +99,7 @@ def test_remap_resolves_collision_by_name_and_nulls_unmatched():
     _seed_standalone(engine, HostClient)
 
     with _mounted_ctx(HostClient):
-        sdb.create_all(engine)  # runs the remap at the end
+        sdb._remap_standalone_client_ids(engine)  # the function under test, called directly
 
     ids = _client_ids(engine)
     # SECURITY: engagement 10's client was scribble 'Acme' (id 1). Host id 1 is a DIFFERENT client
@@ -104,9 +117,10 @@ def test_remap_is_idempotent():
     engine = create_engine("sqlite://")
     _seed_standalone(engine, HostClient)
     with _mounted_ctx(HostClient):
-        sdb.create_all(engine)
+        sdb._remap_standalone_client_ids(engine)
         first = _client_ids(engine)
-        sdb.create_all(engine)  # second boot: create_all recreates an empty scribble_clients -> no-op
+        sdb.Base.metadata.create_all(engine)  # second boot recreates an empty scribble_clients
+        sdb._remap_standalone_client_ids(engine)  # -> no-op
         second = _client_ids(engine)
     assert first == second == {10: 5, 11: None, 12: None}
     with engine.begin() as conn:
@@ -119,6 +133,6 @@ def test_standalone_is_untouched():
     engine = create_engine("sqlite://")
     _seed_standalone(engine, _host_client_model())  # seeds a clients table; NOT injected as client_model
     with _mounted_ctx(None):  # client_model None -> deps.client_model() returns scribble's own Client
-        sdb.create_all(engine)
+        sdb._remap_standalone_client_ids(engine)
     assert _client_ids(engine) == {10: 1, 11: 2, 12: 3}
     assert "scribble_clients_pre_mount_remap" not in set(inspect(engine).get_table_names())

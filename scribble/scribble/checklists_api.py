@@ -19,6 +19,7 @@ from flask import Response, jsonify, render_template, request
 from sqlalchemy import select
 
 from scribble import checklists as C
+from scribble.artifacts_api import _as_uuid
 from scribble.deps import open_session
 from scribble.enums import ChecklistKind
 from scribble.models import (
@@ -191,7 +192,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t)), 201
 
-    @api_bp.post("/checklists/templates/<int:tid>")
+    @api_bp.post("/checklists/templates/<uuid:tid>")
     def edit_checklist_template(tid: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -215,7 +216,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/hide")
+    @api_bp.post("/checklists/templates/<uuid:tid>/hide")
     def hide_checklist_template(tid: int):
         payload = request.get_json(silent=True) or {}
         hidden = bool(payload.get("hidden", True))
@@ -227,7 +228,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/reset")
+    @api_bp.post("/checklists/templates/<uuid:tid>/reset")
     def reset_checklist_template(tid: int):
         with open_session() as db:
             t = db.get(ChecklistTemplate, tid)
@@ -244,7 +245,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(t))
 
-    @api_bp.post("/checklists/templates/<int:tid>/duplicate")
+    @api_bp.post("/checklists/templates/<uuid:tid>/duplicate")
     def duplicate_checklist_template(tid: int):
         with open_session() as db:
             src = db.get(ChecklistTemplate, tid)
@@ -268,7 +269,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, template=_template_out(new)), 201
 
-    @api_bp.get("/checklists/templates/<int:tid>/export")
+    @api_bp.get("/checklists/templates/<uuid:tid>/export")
     def export_checklist_template(tid: int):
         fmt = (request.args.get("format") or "json").lower()
         with open_session() as db:
@@ -290,7 +291,7 @@ def register(api_bp, bp) -> None:
 
     # ----------------------------------------------------------------- assignment (engagement side)
 
-    @api_bp.get("/engagements/<int:eid>/checklists")
+    @api_bp.get("/engagements/<uuid:eid>/checklists")
     def list_engagement_checklists(eid: int):
         with open_session() as db:
             e = db.get(Engagement, eid)
@@ -303,13 +304,22 @@ def register(api_bp, bp) -> None:
             ).all()
             return jsonify(ok=True, checklists=[_checklist_out(ec) for ec in rows])
 
-    @api_bp.post("/engagements/<int:eid>/checklists")
-    def assign_engagement_checklist(eid: int):
+    @api_bp.post("/engagements/<uuid:eid>/checklists")
+    def assign_engagement_checklist(eid):
         payload = request.get_json(silent=True) or {}
-        try:
-            template_id = int(payload.get("template_id"))
-        except (TypeError, ValueError):
-            return jsonify(ok=False, error="template_id must be an integer"), 400
+        raw_template_id = payload.get("template_id")
+        if raw_template_id is None:
+            # REQUIRED. Falling through with None reaches `db.get(..., None)` and answers 404 "template
+            # not found", which tells the caller their template is missing when they never named one.
+            return jsonify(ok=False, error="template_id is required"), 400
+        template_id = _as_uuid(raw_template_id)
+        if template_id is None:
+            # SUPPLIED but unparseable -> 400. `_as_uuid` returns None for both "absent" and
+            # "malformed", so without this check a garbage id falls through to `db.get(..., None)` and
+            # comes back as a 404 "template not found" — telling the caller their id does not exist when
+            # in fact it was never a valid id. The distinction matters to a machine client deciding
+            # whether to retry.
+            return jsonify(ok=False, error="template_id must be a UUID"), 400
         with open_session() as db:
             e = db.get(Engagement, eid)
             if e is None:
@@ -321,7 +331,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, checklist=_checklist_out(ec)), 201
 
-    @api_bp.post("/engagement-checklists/<int:cid>")
+    @api_bp.post("/engagement-checklists/<uuid:cid>")
     def edit_engagement_checklist(cid: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -337,7 +347,7 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True, checklist=_checklist_out(ec))
 
-    @api_bp.post("/engagement-checklists/<int:cid>/delete")
+    @api_bp.post("/engagement-checklists/<uuid:cid>/delete")
     def unassign_engagement_checklist(cid: int):
         with open_session() as db:
             ec = db.get(EngagementChecklist, cid)
@@ -347,8 +357,8 @@ def register(api_bp, bp) -> None:
             db.commit()
             return jsonify(ok=True)
 
-    @api_bp.post("/engagement-checklist-items/<int:iid>")
-    def update_engagement_checklist_item(iid: int):
+    @api_bp.post("/engagement-checklist-items/<uuid:iid>")
+    def update_engagement_checklist_item(iid):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
             it = db.get(EngagementChecklistItem, iid)
@@ -365,10 +375,9 @@ def register(api_bp, bp) -> None:
                 else:
                     # A finding cross-link must reference a finding IN THIS engagement (no dangling or
                     # cross-engagement links). it.checklist.engagement_id is the item's engagement.
-                    try:
-                        fid = int(fid)
-                    except (TypeError, ValueError):
-                        return jsonify(ok=False, error="finding_id must be an integer or null"), 400
+                    fid = _as_uuid(fid)
+                    if fid is None:
+                        return jsonify(ok=False, error="finding_id must be a UUID or null"), 400
                     f = db.get(EngagementFinding, fid)
                     if f is None or f.engagement_id != it.checklist.engagement_id:
                         return jsonify(

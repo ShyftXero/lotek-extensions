@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
+from scribble.artifacts_api import _as_uuid
 from scribble.authz import can_view_engagement
 from scribble.content.render_html import render_block
 from scribble.deps import current_actor, open_session
@@ -75,7 +76,7 @@ def register(api_bp, bp) -> None:
     @api_bp.post("/preview")
     def templating_preview():
         payload = request.get_json(silent=True) or {}
-        engagement_id = payload.get("engagement_id")
+        engagement_id = _as_uuid(payload.get("engagement_id"))
         if not engagement_id:
             return jsonify(error="engagement_id is required"), 400
 
@@ -95,7 +96,7 @@ def register(api_bp, bp) -> None:
                 return jsonify(error=f"engagement {engagement_id} not found"), 404
 
             finding = None
-            finding_id = payload.get("finding_id")
+            finding_id = _as_uuid(payload.get("finding_id"))
             if finding_id is not None:
                 finding = db.get(EngagementFinding, finding_id)
                 if finding is None or finding.engagement_id != engagement.id:

@@ -17,10 +17,14 @@ import uuid
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 
 def _engagement(client, stub_host, name: str = "E") -> int:
@@ -35,7 +39,7 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
 # ── fail-closed: no mounting host at all ─────────────────────────────────────────────────────────
@@ -65,7 +69,7 @@ def test_create_engagement_sets_created_by_and_owner_id(client, stub_host, sessi
         },
     )
     assert resp.status_code == 201
-    eid = resp.get_json()["id"]
+    eid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         assert eng is not None
@@ -104,7 +108,7 @@ def test_create_engagement_repoints_client_id_to_injected_host_client(app, sessi
 
     resp = app.test_client().post(f"{M}/engagements", json={"name": "Acme external", "client_id": cid})
     assert resp.status_code == 201
-    eid = resp.get_json()["id"]
+    eid = uuid.UUID(resp.get_json()["id"])
     with app.app_context(), session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         resolved = eng.resolve_client(db)
@@ -124,9 +128,9 @@ def test_list_templates_returns_seeded_library(client, stub_host):
 
 
 def test_get_template_and_404(client, stub_host):
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     assert client.get(f"{M}/templates/{tid}").status_code == 200
-    assert client.get(f"{M}/templates/999999").status_code == 404
+    assert client.get(f"{M}/templates/{_MISSING_ID}").status_code == 404
 
 
 # ── add-finding: from a library template ─────────────────────────────────────────────────────────
@@ -134,7 +138,7 @@ def test_get_template_and_404(client, stub_host):
 
 def test_add_finding_from_template(client, stub_host, session_factory):
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     resp = client.post(
         f"{M}/engagements/{eid}/findings",
         json={"template_id": tid, "target_host": "10.0.0.5"},
@@ -155,7 +159,7 @@ def test_add_finding_requires_a_source(client, stub_host):
 
 def test_add_finding_rejects_deactivated_template(client, stub_host, session_factory):
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     with session_factory() as db:
         db.get(fm.VulnerabilityTemplate, tid).active = False
         db.commit()
@@ -171,7 +175,7 @@ def test_add_finding_rejects_non_integer_ids(client, stub_host):
 
 
 def test_add_finding_engagement_not_found(client, stub_host):
-    resp = client.post(f"{M}/engagements/999999/findings", json={"template_id": 1})
+    resp = client.post(f"{M}/engagements/{_MISSING_ID}/findings", json={"template_id": 1})
     assert resp.status_code == 404
 
 
@@ -301,7 +305,7 @@ def test_address_engagement_by_core_uuid(client, stub_host, session_factory):
     assert add.status_code == 201, add.get_json()
     with session_factory() as db:
         f = db.get(fm.EngagementFinding, add.get_json()["finding_id"])
-        assert f.engagement_id == eid
+        assert str(f.engagement_id) == eid
 
 
 def test_list_engagements_exposes_core_mapping(client, stub_host, session_factory):
@@ -330,7 +334,11 @@ def test_unknown_core_uuid_is_404(client, stub_host):
 
     malformed = client.get(f"{M}/engagements/not-an-id-or-uuid")
     assert malformed.status_code == 404
-    assert malformed.get_json()["detail"] == "engagement not found"
+    # A non-UUID segment no longer reaches the view: the <uuid:...> converter (lotek#335) rejects it at
+    # routing with Werkzeug's own 404 (no JSON body). That is not an existence oracle -- it reveals only
+    # "not a UUID", never whether any engagement exists -- so the no-oracle guarantee still holds for
+    # every WELL-FORMED id, which the unknown-uuid case above asserts.
+    assert malformed.get_json() is None
 
 
 def test_core_uuid_not_visible_is_404(client, stub_host):

@@ -1,3 +1,5 @@
+// Ids are UUIDv7 strings since lotek#335 -- parseInt() returns NaN for one, silently, and the
+// request then carries a null/NaN id instead of failing. Ids are opaque here: pass them through.
 /*!
  * Scribble rich-text editor (WS4 Phase A) — scribble/static/editor.js
  * =====================================================================
@@ -381,7 +383,7 @@
   function domImageToNode(img) {
     if ((img.dataset && (img.dataset.type === "inlineImage" || img.dataset.artifactId))) {
       var attrs = { alt: img.getAttribute("alt") || "" };
-      if (img.dataset.artifactId) attrs.artifactId = parseInt(img.dataset.artifactId, 10);
+      if (img.dataset.artifactId) attrs.artifactId = img.dataset.artifactId;
       if (img.dataset.caption) attrs.caption = img.dataset.caption;
       return { type: NODE.INLINE_IMAGE, attrs: attrs };
     }
@@ -977,12 +979,15 @@
     var ds = container.dataset || {};
 
     var engagementId =
-      options.engagementId != null ? options.engagementId : parseInt(ds.engagementId, 10);
+      options.engagementId != null ? options.engagementId : ds.engagementId;
     var opts = {
-      findingId: options.findingId != null ? options.findingId : parseInt(ds.findingId, 10),
+      findingId: options.findingId != null ? options.findingId : ds.findingId,
       // engagement_id is REQUIRED by POST /artifacts (create_artifact 400s without it), so inline
       // image paste is broken unless the mount threads it through -- see _editor.html data-engagement-id.
-      engagementId: isNaN(engagementId) ? null : engagementId,
+      // `isNaN(...)` was the old integer guard: for a UUIDv7 string it is TRUE, so it nulled a
+      // perfectly valid id and every inline-image upload 400'd with "engagement_id is required".
+      // Ids are opaque strings now — reject only genuinely absent/empty.
+      engagementId: engagementId ? engagementId : null,
       block: options.block || ds.block,
       apiBase: options.apiBase || ds.apiBase || "/scribble/api",
       user: options.user || ds.user || getAnonUser(),

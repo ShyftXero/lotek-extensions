@@ -71,10 +71,14 @@ def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves inline-image content nodes to a
     placeholder baking in the artifact's ``storage_path`` (see ``render_docx.make_inline_artifact_url``,
     WS8's own copy of the WS7 placeholder trick)."""
-    by_id = {a.id: a.storage_path for a in engagement.artifacts}
+    # Key by str(id): content_json's inlineImage ``artifactId`` is authored in the browser and arrives
+    # as a JSON string (a UUID string since lotek#335; historically a JSON int), while ``a.id`` is a
+    # ``uuid.UUID``. A plain dict keyed by the UUID would miss the string every time, silently dropping
+    # every inline image from the report. str() on both sides normalises int/str/UUID uniformly.
+    by_id = {str(a.id): a.storage_path for a in engagement.artifacts}
 
     def _url(artifact_id: int) -> str:
-        return make_inline_artifact_url(by_id.get(artifact_id))
+        return make_inline_artifact_url(by_id.get(str(artifact_id)) if artifact_id is not None else None)
 
     return _url
 
@@ -94,7 +98,7 @@ def register(api_bp, bp) -> None:
         return  # idempotent: register(app, ...) may be called more than once per process in tests
     bp._ws8_docx_registered = True  # type: ignore[attr-defined]
 
-    @bp.get("/engagements/<int:engagement_id>/report.docx")
+    @bp.get("/engagements/<uuid:engagement_id>/report.docx")
     def engagement_report_docx(engagement_id: int):
         cfg = get_config()
         with open_session() as db:

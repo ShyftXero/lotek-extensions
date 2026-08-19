@@ -23,10 +23,12 @@ gone — the same order ``engagement_ui.delete_finding``/``engagement_delete`` a
 
 from __future__ import annotations
 
+import uuid
 from typing import NamedTuple
 
 from sqlalchemy import delete, select, update
 
+from scribble.artifacts_api import _as_uuid  # noqa: E402 -- one shared body-id parser (lotek#335)
 from scribble.enums import OrderMode, severity_rank
 from scribble.models import (
     CollabDoc,
@@ -95,14 +97,12 @@ _FINDING_FK_HANDLED_ELSEWHERE = frozenset({
 _ENGAGEMENT_UNCASCADED = (ReportRender,)
 
 
-def _coerce_int(value) -> int | None:
-    """Tolerant int parse for an id inside a client-supplied ORDER LIST. ``None`` for anything
+def _coerce_uuid(value) -> uuid.UUID | None:
+    """Tolerant UUID parse for an id inside a client-supplied ORDER LIST. ``None`` for anything
     unparseable, so a stale/garbage entry in a reorder payload is skipped rather than 500ing — the
-    defensive posture ``reorder_groups`` documents."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    defensive posture ``reorder_groups`` documents. Delegates to :func:`artifacts_api._as_uuid`, the
+    one shared body-id parser (lotek#335) — Scribble ids are UUIDv7, not ints, since the PK migration."""
+    return _as_uuid(value)
 
 
 def display_order(findings, order_mode: OrderMode) -> list[EngagementFinding]:
@@ -118,7 +118,7 @@ def display_order(findings, order_mode: OrderMode) -> list[EngagementFinding]:
     return sorted(items, key=lambda f: (severity_rank(f.severity), f.order_index))
 
 
-def ungrouped_display_order(engagement: Engagement, *, exclude_id: int | None = None) -> list:
+def ungrouped_display_order(engagement: Engagement, *, exclude_id: uuid.UUID | None = None) -> list:
     """The ungrouped bucket in the order the board shows it: severity-first, then ``order_index``.
 
     The bucket has no ``order_mode`` of its own (it is not a ``FindingGroup``), which is exactly why this
@@ -131,7 +131,7 @@ def ungrouped_display_order(engagement: Engagement, *, exclude_id: int | None = 
     )
 
 
-def nested_child_ids(findings) -> set[int]:
+def nested_child_ids(findings) -> set[uuid.UUID]:
     """The ids in ``findings`` that the RENDERER nests under a parent instead of rendering top-level.
 
     ONE copy of the nesting rule, shared with ``reporting/context.py::_nest_findings`` (which calls this)
@@ -141,7 +141,7 @@ def nested_child_ids(findings) -> set[int]:
     report, or sitting in a different bucket) renders top-level, so it is NOT nested here either.
     """
     by_id = {f.id: f for f in findings}
-    nested: set[int] = set()
+    nested: set[uuid.UUID] = set()
     for finding in findings:
         if finding.parent_id is None:
             continue
@@ -253,7 +253,7 @@ def place_finding(
     return None if same_group else old_group
 
 
-def reorder_groups(engagement: Engagement, requested_order) -> list[int]:
+def reorder_groups(engagement: Engagement, requested_order) -> list[uuid.UUID]:
     """Apply a client-supplied group order to ``engagement``; returns the ids in their new order.
 
     Defensive by design: an id that is unparseable, duplicated, or belongs to another engagement is
@@ -263,10 +263,10 @@ def reorder_groups(engagement: Engagement, requested_order) -> list[int]:
     position, and a stale payload is not a 500.
     """
     existing = {g.id: g for g in engagement.groups}
-    ordered_ids: list[int] = []
-    seen: set[int] = set()
+    ordered_ids: list[uuid.UUID] = []
+    seen: set[uuid.UUID] = set()
     for raw_id in requested_order:
-        gid = _coerce_int(raw_id)
+        gid = _coerce_uuid(raw_id)
         if gid is not None and gid in existing and gid not in seen:
             ordered_ids.append(gid)
             seen.add(gid)
@@ -306,7 +306,7 @@ def delete_group(db, group: FindingGroup) -> None:
     db.delete(group)
 
 
-def detach_children(db, finding: EngagementFinding) -> list[int]:
+def detach_children(db, finding: EngagementFinding) -> list[uuid.UUID]:
     """NULL the ``parent_id`` of every finding nested under ``finding``; returns their ids in board order.
 
     Nothing else clears that column. ``EngagementFinding.parent_id`` is a self-FK with **no** ``ondelete``
@@ -426,7 +426,7 @@ class DeletedFinding(NamedTuple):
     """
 
     storage_paths: list[str]
-    detached_child_ids: list[int]
+    detached_child_ids: list[uuid.UUID]
 
 
 def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:

@@ -27,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from scribble.db import Base, SoftHostId, TimestampMixin
+from scribble.db import Base, ScribbleUuid, SoftHostId, TimestampMixin
 from scribble.enums import (
     ArtifactKind,
     ArtifactPlacement,
@@ -57,7 +57,7 @@ class Client(Base, TimestampMixin):
 
     __tablename__ = "scribble_clients"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     name: Mapped[str] = mapped_column(String(255), unique=True)
 
 
@@ -66,7 +66,7 @@ class Engagement(Base, TimestampMixin):
 
     __tablename__ = "scribble_engagements"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     # Soft reference, NOT a foreign key (docs/LOTEK_ADOPTION.md §3.1): may point at ``scribble_clients``
     # (standalone) or the host's own client table (mounted, e.g. Lotek's ``clients``) -- a static FK/
     # relationship can only target one table, so resolution goes through ``scribble.deps.client_model``
@@ -154,7 +154,7 @@ class AssessmentType(Base, TimestampMixin):
 
     __tablename__ = "scribble_assessment_types"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     name: Mapped[str] = mapped_column(String(128), unique=True)
     slug: Mapped[str] = mapped_column(String(128), unique=True)
     color: Mapped[str | None] = mapped_column(String(16))
@@ -168,9 +168,9 @@ class FindingGroup(Base, TimestampMixin):
 
     __tablename__ = "scribble_finding_groups"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"))
-    assessment_type_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_assessment_types.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    assessment_type_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_assessment_types.id"))
     name: Mapped[str] = mapped_column(String(128))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     order_mode: Mapped[OrderMode] = mapped_column(Enum(OrderMode), default=OrderMode.auto_severity)
@@ -191,7 +191,7 @@ class VulnerabilityTemplate(Base, TimestampMixin):
 
     __tablename__ = "scribble_vuln_templates"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     name: Mapped[str] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(255))
     default_severity: Mapped[Severity] = mapped_column(Enum(Severity), default=Severity.medium)
@@ -235,11 +235,11 @@ class ScribbleVulnMap(Base, TimestampMixin):
 
     __tablename__ = "scribble_vuln_map"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     source: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     title_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dedupe_prefix: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    template_id: Mapped[int] = mapped_column(ForeignKey("scribble_vuln_templates.id"), nullable=False)
+    template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_vuln_templates.id"), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
@@ -249,10 +249,10 @@ class EngagementFinding(Base, TimestampMixin):
 
     __tablename__ = "scribble_findings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"))
-    group_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_finding_groups.id"))
-    template_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_vuln_templates.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_finding_groups.id"))
+    template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_vuln_templates.id"))
     # Soft reference (NOT a foreign key -- mirrors ``asset_id`` below) to a host Lotek ``Finding.id``,
     # set by ``from_lotek_finding`` when promoting a scan finding. Lets the promote flow dedup (has this
     # Lotek finding already been promoted into this engagement?) without a cross-table FK, since a
@@ -269,7 +269,7 @@ class EngagementFinding(Base, TimestampMixin):
     # vuln-DB template, else a source/title signature) as CHILDREN. Set by promotion aggregation;
     # adjustable by drag-to-nest on the board. Children are queried WHERE parent_id = id (no ORM
     # relationship, to keep the self-ref config trivial and robust).
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
 
     title: Mapped[str] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(255))
@@ -392,9 +392,9 @@ class Artifact(Base, TimestampMixin):
 
     __tablename__ = "scribble_artifacts"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"))
-    finding_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_findings.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
 
     kind: Mapped[ArtifactKind] = mapped_column(Enum(ArtifactKind), default=ArtifactKind.screenshot)
     placement: Mapped[ArtifactPlacement] = mapped_column(
@@ -432,15 +432,15 @@ class EngagementDiagram(Base, TimestampMixin):
     ``scribble_link_attack_path`` in ``api_pat.py``). ``diagram_ref`` is a soft reference (the vector
     diagram's UUID, stored as text) kept for provenance/dedup only; nothing here re-fetches through it.
 
-    ``engagement_id`` is a real FK to ``scribble_engagements.id``, matching that column's CURRENT
-    Integer PK type. ext#36 (``feat/scribble-alembic-uuid-pks``, in flight) migrates engagement ids to
-    UUIDv7 — if that lands first, this FK's column type needs the same trivial rebase.
+    ``engagement_id`` is a real FK to ``scribble_engagements.id`` — UUIDv7 since ext#36/lotek#335
+    migrated every Scribble PK off sequential integers. This table was authored on the int-PK branch
+    and rebased onto the UUID one, exactly the "trivial rebase" the earlier note here predicted.
     """
 
     __tablename__ = "scribble_engagement_diagram"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
     diagram_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     caption: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -458,7 +458,7 @@ class TemplateVariable(Base, TimestampMixin):
 
     __tablename__ = "scribble_variables"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     key: Mapped[str] = mapped_column(String(128), unique=True)  # referenced as {{key}}
     label: Mapped[str] = mapped_column(String(255))
     scope: Mapped[VariableScope] = mapped_column(Enum(VariableScope), default=VariableScope.engagement)
@@ -494,10 +494,10 @@ class VariableValue(Base, TimestampMixin):
     __tablename__ = "scribble_variable_values"
     __table_args__ = (UniqueConstraint("variable_id", "engagement_id", "finding_id"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    variable_id: Mapped[int] = mapped_column(ForeignKey("scribble_variables.id"))
-    engagement_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_engagements.id"))
-    finding_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_findings.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    variable_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_variables.id"))
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_engagements.id"))
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
     value: Mapped[str | None] = mapped_column(Text)
 
     variable: Mapped[TemplateVariable] = relationship()
@@ -510,7 +510,7 @@ class VariableValue(Base, TimestampMixin):
 class Tag(Base, TimestampMixin):
     __tablename__ = "scribble_tags"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     name: Mapped[str] = mapped_column(String(128), unique=True)
     color: Mapped[str | None] = mapped_column(String(16))
 
@@ -518,15 +518,15 @@ class Tag(Base, TimestampMixin):
 class FindingTag(Base):
     __tablename__ = "scribble_finding_tags"
 
-    finding_id: Mapped[int] = mapped_column(ForeignKey("scribble_findings.id"), primary_key=True)
-    tag_id: Mapped[int] = mapped_column(ForeignKey("scribble_tags.id"), primary_key=True)
+    finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_findings.id"), primary_key=True)
+    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_tags.id"), primary_key=True)
 
 
 class TemplateTag(Base):
     __tablename__ = "scribble_template_tags"
 
-    template_id: Mapped[int] = mapped_column(ForeignKey("scribble_vuln_templates.id"), primary_key=True)
-    tag_id: Mapped[int] = mapped_column(ForeignKey("scribble_tags.id"), primary_key=True)
+    template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_vuln_templates.id"), primary_key=True)
+    tag_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_tags.id"), primary_key=True)
 
 
 # --------------------------------------------------------------------------- report templates & renders
@@ -535,7 +535,7 @@ class TemplateTag(Base):
 class ReportTemplate(Base, TimestampMixin):
     __tablename__ = "scribble_report_templates"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     name: Mapped[str] = mapped_column(String(255))
     engagement_type: Mapped[str | None] = mapped_column(String(64))
     docx_path: Mapped[str | None] = mapped_column(String(1024))
@@ -546,8 +546,8 @@ class ReportTemplate(Base, TimestampMixin):
 class ReportRender(Base, TimestampMixin):
     __tablename__ = "scribble_report_renders"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
     format: Mapped[ReportFormat] = mapped_column(Enum(ReportFormat))
     path: Mapped[str] = mapped_column(String(1024))
     context_hash: Mapped[str | None] = mapped_column(String(64))
@@ -563,8 +563,8 @@ class CollabDoc(Base, TimestampMixin):
     __tablename__ = "scribble_collab_docs"
     __table_args__ = (UniqueConstraint("finding_id", "block"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    finding_id: Mapped[int] = mapped_column(ForeignKey("scribble_findings.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_findings.id"))
     block: Mapped[str] = mapped_column(String(64))
     ydoc_state: Mapped[bytes | None] = mapped_column()
     updated_at_ms: Mapped[int | None] = mapped_column(Integer)
@@ -584,7 +584,7 @@ class ChecklistTemplate(Base, TimestampMixin):
 
     __tablename__ = "scribble_checklist_templates"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     slug: Mapped[str] = mapped_column(String(128), unique=True)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
@@ -608,8 +608,8 @@ class ChecklistTemplateItem(Base, TimestampMixin):
 
     __tablename__ = "scribble_checklist_template_items"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    template_id: Mapped[int] = mapped_column(ForeignKey("scribble_checklist_templates.id"))
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_checklist_templates.id"))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     section: Mapped[str | None] = mapped_column(String(255))
     text: Mapped[str] = mapped_column(String(512))
@@ -629,9 +629,12 @@ class EngagementChecklist(Base, TimestampMixin):
 
     __tablename__ = "scribble_engagement_checklists"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"))
-    template_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # soft ref (provenance)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    # Soft ref (provenance) to `scribble_checklist_templates.id` — an INTRA-Scribble reference that never
+    # declared its ForeignKey, which is why the UUID migration's FK sweep does not see it and why it has
+    # to be typed by hand. It points at a Scribble PK, so it follows them to UUIDv7 (lotek#335).
+    template_id: Mapped[uuid.UUID | None] = mapped_column(ScribbleUuid, nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[ChecklistKind] = mapped_column(Enum(ChecklistKind), default=ChecklistKind.coverage)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -653,7 +656,7 @@ class EngagementChecklistItem(Base, TimestampMixin):
 
     __tablename__ = "scribble_engagement_checklist_items"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     engagement_checklist_id: Mapped[int] = mapped_column(
         ForeignKey("scribble_engagement_checklists.id")
     )
@@ -665,7 +668,7 @@ class EngagementChecklistItem(Base, TimestampMixin):
     control_ref: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(64), default="pending")
     note: Mapped[str | None] = mapped_column(Text)
-    finding_id: Mapped[int | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(128))
 
     checklist: Mapped[EngagementChecklist] = relationship(back_populates="items")

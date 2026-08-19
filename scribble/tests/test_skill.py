@@ -12,6 +12,7 @@ import importlib.util
 import json
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 from types import ModuleType
 
@@ -111,7 +112,7 @@ def test_context_sidecar_produces_report_context_shape(tmp_path):
     for key in ("groups", "rollup", "variables", "engagement_id", "engagement_name"):
         assert key in data, f"sidecar dict missing {key!r}"
 
-    assert data["engagement_id"] == engagement_id
+    assert data["engagement_id"] == str(engagement_id)
     assert isinstance(data["groups"], list) and len(data["groups"]) > 0
     assert isinstance(data["variables"], dict)
     assert isinstance(data["rollup"], dict)
@@ -148,7 +149,7 @@ def test_context_sidecar_missing_engagement_raises(tmp_path):
     sidecar = _load_sidecar_module()
     with sidecar.open_readonly_session(db_path) as session:
         with pytest.raises(LookupError):
-            sidecar.build_sidecar_dict(session, engagement_id=999_999)
+            sidecar.build_sidecar_dict(session, engagement_id=uuid.uuid7())  # well-formed, absent
 
 
 def test_context_sidecar_session_is_genuinely_readonly(tmp_path):
@@ -181,7 +182,7 @@ def test_context_sidecar_handles_path_with_uri_reserved_characters(tmp_path):
     sidecar = _load_sidecar_module()
     with sidecar.open_readonly_session(db_path) as session:
         data = sidecar.build_sidecar_dict(session, engagement_id=engagement_id)
-        assert data["engagement_id"] == engagement_id
+        assert data["engagement_id"] == str(engagement_id)
 
         from sqlalchemy.exc import OperationalError
 
@@ -203,7 +204,7 @@ def test_context_sidecar_cli_writes_json_file(tmp_path):
     assert rc == 0
     assert out_path.is_file()
     data = json.loads(out_path.read_text(encoding="utf-8"))
-    assert data["engagement_id"] == engagement_id
+    assert data["engagement_id"] == str(engagement_id)
     assert {"groups", "rollup", "variables"} <= data.keys()
 
     # The DB itself must be untouched by the whole CLI round-trip.

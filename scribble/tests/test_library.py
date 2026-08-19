@@ -14,6 +14,8 @@ VulnerabilityTemplate instead of EngagementFinding), and list search/filter.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from scribble import library_ui
@@ -23,6 +25,8 @@ from scribble.content import schema
 from scribble.content.render_html import render_block
 from scribble.enums import Severity
 from scribble.models import Tag, VulnerabilityTemplate
+
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 API_PREFIX = "/scribble/api"
 
@@ -164,7 +168,7 @@ def test_create_template_minimal(client, session_factory):
     assert data["redirect"].endswith(f"/scribble/library/{data['id']}")
 
     with session_factory() as db:
-        t = db.get(VulnerabilityTemplate, data["id"])
+        t = db.get(VulnerabilityTemplate, uuid.UUID(data["id"]))
         assert t.name == "zzNew Template"
         assert t.active is True
         assert t.default_severity == Severity.medium
@@ -185,7 +189,7 @@ def test_create_template_full_fields(client, session_factory):
         },
     )
     assert resp.status_code == 201
-    template_id = resp.get_json()["id"]
+    template_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         t = db.get(VulnerabilityTemplate, template_id)
@@ -232,7 +236,7 @@ def test_update_edits_same_row_in_place(client, session_factory):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["ok"] is True
-    assert data["id"] == template_id  # same row, no forced duplicate
+    assert uuid.UUID(data["id"]) == template_id  # same row, no forced duplicate
 
     with session_factory() as db:
         # No new row was created by "edit" -- the total row count is unchanged.
@@ -263,7 +267,7 @@ def test_update_recaches_content_html_from_content_json(client, session_factory)
 
 
 def test_update_missing_template_404(client):
-    resp = client.post(f"{API_PREFIX}/templates/999999", json={"name": "x"})
+    resp = client.post(f"{API_PREFIX}/templates/{_MISSING_ID}", json={"name": "x"})
     assert resp.status_code == 404
 
 
@@ -376,7 +380,7 @@ def test_duplicate_of_template_with_empty_content(client, session_factory):
 
 
 def test_duplicate_missing_template_404(client):
-    resp = client.post(f"{API_PREFIX}/templates/999999/duplicate")
+    resp = client.post(f"{API_PREFIX}/templates/{_MISSING_ID}/duplicate")
     assert resp.status_code == 404
 
 
@@ -424,14 +428,14 @@ def test_duplicate_preserves_inactive_state(client, session_factory):
 
     resp = client.post(f"{API_PREFIX}/templates/{template_id}/duplicate")
     assert resp.status_code == 201
-    dup_id = resp.get_json()["id"]
+    dup_id = uuid.UUID(resp.get_json()["id"])
 
     with session_factory() as db:
         assert db.get(VulnerabilityTemplate, dup_id).active is False
 
 
 def test_delete_missing_template_404(client):
-    resp = client.post(f"{API_PREFIX}/templates/999999/delete")
+    resp = client.post(f"{API_PREFIX}/templates/{_MISSING_ID}/delete")
     assert resp.status_code == 404
 
 

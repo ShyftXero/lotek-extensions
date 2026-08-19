@@ -45,7 +45,6 @@ from __future__ import annotations
 import base64
 import binascii
 import fnmatch
-import re
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -70,7 +69,7 @@ from scribble.api_schemas import (
     UploadArtifactRequest,
     request_body,
 )
-from scribble.artifacts_api import artifact_url
+from scribble.artifacts_api import _as_uuid, artifact_url
 from scribble.artifacts_storage import SAFE_NAME_MAX, delete_file, guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
@@ -103,6 +102,12 @@ machine_bp.before_request(host.authenticate)
 # memory/disk with one giant payload.
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
+# Every id in this module's routes is Flask's built-in ``<uuid:...>`` converter (lotek#335 --
+# Scribble's PKs are UUIDv7, not sequential ``Integer``s). Unlike the bare ``<int:...>`` converter
+# it replaced, a malformed value never matches the rule at all: Werkzeug answers a routing 404 --
+# the correct response for "no such id" -- and no view runs, so there is no overflow/DataError
+# class of bug left to guard against here.
+
 # Upper bound on a linked diagram's self-contained HTML snapshot (see scribble_link_attack_path). Vector's
 # export.html inlines its own assets, so it can run larger than a screenshot; this table's ``embed_html``
 # is a ``Text`` column held whole in memory on every report render (like ``content_json`` — see
@@ -113,27 +118,6 @@ _MAX_DIAGRAM_HTML_BYTES = 10 * 1024 * 1024
 _DIAGRAM_REF_MAX_LEN = 64      # EngagementDiagram.diagram_ref  String(64)
 _DIAGRAM_CAPTION_MAX_LEN = 255  # EngagementDiagram.caption      String(255)
 
-# A whole ASCII decimal integer and nothing else -- no sign, no exponent, no decimal point. See
-# ``_finding_id_or_400`` for why a plain ``int()`` is not good enough here.
-#
-# ``[0-9]`` rather than ``\d`` ON PURPOSE: ``re``'s ``\d`` is Unicode-aware, so it matched "\u0667"
-# (Arabic-Indic seven) and "\uff17" (fullwidth seven), which ``int()`` then coerced to 7 -- an artifact
-# attached to, or dropped from, a finding the caller wrote in another script. That is the same coercion
-# 2.9 -> 2 was refused for, in a parse whose whole claim is that it validates rather than converts.
-_INT_RE = re.compile(r"[0-9]+")
-
-# URL converter for every id in this module's routes. Werkzeug's bare integer converter is UNBOUNDED --
-# ``regex=r"\d+"``, ``num_convert=int``, no max -- so ``/engagements/<30 digits>`` routed successfully and
-# then 500'd inside ``db.get()`` (measured: OverflowError on SQLite, DataError on Postgres, which also
-# poisons the open transaction). Same defect as an out-of-range ``finding_id`` in the BODY, reached through
-# the path instead, and a machine API is exactly where a caller-controlled id arrives. Bounding it in the
-# CONVERTER means an out-of-range id never reaches a view: Werkzeug does not match the rule and answers
-# 404, which is also the right answer for "no such id". The bound is the ``Integer`` PK column's, same as
-# ``_MAX_FINDING_ID``. ``tests/test_scribble_machine_tenancy.py`` fails if a machine route is added with an
-# unbounded one.
-_ID = "int(min=1, max=2147483647)"
-
-
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
 
 
@@ -143,6 +127,31 @@ def _enum_value(value) -> str | None:
     Was ``_sev_value``; generalized when the findings serializers below needed the same unwrap for
     ``confidence``/``status``/``order_mode``/``kind`` rather than four more copies of it."""
     return getattr(value, "value", value) if value is not None else None
+
+
+def _opt_uuid(data: dict, key: str):
+    """Validate an OPTIONAL Scribble row id — a UUID since lotek#335.
+
+    Scribble's own primary keys became UUIDv7 to remove trivial enumeration, so the id fields a machine
+    caller sends (`template_id`, `group_id`, …) are UUID strings over JSON. Parsed as integers they
+    produced a flat 400 for every well-formed request, which is how this is caught if it regresses.
+
+    Returns `(value_or_None, error_response_or_None)` so a malformed id is a clean 400 rather than a 500
+    raised deep inside `db.get`. Accepts any spelling `uuid.UUID` does (dashed, undashed, braced, mixed
+    case) and normalises to a real `uuid.UUID`; rejects everything else, `bool` explicitly included.
+    """
+    v = data.get(key)
+    if v is None:
+        return None, None
+    bad = (jsonify({"error": "bad_request", "detail": f"{key} must be a UUID"}), 400)
+    if isinstance(v, uuid.UUID):
+        return v, None
+    if isinstance(v, bool) or not isinstance(v, str):
+        return None, bad
+    try:
+        return uuid.UUID(v.strip()), None
+    except (ValueError, AttributeError):
+        return None, bad
 
 
 def _opt_int(data: dict, key: str):
@@ -195,43 +204,37 @@ def _engagement_not_found():
 
 
 def _resolve_engagement(db, raw_id, actor):
-    """Address an engagement by EITHER id space (#49): its own integer PK, or the core host's
-    engagement id it was created with (``Engagement.core_engagement_id`` — int or UUID; see models.py).
+    """Address an engagement by EITHER id space (#49): its own UUIDv7 PK, or the core host's engagement
+    id it was created with (``Engagement.core_engagement_id`` — int on a legacy/standalone host, UUID on
+    v2 core; see models.py).
 
     Returns the ``Engagement`` if it exists AND ``can_view_engagement`` allows ``actor`` to see it,
-    else ``None`` — callers translate a ``None`` to ``_engagement_not_found()`` exactly as they already
-    did for a plain missing/unauthorized integer id, so this introduces no new oracle: unknown id,
-    malformed id, and "exists but not visible" all collapse to the same 404.
+    else ``None`` — callers translate a ``None`` to ``_engagement_not_found()``, so this introduces no
+    new oracle: unknown id, malformed id, and "exists but not visible" all collapse to the same 404.
 
-    A garbage path segment (neither a digit string nor a parseable UUID) returns ``None`` -> the same
-    404, rather than raising — the ``<engagement_id>`` URL converter is now a bare string converter
-    (widened from ``<int:engagement_id>``), so anything can reach here. That includes an out-of-range
-    integer string, which the OLD bounded ``_ID`` converter used to 404 before a view ever saw it (see
-    ``_ID``'s docstring) -- re-checked here against the same ``Integer`` PK bound so a huge digit string
-    can't reach ``db.get`` and raise (``OverflowError`` on SQLite, ``DataError`` on Postgres) instead of
-    404ing cleanly.
+    Since lotek#335 every Scribble PK — and every v2 core id — is a UUID, so the ``<uuid:engagement_id>``
+    route converter parses the segment before this runs; a non-UUID never matches the rule and 404s at
+    routing. A caller therefore cannot address a row by a legacy INTEGER ``core_engagement_id`` through
+    the URL any more (that shape is unreachable via a UUID converter), which is an accepted consequence
+    of the migration — v2 core keys engagements on UUIDs regardless. A non-UUID reaching here anyway
+    (e.g. an internal caller) simply returns ``None`` -> the same 404, rather than raising.
     """
     text = str(raw_id).strip()
-    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
-        int_id = int(text)
-        if not 0 < int_id <= 2147483647:
-            return None
-        eng = db.get(Engagement, int_id)
-    else:
-        try:
-            core_id = uuid.UUID(text)
-        except (ValueError, AttributeError):
-            return None
-        # No UNIQUE constraint on core_engagement_id (models.py: index=True, not unique=True — a
-        # pre-existing table can't be retrofitted with one). A write-scoped token could deliberately (or
-        # accidentally) set the SAME core_engagement_id on two engagements, including under a client it
-        # holds no grant under; deterministic first-match (oldest id) rather than scalar_one_or_none()
-        # is what keeps a collision an ordinary lookup instead of a 500 that a caller could trigger
-        # against a DIFFERENT tenant's addressing (availability, not disclosure -- can_view_engagement
-        # below still gates what the resolved row exposes).
+    try:
+        key = uuid.UUID(text)
+    except (ValueError, AttributeError):
+        return None
+    # A UUID may be EITHER Scribble's own PK (the id Scribble hands back — #49 primary addressing) OR the
+    # core host's engagement id it was created with (#49 secondary). Try the PK first, then fall back to
+    # ``core_engagement_id``. No UNIQUE constraint on ``core_engagement_id`` (models.py: index, not
+    # unique — a pre-existing table can't be retrofitted with one), so a deliberate/accidental collision
+    # resolves deterministically to the oldest row rather than 500ing on ``scalar_one``;
+    # ``can_view_engagement`` below still gates what the resolved row exposes.
+    eng = db.get(Engagement, key)
+    if eng is None:
         stmt = (
             select(Engagement)
-            .where(Engagement.core_engagement_id == core_id)
+            .where(Engagement.core_engagement_id == key)
             .order_by(Engagement.id)
             .limit(1)
         )
@@ -759,7 +762,7 @@ def scribble_list_templates():
 # ── 3. GET /templates/<id> ───────────────────────────────────────────────────────────────────────────
 
 
-@machine_bp.get(f"/templates/<{_ID}:template_id>")
+@machine_bp.get("/templates/<uuid:template_id>")
 @host.require_scope("read")
 def scribble_get_template(template_id: int):
     with open_session() as db:
@@ -871,7 +874,7 @@ def scribble_create_template():
 # ── 4. POST /engagements/<id>/findings ───────────────────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<engagement_id>/findings")
+@machine_bp.post("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
 def scribble_add_finding(engagement_id: str):
@@ -888,7 +891,7 @@ def scribble_add_finding(engagement_id: str):
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         data = request.get_json(silent=True) or {}
-        template_id, err = _opt_int(data, "template_id")
+        template_id, err = _opt_uuid(data, "template_id")
         if err:
             return err
         # _opt_HOST_id, not _opt_int: this is a CORE finding id, and core v2 keys it on UUIDv7. Parsed as
@@ -897,7 +900,7 @@ def scribble_add_finding(engagement_id: str):
         lotek_finding_id, err = _opt_host_id(data, "lotek_finding_id")
         if err:
             return err
-        group_id, err = _opt_int(data, "group_id")
+        group_id, err = _opt_uuid(data, "group_id")
         if err:
             return err
         # Type-checked and length-capped ONCE, here, because all three branches below write these same
@@ -1091,7 +1094,7 @@ def scribble_add_finding(engagement_id: str):
 @host.require_scope("write")
 def scribble_create_vuln_map():
     data = request.get_json(silent=True) or {}
-    template_id, err = _opt_int(data, "template_id")
+    template_id, err = _opt_uuid(data, "template_id")
     if err:
         return err
     if template_id is None:
@@ -1195,7 +1198,7 @@ def scribble_resolve_template():
 # ── 8. POST /engagements/<id>/promote-job/<job_id> ──────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<engagement_id>/promote-job/<job_id>")
+@machine_bp.post("/engagements/<uuid:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
 def scribble_promote_job(engagement_id: str, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
@@ -1283,7 +1286,7 @@ def scribble_list_engagements():
 # ── 8c. GET /engagements/<id> — one engagement the caller may see ────────────────────────────────────
 
 
-@machine_bp.get("/engagements/<engagement_id>")
+@machine_bp.get("/engagements/<uuid:engagement_id>")
 @host.require_scope("read")
 def scribble_get_engagement(engagement_id: str):
     actor = host.actor()
@@ -1303,7 +1306,7 @@ def scribble_get_engagement(engagement_id: str):
 # ── 8d. GET /engagements/<id>/report — stream the rendered deliverable (html|docx) ───────────────────
 
 
-@machine_bp.get("/engagements/<engagement_id>/report")
+@machine_bp.get("/engagements/<uuid:engagement_id>/report")
 @host.require_scope("read")
 def scribble_engagement_report(engagement_id: str):
     """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
@@ -1356,78 +1359,45 @@ def scribble_engagement_report(engagement_id: str):
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────
 
 
-# A scribble finding id is a sequential 32-bit ``Integer`` PK. The bound is the COLUMN's, not a policy:
-# handing SQLAlchemy a wider integer raises inside the session rather than answering JSON -- OverflowError
-# ("Python int too large to convert to SQLite INTEGER") on SQLite, and on Postgres (the real backend) a
-# DataError "out of range for type integer" that also poisons the open transaction.
-_MAX_FINDING_ID = 2**31 - 1
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+_FALSE_WORDS = {"0", "false", "no", "off"}
 
 
-def _finding_id_or_400(raw) -> tuple[int | None, tuple[Response, int] | None]:
+def _finding_id_or_400(raw) -> tuple[uuid.UUID | None, tuple[Response, int] | None]:
     """``(finding_id, refusal)`` for a caller-supplied ``finding_id``. Exactly one is non-None.
 
-    Absent or empty means "engagement-level evidence" — a legitimate request (the appendix renders it),
+    Absent or empty means "engagement-level evidence" -- a legitimate request (the appendix renders it),
     and the multipart surface submits ``finding_id=""`` for an untouched field, so an empty string must
     not be an error.
 
-    Anything else that is not a WHOLE NUMBER IN RANGE is an error, and used to be swallowed: ``_as_int``
-    returned None, the artifact silently landed as engagement-level evidence, and the 201 reported
-    ``finding_id_dropped: false`` — i.e. "you did not ask for one" — about a request that plainly did. A
-    UUID is the specific value to expect (scribble's finding ids are sequential ints while the host's core
-    ids are UUIDv7, and confusing the two has taken production down here before), and a runbook reading
-    that response cannot tell the difference between a deliberate engagement-level attach and its own bug.
+    Anything else that ``_as_uuid`` cannot parse is REFUSED here rather than silently treated as "no
+    finding_id" -- exactly the class of bug closed for the old int-keyed id (adversarial review,
+    2026-08-17): a caller-supplied id that fails to parse must not silently land as engagement-level
+    evidence while the 201 asserts ``finding_id_dropped: false`` ("you did not ask for one") about a
+    request that plainly did. ``_as_uuid`` itself already rejects every shape that used to need
+    individual reasoning under the old ``int()``-based parse (floats, bools, out-of-range ints, non-ASCII
+    digit strings) -- there is no coercion path left to close case by case, so this wrapper only has to
+    decide what "absent" means and turn a parse failure into a 400.
 
-    The parse is deliberately NOT ``int()``, which is why this does not use ``_as_int``. ``int()`` coerces
-    rather than validates, and JSON gives a caller two shapes that survive it while meaning something else
-    (adversarial review, 2026-08-17):
-
-    * ``2.9`` -> ``2``, so the evidence attaches to finding 2 — an id the caller never named — and the 201
-      answers ``finding_id_dropped: false``, asserting the attach was honored exactly as asked.
-    * ``true`` -> ``1``, bolting the screenshot onto finding #1, because ``bool`` is an ``int`` subclass.
-
-    Both are gibberish and neither could be refused by a check that asks "does ``int()`` succeed"; the
-    docs promise gibberish is refused, so the parse has to be the strict one. Out-of-range is refused for
-    a different reason — see ``_MAX_FINDING_ID`` — and refusing it HERE matters because this runs before
-    the upload's bytes are written, so a bad id no longer leaves an orphan file on disk behind a 500.
-
-    Refusing all of it is also what keeps ``finding_id_dropped`` meaningful for the case that stays
-    silent: a WELL-FORMED id belonging to another engagement is still dropped to None rather than 404'd
-    (see the tenancy comment at the write), because answering differently would say whether that id
-    exists. A malformed id cannot leak anything, so there is no reason to be quiet about it.
+    A WELL-FORMED id belonging to another engagement (or none at all) is still silently dropped rather
+    than refused here -- that case would leak whether the id exists; a malformed one cannot leak anything,
+    so there is no reason to be quiet about it.
     """
-    def refuse() -> tuple[int | None, tuple[Response, int] | None]:
-        # Built lazily (``jsonify`` needs an app context) so the accept path stays callable as a plain
-        # function -- which is how its parse table is tested directly.
-        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
-
     if raw is None or raw == "":
         return None, None
-    # ``bool`` first: it IS an ``int``, so the isinstance check below would accept True/False.
-    if isinstance(raw, bool):
-        return refuse()
-    if isinstance(raw, int):
-        fid = raw
-    elif isinstance(raw, str) and _INT_RE.fullmatch(raw.strip()):
-        fid = int(raw.strip())
-    else:
-        # A float (2.9), a list, a dict, a UUID, "12.5", "1e3" — anything that is not a whole number.
-        return refuse()
-    if not 0 < fid <= _MAX_FINDING_ID:
-        return refuse()
+    fid = _as_uuid(raw)
+    if fid is None:
+        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
     return fid, None
-
-
-_TRUE_WORDS = {"1", "true", "yes", "on"}
-_FALSE_WORDS = {"0", "false", "no", "off"}
 
 
 def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | None]:
     """``(include_in_report, refusal)`` for the caller-supplied publish flag. None means "not specified".
 
-    Strict for the same reason ``_finding_id_or_400`` is: this flag decides whether an artifact appears in
-    a CLIENT deliverable, so ``bool(raw)`` -- under which the string ``"false"`` is True -- is the wrong
-    parse. JSON callers send a real boolean; the multipart surface can only send text, so the usual word
-    forms are accepted there and anything else is refused rather than guessed at.
+    Strict: this flag decides whether an artifact appears in a CLIENT deliverable, so ``bool(raw)`` --
+    under which the string ``"false"`` is True -- is the wrong parse. JSON callers send a real boolean;
+    the multipart surface can only send text, so the usual word forms are accepted there and anything
+    else is refused rather than guessed at.
     """
     if raw is None or raw == "":
         return None, None
@@ -1442,7 +1412,7 @@ def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | 
     return None, (jsonify({"error": "bad_request", "detail": "invalid include_in_report"}), 400)
 
 
-@machine_bp.post("/engagements/<engagement_id>/artifacts")
+@machine_bp.post("/engagements/<uuid:engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
 def scribble_upload_artifact(engagement_id: str):
@@ -1646,9 +1616,10 @@ def scribble_upload_artifact(engagement_id: str):
             # URL, and a dropped one then landed as engagement-level evidence. `finding_id` is what the
             # artifact is actually attached to (null = the engagement itself) and `finding_id_dropped`
             # says the request asked for one that was not honored. ``requested_fid`` is the PARSED id and
-            # is trustworthy because an unparseable one never reaches here (``_finding_id_or_400``): if it
-            # is None the caller really did ask for engagement-level evidence, so a false
-            # ``finding_id_dropped: false`` is not reachable through a malformed value.
+            # is trustworthy because an unparseable one never reaches here -- ``_finding_id_or_400``
+            # refuses it with a 400 before the body is even fully read: if it is None the caller really
+            # did ask for engagement-level evidence, so a false ``finding_id_dropped: false`` is not
+            # reachable through a malformed value.
             "finding_id": artifact.finding_id,
             "finding_id_dropped": requested_fid is not None and artifact.finding_id != requested_fid,
             # Whether this artifact will appear in the rendered report. Echoed for the same reason as the
@@ -1678,7 +1649,7 @@ def _machine_artifact_dict(a: Artifact) -> dict:
     }
 
 
-@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/artifacts")
+@machine_bp.get("/engagements/<uuid:engagement_id>/artifacts")
 @host.require_scope("read")
 def scribble_list_artifacts(engagement_id: int):
     """List the engagement's evidence — the REVIEW surface for what a report is about to publish.
@@ -1708,7 +1679,7 @@ def scribble_list_artifacts(engagement_id: int):
     return jsonify({"artifacts": out, "count": len(out)})
 
 
-@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/artifacts/<{_ID}:artifact_id>")
+@machine_bp.post("/engagements/<uuid:engagement_id>/artifacts/<uuid:artifact_id>")
 @host.require_scope("write")
 @request_body(UpdateArtifactRequest)
 def scribble_update_artifact(engagement_id: int, artifact_id: int):
@@ -2123,7 +2094,7 @@ def _apply_content_blocks(finding: EngagementFinding, blocks: dict) -> None:
 # ── 10a. GET /engagements/<id>/findings — the board, read back ───────────────────────────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>/findings")
+@machine_bp.get("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("read")
 def scribble_list_findings(engagement_id: int):
     """Every finding in an engagement, in BOARD order — the flat list the drag board shows, NOT the nested
@@ -2176,7 +2147,7 @@ def scribble_list_findings(engagement_id: int):
 # ── 10b. GET /findings/<id> — one finding, in full ───────────────────────────────────────────────────
 
 
-@machine_bp.get("/findings/<int:finding_id>")
+@machine_bp.get("/findings/<uuid:finding_id>")
 @host.require_scope("read")
 def scribble_get_finding(finding_id: int):
     actor = host.actor()
@@ -2190,7 +2161,7 @@ def scribble_get_finding(finding_id: int):
 # ── 10c. PATCH /findings/<id> — edit in place ────────────────────────────────────────────────────────
 
 
-@machine_bp.patch("/findings/<int:finding_id>")
+@machine_bp.patch("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 @request_body(PatchFindingRequest)
 def scribble_update_finding(finding_id: int):
@@ -2252,7 +2223,7 @@ def scribble_update_finding(finding_id: int):
 # ── 10d. DELETE /findings/<id> ───────────────────────────────────────────────────────────────────────
 
 
-@machine_bp.delete("/findings/<int:finding_id>")
+@machine_bp.delete("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 def scribble_delete_finding(finding_id: int):
     """Delete a finding and its evidence — ``findings_service.delete_finding``, the same cascade the
@@ -2346,7 +2317,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
 
     if data.get("group_id") is None:
         return None, order_index, None
-    group_id, err = _opt_int(data, "group_id")
+    group_id, err = _opt_uuid(data, "group_id")
     if err:
         return None, 0, err
     target_group = _group_of(db, engagement_id, group_id)
@@ -2355,7 +2326,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
     return target_group, order_index, None
 
 
-@machine_bp.post("/findings/<int:finding_id>/move")
+@machine_bp.post("/findings/<uuid:finding_id>/move")
 @host.require_scope("write")
 @request_body(MoveFindingRequest)
 def scribble_move_finding(finding_id: int):
@@ -2411,7 +2382,7 @@ def scribble_move_finding(finding_id: int):
 # ── 10f. POST /engagements/<id>/findings/move — BULK ─────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/findings/move")
+@machine_bp.post("/engagements/<uuid:engagement_id>/findings/move")
 @host.require_scope("write")
 @request_body(BulkMoveFindingsRequest)
 def scribble_move_findings(engagement_id: int):
@@ -2442,14 +2413,11 @@ def scribble_move_findings(engagement_id: int):
         # de-duplicated one, because the work this refuses is the walk itself.
         if len(raw_ids) > _BULK_ID_LIST_MAX:
             return _bad_request(f"finding_ids may contain at most {_BULK_ID_LIST_MAX} ids")
-        finding_ids: list[int] = []
+        finding_ids: list[uuid.UUID] = []
         for raw in raw_ids:
-            if isinstance(raw, bool) or not isinstance(raw, (int, str)):
-                return _bad_request("finding_ids must contain integers")
-            try:
-                parsed = int(raw)
-            except (TypeError, ValueError):
-                return _bad_request("finding_ids must contain integers")
+            parsed = _as_uuid(raw)
+            if parsed is None:
+                return _bad_request("finding_ids must contain UUIDs")
             if parsed not in finding_ids:
                 finding_ids.append(parsed)
 
@@ -2508,7 +2476,7 @@ def scribble_move_findings(engagement_id: int):
 # ── 10g. groups: create / update / delete / reorder ──────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/groups")
+@machine_bp.post("/engagements/<uuid:engagement_id>/groups")
 @host.require_scope("write")
 @request_body(CreateGroupRequest)
 def scribble_create_group(engagement_id: int):
@@ -2534,7 +2502,7 @@ def scribble_create_group(engagement_id: int):
     # to the database (Postgres 500s, SQLite stores the over-long value silently).
     if (err := _too_long("name", name, cap=_GROUP_NAME_MAX_LEN)) is not None:
         return err
-    assessment_type_id, err = _opt_int(data, "assessment_type_id")
+    assessment_type_id, err = _opt_uuid(data, "assessment_type_id")
     if err:
         return err
 
@@ -2563,7 +2531,7 @@ def scribble_create_group(engagement_id: int):
     return jsonify(body), status
 
 
-@machine_bp.patch("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@machine_bp.patch("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 @request_body(UpdateGroupRequest)
 def scribble_update_group(engagement_id: int, group_id: int):
@@ -2630,7 +2598,7 @@ def scribble_update_group(engagement_id: int, group_id: int):
     return jsonify(body), status
 
 
-@machine_bp.delete("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@machine_bp.delete("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 def scribble_delete_group(engagement_id: int, group_id: int):
     """Delete a report section. Its findings are DETACHED (``group_id`` -> NULL), not deleted — removing a
@@ -2663,7 +2631,7 @@ def scribble_delete_group(engagement_id: int, group_id: int):
     return jsonify(body), status
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/groups/reorder")
+@machine_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
 @host.require_scope("write")
 @request_body(ReorderGroupsRequest)
 def scribble_reorder_groups(engagement_id: int):
@@ -2725,10 +2693,10 @@ def _diagram_dict(d: EngagementDiagram) -> dict:
     }
 
 
-@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/attack-paths")
+@machine_bp.post("/engagements/<uuid:engagement_id>/attack-paths")
 @host.require_scope("write")
 @request_body(LinkAttackPathRequest)
-def scribble_link_attack_path(engagement_id: int):
+def scribble_link_attack_path(engagement_id):
     """Link a vector attack-path diagram into this engagement's report (ext#48).
 
     Scribble has no seam to reach vector directly (a separate extension, no host hook exposes it), so
@@ -2798,9 +2766,9 @@ def scribble_link_attack_path(engagement_id: int):
     return jsonify(body), status
 
 
-@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/attack-paths")
+@machine_bp.get("/engagements/<uuid:engagement_id>/attack-paths")
 @host.require_scope("read")
-def scribble_list_attack_paths(engagement_id: int):
+def scribble_list_attack_paths(engagement_id):
     """List the attack-path diagrams linked to this engagement — the review surface for what the
     report's Attack Paths block will publish (mirrors ``scribble_list_artifacts``)."""
     actor = host.actor()

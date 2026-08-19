@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import io
+import uuid
 
 import pytest
 
@@ -25,9 +26,13 @@ from scribble.artifacts_storage import SAFE_NAME_MAX, resolve_path
 from scribble.host import SCOPE_ATTR
 from tests.conftest import StubActor
 
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
+
 M = "/scribble/machine"
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 # A 1x1 PNG — real bytes, so content-type sniffing and kind inference are exercised for real.
 PNG = base64.b64decode(
@@ -41,7 +46,7 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
 def _upload_json(client, engagement_id, *, data=PNG, filename="shot.png", **extra):
@@ -171,7 +176,7 @@ def test_the_201_echoes_the_effective_finding_id(client, stub_host, session_fact
     eid = _engagement(client, stub_host)
     fid = _finding_on(session_factory, eid)
     body = _upload_json(client, eid, finding_id=fid).get_json()
-    assert body["finding_id"] == fid
+    assert body["finding_id"] == str(fid)
     assert body["finding_id_dropped"] is False
 
 
@@ -204,9 +209,11 @@ def test_a_foreign_finding_id_is_dropped_AND_the_caller_is_told(client, stub_hos
         assert db.get(fm.EngagementFinding, foreign_fid).artifacts == []
 
 
-def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
+def test_a_nonexistent_finding_id_is_dropped_the_same_way(client, stub_host):
+    """A WELL-FORMED id with no row anywhere gets the same silent drop as a foreign one -- refusing it
+    would leak whether the id exists (see ``_finding_id_or_400``'s docstring)."""
     eid = _engagement(client, stub_host)
-    body = _upload_json(client, eid, finding_id=999999).get_json()
+    body = _upload_json(client, eid, finding_id=_MISSING_ID).get_json()
     assert body["finding_id"] is None
     assert body["finding_id_dropped"] is True
 
@@ -214,53 +221,57 @@ def test_a_missing_finding_id_is_dropped_the_same_way(client, stub_host):
 @pytest.mark.parametrize(
     "bad",
     [
-        "0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11",  # a core UUIDv7 — the likeliest wrong value here
         "abc",
         "12.5",
         [],
         {},
-        # JSON NUMBER forms, which the first version of this parse let through because it delegated to
-        # ``int()``: ``int()`` coerces rather than validates, so 2.9 became finding 2 and True became
-        # finding 1 — a DIFFERENT finding than the caller named, reported as ``finding_id_dropped: false``
-        # (adversarial review, 2026-08-17). The string "12.5" above does NOT cover these: it fails
-        # ``int()`` outright, so parametrising only the string masked the hole.
+        # None of these is a UUID, and `_as_uuid` rejects every one of them outright (it never coerces --
+        # see its docstring) -- but a caller-supplied `finding_id` that fails to parse must still be
+        # REFUSED, not silently treated as "no finding_id" (adversarial review, 2026-08-17, against the
+        # old int-keyed id: `int()` coerced `2.9` -> finding 2 and `True` -> finding 1, a DIFFERENT
+        # finding than the caller named, with the 201 asserting `finding_id_dropped: false`). Kept here as
+        # the same class of malformed input against the current UUID parser.
         2.9,
         0.0,
         True,
         False,
-        # Out of range for the column. ``int()`` succeeds, ``db.get`` then raises inside the session —
-        # OverflowError on SQLite, DataError on Postgres — which is a 500 on caller-controlled input, and
-        # by then the bytes are already on disk.
         10**30,
         2**31,
         -1,
         0,
         "1e3",
         "+7",
-        # NON-ASCII decimal digits. ``re``'s ``\\d`` is Unicode-aware, so ``\\d+`` matched these and
-        # ``int()`` then coerced them to an ASCII value: "\u0667" (Arabic-Indic seven) and "\uff17" (fullwidth
-        # seven) both became finding 7. Benign in effect -- it resolves to the id the caller arguably named
-        # -- but it is the same COERCION the 2.9/True cases above were refused for, in a parse whose whole
-        # claim is that it validates rather than converts, so the class is closed rather than argued about.
-        "\u0667",
-        "\uff17",
+        "\u0667",  # Arabic-Indic seven
+        "\uff17",  # fullwidth seven
     ],
 )
 def test_a_finding_id_that_does_not_PARSE_is_refused_not_silently_dropped(client, stub_host, bad):
-    """``_as_int`` returns None for anything non-integer, which used to make an unparseable ``finding_id``
-    indistinguishable from not sending one: the artifact landed as engagement-level evidence and the 201
-    said ``finding_id_dropped: false`` — "you did not ask for one" — which is the exact false reassurance
-    the echo fields were added to remove.
+    """An unparseable ``finding_id`` used to be indistinguishable from not sending one: the artifact
+    landed as engagement-level evidence and the 201 said ``finding_id_dropped: false`` -- "you did not ask
+    for one" -- which is the exact false reassurance the echo fields were added to remove.
 
-    A UUID is the specific mistake to expect: scribble's finding ids are sequential integers while the
-    host's are UUIDv7, and mixing the two has cost this project real outages. Refusing it also keeps
-    ``finding_id_dropped`` honest: after this, ``finding_id: null`` with ``dropped: false`` really does
-    mean the caller asked for engagement-level. (A well-formed id belonging to ANOTHER engagement is still
-    dropped rather than refused — that case would leak whether the id exists; this one cannot.)"""
+    None of these values is a UUID -- scribble's finding ids became UUIDv7 in lotek#335 -- and
+    ``_finding_id_or_400`` refuses every one of them with a clean 400 rather than silently dropping the
+    attachment. (A WELL-FORMED id belonging to ANOTHER engagement, or to none at all, is still dropped
+    rather than refused -- that case would leak whether the id exists; a malformed one cannot leak
+    anything, so there is no reason to be quiet about it. See
+    ``test_a_well_formed_but_foreign_shaped_finding_id_is_dropped_not_refused``.)"""
     eid = _engagement(client, stub_host)
     resp = _upload_json(client, eid, finding_id=bad)
     assert resp.status_code == 400, resp.get_json()
     assert resp.get_json()["detail"] == "invalid finding_id"
+
+
+def test_a_well_formed_but_foreign_shaped_finding_id_is_dropped_not_refused(client, stub_host):
+    """A syntactically valid UUID that just does not name a finding on THIS engagement -- e.g. a core
+    (host) UUIDv7 rather than one of scribble's own -- is the "well-formed but wrong" case, and it is
+    silently dropped exactly like a foreign or nonexistent finding, never refused: refusing a well-formed
+    id would tell the caller whether that id exists somewhere, which is the existence oracle this route
+    must not become."""
+    eid = _engagement(client, stub_host)
+    body = _upload_json(client, eid, finding_id="0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11").get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is True
 
 
 def test_an_empty_finding_id_still_means_engagement_level(client, stub_host):
@@ -278,51 +289,19 @@ def test_a_multipart_upload_refuses_an_unparseable_finding_id(client, stub_host)
     eid = _engagement(client, stub_host)
     resp = client.post(
         f"{M}/engagements/{eid}/artifacts",
-        data={
-            "file": (io.BytesIO(PNG), "shot.png"),
-            "finding_id": "0198f3c1-6a1e-7c0b-9a3e-2f5c8d7b4a11",
-        },
+        data={"file": (io.BytesIO(PNG), "shot.png"), "finding_id": "not-a-uuid"},
         content_type="multipart/form-data",
     )
     assert resp.status_code == 400, resp.get_json()
     assert resp.get_json()["detail"] == "invalid finding_id"
 
 
-@pytest.mark.parametrize(("raw", "would_have_hit"), [(2.9, 2), (True, 1)])
-def test_a_json_number_finding_id_does_not_attach_to_a_DIFFERENT_finding(
-    client, stub_host, session_factory, raw, would_have_hit
-):
-    """The two values ``int()`` silently RESOLVED to a real, wrong finding — measured on this very route.
-
-    With findings 1 and 2 on the engagement, ``{"finding_id": 2.9}`` answered 201 with ``finding_id: 2``
-    and ``finding_id_dropped: false``: the evidence was attached to a finding the caller never named, and
-    the response asserted the attach was honoured exactly as asked. ``true`` did the same to finding 1
-    (``bool`` is an ``int`` subclass). Both are the precise false reassurance the echo fields were added to
-    remove, and ``SCRIBBLE.md`` promises a ``finding_id`` that does not parse is refused.
-
-    So the assertion is two-sided: refused with a 400, AND the finding it would have landed on is clean."""
-    eid = _engagement(client, stub_host)
-    first = _finding_on(session_factory, eid, title="finding one")
-    second = _finding_on(session_factory, eid, title="finding two")
-    assert (first, second) == (1, 2), "this guard is about the ids int() would coerce to"
-
-    resp = _upload_json(client, eid, finding_id=raw)
-    assert resp.status_code == 400, resp.get_json()
-    assert resp.get_json()["detail"] == "invalid finding_id"
-    with session_factory() as db:
-        assert db.get(fm.EngagementFinding, would_have_hit).artifacts == []
-        assert db.query(fm.Artifact).count() == 0
-
-
 def test_an_out_of_range_finding_id_is_refused_BEFORE_the_bytes_are_stored(
     client, stub_host, session_factory, tmp_path
 ):
-    """An id wider than the column raised INSIDE the session — ``OverflowError: Python int too large to
-    convert to SQLite INTEGER``, a DataError on Postgres — so the response was not JSON at all, and
-    ``save_bytes`` had already run, leaving an orphan file on disk behind the 500.
-
-    The bound lives in the parse, which runs before the body is even decoded, so the refusal is a clean 400
-    and nothing is written either to the table or to the artifact directory."""
+    """A caller-supplied ``finding_id`` that cannot parse must be refused before any byte is written —
+    not just before the row lands. ``save_bytes`` and the ``Artifact`` insert both come AFTER the parse,
+    so a malformed id must never leave an orphan file on disk behind a refused request."""
     eid = _engagement(client, stub_host)
     resp = _upload_json(client, eid, finding_id=10**30)
     assert resp.status_code == 400, resp.get_json()
@@ -333,8 +312,8 @@ def test_an_out_of_range_finding_id_is_refused_BEFORE_the_bytes_are_stored(
     assert stored == [], f"a refused upload left bytes on disk: {stored}"
 
 
-def test_a_multipart_upload_refuses_an_out_of_range_finding_id(client, stub_host):
-    """Same bound on the form surface, where every value arrives as a string."""
+def test_a_multipart_upload_refuses_a_non_uuid_finding_id(client, stub_host):
+    """Same rule on the form surface, where every value arrives as a string."""
     eid = _engagement(client, stub_host)
     resp = client.post(
         f"{M}/engagements/{eid}/artifacts",
@@ -343,16 +322,6 @@ def test_a_multipart_upload_refuses_an_out_of_range_finding_id(client, stub_host
     )
     assert resp.status_code == 400, resp.get_json()
     assert resp.get_json()["detail"] == "invalid finding_id"
-
-
-def test_the_largest_id_the_column_holds_is_still_accepted(client, stub_host):
-    """The bound must not refuse a legal id: 2**31-1 is a value the column can hold, so it parses and is
-    then simply dropped as nonexistent (the normal not-found path), not refused as malformed."""
-    eid = _engagement(client, stub_host)
-    resp = _upload_json(client, eid, finding_id=2**31 - 1)
-    assert resp.status_code == 201, resp.get_json()
-    assert resp.get_json()["finding_id"] is None
-    assert resp.get_json()["finding_id_dropped"] is True
 
 
 def test_an_unparseable_finding_id_is_refused_on_a_REPLAY_too(client, stub_host):
@@ -410,7 +379,7 @@ def test_upload_to_an_invisible_engagement_is_404_and_writes_nothing(client, stu
 def test_upload_to_a_missing_engagement_is_the_same_404(client, stub_host):
     """Missing and not-visible are indistinguishable — no existence oracle."""
     _engagement(client, stub_host)  # so the table is not simply empty
-    missing = client.post(f"{M}/engagements/999999/artifacts",
+    missing = client.post(f"{M}/engagements/{_MISSING_ID}/artifacts",
                           json={"filename": "x.png", "content_base64": base64.b64encode(PNG).decode()})
     assert missing.status_code == 404
 
@@ -483,7 +452,7 @@ def test_a_retry_with_the_same_idempotency_key_returns_the_original(client, stub
 
     assert first.status_code == 201, first.get_json()
     assert second.status_code == 200, second.get_json()
-    assert second.get_json()["id"] == first.get_json()["id"]
+    assert uuid.UUID(second.get_json()["id"]) == uuid.UUID(first.get_json()["id"])
     with session_factory() as db:
         assert db.query(fm.Artifact).count() == 1
 
@@ -493,7 +462,7 @@ def test_different_keys_produce_distinct_artifacts(client, stub_host, session_fa
     a = _upload_json(client, eid, idempotency_key="one")
     b = _upload_json(client, eid, idempotency_key="two")
     assert {a.status_code, b.status_code} == {201}
-    assert a.get_json()["id"] != b.get_json()["id"]
+    assert a.get_json()["id"] != uuid.UUID(b.get_json()["id"])
     with session_factory() as db:
         assert db.query(fm.Artifact).count() == 2
 
@@ -542,7 +511,10 @@ def test_an_invalid_kind_or_placement_is_400(client, stub_host):
 def test_upload_fails_closed_with_no_host_mounted(client):
     """Standalone scribble has no PAT scheme, so the machine route must refuse rather than run
     unauthenticated (`scribble/host.py::_no_host`)."""
-    resp = client.post(f"{M}/engagements/1/artifacts", json={"filename": "x", "content_base64": "eA=="})
+    resp = client.post(
+        f"{M}/engagements/{uuid.uuid7()}/artifacts",
+        json={"filename": "x", "content_base64": "eA=="},
+    )  # a well-formed id: the point is the 503 from an unmounted host, not a routing 404
     assert resp.status_code == 503
     assert resp.get_json()["error"] == "unavailable"
 
@@ -651,7 +623,9 @@ def test_the_list_route_is_scoped_to_the_engagement_in_the_URL(client, stub_host
 def test_listing_an_invisible_engagement_is_the_same_404_as_a_missing_one(client, stub_host):
     """No existence oracle, the same posture as every other route in this module."""
     eid = _engagement(client, stub_host)
-    missing = client.get(f"{M}/engagements/999999/artifacts")
+    # A well-formed id with no row -- NOT a malformed one (lotek#335: a bare int no longer MATCHES the
+    # `<uuid:...>` route at all, so Werkzeug's own 404 page would answer instead of the view's JSON 404).
+    missing = client.get(f"{M}/engagements/{_MISSING_ID}/artifacts")
     stub_host.actor = StubActor(id=2, username="other", role="operator")
     stub_host.viewable_client_ids = set()
     invisible = client.get(f"{M}/engagements/{eid}/artifacts")

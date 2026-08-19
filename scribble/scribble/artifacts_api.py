@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import re
 
 from flask import jsonify, request, send_file, url_for
 
@@ -84,39 +83,46 @@ def _infer_kind(content_type: str | None) -> ArtifactKind:
     return ArtifactKind.file
 
 
-def _as_int(value) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def _as_uuid(value):
+    """Coerce a body-supplied Scribble row id to a ``uuid.UUID``, or ``None`` if it is not one.
+
+    Scribble's ids became UUIDv7 in lotek#335, and JSON has no UUID type — so a body field arrives as a
+    STRING. Handing that string straight to ``db.get()`` does not raise a clean "bad id": SQLAlchemy's
+    ``Uuid`` type calls ``.hex`` on it and the request dies as
+    ``AttributeError: 'str' object has no attribute 'hex'`` — a 500, from deep inside the ORM, for what
+    is really malformed input. Returning ``None`` here lets the caller answer 400/404 the way it already
+    does for a missing id.
+
+    URL path segments do NOT need this: Flask's ``<uuid:…>`` converter has already parsed them.
+    """
+    import uuid as _uuid
+
+    if isinstance(value, _uuid.UUID):
+        return value
+    if not isinstance(value, str):
         return None
-
-
-_INT_RE = re.compile(r"[0-9]+")
-_MAX_FINDING_ID = 2**31 - 1
+    try:
+        return _uuid.UUID(value.strip())
+    except (ValueError, AttributeError):
+        return None
 
 
 def _finding_id_or_400(raw):
     """``(finding_id, refusal)`` for a caller-supplied ``finding_id`` — the cookie counterpart of
-    ``api_pat._finding_id_or_400`` (ext#52). Exactly one of the pair is non-None.
+    ``api_pat._finding_id_or_400`` (ext#52), UUID-ported (lotek#335). Exactly one of the pair is non-None.
 
     Absent/empty means "engagement-level evidence" (a legitimate request — the multipart surface
-    submits ``finding_id=""`` for an untouched field). Anything else that is not a whole number in
-    range is refused with a 400 rather than silently coerced/dropped: a float (``2.9``) or a bool
-    (``True`` is an ``int`` subclass) would otherwise attach to a finding the caller never named, and
-    reading "did you ask for one" off the response would then be a lie. See ``api_pat``'s docstring
-    for the full reasoning; this mirrors it exactly so the cookie and PAT surfaces agree.
+    submits ``finding_id=""`` for an untouched field). Anything that is not a valid UUID is refused
+    with a 400 rather than silently coerced/dropped: a float (``2.9``), a bool, or a bare integer
+    would otherwise attach to a finding the caller never named, and reading "did you ask for one" off
+    the response would then be a lie. ``_as_uuid`` returns ``None`` for every non-UUID shape, so the
+    single check below covers them all. Mirrors ``api_pat._finding_id_or_400`` so the cookie and PAT
+    surfaces agree.
     """
     if raw is None or raw == "":
         return None, None
-    if isinstance(raw, bool):
-        return None, (jsonify(error=f"invalid finding_id {raw!r}"), 400)
-    if isinstance(raw, int):
-        fid = raw
-    elif isinstance(raw, str) and _INT_RE.fullmatch(raw.strip()):
-        fid = int(raw.strip())
-    else:
-        return None, (jsonify(error=f"invalid finding_id {raw!r}"), 400)
-    if not 0 < fid <= _MAX_FINDING_ID:
+    fid = _as_uuid(raw)
+    if fid is None:
         return None, (jsonify(error=f"invalid finding_id {raw!r}"), 400)
     return fid, None
 
@@ -159,7 +165,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
         upload = request.files.get("file")
         if upload is not None:
-            engagement_id = _as_int(request.form.get("engagement_id"))
+            engagement_id = _as_uuid(request.form.get("engagement_id"))
             finding_id, bad_finding_id = _finding_id_or_400(request.form.get("finding_id"))
             if bad_finding_id is not None:
                 return bad_finding_id
@@ -171,7 +177,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             data = upload.read()
         elif request.is_json:
             payload = request.get_json(silent=True) or {}
-            engagement_id = _as_int(payload.get("engagement_id"))
+            engagement_id = _as_uuid(payload.get("engagement_id"))
             finding_id, bad_finding_id = _finding_id_or_400(payload.get("finding_id"))
             if bad_finding_id is not None:
                 return bad_finding_id
@@ -322,7 +328,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             }
         return jsonify(result), 201
 
-    @api_bp.get("/artifacts/<int:artifact_id>/raw")
+    @api_bp.get("/artifacts/<uuid:artifact_id>/raw")
     def artifact_raw(artifact_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -350,7 +356,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             mimetype=content_type or "application/octet-stream",
         )
 
-    @api_bp.post("/artifacts/<int:artifact_id>")
+    @api_bp.post("/artifacts/<uuid:artifact_id>")
     def update_artifact(artifact_id: int):
         payload = request.get_json(silent=True) or {}
         with open_session() as db:
@@ -370,7 +376,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             result = _artifact_dict(artifact)
         return jsonify(result)
 
-    @api_bp.post("/artifacts/<int:artifact_id>/delete")
+    @api_bp.post("/artifacts/<uuid:artifact_id>/delete")
     def delete_artifact(artifact_id: int):
         cfg = get_config()
         with open_session() as db:
@@ -383,8 +389,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         delete_file(cfg, storage_path)
         return jsonify(ok=True)
 
-    @api_bp.get("/engagements/<int:engagement_id>/artifacts")
-    def list_engagement_artifacts(engagement_id: int):
+    @api_bp.get("/engagements/<uuid:engagement_id>/artifacts")
+    def list_engagement_artifacts(engagement_id):
         """List every artifact on this engagement -- ext#51's cookie review surface (the machine
         counterpart is ``api_pat.scribble_list_artifacts``), so an operator can see engagement-level
         evidence (``finding_id`` null) before it publishes into the Evidence appendix, not just a
@@ -405,8 +411,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             result = [_artifact_dict(a) for a in rows]
         return jsonify(artifacts=result)
 
-    @api_bp.get("/findings/<int:finding_id>/artifacts")
-    def list_finding_artifacts(finding_id: int):
+    @api_bp.get("/findings/<uuid:finding_id>/artifacts")
+    def list_finding_artifacts(finding_id):
         with open_session() as db:
             rows = (
                 db.query(Artifact)
@@ -417,8 +423,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             result = [_artifact_dict(a) for a in rows]
         return jsonify(artifacts=result)
 
-    @api_bp.post("/findings/<int:finding_id>/artifacts/reorder")
-    def reorder_artifacts(finding_id: int):
+    @api_bp.post("/findings/<uuid:finding_id>/artifacts/reorder")
+    def reorder_artifacts(finding_id):
         payload = request.get_json(silent=True) or {}
         order = payload.get("order")
         if not isinstance(order, list):
@@ -426,7 +432,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         with open_session() as db:
             rows = {a.id: a for a in db.query(Artifact).filter(Artifact.finding_id == finding_id).all()}
             for index, artifact_id in enumerate(order):
-                artifact = rows.get(_as_int(artifact_id))
+                artifact = rows.get(_as_uuid(artifact_id))
                 if artifact is not None:
                     artifact.order_index = index
             db.commit()

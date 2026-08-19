@@ -22,6 +22,7 @@ driven by the optional host `extras['can_write']` hook.
 from __future__ import annotations
 
 import io
+import uuid
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -40,6 +41,8 @@ from scribble.models import (
     VulnerabilityTemplate,
 )
 from scribble.reporting import build_report_context
+
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 API = "/scribble/api"
 UI = "/scribble"
@@ -126,7 +129,7 @@ def test_create_engagement_requires_name(client, session_factory):
 
 
 def test_engagement_board_404_for_missing_engagement(client):
-    resp = client.get(f"{UI}/engagements/999999")
+    resp = client.get(f"{UI}/engagements/{_MISSING_ID}")
     assert resp.status_code == 404
 
 
@@ -324,7 +327,7 @@ def test_finding_detail_get_renders_editor_and_gallery(client, session_factory):
 
 
 def test_finding_detail_404_for_missing(client):
-    resp = client.get(f"{UI}/findings/999999")
+    resp = client.get(f"{UI}/findings/{_MISSING_ID}")
     assert resp.status_code == 404
 
 
@@ -429,7 +432,7 @@ def test_reorder_groups_on_empty_engagement_is_a_noop(client, session_factory):
 
 
 def test_reorder_groups_missing_engagement_404(client):
-    resp = client.post(f"{API}/engagements/999999/groups/reorder", json={"order": []})
+    resp = client.post(f"{API}/engagements/{_MISSING_ID}/groups/reorder", json={"order": []})
     assert resp.status_code == 404
 
 
@@ -461,10 +464,10 @@ def test_move_finding_across_groups_updates_group_and_reindexes_both_sides(clien
     resp = client.post(f"{API}/findings/{f1_id}/move", json={"group_id": external_id, "order_index": 0})
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body["finding"]["group_id"] == external_id
+    assert uuid.UUID(body["finding"]["group_id"]) == external_id
     assert body["finding"]["order_index"] == 0
-    assert body["group"]["id"] == external_id
-    assert body["previous_group"]["id"] == internal_id
+    assert uuid.UUID(body["group"]["id"]) == external_id
+    assert uuid.UUID(body["previous_group"]["id"]) == internal_id
 
     with session_factory() as db:
         moved = db.get(EngagementFinding, f1_id)
@@ -487,7 +490,7 @@ def test_move_finding_into_nonexistent_group_404(client, session_factory):
         db.commit()
         f_id = f.id
 
-    resp = client.post(f"{API}/findings/{f_id}/move", json={"group_id": 999999, "order_index": 0})
+    resp = client.post(f"{API}/findings/{f_id}/move", json={"group_id": str(uuid.uuid7()), "order_index": 0})
     assert resp.status_code == 404
     with session_factory() as db:
         # The finding must not have moved when the target group doesn't exist.
@@ -516,7 +519,7 @@ def test_move_nonexistent_finding_404(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         group_id = group.id
-    resp = client.post(f"{API}/findings/999999/move", json={"group_id": group_id, "order_index": 0})
+    resp = client.post(f"{API}/findings/{_MISSING_ID}/move", json={"group_id": group_id, "order_index": 0})
     assert resp.status_code == 404
 
 
@@ -719,7 +722,7 @@ def test_update_group_rejects_invalid_order_mode(client, session_factory):
 
 
 def test_update_group_missing_404(client):
-    resp = client.post(f"{API}/groups/999999", json={"name": "x"})
+    resp = client.post(f"{API}/groups/{_MISSING_ID}", json={"name": "x"})
     assert resp.status_code == 404
 
 
@@ -825,7 +828,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
         content_type="multipart/form-data",
     )
     assert upload.status_code == 201
-    artifact_id = upload.get_json()["id"]
+    artifact_id = uuid.UUID(upload.get_json()["id"])
 
     with session_factory() as db:
         artifact = db.get(Artifact, artifact_id)
@@ -1059,7 +1062,7 @@ def test_delete_finding_missing_404(client, session_factory):
         eng = _make_engagement(db)
         eng_id = eng.id
 
-    resp = client.post(f"{UI}/engagements/{eng_id}/findings/999999/delete")
+    resp = client.post(f"{UI}/engagements/{eng_id}/findings/{_MISSING_ID}/delete")
     assert resp.status_code == 404
 
 

@@ -10,6 +10,7 @@ safe even though it runs once per test app in the same pytest process.
 from __future__ import annotations
 
 import io
+import uuid
 
 import pytest
 from flask import Flask
@@ -31,6 +32,8 @@ from scribble.enums import ArtifactPlacement, Severity
 from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
 from scribble.seed import seed_defaults
+
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
@@ -185,7 +188,7 @@ def test_upload_multipart_creates_row_and_file(client, session_factory, cfg):
     assert body["url"].endswith(f"/artifacts/{body['id']}/raw")
 
     with session_factory() as db:
-        artifact = db.get(Artifact, body["id"])
+        artifact = db.get(Artifact, uuid.UUID(body["id"]))
         assert artifact is not None
         assert artifact.engagement_id == engagement_id
         assert artifact.finding_id == finding_id
@@ -245,7 +248,7 @@ def test_create_artifact_keeps_own_finding_id(client, session_factory):
     )
     assert resp.status_code == 201
     body = resp.get_json()
-    assert body["finding_id"] == finding_id
+    assert body["finding_id"] == str(finding_id)
     assert body["finding_id_dropped"] is False
 
 
@@ -343,7 +346,7 @@ def test_upload_json_base64_creates_row(client, session_factory):
     assert body["kind"] == "text"
 
     with session_factory() as db:
-        artifact = db.get(Artifact, body["id"])
+        artifact = db.get(Artifact, uuid.UUID(body["id"]))
         assert artifact.content_type == "text/plain"
 
 
@@ -362,7 +365,7 @@ def test_upload_created_by_none_without_host_hook(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        artifact = db.get(Artifact, resp.get_json()["id"])
+        artifact = db.get(Artifact, uuid.UUID(resp.get_json()["id"]))
         assert artifact.created_by is None
 
 
@@ -386,7 +389,7 @@ def test_upload_created_by_set_from_host_current_actor_hook(client, session_fact
         )
         assert resp.status_code == 201
         with session_factory() as db:
-            artifact = db.get(Artifact, resp.get_json()["id"])
+            artifact = db.get(Artifact, uuid.UUID(resp.get_json()["id"]))
             assert artifact.created_by == "j.analyst"
     finally:
         cfg.extras.pop("current_actor", None)
@@ -408,7 +411,7 @@ def test_upload_with_placement_inline(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        artifact = db.get(Artifact, resp.get_json()["id"])
+        artifact = db.get(Artifact, uuid.UUID(resp.get_json()["id"]))
         assert artifact.placement == ArtifactPlacement.inline
 
 
@@ -444,7 +447,7 @@ def test_upload_default_placement_is_attached(client, session_factory):
     )
     assert resp.status_code == 201
     with session_factory() as db:
-        artifact = db.get(Artifact, resp.get_json()["id"])
+        artifact = db.get(Artifact, uuid.UUID(resp.get_json()["id"]))
         assert artifact.placement == ArtifactPlacement.attached
 
 
@@ -466,7 +469,7 @@ def test_upload_with_same_idempotency_key_header_returns_existing_artifact(clien
         headers={"Idempotency-Key": "retry-key-1"},
     )
     assert first.status_code == 201
-    first_id = first.get_json()["id"]
+    first_id = uuid.UUID(first.get_json()["id"])
 
     # Retried upload with the SAME header: must not create a second row/file, and must return 200.
     second = client.post(
@@ -479,7 +482,7 @@ def test_upload_with_same_idempotency_key_header_returns_existing_artifact(clien
         headers={"Idempotency-Key": "retry-key-1"},
     )
     assert second.status_code == 200
-    assert second.get_json()["id"] == first_id
+    assert uuid.UUID(second.get_json()["id"]) == first_id
 
     with session_factory() as db:
         count = db.query(Artifact).filter_by(engagement_id=engagement_id).count()
@@ -503,7 +506,7 @@ def test_upload_without_idempotency_key_creates_normally(client, session_factory
     )
     assert first.status_code == 201
     assert second.status_code == 201
-    assert first.get_json()["id"] != second.get_json()["id"]
+    assert first.get_json()["id"] != uuid.UUID(second.get_json()["id"])
 
     with session_factory() as db:
         count = db.query(Artifact).filter_by(engagement_id=engagement_id).count()
@@ -529,7 +532,7 @@ def test_upload_with_different_idempotency_keys_creates_two_artifacts(client, se
     )
     assert first.status_code == 201
     assert second.status_code == 201
-    assert first.get_json()["id"] != second.get_json()["id"]
+    assert first.get_json()["id"] != uuid.UUID(second.get_json()["id"])
 
     with session_factory() as db:
         count = db.query(Artifact).filter_by(engagement_id=engagement_id).count()
@@ -622,7 +625,7 @@ def test_raw_download_is_forced_attachment(client, session_factory):
         data={"engagement_id": str(engagement_id), "file": (io.BytesIO(PNG_BYTES), "shot.png")},
         content_type="multipart/form-data",
     )
-    artifact_id = create.get_json()["id"]
+    artifact_id = uuid.UUID(create.get_json()["id"])
 
     resp = client.get(f"/scribble/api/artifacts/{artifact_id}/raw")
     assert resp.status_code == 200
@@ -632,7 +635,7 @@ def test_raw_download_is_forced_attachment(client, session_factory):
 
 
 def test_raw_download_missing_returns_404(client):
-    resp = client.get("/scribble/api/artifacts/999999/raw")
+    resp = client.get("/scribble/api/artifacts/{_MISSING_ID}/raw")
     assert resp.status_code == 404
 
 
@@ -649,7 +652,7 @@ def test_update_caption_and_include_toggle(client, session_factory):
         data={"engagement_id": str(engagement_id), "file": (io.BytesIO(PNG_BYTES), "shot.png")},
         content_type="multipart/form-data",
     )
-    artifact_id = create.get_json()["id"]
+    artifact_id = uuid.UUID(create.get_json()["id"])
 
     resp = client.post(
         f"/scribble/api/artifacts/{artifact_id}",
@@ -667,7 +670,7 @@ def test_update_caption_and_include_toggle(client, session_factory):
 
 
 def test_update_missing_artifact_404(client):
-    resp = client.post("/scribble/api/artifacts/999999", json={"caption": "x"})
+    resp = client.post("/scribble/api/artifacts/{_MISSING_ID}", json={"caption": "x"})
     assert resp.status_code == 404
 
 
@@ -691,7 +694,7 @@ def test_reorder_persists_order_index(client, session_factory):
             },
             content_type="multipart/form-data",
         )
-        ids.append(resp.get_json()["id"])
+        ids.append(uuid.UUID(resp.get_json()["id"]))
 
     # Reverse the natural creation order.
     new_order = list(reversed(ids))
@@ -699,7 +702,7 @@ def test_reorder_persists_order_index(client, session_factory):
     assert resp.status_code == 200
 
     listing = client.get(f"/scribble/api/findings/{finding_id}/artifacts").get_json()
-    assert [a["id"] for a in listing["artifacts"]] == new_order
+    assert [uuid.UUID(a["id"]) for a in listing["artifacts"]] == new_order
 
     with session_factory() as db:
         rows = {a.id: a.order_index for a in db.query(Artifact).filter_by(finding_id=finding_id).all()}
@@ -730,7 +733,7 @@ def test_delete_removes_row_and_file(client, session_factory, cfg):
         data={"engagement_id": str(engagement_id), "file": (io.BytesIO(PNG_BYTES), "shot.png")},
         content_type="multipart/form-data",
     )
-    artifact_id = create.get_json()["id"]
+    artifact_id = uuid.UUID(create.get_json()["id"])
 
     with session_factory() as db:
         storage_path = db.get(Artifact, artifact_id).storage_path
@@ -747,7 +750,7 @@ def test_delete_removes_row_and_file(client, session_factory, cfg):
 
 
 def test_delete_missing_artifact_404(client):
-    resp = client.post("/scribble/api/artifacts/999999/delete")
+    resp = client.post("/scribble/api/artifacts/{_MISSING_ID}/delete")
     assert resp.status_code == 404
 
 
@@ -893,7 +896,7 @@ def test_upload_with_same_engagement_finding_id_echoes_it_undropped(client, sess
     )
     assert resp.status_code == 201
     body = resp.get_json()
-    assert body["finding_id"] == finding_id
+    assert body["finding_id"] == str(finding_id)
     assert body["finding_id_dropped"] is False
 
     with session_factory() as db:

@@ -9,13 +9,19 @@ and — again — the tenancy pass-through (missing/unauthorized job -> 404, not
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import FakeFindingDTO, StubActor
+
+_MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
 M = "/scribble/machine"
 
 
-ACME = 501  # the client every machine-created engagement in this file belongs to
+# Scribble's own client PK is UUIDv7 since lotek#335. Where a test seeds `scribble_clients` and
+# ALSO grants on the same id via the stub host, both halves must move together.
+ACME = uuid.uuid7()  # the client every machine-created engagement in this file belongs to
 
 
 def _engagement(client, stub_host, name: str = "E") -> int:
@@ -30,7 +36,7 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return resp.get_json()["id"]
+    return uuid.UUID(resp.get_json()["id"])
 
 
 def test_promote_job_creates_findings_and_records_host_assignment(client, stub_host, session_factory):
@@ -62,7 +68,12 @@ def test_promote_is_deduped_on_rerun(client, stub_host):
     eid = _engagement(client, stub_host)
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     r2 = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
-    assert r2.get_json() == {"engagement_id": eid, "promoted": 0, "skipped": 2, "parents": 0}
+    assert r2.get_json() == {
+        "engagement_id": str(eid),  # ids serialise to strings on the wire
+        "promoted": 0,
+        "skipped": 2,
+        "parents": 0,
+    }
 
 
 def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean_vuln_map):
@@ -71,7 +82,7 @@ def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean
     )
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     eid = _engagement(client, stub_host)
-    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    tid = uuid.UUID(client.get(f"{M}/templates").get_json()["items"][0]["id"])
     client.post(f"{M}/vuln-map", json={"source": "nuclei", "template_id": tid})
 
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")
@@ -96,4 +107,4 @@ def test_promote_unknown_job_and_engagement_404(client, stub_host):
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/nope").status_code == 404
-    assert client.post(f"{M}/engagements/999999/promote-job/job-1").status_code == 404
+    assert client.post(f"{M}/engagements/{_MISSING_ID}/promote-job/job-1").status_code == 404

@@ -16,6 +16,8 @@ shared state other test modules rely on.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from flask import Blueprint, Flask
 from sqlalchemy import create_engine
@@ -360,7 +362,9 @@ def test_preview_endpoint_finding_mode(preview_client, preview_session_factory):
 
 
 def test_preview_endpoint_missing_engagement(preview_client):
-    resp = preview_client.post("/scribble/api/preview", json={"engagement_id": 999999, "text": "hi"})
+    resp = preview_client.post(
+        "/scribble/api/preview", json={"engagement_id": str(uuid.uuid7()), "text": "hi"}
+    )
     assert resp.status_code == 404
 
 
