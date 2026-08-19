@@ -199,6 +199,14 @@ class StubHost:
         # a stub that granted engagement-OWNER reads would be kinder than the host and would hide the
         # very defect this capability exists to fix.
         self.viewable_client_ids: set[int] = set()
+        # Captured `_audit(...)` calls, in order: (action, kwargs). Unwired here would mean the same
+        # thing it did before ext#63 fixed the emitting side — `_audit`'s `host.host_hook("audit")`
+        # returns None and every call is a silent no-op, which is exactly how the missing audit rows
+        # shipped unnoticed.
+        self.audit_calls: list[tuple[str, dict]] = []
+
+    def audit(self, db, action: str, **kwargs) -> None:  # noqa: ARG002 - db unused by the stub
+        self.audit_calls.append((action, kwargs))
 
     def mark_job_promoted(self, job_id: str, actor: StubActor | None, *, extension: str, ref_id: int) -> bool:
         self.promoted_calls.append((job_id, actor, extension, ref_id))
@@ -264,6 +272,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
     cfg.extras["can_view_client"] = stub.can_view_client
+    cfg.extras["audit"] = stub.audit
 
 
 @pytest.fixture

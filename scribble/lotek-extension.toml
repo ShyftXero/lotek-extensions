@@ -71,3 +71,27 @@ docs_title = "Scribble (reporting)"
 [db]
 base = "scribble.models:Base"   # the module whose IMPORT registers the tables (db.py alone yields an empty Base)
 table_prefix = "scribble_"
+
+# The registered audit-verb vocabulary (INV-AUDIT-03's reader half, ext#57). Bare verbs — the host
+# namespaces each to `ext:scribble:<verb>` (see app.extensions.extension_audit_actions) and merges
+# them into /admin/audit's action filter. Keep this list in sync with what api_pat.py's `_audit(db,
+# "<verb>", ...)` calls actually emit: a verb declared here that nothing emits is a false promise in
+# the dropdown, and an emitted verb missing here is silent again (the exact gap ext#57 closes).
+[audit]
+verbs = [
+    "create_engagement",
+    "create_template",
+    "add_finding",
+    "create_vuln_map",
+    "report_read",
+    "update_finding",
+    "delete_finding",
+    "move_finding",
+    "move_findings",
+    "create_group",
+    "update_group",
+    "delete_group",
+    "reorder_groups",
+    "upload_artifact",
+    "update_artifact",
+]

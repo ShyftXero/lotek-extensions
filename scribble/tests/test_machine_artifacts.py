@@ -721,3 +721,57 @@ def test_a_huge_id_in_the_PATH_is_a_routing_refusal_not_a_500(client, stub_host)
         _upload_json(client, huge),
     ):
         assert resp.status_code in (404, 405), resp.status_code
+
+
+# ── audit trail (ext#63, INV-AUDIT-03) ───────────────────────────────────────────────────────────
+
+
+def test_upload_emits_audit_row(client, stub_host):
+    """Every other mutating route in this module calls ``_audit``; the upload route now does too, so
+    who attached evidence to a deliverable is on the record."""
+    eid = _engagement(client, stub_host)
+    stub_host.audit_calls.clear()  # isolate the upload's own row from create_engagement's
+    body = _upload_json(client, eid, caption="proof").get_json()
+    assert len(stub_host.audit_calls) == 1
+    action, kw = stub_host.audit_calls[0]
+    assert action == "ext:scribble:upload_artifact"
+    assert kw["subject_type"] == "artifact"
+    assert kw["subject_id"] == body["id"]
+    assert kw["after"]["include_in_report"] is True
+    assert kw["after"]["engagement_id"] == eid
+
+
+def test_update_emits_audit_with_transition(client, stub_host):
+    """The toggle route is the more sensitive one -- it can take evidence back OUT of a report that may
+    already have been sent -- and its audit row must carry the include_in_report TRANSITION, not just the
+    new value."""
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid, caption="x").get_json()["id"]
+    stub_host.audit_calls.clear()  # isolate the toggle's own row from the upload's
+
+    resp = client.post(
+        f"{M}/engagements/{eid}/artifacts/{aid}",
+        json={"include_in_report": False, "caption": "y"},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert len(stub_host.audit_calls) == 1
+    action, kw = stub_host.audit_calls[0]
+    assert action == "ext:scribble:update_artifact"
+    assert kw["subject_type"] == "artifact"
+    assert kw["subject_id"] == aid
+    assert kw["before"]["include_in_report"] is True
+    assert kw["after"]["include_in_report"] is False
+    assert kw["before"]["caption"] == "x"
+    assert kw["after"]["caption"] == "y"
+
+
+def test_a_no_op_toggle_writes_no_audit_row(client, stub_host):
+    """An empty/no-op body (no include_in_report, no caption key) changes nothing -- it must not write
+    a before==after audit row that claims something happened when it didn't."""
+    eid = _engagement(client, stub_host)
+    aid = _upload_json(client, eid, caption="x").get_json()["id"]
+    stub_host.audit_calls.clear()
+
+    resp = client.post(f"{M}/engagements/{eid}/artifacts/{aid}", json={})
+    assert resp.status_code == 200, resp.get_json()
+    assert stub_host.audit_calls == []
