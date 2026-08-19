@@ -43,7 +43,7 @@ from urllib.parse import quote, unquote
 import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
-from scribble.reporting.context import ArtifactCtx, FindingCtx, GroupCtx, ReportContext
+from scribble.reporting.context import ArtifactCtx, DiagramCtx, FindingCtx, GroupCtx, ReportContext
 from scribble.reporting.templates import ReportTemplate, get_template, list_templates
 
 ArtifactBytes = Callable[[str], "bytes | None"]
@@ -61,13 +61,10 @@ _BLOCK_ORDER = ("description", "remediation", "details")
 _NAV_LABELS = {
     "summary": "Summary",
     "findings": "Findings",
+    "diagrams": "Attack Paths",
     "methodology": "Methodology",
     "evidence": "Evidence",
 }
-
-# A 1x1 transparent GIF — the fallback ``src`` for an inline image that can't be resolved (no bytes
-# available / not embedding), so the document never emits an empty/broken external-looking src.
-_BLANK_PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 # Placeholder scheme baked into inline-image src by ``make_inline_artifact_url`` / resolved by
 # ``_substitute_inline_placeholders``. Relative + schemeless so it survives the stricter sanitize pass
@@ -236,32 +233,65 @@ class _AssetResolver:
             return f"artifacts/{name}"
         return None
 
-    def resolve_inline(self, storage_path: str) -> str:
+    def resolve_inline(self, storage_path: str) -> str | None:
+        """A src for this inline-content image, or ``None`` when it cannot be embedded (over budget /
+        no bytes available). Returning ``None`` — rather than a silent blank pixel (issue #61) — lets
+        ``_substitute_inline_placeholders`` swap in a chip that NAMES the missing file instead of
+        leaving an invisible gap in the deliverable."""
         if self.mode == "inline":
             # An ``inlineImage`` node is an <img> by construction, so the image-only rule above is already
             # satisfied by the placement; the BYTE budget still applies (this is the other path that can
             # push a file's bytes into the document).
-            return self._inline_uri(storage_path, None) or _BLANK_PIXEL
+            return self._inline_uri(storage_path, None)
         if self.mode == "zip":
             name = _safe_name_from_path(storage_path)
             self.manifest[name] = storage_path
             return f"artifacts/{name}"
-        return _BLANK_PIXEL
+        return None
 
 
 def _sanitize_asset_html(fragment: str) -> str:
     return nh3.clean(fragment, tags=_ASSET_TAGS, attributes=_ASSET_ATTRS, url_schemes=_ASSET_URL_SCHEMES)
 
 
+# Matches a whole ``<img …>`` element (self-closing or not) so an unresolvable inline image can be
+# replaced ENTIRELY by an honest "not embedded" chip (issue #61) rather than just having its ``src``
+# swapped for a blank pixel -- content/render_html.py's ``inlineImage`` node always emits a single
+# self-closing ``<img class="artifact" src="…" alt="…"/>`` (see that module's ``_render_node``), so a
+# non-greedy ``[^>]*`` scoped to one tag is safe here (no nested ``>`` inside an attribute value nh3 has
+# already produced).
+_INLINE_IMG_TAG_RE = re.compile(r"<img\b[^>]*>")
+
+
+def _inline_missing_chip(storage_path: str) -> str:
+    """The honest "evidence not embedded" chip an unresolvable inline image degrades to (issue #61) --
+    names the file so a client deliverable never has a silent, invisible gap where a pasted-in
+    screenshot used to be."""
+    name = storage_path.replace("\\", "/").rsplit("/", 1)[-1] or "file"
+    raw = (
+        f'<span class="evidence-item file missing inline-missing">\U0001f4c4 {_esc(name)} '
+        f'<span class="cap">(evidence not embedded)</span></span>'
+    )
+    return _sanitize_asset_html(raw)
+
+
 def _substitute_inline_placeholders(fragment: str, resolver: _AssetResolver) -> str:
     if _INLINE_PREFIX not in fragment:
         return fragment
 
-    def _sub(m: re.Match[str]) -> str:
-        storage_path = unquote(m.group(1))
-        return resolver.resolve_inline(storage_path)
+    def _sub_tag(tag_match: re.Match[str]) -> str:
+        tag = tag_match.group(0)
+        src_match = _INLINE_SRC_RE.search(tag)
+        if not src_match:
+            return tag  # not one of our placeholder tags -- leave untouched
+        storage_path = unquote(src_match.group(1))
+        resolved = resolver.resolve_inline(storage_path)
+        if resolved is None:
+            return _inline_missing_chip(storage_path)
+        start, end = src_match.span(1)
+        return tag[:start] + resolved + tag[end:]
 
-    return _INLINE_SRC_RE.sub(_sub, fragment)
+    return _INLINE_IMG_TAG_RE.sub(_sub_tag, fragment)
 
 
 def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str:
@@ -1146,6 +1176,48 @@ def _render_methodology(ctx: ReportContext) -> str:
     return "\n".join(out)
 
 
+def _render_diagram_item(d: DiagramCtx) -> str:
+    """One linked attack-path diagram: vector's self-contained ``export.html`` snapshot inside a
+    SANDBOXED iframe (``sandbox="allow-scripts"`` only — deliberately NOT ``allow-same-origin``, so the
+    snapshot's own animation JS still runs but the embedded document can never reach this report's DOM,
+    cookies, or storage). ``embed_html`` is operator/agent-supplied content (came in over a PAT POST — see
+    ``api_pat.scribble_link_attack_path``), so it is HTML-escaped into the ``srcdoc`` ATTRIBUTE like any
+    other untrusted string, never interpolated as raw markup."""
+    caption = f'<figcaption class="diagram-caption">{_esc(d.caption)}</figcaption>' if d.caption else ""
+    return (
+        '<figure class="attack-path-item">'
+        f'<iframe class="attack-path-frame" sandbox="allow-scripts" '
+        f'srcdoc="{_esc(d.embed_html)}" loading="lazy" '
+        f'title="Attack path diagram{" — " + _esc(d.caption) if d.caption else ""}">'
+        "</iframe>"
+        f"{caption}"
+        "</figure>"
+    )
+
+
+def _render_diagrams(ctx: ReportContext) -> str:
+    """Attack Paths block (ext#48): linked vector diagrams, embedded as self-contained HTML snapshots.
+
+    Renders NOTHING when the engagement has no linked diagram — which is every report today, since the
+    field is new and additive. That empty return is the load-bearing half of "reports without a diagram
+    render identically": combined with ``_render_document``'s empty-block filter, a template that lists
+    ``diagrams`` produces byte-for-byte the same document as before this block existed whenever
+    ``ctx.diagrams`` is empty (pinned by ``tests/test_report_attack_path.py``).
+    """
+    if not ctx.diagrams:
+        return ""
+    items = "".join(_render_diagram_item(d) for d in ctx.diagrams)
+    return (
+        '<section class="sec group" id="sec-diagrams">'
+        '<h2 class="sec-h">Attack Paths <span class="chev">▾</span>'
+        f'<span class="count">{len(ctx.diagrams)} '
+        f'diagram{"s" if len(ctx.diagrams) != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Attack-path diagrams linked to this '
+        "engagement, showing how discovered issues chain into a broader compromise.</p>"
+        f"{items}</div></section>"
+    )
+
+
 def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
     with no ``finding_id``.
@@ -1158,11 +1230,18 @@ def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> s
     Two bounds apply and both are visible in the output rather than silent: the gallery embeds only IMAGE
     bytes and only within the inlining budget (see ``_MAX_INLINE_ASSET_BYTES`` — everything else is named
     with a "not embedded" chip), and the list itself is capped at ``_MAX_APPENDIX_ITEMS`` with a note
-    saying how many items are not shown. The heading always reports the TRUE total."""
+    saying how many items are not shown. The heading always reports the TRUE total.
+
+    ``mode="zip"`` is EXEMPT from the item cap (issue #62): ``export_zip`` builds its archive from
+    ``resolver.manifest``, which is populated only by the artifacts this function actually renders (via
+    ``resolve_gallery``) — capping the listing in zip mode silently dropped the excess FILES from the
+    delivered archive, not just their mention in ``report.html``. A zip entry is a real file (no base64
+    inflation, no per-item nh3 cost beyond the cheap gallery markup), so the reasoning that justifies the
+    cap in ``inline`` mode (bounding the bytes held in one document string) simply doesn't apply here."""
     if not ctx.artifacts:
         return ""
     total = len(ctx.artifacts)
-    shown = ctx.artifacts[:_MAX_APPENDIX_ITEMS]
+    shown = ctx.artifacts if resolver.mode == "zip" else ctx.artifacts[:_MAX_APPENDIX_ITEMS]
     withheld = total - len(shown)
     gallery = _render_artifact_gallery(shown, resolver, label=None)
     # Say so when the list is truncated. The count in the heading is the TRUE total either way, so the
@@ -1217,6 +1296,9 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
             entries.append((1, "sec-methodology", _methodology_heading(ctx), ""))
             if any(c.kind == "compliance" for c in ctx.checklists):
                 entries.append((1, "sec-compliance", _COMPLIANCE_HEADING, ""))
+        elif key == "diagrams":
+            if ctx.diagrams:
+                entries.append((1, "sec-diagrams", "Attack Paths", ""))
         elif key == "evidence":
             if ctx.artifacts:
                 entries.append((1, "sec-evidence", "Evidence", ""))
@@ -1270,6 +1352,8 @@ def _render_block_by_key(
             '<div id="sec-findings"></div>\n'
             f"{_render_groups(ctx, resolver)}"
         )
+    if key == "diagrams":
+        return _render_diagrams(ctx)
     if key == "methodology":
         return _render_methodology(ctx)
     if key == "evidence":
@@ -1875,6 +1959,15 @@ table.index td.ix-cvss {
 
 /* engagement-level evidence appendix */
 .evidence-intro { font-size: 14px; margin: 0 0 12px; }
+
+/* attack-path diagrams (ext#48) */
+.attack-path-item { margin: 0 0 20px; }
+.attack-path-frame {
+  width: 100%; min-height: 480px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+}
+.diagram-caption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+@media print { .attack-path-frame { min-height: 600px; } }
 
 /* checklists */
 .ck-list {

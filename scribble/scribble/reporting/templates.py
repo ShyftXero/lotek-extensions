@@ -15,6 +15,9 @@ Blocks (keys dispatched in ``render_html._render_block_by_key``):
 - ``summary``     — Executive Summary: front matter (engagement overview + scope and limitations), the
   risk banner, the generated narrative, the severity bar + rating definitions, metrics, findings index.
 - ``findings``    — the filter bar + the finding groups.
+- ``diagrams``    — linked vector attack-path diagrams (ext#48), each a self-contained HTML snapshot in a
+  sandboxed iframe. Renders nothing when the engagement has no linked diagram, which is every report
+  today — this is what makes adding the block backward-compatible (see ``render_html._render_diagrams``).
 - ``methodology`` — the standing methodology description + coverage / compliance checklists.
 - ``evidence``    — appendix of ENGAGEMENT-level evidence (artifacts with no ``finding_id``). Renders
   nothing when there is none, which is the normal case; the toolbar link follows the rendered anchor.
@@ -42,6 +45,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "toc",
     "summary",
     "findings",
+    "diagrams",
     "methodology",
     "evidence",
 )
@@ -62,21 +66,23 @@ class ReportTemplate:
 
 
 # ``cover`` then ``toc`` FIRST — a deliverable opens on its title page and its contents, and both carry
-# ``break-after: page`` so they own page 1 and page 2 of the PDF. ``evidence`` sits LAST: it is an appendix
-# of engagement-level material, so it belongs after the findings and the methodology rather than
-# interrupting either.
-_STANDARD_BLOCKS = ("cover", "toc", "summary", "findings", "methodology", "evidence")
+# ``break-after: page`` so they own page 1 and page 2 of the PDF. ``diagrams`` sits right AFTER
+# ``findings`` (attack-path diagrams are a visual extension of the findings they connect), and
+# ``evidence`` sits LAST: it is an appendix of engagement-level material, so it belongs after everything
+# else rather than interrupting it.
+_STANDARD_BLOCKS = ("cover", "toc", "summary", "findings", "diagrams", "methodology", "evidence")
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
 _TEMPLATES: tuple[ReportTemplate, ...] = (
     ReportTemplate("default", "Standard", "auto", _STANDARD_BLOCKS),
     # Methodology/coverage BEFORE findings — proves a template can reorder whole sections. The TOC follows
     # the template, so it lists methodology before the findings here without knowing anything about it.
+    # ``diagrams`` still follows ``findings`` here, same rule as the standard template.
     ReportTemplate(
         "compliance",
         "Compliance-first",
         "auto",
-        ("cover", "toc", "summary", "methodology", "findings", "evidence"),
+        ("cover", "toc", "summary", "methodology", "findings", "diagrams", "evidence"),
     ),
     # Same layout, dark theme forced — proves a template can carry theme.
     ReportTemplate("dark", "Dark", "dark", _STANDARD_BLOCKS),

@@ -5,7 +5,7 @@ custom nodes are Scribble-specific:
 
 - ``variable``      — an inline ``{{KEY}}`` reference (attrs: ``{"key": "COMPANY_NAME"}``), rendered as a
                       chip in the editor and resolved to a value at render time.
-- ``inlineImage``   — an inline image referencing an ``Artifact`` (attrs: ``{"artifactId": int,
+- ``inlineImage``   — an inline image referencing an ``Artifact`` (attrs: ``{"artifactId": str (UUID),
                       "alt": str, "caption": str}``).
 - ``figure``        — a block figure: an image + ``figcaption`` (for figure numbering in reports).
 

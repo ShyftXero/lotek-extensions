@@ -33,6 +33,11 @@ class CreateEngagementRequest(BaseModel):
     )
     scope_type: str | None = Field("external", description="e.g. 'external' | 'internal' (default external).")
     company_name: str | None = Field(None, description="Optional company/customer display name.")
+    core_engagement_id: int | str | None = Field(
+        None,
+        description="Core engagement id (int or UUID) this scribble engagement mirrors — lets a PAT "
+        "caller later address it by the id core returned; surfaced in GET /engagements output.",
+    )
     idempotency_key: str | None = Field(
         None,
         description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
@@ -257,3 +262,29 @@ class UpdateArtifactRequest(BaseModel):
         None, description="Publish (true) or withhold (false) this artifact in the rendered report."
     )
     caption: str | None = Field(None, description="Human caption shown in the report.")
+
+
+class LinkAttackPathRequest(BaseModel):
+    """JSON body of ``POST /scribble/machine/engagements/{engagement_id}/attack-paths`` (write scope) —
+    link a vector attack-path diagram into this engagement's report (ext#48).
+
+    Scribble cannot reach vector directly (separate extension, no host seam exposes it), so the caller
+    does the fetch: ``GET`` vector's ``/vector/machine/diagrams/{diagram_id}/export.html`` (already a
+    self-contained document — inline assets, no external references) and POST the resulting HTML here
+    as ``embed_html``. The report renders it inside a sandboxed iframe (``allow-scripts`` only); this
+    endpoint stores it verbatim and does not parse or execute it.
+    """
+
+    diagram_ref: str | None = Field(
+        None, description="The source vector diagram's id/UUID, kept for provenance/dedup only."
+    )
+    embed_html: str = Field(
+        ..., description="Self-contained HTML snapshot (vector's export.html) to embed in the report."
+    )
+    caption: str | None = Field(None, description="Human caption shown under the diagram in the report.")
+    include_in_report: bool | None = Field(
+        None, description="Whether this diagram appears in the rendered report (default true)."
+    )
+    idempotency_key: str | None = Field(
+        None, description="Dedup key; a retry with the same key returns the original link (200)."
+    )

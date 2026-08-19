@@ -474,7 +474,14 @@ def _additive_column_sync(engine) -> None:
 
     # (`_rename_from_fraction` already ran in `run_migrations`, which is this function's only caller.)
     pre_existing = set(inspect(engine).get_table_names())  # capture BEFORE create_all (post-rename)
-    Base.metadata.create_all(engine)  # creates missing tables at full shape; no-ops existing ones
+    # Only ensure the tables that ALREADY exist (a no-op — they're present — that lets the ADD COLUMN loop
+    # below add their missing columns). Do NOT create brand-new, post-baseline tables here: this runs on
+    # the adoption path against a LEGACY int-PK schema, and a new table declared with a UUID FK to
+    # scribble_engagements.id (e.g. scribble_engagement_diagram, lotek#335) cannot be built while that
+    # parent PK is still INTEGER — Postgres rejects the mixed-type FK. New tables are created by the
+    # Alembic upgrade that runs straight after this, AFTER b1d4a7c9e250 converts the parent to UUID.
+    existing_tables = [t for t in Base.metadata.sorted_tables if t.name in pre_existing]
+    Base.metadata.create_all(engine, tables=existing_tables)  # no-ops existing; never creates new tables
 
     insp = inspect(engine)  # fresh inspector reflecting the post-create_all schema
     with engine.begin() as conn:

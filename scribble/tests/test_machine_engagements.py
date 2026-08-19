@@ -259,3 +259,104 @@ def test_promote_lotek_finding_dedups_on_source_finding_id(client, stub_host, se
     with session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         assert len([f for f in eng.findings if f.source_finding_id == 202]) == 1
+
+
+# ── core engagement id mapping (#49) ─────────────────────────────────────────────────────────────
+
+
+def test_create_engagement_accepts_core_engagement_uuid(client, stub_host, session_factory):
+    """`core_engagement_id` (int or UUID) is optional on create, round-trips through `SoftHostId`, and
+    is echoed back in the create response — the addressing alias a PAT caller needs to later reach
+    this engagement by the id core handed it (`POST /api/v1/engagements` returns a UUIDv7)."""
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    core_id = uuid.uuid4()
+    resp = client.post(
+        f"{M}/engagements",
+        json={"name": "Mapped", "client_id": ACME, "core_engagement_id": str(core_id)},
+    )
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["core_engagement_id"] == str(core_id)
+    with session_factory() as db:
+        eng = db.get(fm.Engagement, body["id"])
+        assert eng.core_engagement_id == core_id  # the UUID object, not its string spelling
+
+
+def test_address_engagement_by_core_uuid(client, stub_host, session_factory):
+    """A caller holding only the CORE uuid can reach every engagement-scoped route the integer PK
+    reaches — `_resolve_engagement` accepts either id space, with identical output either way."""
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    core_id = uuid.uuid4()
+    resp = client.post(
+        f"{M}/engagements",
+        json={"name": "Mapped", "client_id": ACME, "core_engagement_id": str(core_id)},
+    )
+    assert resp.status_code == 201
+    eid = resp.get_json()["id"]
+
+    by_int = client.get(f"{M}/engagements/{eid}")
+    by_uuid = client.get(f"{M}/engagements/{core_id}")
+    assert by_int.status_code == 200 and by_uuid.status_code == 200
+    assert by_int.get_json()["finding_count"] == by_uuid.get_json()["finding_count"]
+    assert by_uuid.get_json()["id"] == eid  # resolves to the SAME scribble engagement
+
+    tid = client.get(f"{M}/templates").get_json()["items"][0]["id"]
+    add = client.post(f"{M}/engagements/{core_id}/findings", json={"template_id": tid})
+    assert add.status_code == 201, add.get_json()
+    with session_factory() as db:
+        f = db.get(fm.EngagementFinding, add.get_json()["finding_id"])
+        assert str(f.engagement_id) == eid
+
+
+def test_list_engagements_exposes_core_mapping(client, stub_host, session_factory):
+    """`GET /engagements` (list) surfaces `core_engagement_id` so the mapping is DISCOVERABLE rather
+    than something a caller must already know or cross-reference."""
+    stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
+    core_id = uuid.uuid4()
+    resp = client.post(
+        f"{M}/engagements",
+        json={"name": "Mapped", "client_id": ACME, "core_engagement_id": str(core_id)},
+    )
+    eid = resp.get_json()["id"]
+
+    items = client.get(f"{M}/engagements").get_json()["items"]
+    row = next(i for i in items if i["id"] == eid)
+    assert row["core_engagement_id"] == str(core_id)
+
+
+def test_unknown_core_uuid_is_404(client, stub_host):
+    """A well-formed but unused core uuid, and a malformed non-uuid/non-int path segment, both 404 —
+    byte-identical to an unknown integer id (no existence oracle over either id space)."""
+    _engagement(client, stub_host)  # at least one real engagement exists
+    unknown = client.get(f"{M}/engagements/{uuid.uuid4()}")
+    assert unknown.status_code == 404
+    assert unknown.get_json()["detail"] == "engagement not found"
+
+    malformed = client.get(f"{M}/engagements/not-an-id-or-uuid")
+    assert malformed.status_code == 404
+    # A non-UUID segment no longer reaches the view: the <uuid:...> converter (lotek#335) rejects it at
+    # routing with Werkzeug's own 404 (no JSON body). That is not an existence oracle -- it reveals only
+    # "not a UUID", never whether any engagement exists -- so the no-oracle guarantee still holds for
+    # every WELL-FORMED id, which the unknown-uuid case above asserts.
+    assert malformed.get_json() is None
+
+
+def test_core_uuid_not_visible_is_404(client, stub_host):
+    """An engagement addressed by its core UUID, under a client the caller cannot see, 404s exactly
+    like the same engagement addressed by its integer PK — tenancy holds across the new id space."""
+    core_id = uuid.uuid4()
+    with_grant = 601
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    stub_host.viewable_client_ids = {with_grant}
+    resp = client.post(
+        f"{M}/engagements",
+        json={"name": "Foreign", "client_id": with_grant, "core_engagement_id": str(core_id)},
+    )
+    assert resp.status_code == 201
+    eid = resp.get_json()["id"]
+
+    # A different token, holding no grant under `with_grant`, must be refused by EITHER id space.
+    stub_host.actor = StubActor(id=8, username="opB", role="operator")
+    stub_host.viewable_client_ids = {999}
+    assert client.get(f"{M}/engagements/{eid}").status_code == 404
+    assert client.get(f"{M}/engagements/{core_id}").status_code == 404

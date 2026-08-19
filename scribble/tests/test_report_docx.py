@@ -546,3 +546,109 @@ def test_html_to_richtext_empty_input(tpl):
     assert rt.xml == ""
     rt_none = html_to_richtext(None, tpl=tpl)
     assert rt_none.xml == ""
+
+
+def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_factory):
+    """#54 (the docx half of ext#40 mechanism 2): a child (nested per-host) finding's OWN artifact
+    must embed as an inline shape in the docx report -- before this, ``_children_html`` was pure text
+    and a screenshot attached to a promoted per-host instance never appeared in the docx deliverable
+    at all."""
+    with session_factory() as db:
+        eng = Engagement(name="Child Evidence Docx", company_name="Acme")
+        g = FindingGroup(engagement=eng, name="Internal", order_index=0)
+        parent = EngagementFinding(
+            engagement=eng,
+            group=g,
+            title="Kerberoastable Account",
+            severity=Severity.high,
+            order_index=0,
+            content_json={"description": _block("Kerberoastable accounts were identified.")},
+        )
+        db.add(eng)
+        db.flush()
+        child = EngagementFinding(
+            engagement=eng,
+            group=g,
+            title="Kerberoastable Account",
+            severity=Severity.high,
+            order_index=1,
+            target_host="dc01.acme.test",
+            content_json={"description": _block("Should not get its own table.")},
+            variables={"AFFECTED": "svc_sql"},
+        )
+        child.parent_id = parent.id
+        db.add(child)
+        db.commit()
+        eng_id, child_id = eng.id, child.id
+        artifact = Artifact(
+            engagement=eng,
+            finding_id=child_id,
+            kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached,
+            filename="child-shot.png",
+            content_type="image/png",
+            storage_path="child-shot.png",
+            caption="Child evidence",
+            order_index=0,
+        )
+        db.add(artifact)
+        db.commit()
+
+    fake_files = {"child-shot.png": _PNG_BYTES}
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
+
+    doc = docx.Document(io.BytesIO(payload))
+    assert len(doc.inline_shapes) == 1
+    assert "Child evidence" in _all_text(doc)
+    assert "Should not get its own table." not in _all_text(doc)
+
+
+def test_engagement_level_evidence_appendix_in_docx(session_factory):
+    """#54 (the docx half of ext#40 mechanism 1): an artifact attached to the ENGAGEMENT (no
+    ``finding_id``) must appear in the docx report -- before this, ``render_docx`` never read
+    ``ReportContext.artifacts`` at all."""
+    with session_factory() as db:
+        eng = Engagement(name="Engagement Evidence Docx", company_name="Acme")
+        group = FindingGroup(engagement=eng, name="Web App", order_index=0)
+        EngagementFinding(
+            engagement=eng,
+            group=group,
+            title="Some Finding",
+            severity=Severity.medium,
+            order_index=0,
+            content_json={"description": _block("Body text.")},
+        )
+        db.add(eng)
+        db.flush()
+        artifact = Artifact(
+            engagement=eng,
+            finding_id=None,
+            kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached,
+            filename="network-diagram.png",
+            content_type="image/png",
+            storage_path="network-diagram.png",
+            caption="Network overview",
+            order_index=0,
+        )
+        db.add(artifact)
+        db.commit()
+        eng_id = eng.id
+
+    fake_files = {"network-diagram.png": _PNG_BYTES}
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        assert len(ctx.artifacts) == 1
+        payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
+
+    doc = docx.Document(io.BytesIO(payload))
+    text = _all_text(doc)
+    assert "Evidence Appendix" in text
+    assert "Network overview" in text
+    assert len(doc.inline_shapes) == 1

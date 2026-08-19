@@ -199,6 +199,8 @@ also could not do. The board routes below share their mutation logic with the co
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a WELL-FORMED id belonging to another engagement (or to none at all) is silently dropped rather than 404'd (see the comment at the check — refusing it would leak whether that id exists), and this is how a caller detects the drop. A `finding_id` that does not **parse as a UUID** (scribble's finding ids are UUIDv7, since lotek#335) is refused `400 invalid finding_id` rather than dropped, so `finding_id_dropped: false` cannot mean "your id was gibberish"; an empty/absent one still means engagement-level. Also optional: `include_in_report` (default `true`) — send `false` for working material you are attaching but do not want in the client deliverable. The response echoes `include_in_report` alongside the two `finding_id` fields. |
 | `GET /scribble/machine/engagements/<engagement_id>/artifacts` | read | List the engagement's evidence — the review surface for what a report is about to publish. `?unattached=1` narrows to the engagement-level rows (`finding_id` null) the Evidence appendix ships. Each row carries `include_in_report`, `byte_size`, `caption`, `created_by`, `created_at`. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts/<artifact_id>` | write | Change `include_in_report` and/or `caption` on one artifact; omitted fields are unchanged. The artifact is addressed THROUGH its engagement, so an id belonging to another engagement is 404 whatever the caller's grants are. |
+| `POST /scribble/machine/engagements/<engagement_id>/attack-paths` | write | Link a vector attack-path diagram into the report's Attack Paths block (ext#48). Scribble has no seam to reach vector directly, so the caller does the fetch: `GET` vector's `/vector/machine/diagrams/<id>/export.html` (already self-contained) and POST the result here as `embed_html`, plus optional `diagram_ref` (vector's diagram id, provenance only), `caption`, `include_in_report` (default `true`), `idempotency_key`. The snapshot is embedded verbatim in a sandboxed `<iframe sandbox="allow-scripts">` (no `allow-same-origin`) — never parsed or executed server-side. Capped at 10 MiB. An engagement with no linked diagram renders no Attack Paths section at all (the block is fully backward-compatible). |
+| `GET /scribble/machine/engagements/<engagement_id>/attack-paths` | read | List the diagrams linked to this engagement — the review surface for what the Attack Paths block will publish. Each row carries `caption`, `include_in_report`, `order_index`, `has_embed_html` (the snapshot body itself is omitted from the listing). |
 
 Every id in a machine route's PATH is a **bounded** converter (`int(min=1, max=2147483647)`, the `Integer`
 PK column's range — `api_pat._ID`). Werkzeug's bare `<int:>` has no maximum, so a 30-digit path segment used
@@ -393,20 +395,22 @@ added alongside it is the ability to decide and to check:
 - **Decide at upload.** `include_in_report: false` on the upload attaches the file without publishing it —
   for working material (a raw scan file, internal notes, a `.pcap`, vector's `export.html`). The response
   echoes `include_in_report` either way, so it is never a silent outcome.
-- **See the set.** `GET /scribble/machine/engagements/<id>/artifacts?unattached=1` lists exactly the rows
-  the appendix publishes, each with its `include_in_report`. Before this there was no such surface at all:
-  the cookie API only lists a FINDING's artifacts (`GET /scribble/api/findings/<id>/artifacts`), which by
-  construction cannot show a `finding_id`-null row, and there is no UI for them either — so the rendered
-  report was the only place they became visible.
+- **See the set.** `GET /scribble/machine/engagements/<id>/artifacts?unattached=1` (machine) or
+  `GET /scribble/api/engagements/<id>/artifacts` (cookie, ext#51) lists exactly the rows the appendix
+  publishes, each with its `include_in_report`. The cookie route lists every artifact on the
+  engagement — finding-attached and engagement-level alike — where `GET /scribble/api/findings/<id>/artifacts`
+  by construction cannot show a `finding_id`-null row. The **engagement page** also has its own "Engagement
+  evidence" panel now (ext#51): the same include/caption/delete controls the finding editor's gallery has,
+  for evidence attached to the engagement rather than to a finding — before this the rendered report was
+  the only place these rows became visible.
 - **Take one back out.** `POST /scribble/machine/engagements/<id>/artifacts/<artifact_id>` with
   `{"include_in_report": false}`, or from a session the cookie routes `POST /scribble/api/artifacts/<id>`
-  and `.../delete`.
+  and `.../delete` (both reachable from the engagement page's evidence panel).
 
 Note what still holds regardless: **rows that predate this change were created under the old meaning**, so
 the first render after upgrading publishes any engagement-level artifact an operator attached on the
-reasonable assumption that nothing rendered it. Use the list route on an existing engagement, and read the
-Evidence appendix, before sending a report. An engagement-artifact list + toggle on the engagement PAGE
-(the cookie/UI half) is still filed as its own change.
+reasonable assumption that nothing rendered it. Use the list route (or the engagement page's evidence
+panel) on an existing engagement, and read the Evidence appendix, before sending a report.
 
 **The printed deliverable opens like a document** (ext#43, 2026-08-17 — it opened on the masthead and then
 straight into the executive summary before). Two blocks exist only in `@media print`:

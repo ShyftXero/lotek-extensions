@@ -73,13 +73,21 @@ So the cost is **code and URL surface, not data migration**.
 ### A. Leave it
 Cost: nothing. Keeps all three problems, including the unimplementable contract for the next extension.
 
-### B. Add a core-engagement link column
-`scribble_engagements.core_engagement_id: SoftHostId` (or repurpose `guid`), populated on create and on
-`promote-job`, plus a lookup so `GET /scribble/machine/engagements?core_engagement_id=<uuid>` resolves.
+### B. Add a core-engagement link column — **SHIPPED** (#49, `fix/scribble-core-engagement-uuid-map`)
+`scribble_engagements.core_engagement_id: SoftHostId` (nullable, `index=True` — not `unique=True`, since
+`create_all`'s additive path cannot retrofit a UNIQUE constraint on a pre-existing table), populated
+optionally on create (`POST /engagements` body field, surfaced back in the response), and addressable via
+`_resolve_engagement` in `api_pat.py` — the 5 engagement-scoped machine routes (`findings`, `promote-job`,
+`GET /engagements/<id>`, `report`, `artifacts` upload) now accept EITHER the scribble integer PK or the
+core UUID in the URL, resolving to the same `Engagement` and the same tenancy check either way. The
+mapping is also surfaced in `GET /engagements` (list) and `GET /engagements/<id>` output, so it is
+discoverable rather than requiring a caller to already know it.
 - Fixes problem 1 (discovery) — the one that actually blocks machine clients today.
-- Fixes neither 2 nor the seam.
-- Cost: one column, one query path, one test. Small.
-- Decide `guid`'s fate in the same change rather than leaving a dead unique column beside a new one.
+- Fixes neither 2 nor the seam (C, below, is still open).
+- `guid` (`String(64)`, unique, unused) is left as-is — its fate is a separate decision, not entangled
+  with this column.
+- Explicitly did NOT block on D (the UUIDv7 PK migration, `feat/scribble-alembic-uuid-pks`) — this slice
+  is additive and survives whatever that decision becomes.
 
 ### C. Widen the host seam (core / lotek repo) — **recommended first, regardless of the rest**
 `jobs.promoted_ref_id` `Integer` → text-backed soft ref; drop the `int(ref_id)` coercion in

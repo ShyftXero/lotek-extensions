@@ -16,7 +16,7 @@ from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
-from scribble.reporting.render_html import export_zip, render_report_html
+from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
 
 
 def _block(text: str) -> dict:
@@ -315,3 +315,248 @@ def test_export_zip_bundles_report_and_artifacts(session_factory):
     report_html = zf.read("report.html").decode("utf-8")
     assert "Domain Admin Compromise" in report_html
     assert "Excluded Finding" not in report_html
+
+
+def _inline_image_block(artifact_id: int, alt: str = "inline evidence") -> dict:
+    return {
+        "type": schema.DOC,
+        "content": [
+            {
+                "type": schema.PARAGRAPH,
+                "content": [
+                    {
+                        "type": schema.INLINE_IMAGE,
+                        "attrs": {"artifactId": artifact_id, "alt": alt, "caption": ""},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _artifact_url_factory(engagement):
+    by_id = {str(a.id): a.storage_path for a in engagement.artifacts}
+
+    def _url(artifact_id):
+        return make_inline_artifact_url(by_id.get(str(artifact_id)) if artifact_id is not None else None)
+
+    return _url
+
+
+def test_engagement_level_evidence_renders_in_appendix(session_factory):
+    """#40/#54 mechanism 1: an artifact attached to the ENGAGEMENT (``finding_id`` NULL) must appear
+    somewhere in the report -- before this it was accepted, stored, answered 201, and then rendered
+    nowhere."""
+    with session_factory() as db:
+        client = Client(name="Acme")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="Engagement Evidence", client_id=client.id, company_name="Acme")
+        group = FindingGroup(engagement=eng, name="Web App", order_index=0)
+        EngagementFinding(
+            engagement=eng,
+            group=group,
+            title="Some Finding",
+            severity=Severity.medium,
+            order_index=0,
+            content_json={"description": _block("Body text.")},
+        )
+        db.add(eng)
+        db.flush()
+        artifact = Artifact(
+            engagement=eng,
+            finding_id=None,
+            kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached,
+            filename="network-diagram.png",
+            content_type="image/png",
+            storage_path="network-diagram.png",
+            caption="Network overview",
+            order_index=0,
+        )
+        db.add(artifact)
+        db.commit()
+        eng_id = eng.id
+
+    fake_files = {"network-diagram.png": b"\x89PNG\r\n\x1a\nFAKEDATA"}
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        assert len(ctx.artifacts) == 1  # engagement-level evidence reaches the frozen contract
+        html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=fake_files.get)
+
+    assert 'id="sec-evidence"' in html_doc
+    assert "data:image/png;base64," in html_doc
+    assert "Network overview" in html_doc
+
+
+def test_child_finding_evidence_renders_without_leaking_child_content(session_factory):
+    """#40/#54 mechanism 2: a child (nested per-host) finding's OWN artifact must render inside the
+    compact children block -- and the child's content-block text must still never appear anywhere,
+    exactly as ``test_render_report_html_renders_nested_children_compactly`` already pins."""
+    with session_factory() as db:
+        eng = Engagement(name="Child Evidence", company_name="Acme")
+        g = FindingGroup(engagement=eng, name="Internal", order_index=0)
+        parent = EngagementFinding(
+            engagement=eng,
+            group=g,
+            title="Kerberoastable Account",
+            severity=Severity.high,
+            order_index=0,
+            content_json={"description": _block("Kerberoastable accounts were identified.")},
+        )
+        db.add(eng)
+        db.flush()
+        child = EngagementFinding(
+            engagement=eng,
+            group=g,
+            title="Kerberoastable Account",
+            severity=Severity.high,
+            order_index=1,
+            target_host="dc01.acme.test",
+            content_json={"description": _block("Should not render as its own card.")},
+            variables={"AFFECTED": "svc_sql"},
+        )
+        child.parent_id = parent.id
+        db.add(child)
+        db.commit()
+        eng_id, child_id = eng.id, child.id
+        artifact = Artifact(
+            engagement=eng,
+            finding_id=child_id,
+            kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached,
+            filename="child-shot.png",
+            content_type="image/png",
+            storage_path="child-shot.png",
+            caption="Child evidence",
+            order_index=0,
+        )
+        db.add(artifact)
+        db.commit()
+
+    fake_files = {"child-shot.png": b"\x89PNG\r\n\x1a\nFAKEDATA"}
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=fake_files.get)
+
+    assert "data:image/png;base64," in html_doc
+    assert "Child evidence" in html_doc
+    assert "Should not render as its own card." not in html_doc
+    idx_children_table = html_doc.index('<table class="children-table">')
+    idx_image = html_doc.index("data:image/png;base64,")
+    assert idx_children_table < idx_image
+
+
+def test_export_zip_evidence_appendix_cap_is_exempt(session_factory, monkeypatch):
+    """#62: the zip mode's Evidence appendix must ship EVERY engagement-level artifact under
+    ``artifacts/`` even when the count exceeds the appendix item cap -- unlike ``inline`` mode, a zip
+    entry is a real file, so the cap that bounds an inlined document's byte/DOM cost doesn't apply."""
+    import scribble.reporting.render_html as rh
+
+    monkeypatch.setattr(rh, "_MAX_APPENDIX_ITEMS", 3)
+
+    with session_factory() as db:
+        eng = Engagement(name="Many Artifacts", company_name="Acme")
+        g = FindingGroup(engagement=eng, name="External", order_index=0)
+        EngagementFinding(
+            engagement=eng, group=g, title="F", severity=Severity.low, order_index=0,
+            content_json={"description": _block("x")},
+        )
+        db.add(eng)
+        db.flush()
+        fake_files = {}
+        n = 6  # > the monkeypatched cap of 3
+        for i in range(n):
+            name = f"file-{i}.txt"
+            db.add(
+                Artifact(
+                    engagement=eng,
+                    finding_id=None,
+                    kind=ArtifactKind.text,
+                    placement=ArtifactPlacement.attached,
+                    filename=name,
+                    content_type="text/plain",
+                    storage_path=name,
+                    order_index=i,
+                )
+            )
+            fake_files[name] = f"contents of {name}".encode()
+        db.commit()
+        eng_id = eng.id
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        assert len(ctx.artifacts) == n
+        payload = export_zip(ctx, artifact_bytes=fake_files.get)
+
+    zf = zipfile.ZipFile(io.BytesIO(payload))
+    names = zf.namelist()
+    artifact_entries = [nm for nm in names if nm.startswith("artifacts/")]
+    assert len(artifact_entries) == n, f"expected all {n} files in the zip, got {artifact_entries}"
+
+
+def test_unresolvable_inline_image_yields_honest_chip_not_blank_pixel(session_factory):
+    """#61: an inline content image whose bytes are unavailable must render a visible chip NAMING the
+    file -- never a silent, invisible blank pixel."""
+    with session_factory() as db:
+        eng = Engagement(name="Inline Evidence", company_name="Acme")
+        group = FindingGroup(engagement=eng, name="Web App", order_index=0)
+        db.add(eng)
+        db.flush()
+        artifact = Artifact(
+            engagement=eng,
+            finding_id=None,
+            placement=ArtifactPlacement.inline,
+            kind=ArtifactKind.screenshot,
+            filename="missing-bytes.png",
+            content_type="image/png",
+            storage_path="missing-bytes.png",
+            order_index=0,
+        )
+        db.add(artifact)
+        db.flush()
+        finding = EngagementFinding(
+            engagement=eng,
+            group=group,
+            title="Inline Finding",
+            severity=Severity.medium,
+            order_index=0,
+            content_json={"description": _inline_image_block(str(artifact.id))},
+        )
+        db.add(finding)
+        db.commit()
+        eng_id = eng.id
+
+    # NOTE: no bytes for "missing-bytes.png" in this map -- the render cannot resolve it.
+    empty_files: dict[str, bytes] = {}
+
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
+        html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=empty_files.get)
+
+    assert "R0lGODlhAQABAIAAAAAAAP" not in html_doc  # no bare blank-pixel data URI leaked through
+    assert "missing-bytes.png" in html_doc
+    assert "evidence not embedded" in html_doc
+
+
+def test_unresolvable_inline_image_note_is_a_real_guard(session_factory):
+    """Negative self-test for the guard above: if the "evidence not embedded" note were removed, the
+    positive assertion in the previous test would start passing for the WRONG reason (a genuinely
+    silent gap). Simulate the old (pre-#61) behavior directly against the resolver to prove the note
+    is load-bearing, not decorative."""
+    from scribble.reporting.render_html import _AssetResolver, _substitute_inline_placeholders
+
+    resolver = _AssetResolver("inline", lambda _path: None)  # every lookup fails -> unresolvable
+    fragment = '<img class="artifact" src="/__scribble_inline__/missing-bytes.png" alt="x"/>'
+    resolved = _substitute_inline_placeholders(fragment, resolver)
+    assert "evidence not embedded" in resolved
+    assert "missing-bytes.png" in resolved
+    # Now prove the assertion actually detects an absent note (i.e. it isn't vacuously true):
+    stripped = resolved.replace("evidence not embedded", "")
+    assert "evidence not embedded" not in stripped

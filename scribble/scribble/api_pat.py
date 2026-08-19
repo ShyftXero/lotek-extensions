@@ -60,6 +60,7 @@ from scribble.api_schemas import (
     CreateEngagementRequest,
     CreateGroupRequest,
     CreateTemplateRequest,
+    LinkAttackPathRequest,
     MoveFindingRequest,
     PatchFindingRequest,
     ReorderGroupsRequest,
@@ -69,7 +70,7 @@ from scribble.api_schemas import (
     request_body,
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
-from scribble.artifacts_storage import delete_file, guess_content_type, save_bytes
+from scribble.artifacts_storage import SAFE_NAME_MAX, delete_file, guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
     can_view_engagement,
@@ -82,6 +83,7 @@ from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingS
 from scribble.models import (
     Artifact,
     Engagement,
+    EngagementDiagram,
     EngagementFinding,
     FindingGroup,
     ScribbleVulnMap,
@@ -105,6 +107,16 @@ _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 # it replaced, a malformed value never matches the rule at all: Werkzeug answers a routing 404 --
 # the correct response for "no such id" -- and no view runs, so there is no overflow/DataError
 # class of bug left to guard against here.
+
+# Upper bound on a linked diagram's self-contained HTML snapshot (see scribble_link_attack_path). Vector's
+# export.html inlines its own assets, so it can run larger than a screenshot; this table's ``embed_html``
+# is a ``Text`` column held whole in memory on every report render (like ``content_json`` — see
+# ``_CONTENT_BLOCK_MAX``'s comment for why persistent, per-render costs get their own explicit cap rather
+# than relying on the host's ``MAX_CONTENT_LENGTH`` alone), so a bound is owed here too. 10 MiB is well
+# above any real diagram snapshot and far below where either cost bites.
+_MAX_DIAGRAM_HTML_BYTES = 10 * 1024 * 1024
+_DIAGRAM_REF_MAX_LEN = 64      # EngagementDiagram.diagram_ref  String(64)
+_DIAGRAM_CAPTION_MAX_LEN = 255  # EngagementDiagram.caption      String(255)
 
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
 
@@ -189,6 +201,47 @@ def _engagement_not_found():
     one for an engagement that does not exist. 404, never 403: a distinguishable refusal is an existence
     oracle over the whole id space (same posture as ``scribble.authz``'s abort(404))."""
     return jsonify({"error": "not_found", "detail": "engagement not found"}), 404
+
+
+def _resolve_engagement(db, raw_id, actor):
+    """Address an engagement by EITHER id space (#49): its own UUIDv7 PK, or the core host's engagement
+    id it was created with (``Engagement.core_engagement_id`` — int on a legacy/standalone host, UUID on
+    v2 core; see models.py).
+
+    Returns the ``Engagement`` if it exists AND ``can_view_engagement`` allows ``actor`` to see it,
+    else ``None`` — callers translate a ``None`` to ``_engagement_not_found()``, so this introduces no
+    new oracle: unknown id, malformed id, and "exists but not visible" all collapse to the same 404.
+
+    Since lotek#335 every Scribble PK — and every v2 core id — is a UUID, so the ``<uuid:engagement_id>``
+    route converter parses the segment before this runs; a non-UUID never matches the rule and 404s at
+    routing. A caller therefore cannot address a row by a legacy INTEGER ``core_engagement_id`` through
+    the URL any more (that shape is unreachable via a UUID converter), which is an accepted consequence
+    of the migration — v2 core keys engagements on UUIDs regardless. A non-UUID reaching here anyway
+    (e.g. an internal caller) simply returns ``None`` -> the same 404, rather than raising.
+    """
+    text = str(raw_id).strip()
+    try:
+        key = uuid.UUID(text)
+    except (ValueError, AttributeError):
+        return None
+    # A UUID may be EITHER Scribble's own PK (the id Scribble hands back — #49 primary addressing) OR the
+    # core host's engagement id it was created with (#49 secondary). Try the PK first, then fall back to
+    # ``core_engagement_id``. No UNIQUE constraint on ``core_engagement_id`` (models.py: index, not
+    # unique — a pre-existing table can't be retrofitted with one), so a deliberate/accidental collision
+    # resolves deterministically to the oldest row rather than 500ing on ``scalar_one``;
+    # ``can_view_engagement`` below still gates what the resolved row exposes.
+    eng = db.get(Engagement, key)
+    if eng is None:
+        stmt = (
+            select(Engagement)
+            .where(Engagement.core_engagement_id == key)
+            .order_by(Engagement.id)
+            .limit(1)
+        )
+        eng = db.execute(stmt).scalar_one_or_none()
+    if eng is None or not can_view_engagement(eng, actor):
+        return None
+    return eng
 
 
 def _client_not_found():
@@ -313,7 +366,14 @@ _TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
 # basename is 33 characters longer than the name the caller sent and overruns ``NAME_MAX`` (255 on
 # Linux/ext4) at 223 — measured, not assumed: 222 stores, 223 raises ``ENAMETOOLONG`` and the caller
 # gets a 500. Cap at the SMALLER of the two limits, or the guard would still 500 on everything between.
-_ARTIFACT_FILENAME_MAX_LEN = 255 - 32 - 1  # NAME_MAX - len(uuid4().hex) - len("_") == 222
+# ``SAFE_NAME_MAX`` (== 222) is imported rather than recomputed so this number and the one
+# ``save_bytes`` truncates the SECURED name to (artifacts_storage._bounded_name, applied AFTER
+# ``secure_filename`` — which NFKD-normalizes and can EXPAND, not just shrink, the caller's input)
+# can never drift apart. This cap alone does not stop the filesystem overrun by itself (a 222-char
+# unicode name can still secure_filename to 400+ chars) — ``_bounded_name`` is what actually
+# protects the write; this 400 just gives the caller an honest, fast rejection for the case its
+# own input is unreasonable on its face.
+_ARTIFACT_FILENAME_MAX_LEN = SAFE_NAME_MAX
 
 # Bound on a client-supplied ID LIST (``finding_ids`` on the bulk move, ``order`` on the group reorder). The
 # length caps above bound one string; this bounds the one input whose LENGTH costs work per element, which is
@@ -605,6 +665,12 @@ def scribble_create_engagement():
     client_id, err = _opt_host_id(data, "client_id")
     if err:
         return err
+    # Soft ref to the CORE engagement id (#49) -- optional, int-or-UUID, same parser as client_id. Not a
+    # tenancy field: it just records the addressing alias (see _resolve_engagement) for a caller that
+    # only holds the core id back from POST /api/v1/engagements.
+    core_engagement_id, err = _opt_host_id(data, "core_engagement_id")
+    if err:
+        return err
     actor = host.actor()
 
     # The client an engagement is created under IS its tenancy, and it arrives in the request body — so
@@ -642,10 +708,17 @@ def scribble_create_engagement():
                 # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so
                 # it cannot be older than itself (no more capability-gating on the mounted schema).
                 owner_id=actor.id if actor else None,
+                core_engagement_id=core_engagement_id,
             )
             db.add(eng)
             db.flush()  # assign the PK so the audit row + response can reference it
-            body = {"id": eng.id, "name": eng.name}
+            body = {
+                "id": eng.id,
+                "name": eng.name,
+                "core_engagement_id": (
+                    str(eng.core_engagement_id) if eng.core_engagement_id is not None else None
+                ),
+            }
             _audit(db, "create_engagement", subject_type="engagement", subject_id=eng.id, after=body)
             db.commit()
             return body, 201
@@ -804,18 +877,18 @@ def scribble_create_template():
 @machine_bp.post("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
-def scribble_add_finding(engagement_id: int):
+def scribble_add_finding(engagement_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
         # DESTINATION tenancy FIRST — before the body is even parsed. Authorizing ahead of validation
         # keeps the refusal for a foreign engagement identical no matter what the body says, so a caller
-        # can't map the id space by diffing 400s against 404s.
-        engagement = db.get(Engagement, engagement_id)
+        # can't map the id space by diffing 400s against 404s. Addressable by EITHER id space (#49) —
+        # see _resolve_engagement; a missing/unauthorized/malformed id all collapse to the same 404.
+        engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
-        if not can_view_engagement(engagement, actor):
-            return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         data = request.get_json(silent=True) or {}
         template_id, err = _opt_uuid(data, "template_id")
@@ -1127,7 +1200,7 @@ def scribble_resolve_template():
 
 @machine_bp.post("/engagements/<uuid:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
-def scribble_promote_job(engagement_id: int, job_id: str):
+def scribble_promote_job(engagement_id: str, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
 
     This route spans TWO tenancy domains and must check both, which is exactly what it failed to do until
@@ -1145,11 +1218,10 @@ def scribble_promote_job(engagement_id: int, job_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
+        engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
-        if not can_view_engagement(engagement, actor):
-            return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         findings_ns = host.findings()
         job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
@@ -1186,6 +1258,11 @@ def _engagement_summary(engagement: Engagement) -> dict:
         "id": engagement.id,
         "name": engagement.name,
         "client_id": str(engagement.client_id) if engagement.client_id is not None else None,
+        # Discoverable mapping (#49): a caller may address this engagement by either id (see
+        # _resolve_engagement); surfacing it here means it doesn't have to guess or cross-reference.
+        "core_engagement_id": (
+            str(engagement.core_engagement_id) if engagement.core_engagement_id is not None else None
+        ),
         "scope_type": engagement.scope_type,
         "company_name": engagement.company_name,
         "status": engagement.status,
@@ -1211,12 +1288,13 @@ def scribble_list_engagements():
 
 @machine_bp.get("/engagements/<uuid:engagement_id>")
 @host.require_scope("read")
-def scribble_get_engagement(engagement_id: int):
+def scribble_get_engagement(engagement_id: str):
     actor = host.actor()
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        # Missing and not-visible are the SAME 404 — no existence oracle over the id space.
-        if engagement is None or not can_view_engagement(engagement, actor):
+        # Missing, not-visible, AND unaddressable-by-either-id-space are the SAME 404 — no existence
+        # oracle over either id space (#49 — see _resolve_engagement).
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
         summary = _engagement_summary(engagement)
         summary["finding_count"] = len(engagement.findings)
@@ -1230,7 +1308,7 @@ def scribble_get_engagement(engagement_id: int):
 
 @machine_bp.get("/engagements/<uuid:engagement_id>/report")
 @host.require_scope("read")
-def scribble_engagement_report(engagement_id: int):
+def scribble_engagement_report(engagement_id: str):
     """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
     pdf. Reuses the SAME ``build_report_context`` + renderers the cookie report routes use (artifact bytes
     embedded), so the machine deliverable is byte-identical to the browser one.
@@ -1247,9 +1325,10 @@ def scribble_engagement_report(engagement_id: int):
     cfg = get_config()
     reader = _artifact_bytes_reader(cfg.artifact_root)
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        if engagement is None or not can_view_engagement(engagement, actor):
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for the audit row below
 
         if fmt == "docx":
             from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
@@ -1336,7 +1415,7 @@ def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | 
 @machine_bp.post("/engagements/<uuid:engagement_id>/artifacts")
 @host.require_scope("write")
 @request_body(UploadArtifactRequest)
-def scribble_upload_artifact(engagement_id: int):
+def scribble_upload_artifact(engagement_id: str):
     """Attach an evidence file (screenshot, capture, document) to an engagement — the PAT counterpart of
     the cookie ``POST <url_prefix>/api/artifacts``, so an agent can supply report evidence.
 
@@ -1357,9 +1436,10 @@ def scribble_upload_artifact(engagement_id: int):
     # anything checked whether it was allowed to write here at all — work done on behalf of a tenant with
     # no grant. The re-read below is what the write itself uses.
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
-        if engagement is None or not can_view_engagement(engagement, actor):
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
             return _engagement_not_found()
+        engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
     upload = request.files.get("file")
     if upload is not None:
@@ -2570,6 +2650,112 @@ def scribble_reorder_groups(engagement_id: int):
 
     body, status = _with_idempotency(_idempotency_key(data), _produce)
     return jsonify(body), status
+
+
+# ── attack-path diagrams (ext#48) ───────────────────────────────────────────────────────────────────
+
+
+def _diagram_dict(d: EngagementDiagram) -> dict:
+    return {
+        "id": d.id,
+        "engagement_id": d.engagement_id,
+        "diagram_ref": d.diagram_ref,
+        "caption": d.caption or "",
+        "include_in_report": d.include_in_report,
+        "order_index": d.order_index,
+        # The snapshot itself is potentially large and is not useful in a listing — a caller that wants
+        # it renders the report, or re-fetches vector's export directly. Its presence (not its content)
+        # is what a review surface needs, matching artifacts_api leaving byte content out of listings.
+        "has_embed_html": bool(d.embed_html),
+    }
+
+
+@machine_bp.post("/engagements/<uuid:engagement_id>/attack-paths")
+@host.require_scope("write")
+@request_body(LinkAttackPathRequest)
+def scribble_link_attack_path(engagement_id):
+    """Link a vector attack-path diagram into this engagement's report (ext#48).
+
+    Scribble has no seam to reach vector directly (a separate extension, no host hook exposes it), so
+    THIS route accepts an already-rendered, self-contained HTML snapshot rather than fetching one: the
+    caller GETs vector's ``/vector/machine/diagrams/{id}/export.html`` and POSTs the result here as
+    ``embed_html``. The report embeds it verbatim inside a sandboxed iframe
+    (``render_html._render_diagram_item``) — this route stores it, never parses or executes it.
+
+    Tenancy is checked BEFORE the body is read (same rule as ``scribble_upload_artifact``, for the same
+    reason: a caller must not be able to map the id space by diffing 400s against 404s for an engagement
+    it cannot see). ``idempotency_key`` (body or ``Idempotency-Key`` header) makes a retry return the
+    original link (200) rather than creating a duplicate.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+    data = request.get_json(silent=True) or {}
+    embed_html, err = _opt_str(data, "embed_html")
+    if err:
+        return err
+    if not embed_html:
+        return _bad_request("embed_html is required")
+    if len(embed_html.encode("utf-8")) > _MAX_DIAGRAM_HTML_BYTES:
+        return jsonify({
+            "error": "payload_too_large",
+            "detail": f"embed_html exceeds the {_MAX_DIAGRAM_HTML_BYTES // (1024 * 1024)} MiB limit",
+        }), 413
+
+    diagram_ref, err = _opt_str(data, "diagram_ref")
+    if err:
+        return err
+    if (err := _too_long("diagram_ref", diagram_ref or "", cap=_DIAGRAM_REF_MAX_LEN)) is not None:
+        return err
+    caption, err = _opt_str(data, "caption")
+    if err:
+        return err
+    if (err := _too_long("caption", caption or "", cap=_DIAGRAM_CAPTION_MAX_LEN)) is not None:
+        return err
+    publish, err = _include_in_report_or_400(data.get("include_in_report"))
+    if err:
+        return err
+
+    idempotency_key = _idempotency_key(data)
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as wdb:
+            eng = wdb.get(Engagement, engagement_id)
+            if eng is None:
+                return {"error": "not_found", "detail": "engagement not found"}, 404
+            siblings = list(eng.diagrams)
+            diagram = EngagementDiagram(
+                engagement_id=engagement_id,
+                diagram_ref=diagram_ref,
+                caption=caption,
+                embed_html=embed_html,
+                order_index=len(siblings),
+                include_in_report=publish if publish is not None else True,
+            )
+            wdb.add(diagram)
+            wdb.commit()
+            return _diagram_dict(diagram), 201
+
+    body, status = _with_idempotency(idempotency_key, _produce)
+    return jsonify(body), status
+
+
+@machine_bp.get("/engagements/<uuid:engagement_id>/attack-paths")
+@host.require_scope("read")
+def scribble_list_attack_paths(engagement_id):
+    """List the attack-path diagrams linked to this engagement — the review surface for what the
+    report's Attack Paths block will publish (mirrors ``scribble_list_artifacts``)."""
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        rows = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
+        out = [_diagram_dict(d) for d in rows]
+    return jsonify({"diagrams": out, "count": len(out)})
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────
