@@ -28,8 +28,16 @@ from registrar import host
 from registrar.api_schemas import ActionRequest, request_body
 from registrar.deps import get_config, host_audit, host_visible_engagement_ids
 from registrar.enums import Tier
-from registrar.models import AuditRecord, Domain, StagedAction
-from registrar.service import ConfirmationRequired, execute_direct, stage, tier_of, visible_servers
+from registrar.models import AuditRecord
+from registrar.service import (
+    ConfirmationRequired,
+    execute_direct,
+    stage,
+    tier_of,
+    visible_domains,
+    visible_servers,
+    visible_staged,
+)
 
 machine_bp = Blueprint("registrar_machine", __name__)
 machine_bp.before_request(host.authenticate)
@@ -58,9 +66,10 @@ def list_servers():
 @machine_bp.get("/domains")
 @host.require_scope("read")
 def list_domains():
-    """List domains."""
+    """List domains visible to the token's user (engagement-scoped by checkout; admin sees all)."""
     with get_config().session_factory() as db:
-        rows = db.scalars(select(Domain).order_by(Domain.name)).all()
+        rows = visible_domains(db, visible_engagement_ids=host_visible_engagement_ids(),
+                               is_admin=_is_admin(host.actor()))
         return jsonify(domains=[
             {"id": str(d.id), "name": d.name, "provider": d.provider, "registered": d.registered,
              "checked_out_to": str(d.checked_out_to) if d.checked_out_to else None}
@@ -106,12 +115,11 @@ def action():
 @machine_bp.get("/staged")
 @host.require_scope("read")
 def list_staged():
-    """List pending staged (confirm-tier) actions awaiting a human approval."""
+    """List pending staged (confirm-tier) actions visible to the token's user (engagement-scoped;
+    admin sees org-level/unbound ones)."""
     with get_config().session_factory() as db:
-        rows = db.scalars(
-            select(StagedAction).where(StagedAction.status == "pending")
-            .order_by(StagedAction.created_at.desc())
-        ).all()
+        rows = visible_staged(db, visible_engagement_ids=host_visible_engagement_ids(),
+                              is_admin=_is_admin(host.actor()))
         return jsonify(staged=[
             {"id": str(s.id), "verb": s.verb, "provider": s.provider,
              "initiator_id": str(s.initiator_id) if s.initiator_id else None,
@@ -123,7 +131,14 @@ def list_staged():
 @machine_bp.get("/audit")
 @host.require_scope("read")
 def audit():
-    """The most recent registrar audit records (verb, provider, tier, result)."""
+    """The most recent registrar audit records (verb, provider, tier, result) — ADMIN-ONLY.
+
+    ``AuditRecord`` carries NO engagement_id column and the trail spans every engagement's actions, so
+    it cannot be engagement-scoped row-by-row (INV-TENANCY-06). A non-admin token gets an empty list
+    (consistent with the sibling scoped lists) rather than a cross-tenant action log.
+    """
+    if not _is_admin(host.actor()):
+        return jsonify(audit=[])
     with get_config().session_factory() as db:
         rows = db.scalars(select(AuditRecord).order_by(AuditRecord.at.desc()).limit(50)).all()
         return jsonify(audit=[

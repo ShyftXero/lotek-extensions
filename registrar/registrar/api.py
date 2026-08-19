@@ -25,7 +25,7 @@ from registrar.deps import (
     host_visible_engagement_ids,
 )
 from registrar.enums import Tier
-from registrar.models import AuditRecord, Domain, StagedAction
+from registrar.models import AuditRecord, StagedAction
 from registrar.service import (
     ApprovalDenied,
     ConfirmationRequired,
@@ -33,7 +33,9 @@ from registrar.service import (
     execute_direct,
     stage,
     tier_of,
+    visible_domains,
     visible_servers,
+    visible_staged,
 )
 
 api_bp = Blueprint("registrar_api", __name__)
@@ -72,7 +74,8 @@ def list_servers():
 def list_domains():
     cfg = get_config()
     with cfg.session_factory() as db:
-        rows = db.scalars(select(Domain).order_by(Domain.name)).all()
+        rows = visible_domains(db, visible_engagement_ids=host_visible_engagement_ids(),
+                               is_admin=current_actor_is_admin())
         return jsonify(domains=[
             {"id": str(d.id), "name": d.name, "provider": d.provider, "registered": d.registered,
              "checked_out_to": str(d.checked_out_to) if d.checked_out_to else None}
@@ -112,10 +115,8 @@ def action():
 def list_staged():
     cfg = get_config()
     with cfg.session_factory() as db:
-        rows = db.scalars(
-            select(StagedAction).where(StagedAction.status == "pending")
-            .order_by(StagedAction.created_at.desc())
-        ).all()
+        rows = visible_staged(db, visible_engagement_ids=host_visible_engagement_ids(),
+                              is_admin=current_actor_is_admin())
         return jsonify(staged=[
             {"id": str(s.id), "verb": s.verb, "provider": s.provider,
              "initiator_id": str(s.initiator_id) if s.initiator_id else None,
@@ -148,6 +149,13 @@ def approve_staged(staged_id: uuid.UUID):
 
 @api_bp.get("/audit")
 def audit():
+    # ADMIN-ONLY (INV-TENANCY-06). The registrar audit trail spans every engagement's actions and
+    # ``AuditRecord`` carries NO engagement_id column, so it cannot be engagement-scoped row-by-row.
+    # Rather than leak a cross-tenant action log, restrict it: a non-admin gets an empty list (200),
+    # consistent with how the sibling list endpoints scope by returning fewer rows. Standalone (no host
+    # actor) counts as admin, so single-user REGISTRAR still sees its own trail.
+    if not current_actor_is_admin():
+        return jsonify(audit=[])
     cfg = get_config()
     with cfg.session_factory() as db:
         rows = db.scalars(select(AuditRecord).order_by(AuditRecord.at.desc()).limit(50)).all()

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from registrar.drivers import get_compute, get_dns, get_sms, tier_of
 from registrar.enums import ServerKind, ServerState, Tier
-from registrar.models import AuditRecord, Server, StagedAction
+from registrar.models import AuditRecord, Domain, Server, StagedAction
 
 
 class ConfirmationRequired(Exception):
@@ -156,6 +156,47 @@ def visible_servers(db: Session, *, visible_engagement_ids, is_admin: bool) -> l
         elif visible_engagement_ids is None or (s.engagement_id in visible_engagement_ids):
             out.append(s)
     return out
+
+
+def _scope_included(bound_engagement_id, *, visible_engagement_ids, is_admin: bool) -> bool:
+    """The single read-scope rule shared by every registrar list (INV-TENANCY-06), mirroring
+    ``visible_servers``:
+
+    * ``visible_engagement_ids is None`` -> standalone / no host scoping -> everything is visible.
+    * a row bound to an engagement is visible iff that engagement is in the caller's visible set.
+    * an UNBOUND row (no engagement) is org-level inventory, like a ``static`` server -> admin-only.
+    """
+    if visible_engagement_ids is None:
+        return True
+    if bound_engagement_id is None:
+        return is_admin
+    return bound_engagement_id in visible_engagement_ids
+
+
+def visible_domains(db: Session, *, visible_engagement_ids, is_admin: bool) -> list[Domain]:
+    """Domains scoped to the actor's engagements by checkout (INV-TENANCY-06). A domain checked out to
+    an engagement is visible only to a caller who can see that engagement; an available domain
+    (``checked_out_to is None``) is org inventory -> admin-only. Standalone sees all."""
+    return [
+        d for d in db.scalars(select(Domain).order_by(Domain.name)).all()
+        if _scope_included(d.checked_out_to, visible_engagement_ids=visible_engagement_ids,
+                           is_admin=is_admin)
+    ]
+
+
+def visible_staged(db: Session, *, visible_engagement_ids, is_admin: bool) -> list[StagedAction]:
+    """Pending staged actions scoped to the actor's engagements (INV-TENANCY-06). An engagement-bound
+    staged action is visible only to a caller who can see that engagement; an unbound one is org-level
+    -> admin-only. Standalone sees all."""
+    rows = db.scalars(
+        select(StagedAction).where(StagedAction.status == "pending")
+        .order_by(StagedAction.created_at.desc())
+    ).all()
+    return [
+        s for s in rows
+        if _scope_included(s.engagement_id, visible_engagement_ids=visible_engagement_ids,
+                           is_admin=is_admin)
+    ]
 
 
 def stage_from_reconcile(db: Session, provider: str = "null") -> int:
