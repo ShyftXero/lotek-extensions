@@ -33,6 +33,11 @@ class CreateEngagementRequest(BaseModel):
     )
     scope_type: str | None = Field("external", description="e.g. 'external' | 'internal' (default external).")
     company_name: str | None = Field(None, description="Optional company/customer display name.")
+    core_engagement_id: int | str | None = Field(
+        None,
+        description="Core engagement id (int or UUID) this scribble engagement mirrors — lets a PAT "
+        "caller later address it by the id core returned; surfaced in GET /engagements output.",
+    )
     idempotency_key: str | None = Field(
         None,
         description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
