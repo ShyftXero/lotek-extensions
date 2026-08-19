@@ -411,6 +411,16 @@ def register(api_bp, bp) -> None:
 
             client = engagement.resolve_client(db)
 
+            # Engagement-level evidence (ext#51): artifacts attached to the engagement itself, not to
+            # any finding (``finding_id`` null). These render into the client report's Evidence
+            # appendix (ext#40 / ``reporting/context.py``'s ``ReportContext.artifacts``) but previously
+            # had no UI review/exclude surface -- an operator could only discover what published by
+            # reading the rendered report.
+            engagement_artifacts = sorted(
+                (a for a in engagement.artifacts if a.finding_id is None),
+                key=lambda a: (a.order_index, a.id),
+            )
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
@@ -419,6 +429,7 @@ def register(api_bp, bp) -> None:
                 ungrouped=ungrouped,
                 templates=templates,
                 assessment_types=assessment_types,
+                engagement_artifacts=engagement_artifacts,
             )
 
     # =============================================================================== UI: groups
