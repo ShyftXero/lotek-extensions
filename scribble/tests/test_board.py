@@ -25,6 +25,8 @@ import io
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from scribble.artifacts_storage import resolve_path
 from scribble.blueprint import _inject_base
 from scribble.content import schema
@@ -841,6 +843,200 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
         assert db.get(EngagementFinding, finding_id) is None
         assert db.get(Artifact, artifact_id) is None
     assert not on_disk.is_file()
+
+
+def test_delete_finding_detaches_its_nested_children(client, session_factory):
+    """The cookie board's delete hit the same self-FK wall as the machine route (both call
+    `findings_service.delete_finding`): deleting a promoted PARENT raised `IntegrityError` and the request
+    500'd, because `EngagementFinding.parent_id` has no `ondelete` and no ORM relationship to clear it.
+
+    Children are detached, not deleted — see `findings_service.detach_children`. Driven through the HTTP
+    route rather than the service so it proves the surface a user actually clicks.
+    """
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        group = _make_group(db, eng, "Active Directory")
+        tmpl = _make_template(db, "Kerberoasting")
+        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        db.add(parent)
+        db.flush()
+        children = [
+            EngagementFinding.from_template(
+                tmpl, engagement_id=eng.id, group_id=group.id, parent_id=parent.id,
+                target_host=host, order_index=index + 1,
+            )
+            for index, host in enumerate(("10.0.0.10", "10.0.0.20"))
+        ]
+        db.add_all(children)
+        db.commit()
+        eng_id, parent_id = eng.id, parent.id
+        child_ids = [child.id for child in children]
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/findings/{parent_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(EngagementFinding, parent_id) is None
+        for child_id in child_ids:
+            child = db.get(EngagementFinding, child_id)
+            assert child is not None and child.parent_id is None
+
+
+def test_engagement_delete_survives_a_promoted_parent_child_cluster(client, session_factory):
+    """Deleting an ENGAGEMENT that holds a promoted aggregation must work.
+
+    Pre-existing defect of the same class as the parent-delete one, found while fixing it and not reported:
+    `Engagement.findings` cascades `delete-orphan`, and with no ORM relationship on the self-FK SQLAlchemy
+    has no dependency to order those DELETEs by — it emits them in one batch and the child rows' `parent_id`
+    FK fails. So an engagement holding ANY promoted finding could not be deleted at all (`IntegrityError`
+    here, `ForeignKeyViolation` on prod Postgres). `findings_service.flatten_nesting` clears the links first.
+    """
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "SMB signing not required")
+        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        db.add(parent)
+        db.flush()
+        db.add_all([
+            EngagementFinding.from_template(
+                tmpl, engagement_id=eng.id, parent_id=parent.id, target_host=f"10.0.0.{n}"
+            )
+            for n in (5, 6, 7)
+        ])
+        db.commit()
+        eng_id = eng.id
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(Engagement, eng_id) is None
+        assert db.scalars(
+            select(EngagementFinding).where(EngagementFinding.engagement_id == eng_id)
+        ).all() == []
+
+
+def test_engagement_delete_survives_rows_that_reference_a_finding_from_OUTSIDE_the_cascade(
+    client, session_factory
+):
+    """Deleting an engagement must work when something outside its ORM cascade graph references a finding.
+
+    `Engagement` cascades `delete-orphan` to groups/findings/artifacts/variable_values/checklists — the rows
+    the ORM knows are the engagement's. It knows nothing about a `CollabDoc` (which has no engagement column
+    at all, and which the live co-editing room writes the moment a human opens a block), a finding-scoped
+    `VariableValue` whose `engagement_id` is NULL, or the ORDER of an `EngagementChecklistItem`'s DELETE
+    relative to the findings' (no dependency edge between those mappers). Each of those made this route a
+    **500** — the engagement could not be deleted at all — which is the same defect
+    `test_engagement_delete_survives_a_promoted_parent_child_cluster` above covers for `parent_id` only. That
+    test passing is exactly why this one was missing: one member of the FK set was fixed and certified.
+
+    `findings_service.prepare_engagement_delete` owns the whole set now; see the enumeration at the top of
+    that module.
+    """
+    from scribble.models import (
+        CollabDoc,
+        EngagementChecklist,
+        EngagementChecklistItem,
+        TemplateVariable,
+        VariableValue,
+    )
+
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "SMB signing not required")
+        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        db.add(finding)
+        db.flush()
+        variable = TemplateVariable(key="PER_FINDING_HOST", label="Host")  # not a seeded key
+        checklist = EngagementChecklist(engagement_id=eng.id, name="Coverage")
+        db.add_all([variable, checklist, CollabDoc(finding_id=finding.id, block="description",
+                                                  ydoc_state=b"\x00\x01ydoc")])
+        db.flush()
+        db.add_all([
+            VariableValue(variable_id=variable.id, finding_id=finding.id, value="10.0.0.5"),
+            EngagementChecklistItem(
+                engagement_checklist_id=checklist.id, text="SMB reviewed", finding_id=finding.id
+            ),
+        ])
+        db.commit()
+        eng_id, finding_id = eng.id, finding.id
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(Engagement, eng_id) is None
+        assert db.get(EngagementFinding, finding_id) is None
+        assert db.scalars(select(CollabDoc)).all() == []
+        assert db.scalars(select(VariableValue)).all() == []
+        # The checklist went with the engagement (it IS the engagement's), items and all.
+        assert db.scalars(select(EngagementChecklistItem)).all() == []
+
+
+def test_engagement_delete_clears_the_one_referrer_no_relationship_cascades(client, session_factory):
+    """`scribble_report_renders.engagement_id` — the sixth column referencing an engagement, and the one no
+    ORM relationship covers — must not block the delete either.
+
+    NOT reported by either review round: found by asking the enumeration question ONE TABLE OVER, which is the
+    lesson round 2 was about. Five of the six referrers are reached by an `Engagement` relationship cascading
+    `delete-orphan`; `ReportRender` has no relationship at all, so a single row made this route a 500
+    (reproduced) — an FK violation that deletes nothing.
+
+    LATENT today: nothing in the codebase instantiates `ReportRender` (the table is schema-frozen for a later
+    phase), which is exactly why it would have shipped — the first code to write one would have broken
+    engagement delete somewhere far from itself. Fixed in `findings_service.prepare_engagement_delete`, with
+    the file-unlink obligation for a future writer recorded next to `_ENGAGEMENT_UNCASCADED`.
+    """
+    from scribble.enums import ReportFormat
+    from scribble.models import ReportRender
+
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Missing HSTS")
+        db.add(EngagementFinding.from_template(tmpl, engagement_id=eng.id))
+        db.add(ReportRender(engagement_id=eng.id, format=ReportFormat.html, path="renders/1.html"))
+        db.commit()
+        eng_id = eng.id
+
+    resp = client.post(f"{UI}/engagements/{eng_id}/delete")
+    assert resp.status_code == 302
+
+    with session_factory() as db:
+        assert db.get(Engagement, eng_id) is None
+        assert db.scalars(select(ReportRender)).all() == []
+
+
+def test_every_column_referencing_an_engagement_is_cascaded_or_declared():
+    """The engagement-side twin of the finding-side FK guard, for the same reason.
+
+    A guard that enumerates the columns pointing at ONE table and stops is the same shape as a fix applied to
+    one member of a set: it certifies the area it was written for and says nothing about its neighbour. So
+    this derives the referrers of `scribble_engagements.id` from `Base.metadata` and requires each to be
+    reachable by an `Engagement` relationship that cascades `delete-orphan` OR declared in
+    `findings_service._ENGAGEMENT_UNCASCADED` (which `prepare_engagement_delete` clears by hand). A new table
+    referencing an engagement fails this until someone decides which it is.
+    """
+    from scribble import findings_service as svc
+    from scribble.models import Base, Engagement
+
+    referrers = {
+        (table.name, column.name)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        for fk in column.foreign_keys
+        if fk.column.table.name == "scribble_engagements" and fk.column.name == "id"
+    }
+    cascaded = {
+        (rel.mapper.local_table.name, "engagement_id")
+        for rel in Engagement.__mapper__.relationships
+        if rel.cascade.delete_orphan
+    }
+    declared = cascaded | {(m.__tablename__, "engagement_id") for m in svc._ENGAGEMENT_UNCASCADED}
+    assert referrers == declared, (
+        "a column referencing scribble_engagements.id is neither cascade-covered nor cleared by hand: "
+        f"{referrers ^ declared} — give it a relationship with cascade='all, delete-orphan' or add it to "
+        "findings_service._ENGAGEMENT_UNCASCADED, or deleting an engagement will 500"
+    )
 
 
 def test_delete_finding_wrong_engagement_404(client, session_factory):

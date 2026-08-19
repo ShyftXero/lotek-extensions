@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Scribble{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('scribble.static', filename='scribble.css') }}" />
+  {# Per-page <link>/<meta> injection point, same name and position as the host's (lotek base.html) so a
+     page template's `head_extra` block lands in the <head> whether scribble is standalone or MOUNTED.
+     cream/registrar/vector already carry this; scribble did not, which is why a page could not ship its
+     own stylesheet to a host at all (ext#44). #}
+  {% block head_extra %}{% endblock %}
 </head>
 <body class="app-shell">
   <aside class="sidebar">

@@ -255,11 +255,20 @@ def _footer_block(view: DocumentView) -> str:
     return "".join(bits)
 
 
-def render_document_html(view: DocumentView, *, standalone: bool = False) -> str:
+def render_document_html(view: DocumentView, *, standalone: bool = False, name: str = "") -> str:
     """The document as HTML. ``standalone`` wraps it in a full page with its own ``<style>``; otherwise
-    a fragment is returned for embedding (the preview pane and the in-app viewer)."""
+    a fragment is returned for embedding (the preview pane and the in-app viewer).
+
+    ``name`` names the document in a **standalone** page's ``<title>`` when it has no number yet — pass
+    the in-app handle (``draft …b839c91e20``). Without it every unissued export's title is a bare
+    ``Invoice``, and that string is what a browser tab and the PDF's own metadata show, so three drafts
+    open side by side are three identical tabs. An issued document is titled by its number either way
+    (:func:`cream.handles.document_handle` returns the number once there is one), and the *document body*
+    is untouched: a draft's identity here is app-side naming, not a number printed on the client's copy.
+    """
     status_class = escape(view.status if view.status in ("draft", "void") else "")
-    heading = escape((view.kind or "document").title())
+    kind_label = (view.kind or "document").title()
+    heading = escape(kind_label)
     number = f'<div class="num">{plain(view.number)}</div>' if view.number else ""
     body = f"""
 <div class="cream-doc">
@@ -286,7 +295,10 @@ def render_document_html(view: DocumentView, *, standalone: bool = False) -> str
 """
     if not standalone:
         return f"<style>{_css(view)}</style>{body}"
-    title = escape(f"{heading} {view.number or ''}".strip())
+    # escape() once, over the raw pieces — `heading` is already escaped, so folding it in here would
+    # double-escape a kind or a handle containing `&`.
+    identity = (name or "").strip() or (view.number or "")
+    title = escape(f"{kind_label} {identity}".strip())
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{title}</title><style>{_css(view)}"
@@ -295,15 +307,19 @@ def render_document_html(view: DocumentView, *, standalone: bool = False) -> str
     )
 
 
-def render_document_pdf(view: DocumentView) -> bytes | None:
+def render_document_pdf(view: DocumentView, *, name: str = "") -> bytes | None:
     """PDF bytes via weasyprint if available, else ``None`` (caller falls back to HTML).
 
     ``base_url`` is deliberately **not** passed: without it weasyprint has no document root to resolve a
     relative reference against, so the only images that can load are the inline ``data:`` URIs
     :func:`safe_logo` already vetted.
+
+    ``name`` is passed straight through to :func:`render_document_html` — weasyprint reads the page's
+    ``<title>`` into the PDF's own metadata title, which is what a PDF reader shows in its window and its
+    recent-files list.
     """
     try:
         from weasyprint import HTML  # type: ignore  # optional heavy native dep
     except Exception:  # noqa: BLE001 - optional dependency; absence is expected, not an error
         return None
-    return HTML(string=render_document_html(view, standalone=True)).write_pdf()
+    return HTML(string=render_document_html(view, standalone=True, name=name)).write_pdf()

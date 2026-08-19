@@ -32,7 +32,9 @@ UI (``bp``, mounted at the host ``url_prefix``, default ``/scribble``):
     POST /engagements/<id>/findings                       add a finding from a VulnerabilityTemplate
     POST /engagements/<id>/findings/<finding_id>/delete   delete a finding AND its artifacts (endpoint:
                                                            delete_finding) -- unlike group delete, a
-                                                           finding IS its content, so this does not detach
+                                                           finding IS its content, so its evidence goes
+                                                           with it; its nested per-host CHILDREN do not,
+                                                           they are detached (findings_service)
     GET  /findings/<id>                                   finding detail (endpoint: finding_detail)
     POST /findings/<id>                                   update finding meta
 
@@ -50,8 +52,10 @@ ignored (not a 500); moving into a nonexistent or cross-engagement group is a 40
 corruption; deleting a group detaches its findings (group_id -> NULL) instead of cascading their
 deletion, since a report *section* is not the same thing as the findings inside it -- conversely,
 deleting a finding (``delete_finding``) DOES cascade to its own artifacts, since a finding is its
-content and evidence, not a container for other authored rows; 404 (never 500) if the finding doesn't
-exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
+content and evidence, not a container for other authored rows -- but its nested per-host CHILDREN are
+DETACHED like a group's findings are, because those rows carry evidence of their own (and, until that was
+handled, deleting a promoted parent violated the ``parent_id`` self-FK and 500'd); 404 (never 500) if the
+finding doesn't exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
 
 ``Engagement.created_by`` / ``EngagementFinding.created_by`` are set from the optional host-injected
 ``current_actor`` hook (``scribble.deps.current_actor_username``) -- ``None`` standalone.
@@ -65,6 +69,7 @@ from datetime import date
 from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
+from scribble import findings_service
 from scribble.artifacts_storage import delete_file
 from scribble.authz import can_view_client_id, host_is_mounted, visible_engagements
 from scribble.content import schema
@@ -78,7 +83,7 @@ from scribble.deps import (
     open_session,
     severity_enum,
 )
-from scribble.enums import Confidence, FindingStatus, OrderMode, severity_rank
+from scribble.enums import Confidence, FindingStatus, OrderMode
 from scribble.models import (
     AssessmentType,
     Engagement,
@@ -140,26 +145,6 @@ def _parse_float(value: str | None) -> float | None:
         return float(value)
     except ValueError:
         return None
-
-
-def _display_order(findings, order_mode: OrderMode) -> list[EngagementFinding]:
-    """Board display order for one group's findings.
-
-    Mirrors ``reporting/context.py::_order_findings`` (auto_severity = worst-first then order_index;
-    manual = order_index only) but WITHOUT the ``include_in_report`` filter — authors need to see (and
-    re-include) excluded findings on the board, unlike the rendered report.
-    """
-    items = list(findings)
-    if order_mode == OrderMode.manual:
-        return sorted(items, key=lambda f: f.order_index)
-    return sorted(items, key=lambda f: (severity_rank(f.severity), f.order_index))
-
-
-def _reindex(items) -> None:
-    """Assign sequential order_index (0..n-1) to items in their current list order. The single place
-    that decides on-disk order_index values for a reorder/move — no gaps, no duplicates."""
-    for index, item in enumerate(items):
-        item.order_index = index
 
 
 def _viewable_clients(db) -> list:
@@ -386,6 +371,14 @@ def register(api_bp, bp) -> None:
             # bytes on disk are not the ORM's to clean up -- collect the paths before the cascade delete,
             # then best-effort remove the files afterward, same as delete_finding does per-finding.
             storage_paths = [a.storage_path for a in engagement.artifacts]
+            # Clear everything that references a FINDING of this engagement from OUTSIDE the cascade
+            # graph, FIRST: the delete-orphan cascade below emits its finding DELETEs in one unordered
+            # batch, so a surviving reference makes that batch violate an FK and the engagement cannot be
+            # deleted AT ALL. That is the self-FK parent_id link (a promoted aggregation), and equally a
+            # CollabDoc (written by the co-editing room the moment a human opens a block), a
+            # finding-scoped VariableValue, or a checklist item's finding_id. See
+            # findings_service.prepare_engagement_delete, which owns the whole set.
+            findings_service.prepare_engagement_delete(db, engagement)
             db.delete(engagement)  # cascades to groups/findings/artifacts/variable_values (delete-orphan)
             db.commit()
         for storage_path in storage_paths:
@@ -403,12 +396,10 @@ def register(api_bp, bp) -> None:
 
             groups = sorted(engagement.groups, key=lambda g: g.order_index)
             board_groups = [
-                {"group": g, "findings": _display_order(g.findings, g.order_mode)} for g in groups
+                {"group": g, "findings": findings_service.display_order(g.findings, g.order_mode)}
+                for g in groups
             ]
-            ungrouped = sorted(
-                (f for f in engagement.findings if f.group_id is None),
-                key=lambda f: (severity_rank(f.severity), f.order_index),
-            )
+            ungrouped = findings_service.ungrouped_display_order(engagement)
 
             templates = db.scalars(
                 select(VulnerabilityTemplate)
@@ -445,13 +436,7 @@ def register(api_bp, bp) -> None:
             if name:
                 assessment_type_id = _as_uuid(request.form.get("assessment_type_id"))
                 at = db.get(AssessmentType, assessment_type_id) if assessment_type_id is not None else None
-                group = FindingGroup(
-                    engagement_id=engagement_id,
-                    assessment_type=at,
-                    name=name,
-                    order_index=len(engagement.groups),
-                )
-                db.add(group)
+                findings_service.create_group(db, engagement, name=name, assessment_type=at)
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
@@ -461,12 +446,8 @@ def register(api_bp, bp) -> None:
             group = db.get(FindingGroup, group_id)
             if group is None or group.engagement_id != engagement_id:
                 abort(404)
-            # Detach child findings rather than deleting them: removing a report *section* must never
-            # silently destroy authored findings (PLAN.md's board is a two-level tree, not a hierarchy
-            # of ownership over content).
-            for finding in list(group.findings):
-                finding.group_id = None
-            db.delete(group)
+            # Detaches its child findings rather than deleting them — see findings_service.delete_group.
+            findings_service.delete_group(db, group)
             db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
@@ -491,7 +472,7 @@ def register(api_bp, bp) -> None:
                     group.findings
                     if group is not None
                     else [f for f in engagement.findings if f.group_id is None]
-                )
+                )  # count only — a new finding goes last, so display order is irrelevant here
                 finding = EngagementFinding.from_template(
                     template,
                     engagement_id=engagement_id,
@@ -514,17 +495,12 @@ def register(api_bp, bp) -> None:
             finding = db.get(EngagementFinding, finding_id)
             if finding is None or finding.engagement_id != engagement_id:
                 abort(404)
-            # Unlike delete_group (which deliberately only detaches its children -- a report *section*
-            # isn't the same thing as the findings inside it), a finding IS its content: deleting it
-            # must take its evidence with it. EngagementFinding.artifacts has no delete/delete-orphan
-            # cascade (models.py) and Artifact.finding_id is nullable, so without this an ORM-level
-            # `db.delete(finding)` would silently NULL out each artifact's finding_id (orphaning it)
-            # rather than removing it. Delete the rows explicitly, then best-effort clean their on-disk
-            # files (mirrors artifacts_api.delete_artifact).
-            storage_paths = [a.storage_path for a in finding.artifacts]
-            for artifact in list(finding.artifacts):
-                db.delete(artifact)
-            db.delete(finding)
+            # Takes its artifact ROWS with it (unlike delete_group's detach) and hands back their on-disk
+            # paths — see findings_service.delete_finding. The files go only AFTER the commit below, so a
+            # rolled-back delete cannot leave the bytes gone (mirrors artifacts_api.delete_artifact).
+            # Children (per-host instances of a promoted vuln type) are DETACHED, not deleted — see
+            # findings_service.detach_children. Without that step this route 500'd on any promoted parent.
+            storage_paths = findings_service.delete_finding(db, finding).storage_paths
             db.commit()
         for storage_path in storage_paths:
             delete_file(cfg, storage_path)
@@ -607,24 +583,10 @@ def register(api_bp, bp) -> None:
             if engagement is None:
                 return jsonify(error="engagement not found"), 404
 
-            existing = {g.id: g for g in engagement.groups}
-            ordered_ids: list = []
-            seen: set = set()
-            for raw_id in order:
-                gid = _as_uuid(raw_id)
-                if gid is not None and gid in existing and gid not in seen:
-                    ordered_ids.append(gid)
-                    seen.add(gid)
-
-            # Anything belonging to this engagement that the client didn't mention (a stale/partial
-            # payload, e.g. a group created concurrently in another tab) keeps its relative order and
-            # is appended after the ones explicitly placed, so no group is ever silently dropped or
-            # left with an undefined position.
-            leftover = sorted((g for g in existing.values() if g.id not in seen), key=lambda g: g.order_index)
-            ordered_ids.extend(g.id for g in leftover)
-
-            for index, gid in enumerate(ordered_ids):
-                existing[gid].order_index = index
+            # Stale/foreign/duplicate ids are ignored and unmentioned groups keep their relative order at
+            # the end — see findings_service.reorder_groups (UUID-aware since lotek#335 — it parses each
+            # client-supplied id with the same `_as_uuid` this module uses, not `int`).
+            ordered_ids = findings_service.reorder_groups(engagement, order)
             db.commit()
 
             result = [{"id": gid, "order_index": index} for index, gid in enumerate(ordered_ids)]
@@ -657,52 +619,11 @@ def register(api_bp, bp) -> None:
                 if target_group is None or target_group.engagement_id != finding.engagement_id:
                     return jsonify(error=f"group {target_group_id} not found on this engagement"), 404
 
-            old_group = finding.group
-            old_group_id = old_group.id if old_group is not None else None
-            new_group_id = target_group.id if target_group is not None else None
-            same_group = old_group_id == new_group_id
-
-            # Compute both affected lists BEFORE mutating `finding` — reads reflect the pre-move state
-            # unambiguously, independent of session autoflush timing.
-            #
-            # The client's `order_index` in the payload is a slot in the RENDERED DOM order (board.js
-            # reads DOM position), and for an ``auto_severity`` group the board renders severity-ranked,
-            # NOT order_index-ranked (see ``_display_order`` and the board template). So dest_siblings
-            # must be arranged the SAME way the board displayed them before inserting at the client
-            # index — otherwise the finding lands among the wrong neighbours, and the _reindex + manual
-            # flip below would freeze an order the user never chose (board order != document order). The
-            # ungrouped bucket has no manual mode and is always shown severity-first, so it uses the same
-            # severity-then-order_index key the board view uses for it.
-            if target_group is not None:
-                dest_siblings = _display_order(
-                    [f for f in target_group.findings if f.id != finding.id], target_group.order_mode
-                )
-            else:
-                dest_siblings = sorted(
-                    (f for f in finding.engagement.findings if f.group_id is None and f.id != finding.id),
-                    key=lambda f: (severity_rank(f.severity), f.order_index),
-                )
-            index = max(0, min(requested_index, len(dest_siblings)))
-            dest_siblings.insert(index, finding)
-
-            remaining = None
-            if not same_group and old_group is not None:
-                remaining = sorted(
-                    (f for f in old_group.findings if f.id != finding.id), key=lambda f: f.order_index
-                )
-
-            _reindex(dest_siblings)
-            if remaining is not None:
-                _reindex(remaining)
-
-            finding.group_id = new_group_id
-
-            # The first manual drag flips the destination group to manual; "re-rank by severity"
-            # (POST /groups/<id> {order_mode: "auto_severity"}) is the explicit way back
-            # (PLAN.md §4 "Grouping & ordering UX"). Any drag into a group is a deliberate manual
-            # placement, so this is unconditional, not just-once.
-            if target_group is not None:
-                target_group.order_mode = OrderMode.manual
+            # The ordering rules (client index = a slot in the RENDERED order; reindex both sides; flip
+            # the destination group to manual) live in findings_service.place_finding, which the machine
+            # API's move routes call too — see its docstring. It returns the PREVIOUS group when the move
+            # crossed groups, which is what this response reports as `previous_group`.
+            previous_group = findings_service.place_finding(finding, target_group, requested_index)
 
             db.commit()
 
@@ -719,8 +640,8 @@ def register(api_bp, bp) -> None:
                     else None
                 ),
                 "previous_group": (
-                    {"id": old_group.id, "order_mode": old_group.order_mode.value}
-                    if (old_group is not None and not same_group)
+                    {"id": previous_group.id, "order_mode": previous_group.order_mode.value}
+                    if previous_group is not None
                     else None
                 ),
             }

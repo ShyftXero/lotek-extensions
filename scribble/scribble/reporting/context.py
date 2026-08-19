@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import object_session
 
+from scribble import findings_service
 from scribble.content import render_html
 from scribble.enums import OrderMode, Severity, risk_rating, severity_rank
 from scribble.templating import build_context, build_full_context, make_var_resolver
@@ -27,6 +28,10 @@ class ArtifactCtx:
     caption: str
     content_type: str | None
     storage_path: str
+    # What the row recorded for this file, so a renderer can decide whether to carry its bytes WITHOUT
+    # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the
+    # authority, and the field is additive + defaulted, so an existing consumer is unaffected.
+    byte_size: int | None = None
 
 
 @dataclass
@@ -108,6 +113,13 @@ class ReportContext:
     rollup: SeverityRollup | None = None
     checklists: list[ChecklistCtx] = field(default_factory=list)
     variables: dict[str, str] = field(default_factory=dict)
+    # ADDITIVE extension to this frozen contract (2026-08-17, ext#40): engagement-level evidence —
+    # artifacts attached to the ENGAGEMENT with no ``finding_id``. Until this field existed the renderers
+    # could only reach ``finding.artifacts``, so an upload with no ``finding_id`` was stored, answered
+    # 201 with a URL, and then could never appear in any deliverable — a silent, invisible loss of client
+    # evidence. Existing consumers are unaffected: new field, defaults empty, nothing reordered or
+    # renamed. Rendered by ``render_html``'s Evidence appendix block.
+    artifacts: list[ArtifactCtx] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -144,6 +156,24 @@ def _facts_line(variables: dict) -> str:
     return ""
 
 
+def _artifact_ctxs(artifacts) -> list[ArtifactCtx]:
+    """``ArtifactCtx``\\s for an evidence gallery, in board order, honoring ``include_in_report`` and
+    skipping ``inline``-placed artifacts (those are already embedded in a content block's HTML)."""
+    return [
+        ArtifactCtx(
+            id=a.id,
+            kind=a.kind.value,
+            filename=a.filename,
+            caption=a.caption or "",
+            content_type=a.content_type,
+            storage_path=a.storage_path,
+            byte_size=a.byte_size,
+        )
+        for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))
+        if a.include_in_report and a.placement.value == "attached"
+    ]
+
+
 def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     engagement = finding.engagement
     # Resolve this finding's OWN report-variable overlay (``EngagementFinding.variables``, filled by
@@ -167,18 +197,7 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         blocks_html[block] = render_html.render_block(
             resolved, resolve_var=resolve_var, artifact_url=artifact_url
         )
-    artifacts = [
-        ArtifactCtx(
-            id=a.id,
-            kind=a.kind.value,
-            filename=a.filename,
-            caption=a.caption or "",
-            content_type=a.content_type,
-            storage_path=a.storage_path,
-        )
-        for a in sorted(finding.artifacts, key=lambda a: a.order_index)
-        if a.include_in_report and a.placement.value == "attached"
-    ]
+    artifacts = _artifact_ctxs(finding.artifacts)
     return FindingCtx(
         id=finding.id,
         title=finding.title,
@@ -204,14 +223,17 @@ def _nest_findings(ordered_findings, *, artifact_url) -> list[FindingCtx]:
     the model (no ORM relationship, no extra query: this is a single pass over ``ordered_findings``).
     A finding whose ``parent_id`` doesn't resolve within this list (missing / excluded / cross-group
     parent) falls back to rendering top-level, exactly as it would have before nesting existed.
+
+    That rule lives in ``findings_service.nested_child_ids`` rather than here, because the machine API's
+    board listing has to answer "how many findings does the report actually show?" with the SAME rule --
+    it counted a promoted parent's children as three top-level findings when the report renders one.
     """
-    by_id = {f.id: f for f in ordered_findings}
+    nested = findings_service.nested_child_ids(ordered_findings)
     children_by_parent: dict[int, list] = {}
     top_level: list = []
     for f in ordered_findings:
-        parent = by_id.get(f.parent_id) if f.parent_id is not None else None
-        if parent is not None and parent.parent_id is None:
-            children_by_parent.setdefault(parent.id, []).append(f)
+        if f.id in nested:
+            children_by_parent.setdefault(f.parent_id, []).append(f)
         else:
             top_level.append(f)
 
@@ -377,6 +399,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         end_date=engagement.end_date.isoformat() if engagement.end_date else None,
         groups=groups_out,
         rollup=rollup,
+        # Engagement-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
+        # These have no finding gallery to appear in, so without this list they reached no deliverable at
+        # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
+        artifacts=_artifact_ctxs([a for a in engagement.artifacts if a.finding_id is None]),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),

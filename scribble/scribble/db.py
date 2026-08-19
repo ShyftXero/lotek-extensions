@@ -502,3 +502,6 @@ def _additive_column_sync(engine) -> None:
     # `_widen_soft_host_id_columns` and `_remap_standalone_client_ids` used to run here. They are now
     # sequenced by `run_migrations` (adoption path only), because their ordering relative to the Alembic
     # STAMP is what makes adoption correct: the schema must match the baseline *before* it is stamped.
+    # (Ordering there is the same as here: widen SoftHostId storage before _remap_standalone_client_ids
+    # writes a v2 UUID host id into scribble_engagements.client_id — an unrepaired INTEGER column would
+    # refuse that write.)
