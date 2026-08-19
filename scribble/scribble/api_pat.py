@@ -70,7 +70,7 @@ from scribble.api_schemas import (
     request_body,
 )
 from scribble.artifacts_api import artifact_url
-from scribble.artifacts_storage import delete_file, guess_content_type, save_bytes
+from scribble.artifacts_storage import SAFE_NAME_MAX, delete_file, guess_content_type, save_bytes
 from scribble.authz import (
     can_view_client_id,
     can_view_engagement,
@@ -351,7 +351,14 @@ _TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
 # basename is 33 characters longer than the name the caller sent and overruns ``NAME_MAX`` (255 on
 # Linux/ext4) at 223 — measured, not assumed: 222 stores, 223 raises ``ENAMETOOLONG`` and the caller
 # gets a 500. Cap at the SMALLER of the two limits, or the guard would still 500 on everything between.
-_ARTIFACT_FILENAME_MAX_LEN = 255 - 32 - 1  # NAME_MAX - len(uuid4().hex) - len("_") == 222
+# ``SAFE_NAME_MAX`` (== 222) is imported rather than recomputed so this number and the one
+# ``save_bytes`` truncates the SECURED name to (artifacts_storage._bounded_name, applied AFTER
+# ``secure_filename`` — which NFKD-normalizes and can EXPAND, not just shrink, the caller's input)
+# can never drift apart. This cap alone does not stop the filesystem overrun by itself (a 222-char
+# unicode name can still secure_filename to 400+ chars) — ``_bounded_name`` is what actually
+# protects the write; this 400 just gives the caller an honest, fast rejection for the case its
+# own input is unreasonable on its face.
+_ARTIFACT_FILENAME_MAX_LEN = SAFE_NAME_MAX
 
 # Bound on a client-supplied ID LIST (``finding_ids`` on the bulk move, ``order`` on the group reorder). The
 # length caps above bound one string; this bounds the one input whose LENGTH costs work per element, which is
