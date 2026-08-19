@@ -35,6 +35,12 @@ dev = [
     "pytest-playwright>=0.4.0",
     "ruff>=0.6.0",
     "pyrefly>=0.16.0",
+    # The Postgres driver scribble's OWN migration/PG-gated tests need (test_uuid_pk_migration,
+    # test_alembic_adoption, test_db_additive_migration + the standalone `alembic -x url=postgresql+psycopg://…`
+    # path). MOUNTED in lotek the host supplies psycopg, so it is not a runtime dep here — but a clean
+    # `uv run --extra dev pytest` could not connect to Postgres without it (it was being hand-installed).
+    # `[binary]` avoids a libpq build. lotek#335 / #36 / ext#71.
+    "psycopg[binary]>=3.1",
 ]
 
 # Discovery signal: lotek enumerates installed extensions via this entry-point group
