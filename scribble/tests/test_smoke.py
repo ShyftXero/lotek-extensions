@@ -177,6 +177,41 @@ def test_report_context_orphaned_child_falls_back_to_top_level(session_factory):
     assert findings[0].children == []
 
 
+def test_report_context_nests_exactly_one_level_deep(session_factory):
+    """A GRANDCHILD (``parent_id`` -> a finding that is itself a child) renders TOP-LEVEL, not inside the
+    child. Nesting is one level: a child is only ever nested under a TRUE parent (``parent_id is None``).
+
+    Unpinned until this test existed, and the condition it pins (``parent.parent_id is None``) is the half
+    of the rule that has no other coverage -- the orphan test above exercises "parent not in the list", not
+    "parent is not a parent". Written when the rule moved into ``findings_service.nested_child_ids`` to be
+    shared with the machine API's ``top_level_count``: moved code needs the guard that proves the move was
+    faithful, and one shared copy means one break shows up on both surfaces.
+    """
+    with session_factory() as db:
+        eng = Engagement(name="Deep", company_name="Acme")
+        g = FindingGroup(engagement=eng, name="Internal", order_index=0)
+        parent = _finding(eng, g, "Weak SMB Signing", Severity.high, 0, target_host="10.0.0.1")
+        db.add(eng)
+        db.flush()
+
+        child = _finding(eng, g, "Weak SMB Signing", Severity.high, 1, target_host="10.0.0.2")
+        child.parent_id = parent.id
+        db.add(child)
+        db.flush()
+
+        grandchild = _finding(eng, g, "Weak SMB Signing", Severity.high, 2, target_host="10.0.0.3")
+        grandchild.parent_id = child.id
+        db.add(grandchild)
+        db.commit()
+
+        ctx = build_report_context(db.get(Engagement, eng.id))
+
+    findings = ctx.groups[0].findings
+    assert [f.target_host for f in findings] == ["10.0.0.1", "10.0.0.3"]
+    assert [c.target_host for c in findings[0].children] == ["10.0.0.2"]
+    assert findings[1].children == []  # the grandchild renders flat, carrying nothing
+
+
 def test_report_context_narrative_is_populated_and_data_derived(session_factory):
     """D2: ``ReportContext.narrative`` is synthesized from the rollup + worst finding titles, not
     hand-authored -- non-empty whenever there are findings, and names the top-severity finding."""
