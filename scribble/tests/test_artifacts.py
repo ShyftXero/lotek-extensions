@@ -609,3 +609,64 @@ def test_artifact_url_builds_raw_endpoint(app):
         url = artifact_url(42)
     assert url.endswith("/artifacts/42/raw")
     assert url.startswith("/scribble/api")
+
+
+def test_upload_with_same_engagement_finding_id_echoes_it_undropped(client, session_factory):
+    """#40 mechanism 3: a valid, SAME-engagement ``finding_id`` is echoed back verbatim with
+    ``finding_id_dropped: false``."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        finding = _make_finding(db, eng)
+        engagement_id, finding_id = eng.id, finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        json={
+            "engagement_id": engagement_id,
+            "finding_id": finding_id,
+            "filename": "x.png",
+            "content_base64": "eA==",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] == finding_id
+    assert body["finding_id_dropped"] is False
+
+    with session_factory() as db:
+        artifact = db.get(Artifact, body["id"])
+        assert artifact.finding_id == finding_id
+
+
+def test_upload_with_cross_engagement_finding_id_is_nulled_and_flagged(client, session_factory):
+    """#40 mechanism 3: ``finding_id`` naming a finding on a DIFFERENT engagement must not be stored
+    verbatim -- before this fix, an authenticated actor holding ANY engagement could bolt evidence onto
+    a finding in someone else's report by just naming its id, and that finding's report would silently
+    carry the attacker-supplied artifact. The upload itself still succeeds (matches the ``group_id``
+    precedent elsewhere in this package): the association is dropped, not the whole request."""
+    with session_factory() as db:
+        eng_a = _make_engagement(db)
+        eng_b = Engagement(name="Other Co Engagement")
+        db.add(eng_b)
+        db.commit()
+        foreign_finding = _make_finding(db, eng_b)
+        engagement_id, foreign_finding_id = eng_a.id, foreign_finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        json={
+            "engagement_id": engagement_id,
+            "finding_id": foreign_finding_id,
+            "filename": "x.png",
+            "content_base64": "eA==",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is True
+
+    with session_factory() as db:
+        artifact = db.get(Artifact, body["id"])
+        assert artifact.engagement_id == engagement_id
+        assert artifact.finding_id is None
