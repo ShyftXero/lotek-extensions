@@ -94,7 +94,14 @@ def _machine_rules(app):
 
 
 def _build_url(
-    app, rule, *, engagement_id: int, job_id: str, finding_id: int = 0, group_id: int = 0
+    app,
+    rule,
+    *,
+    engagement_id: int,
+    job_id: str,
+    artifact_id: int = 0,
+    finding_id: int = 0,
+    group_id: int = 0,
 ) -> str:
     """Build a real URL for a machine rule via `url_for`.
 
@@ -113,6 +120,11 @@ def _build_url(
             values[arg] = engagement_id
         elif arg == "job_id":
             values[arg] = job_id
+        elif arg == "artifact_id":
+            # A REAL artifact on that engagement, seeded by the caller. A made-up id would answer 404
+            # "artifact not found" — which would make the DENY sweep pass for the wrong reason (not
+            # tenancy) and the ALLOW sweep fail for the wrong reason.
+            values[arg] = artifact_id
         elif arg == "finding_id":
             values[arg] = finding_id
         elif arg == "group_id":
@@ -145,6 +157,18 @@ def _engagement(session_factory, *, client_id) -> int:
         db.add(eng)
         db.commit()
         return eng.id
+
+
+def _artifact_on(session_factory, engagement_id: int) -> int:
+    """A real artifact row on ``engagement_id`` — see ``_build_url``'s ``artifact_id`` branch."""
+    with session_factory() as db:
+        art = fm.Artifact(
+            engagement_id=engagement_id, filename="evidence.png", content_type="image/png",
+            storage_path=f"{engagement_id}/evidence.png", byte_size=4,
+        )
+        db.add(art)
+        db.commit()
+        return art.id
 
 
 def _children(session_factory, engagement_id: int) -> tuple[int, int]:
@@ -197,6 +221,33 @@ def test_every_machine_route_is_classified(app):
     )
 
 
+def test_every_machine_route_id_converter_is_BOUNDED(app):
+    """A path id must not be able to overflow the column it is about to be looked up by.
+
+    Werkzeug's bare ``<int:x>`` is unbounded — a bare digit regex, ``num_convert=int``, no max — so a 30-digit
+    id ROUTED successfully and then raised inside ``db.get()``: measured 500 on
+    ``GET /scribble/machine/engagements/<10**30>`` and on its ``/artifacts`` sibling. On Postgres the
+    equivalent ``DataError`` also poisons the open transaction. It is the same defect as an out-of-range
+    ``finding_id`` in the request BODY (``_finding_id_or_400``), reached through the path instead.
+
+    Bounding it in the converter is what makes the fix structural: Werkzeug does not match the rule at all,
+    so the answer is a routing 404 — which is also the correct answer for "no such id" — and no view runs.
+    This walks the live ``url_map`` so a route added later with a bare ``<int:>`` fails HERE rather than in
+    production, which is the only reason a rule expressed as a shared ``_ID`` string constant can be
+    trusted to stay applied."""
+    from werkzeug.routing.converters import NumberConverter
+
+    unbounded = []
+    for rule in _machine_rules(app):
+        for arg, conv in (rule._converters or {}).items():
+            if isinstance(conv, NumberConverter) and (conv.max is None or conv.max > 2**31 - 1):
+                unbounded.append((rule.endpoint, arg, conv.max))
+    assert unbounded == [], (
+        "machine route(s) with an unbounded integer id converter — use api_pat._ID, or a 30-digit path "
+        f"segment 500s inside db.get(): {unbounded}"
+    )
+
+
 # ── 2. every engagement-scoped machine route denies a foreign client ─────────────────────────────────
 
 
@@ -204,6 +255,7 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
     _foreign_token(stub_host)
     stub_host.findings.add_job("job-1", owner_id=8, dtos=[])  # the token's OWN job: source side is fine
     eid = _engagement(session_factory, client_id=ACME)
+    aid = _artifact_on(session_factory, eid)
     client = app.test_client()
 
     allowed = []
@@ -214,7 +266,15 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
             # Real child rows, under the ACME engagement, per request — so a `finding_id`/`group_id`
             # route is denied because of TENANCY and not because the id happened not to exist.
             fid, gid = _children(session_factory, eid)
-            url = _build_url(app, rule, engagement_id=eid, job_id="job-1", finding_id=fid, group_id=gid)
+            url = _build_url(
+                app,
+                rule,
+                engagement_id=eid,
+                job_id="job-1",
+                artifact_id=aid,
+                finding_id=fid,
+                group_id=gid,
+            )
             resp = client.open(url, method=method, json={"finding_ids": [fid], "group_id": gid})
             if resp.status_code != 404:
                 allowed.append((rule.endpoint, method, url, resp.status_code))
@@ -270,6 +330,7 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
     _granted_token(stub_host)
     stub_host.findings.add_job("job-1", owner_id=7, dtos=[])
     eid = _engagement(session_factory, client_id=ACME)
+    aid = _artifact_on(session_factory, eid)
     client = app.test_client()
 
     denied = []
@@ -281,7 +342,15 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
             # shared finding/group would be gone for every rule sorted after them and every later
             # assertion would pass for the wrong reason (see `_children`).
             fid, gid = _children(session_factory, eid)
-            url = _build_url(app, rule, engagement_id=eid, job_id="job-1", finding_id=fid, group_id=gid)
+            url = _build_url(
+                app,
+                rule,
+                engagement_id=eid,
+                job_id="job-1",
+                artifact_id=aid,
+                finding_id=fid,
+                group_id=gid,
+            )
             # An empty body is a business 400 on add-finding; only 404 (the tenancy refusal) is a failure.
             resp = client.open(url, method=method, json={})
             if resp.status_code == 404:
