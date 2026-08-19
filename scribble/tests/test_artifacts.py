@@ -20,7 +20,13 @@ import scribble
 from scribble.api import api_bp
 from scribble.artifacts_api import artifact_url
 from scribble.artifacts_api import register as register_artifacts
-from scribble.artifacts_storage import guess_content_type, resolve_path, safe_join, save_bytes
+from scribble.artifacts_storage import (
+    SAFE_NAME_MAX,
+    guess_content_type,
+    resolve_path,
+    safe_join,
+    save_bytes,
+)
 from scribble.blueprint import bp
 from scribble.enums import ArtifactPlacement, Severity
 from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
@@ -113,6 +119,23 @@ def test_save_bytes_writes_file_and_returns_metadata(cfg):
     assert resolved.read_bytes() == PNG_BYTES
     # storage_path is relative and namespaced under the engagement id.
     assert storage_path.startswith("1/")
+
+
+def test_save_bytes_bounds_name_after_secure_filename(cfg):
+    """#55 residual 1: ``secure_filename`` NFKD-normalizes and can EXPAND, not just shrink, the
+    caller's filename (``len(secure_filename('½' * 222)) == 444``, measured against the installed
+    werkzeug). An unbounded ``safe_name`` built from that would overrun ``NAME_MAX`` (255) once
+    ``save_bytes`` prefixes ``"<uuid4hex>_"`` and raise ``OSError: [Errno 36] File name too long`` --
+    a 500 on what looks, at the API boundary, like a reasonably-sized name. Pins that ``save_bytes``
+    truncates the SECURED name (not the caller's raw one) so the write always succeeds."""
+    name = "½" * 222 + ".png"
+    storage_path, _sha256, _size = save_bytes(cfg, 1, name, PNG_BYTES)
+    resolved = resolve_path(cfg, storage_path)
+    assert resolved.is_file()
+    assert resolved.read_bytes() == PNG_BYTES
+    basename = storage_path.rsplit("/", 1)[-1]
+    assert len(basename.encode()) <= 255
+    assert basename.endswith(".png")
 
 
 def test_safe_join_rejects_traversal(cfg, tmp_path):
@@ -399,6 +422,73 @@ def test_upload_requires_engagement_id(client):
     assert resp.status_code == 400
 
 
+def test_upload_multipart_rejects_overlong_filename(client, session_factory):
+    """#55 residual 2: the cookie upload path never bounded ``filename`` at all before this fix --
+    unlike the machine route (``api_pat.py``), which already rejects an over-``SAFE_NAME_MAX`` name
+    with a 400. Without a cap this route stores the caller's RAW filename straight into
+    ``Artifact.filename`` (``String(512)``); a long enough one truncates silently on SQLite (this
+    suite's backend) and raises ``StringDataRightTruncation`` on the Postgres prod actually runs.
+    A too-long name must be refused before any byte is written, exactly like the machine route."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        engagement_id = eng.id
+
+    long_name = "a" * (SAFE_NAME_MAX + 1) + ".png"
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "file": (io.BytesIO(PNG_BYTES), long_name),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert "too long" in resp.get_json()["error"]
+
+    with session_factory() as db:
+        assert db.query(Artifact).filter(Artifact.engagement_id == engagement_id).count() == 0
+
+
+def test_upload_multipart_accepts_filename_at_the_cap(client, session_factory):
+    """The cap must not become a false refusal for a name AT the boundary."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        engagement_id = eng.id
+
+    name_at_cap = "b" * (SAFE_NAME_MAX - len(".png")) + ".png"
+    assert len(name_at_cap) == SAFE_NAME_MAX
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "file": (io.BytesIO(PNG_BYTES), name_at_cap),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201, resp.get_json()
+
+
+def test_upload_json_base64_rejects_overlong_filename(client, session_factory):
+    """Same cap on the JSON-body upload shape, not just multipart."""
+    import base64
+
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        engagement_id = eng.id
+
+    long_name = "c" * (SAFE_NAME_MAX + 1) + ".png"
+    resp = client.post(
+        "/scribble/api/artifacts",
+        json={
+            "engagement_id": engagement_id,
+            "filename": long_name,
+            "content_base64": base64.b64encode(PNG_BYTES).decode(),
+        },
+    )
+    assert resp.status_code == 400
+    assert "too long" in resp.get_json()["error"]
+
+
 def test_raw_download_is_forced_attachment(client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
@@ -612,3 +702,64 @@ def test_artifact_url_builds_raw_endpoint(app):
         url = artifact_url(42)
     assert url.endswith("/artifacts/42/raw")
     assert url.startswith("/scribble/api")
+
+
+def test_upload_with_same_engagement_finding_id_echoes_it_undropped(client, session_factory):
+    """#40 mechanism 3: a valid, SAME-engagement ``finding_id`` is echoed back verbatim with
+    ``finding_id_dropped: false``."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        finding = _make_finding(db, eng)
+        engagement_id, finding_id = eng.id, finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        json={
+            "engagement_id": engagement_id,
+            "finding_id": finding_id,
+            "filename": "x.png",
+            "content_base64": "eA==",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] == finding_id
+    assert body["finding_id_dropped"] is False
+
+    with session_factory() as db:
+        artifact = db.get(Artifact, body["id"])
+        assert artifact.finding_id == finding_id
+
+
+def test_upload_with_cross_engagement_finding_id_is_nulled_and_flagged(client, session_factory):
+    """#40 mechanism 3: ``finding_id`` naming a finding on a DIFFERENT engagement must not be stored
+    verbatim -- before this fix, an authenticated actor holding ANY engagement could bolt evidence onto
+    a finding in someone else's report by just naming its id, and that finding's report would silently
+    carry the attacker-supplied artifact. The upload itself still succeeds (matches the ``group_id``
+    precedent elsewhere in this package): the association is dropped, not the whole request."""
+    with session_factory() as db:
+        eng_a = _make_engagement(db)
+        eng_b = Engagement(name="Other Co Engagement")
+        db.add(eng_b)
+        db.commit()
+        foreign_finding = _make_finding(db, eng_b)
+        engagement_id, foreign_finding_id = eng_a.id, foreign_finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        json={
+            "engagement_id": engagement_id,
+            "finding_id": foreign_finding_id,
+            "filename": "x.png",
+            "content_base64": "eA==",
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is True
+
+    with session_factory() as db:
+        artifact = db.get(Artifact, body["id"])
+        assert artifact.engagement_id == engagement_id
+        assert artifact.finding_id is None

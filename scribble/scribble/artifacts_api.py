@@ -34,6 +34,12 @@ Routes (all on ``api_bp``, i.e. mounted at ``<url_prefix>/api``):
                             exists for ``(engagement_id, idempotency_key)`` it's returned as-is with 200
                             instead of creating a second row/file; this is a query-based check, not a DB
                             unique constraint (see ``Artifact.idempotency_key`` in scribble/models.py).
+    ``finding_id``        -- optional. Validated against ``engagement_id`` (ext#40 mechanism 3): a
+                            ``finding_id`` naming a finding on a DIFFERENT engagement is silently nulled
+                            rather than stored verbatim. The 200/201 response echoes the EFFECTIVE
+                            ``finding_id`` (``null`` if dropped) plus a ``finding_id_dropped`` bool so a
+                            well-behaved caller can tell its request was accepted but not attached where
+                            it asked.
 """
 
 from __future__ import annotations
@@ -43,11 +49,17 @@ import binascii
 
 from flask import jsonify, request, send_file, url_for
 
-from scribble.artifacts_storage import delete_file, guess_content_type, resolve_path, save_bytes
+from scribble.artifacts_storage import (
+    SAFE_NAME_MAX,
+    delete_file,
+    guess_content_type,
+    resolve_path,
+    save_bytes,
+)
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
-from scribble.models import Artifact, Engagement
+from scribble.models import Artifact, Engagement, EngagementFinding
 
 _REGISTERED_ATTR = "_scribble_artifacts_registered"
 
@@ -170,6 +182,17 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
         if engagement_id is None:
             return jsonify(error="engagement_id is required"), 400
+        # An over-long filename is a 500 twice over here: ``ENAMETOOLONG`` from the filesystem (guarded
+        # against regardless, by ``save_bytes``'s own post-``secure_filename`` truncation), and a Postgres
+        # ``StringDataRightTruncation`` on ``Artifact.filename`` (String(512)) behind it, since THIS route
+        # stores the caller's raw filename, not the secured/truncated on-disk name. This mirrors the same
+        # cap the machine upload route (api_pat.py) already applies — that route was fixed first and this
+        # one was flagged as almost certainly the same hole (issue #55); ``SAFE_NAME_MAX`` (222) is the
+        # single shared source both routes cap against, so they cannot drift apart. (A non-``str``
+        # ``filename`` from a JSON body is a separate, pre-existing gap this route already had before
+        # this fix and is out of scope for #55 — ``isinstance`` just keeps this new check from raising.)
+        if isinstance(filename, str) and len(filename) > SAFE_NAME_MAX:
+            return jsonify(error=f"filename too long (max {SAFE_NAME_MAX} characters)"), 400
         if not data:
             return jsonify(error="empty upload"), 400
 
@@ -213,8 +236,30 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
                         "url": artifact_url(existing.id),
                         "kind": existing.kind.value,
                         "filename": existing.filename,
+                        "finding_id": existing.finding_id,
+                        "finding_id_dropped": False,
                     }
                     return jsonify(result), 200
+
+        # Never attach to ANOTHER engagement's finding (ext#40 mechanism 3): ``finding_id`` is a
+        # caller-supplied id read straight off the request body with no cross-check against
+        # ``engagement_id`` -- the upload itself is tenancy-gated above, but the ATTACHMENT TARGET was
+        # not, so an authenticated actor holding ANY engagement could bolt evidence onto a finding in
+        # someone else's report, where it would render into that client's deliverable
+        # (``reporting/context.py`` builds a finding's evidence gallery straight from
+        # ``finding.artifacts``, no engagement cross-check there either). Silently dropping the
+        # association (rather than 404ing the whole upload) matches the precedent already established
+        # for the PAT machine route (``api_pat.py::scribble_upload_artifact``) -- the artifact still
+        # lands on the engagement the caller is authorized for, just unattached. ``finding_id_dropped``
+        # in the response lets a well-behaved caller notice and fix its own request instead of the
+        # mismatch failing silently.
+        finding_id_dropped = False
+        if finding_id is not None:
+            with open_session() as db:
+                target = db.get(EngagementFinding, finding_id)
+                if target is None or target.engagement_id != engagement_id:
+                    finding_id = None
+                    finding_id_dropped = True
 
         content_type = guess_content_type(filename, data)
         if kind_raw:
@@ -258,6 +303,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
                 "url": artifact_url(artifact.id),
                 "kind": artifact.kind.value,
                 "filename": artifact.filename,
+                "finding_id": artifact.finding_id,
+                "finding_id_dropped": finding_id_dropped,
             }
         return jsonify(result), 201
 
