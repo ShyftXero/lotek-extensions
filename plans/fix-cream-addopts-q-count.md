@@ -2,7 +2,7 @@
 
 - **Branch:** `fix/cream-addopts-q-count`  (worktree: `.claude/worktrees/cream-addopts-q`, off `main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 Fix #56: `cream/pyproject.toml` sets `addopts = "-q"`, so a caller's habitual `pytest -q`
@@ -16,7 +16,7 @@ reporting defect only — but the PR gate needs exact counts, and `-qq` hides th
       neither `-q`, `-qq`, nor `--quiet`), proven RED before / GREEN after the toml edit
 
 ## Remaining
-- [ ] Open PR, close out gate acks
+- [x] Open PR, close out gate acks
 
 ## Notes / gotchas
 - Scope is cream-only per the issue/unit hint. `scribble`, `registrar`, `vector` have the
