@@ -63,11 +63,11 @@ def cfg(app):
     return app.extensions["scribble"]
 
 
-def _make_engagement(db) -> Engagement:
-    c = Client(name="Acme")
+def _make_engagement(db, *, client_name: str = "Acme") -> Engagement:
+    c = Client(name=client_name)
     db.add(c)
     db.flush()
-    eng = Engagement(name="Q3", client_id=c.id, company_name="Acme Corp")
+    eng = Engagement(name="Q3", client_id=c.id, company_name=f"{client_name} Corp")
     db.add(eng)
     db.commit()
     return eng
@@ -172,6 +172,132 @@ def test_upload_multipart_creates_row_and_file(client, session_factory, cfg):
         path = resolve_path(cfg, artifact.storage_path)
         assert path.is_file()
         assert path.read_bytes() == PNG_BYTES
+
+
+def test_create_artifact_drops_foreign_finding_id(client, session_factory):
+    """ext#52: a `finding_id` belonging to a DIFFERENT engagement is silently dropped to None, not
+    written through -- otherwise a caller holding engagement A could bolt evidence onto a finding in
+    engagement B's report by naming B's finding id in the upload to A."""
+    with session_factory() as db:
+        eng_a = _make_engagement(db, client_name="Acme A")
+        eng_b = _make_engagement(db, client_name="Acme B")
+        foreign_finding = _make_finding(db, eng_b)
+        engagement_id, foreign_finding_id = eng_a.id, foreign_finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "finding_id": str(foreign_finding_id),
+            "file": (io.BytesIO(PNG_BYTES), "shot.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is True
+
+    with session_factory() as db:
+        artifact = db.get(Artifact, body["id"])
+        assert artifact.engagement_id == engagement_id
+        assert artifact.finding_id is None
+
+
+def test_create_artifact_keeps_own_finding_id(client, session_factory):
+    """The companion positive: a `finding_id` in the SAME engagement is honored, not dropped."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        finding = _make_finding(db, eng)
+        engagement_id, finding_id = eng.id, finding.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "finding_id": str(finding_id),
+            "file": (io.BytesIO(PNG_BYTES), "shot.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] == finding_id
+    assert body["finding_id_dropped"] is False
+
+
+def test_create_artifact_refuses_unparseable_finding_id(client, session_factory):
+    """ext#52 point 2: a malformed `finding_id` (not a whole number in range) is a 400, not a silent
+    `_as_int`-to-None drop -- a float or a bool must not be coerced into attaching to a finding the
+    caller never named."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        engagement_id = eng.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "finding_id": "2.9",
+            "file": (io.BytesIO(PNG_BYTES), "shot.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+
+
+def test_create_artifact_empty_finding_id_is_engagement_level(client, session_factory):
+    """The multipart surface submits `finding_id=""` for an untouched field -- must mean
+    "engagement-level evidence", not a parse error."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        engagement_id = eng.id
+
+    resp = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "finding_id": "",
+            "file": (io.BytesIO(PNG_BYTES), "shot.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["finding_id"] is None
+    assert body["finding_id_dropped"] is False
+
+
+def test_list_engagement_artifacts_returns_engagement_rows(client, session_factory):
+    """ext#51: `GET /scribble/api/engagements/<id>/artifacts` lists every artifact on the engagement
+    (finding-attached and engagement-level alike), not just one finding's gallery."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        finding = _make_finding(db, eng)
+        engagement_id, finding_id = eng.id, finding.id
+
+    attached = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "finding_id": str(finding_id),
+            "file": (io.BytesIO(PNG_BYTES), "attached.png"),
+        },
+        content_type="multipart/form-data",
+    ).get_json()
+    unattached = client.post(
+        "/scribble/api/artifacts",
+        data={
+            "engagement_id": str(engagement_id),
+            "file": (io.BytesIO(PNG_BYTES), "unattached.png"),
+        },
+        content_type="multipart/form-data",
+    ).get_json()
+
+    resp = client.get(f"/scribble/api/engagements/{engagement_id}/artifacts")
+    assert resp.status_code == 200
+    ids = {a["id"] for a in resp.get_json()["artifacts"]}
+    assert ids == {attached["id"], unattached["id"]}
 
 
 def test_upload_json_base64_creates_row(client, session_factory):
@@ -602,6 +728,53 @@ def test_excluded_artifact_filtered_from_report_context(session_factory, app):
     filenames = [a.filename for a in finding_ctx.artifacts]
     assert filenames == ["kept.png"]
     assert "dropped.png" not in filenames
+
+
+def test_foreign_engagement_artifact_excluded_from_finding_gallery(session_factory, app):
+    """ext#52 point 4 (defence in depth): `_finding_ctx` must never render an artifact whose
+    `engagement_id` differs from the finding's own engagement, even if one somehow slipped past the
+    write-time tenancy check -- e.g. a direct DB insert, or a future regression in `create_artifact`'s
+    cross-check. Every legitimate artifact already carries the finding's own `engagement_id` (both
+    upload routes set it that way), so this filter can never drop a real one."""
+    with session_factory() as db:
+        eng_a = _make_engagement(db, client_name="Acme A")
+        eng_b = _make_engagement(db, client_name="Acme B")
+        group = FindingGroup(engagement=eng_a, name="External", order_index=0)
+        finding = EngagementFinding(engagement=eng_a, group=group, title="xss", severity=Severity.high)
+        db.add(group)
+        db.add(finding)
+        db.commit()
+
+        legit = Artifact(
+            engagement=eng_a,
+            finding=finding,
+            filename="legit.png",
+            storage_path="x/legit.png",
+            include_in_report=True,
+            order_index=0,
+        )
+        # Force-attached: same trick a write-time bug or a direct DB write could produce -- an
+        # Artifact row pointed at eng_b but linked to eng_a's finding.
+        foreign = Artifact(
+            engagement=eng_b,
+            finding=finding,
+            filename="foreign.png",
+            storage_path="x/foreign.png",
+            include_in_report=True,
+            order_index=1,
+        )
+        db.add(legit)
+        db.add(foreign)
+        db.commit()
+
+        with app.app_context():
+            ctx = build_report_context(eng_a, artifact_url=artifact_url)
+
+    assert len(ctx.groups) == 1
+    finding_ctx = ctx.groups[0].findings[0]
+    filenames = [a.filename for a in finding_ctx.artifacts]
+    assert filenames == ["legit.png"]
+    assert "foreign.png" not in filenames
 
 
 def test_artifact_url_builds_raw_endpoint(app):

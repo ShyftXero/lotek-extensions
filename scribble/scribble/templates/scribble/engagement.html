@@ -199,7 +199,81 @@
   .scribble-board-findings-empty { padding: 10px; border: 1px dashed var(--line); border-radius: 8px; }
   .scribble-board-group-ungrouped { border-style: dashed; }
   .scribble-readonly-note { font-style: italic; }
+
+  /* Engagement-level evidence panel (ext#51) -- shares the finding gallery's item classes so
+     scribble/static/artifacts.js's delegated toggle/caption/delete handlers apply unmodified, but
+     scoped under its own component class per the dashboard-UI-change convention. */
+  .scribble-evidence-panel .scribble-gallery-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .scribble-evidence-panel .scribble-gallery-item {
+    display: flex; align-items: center; gap: 12px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--field-bg);
+  }
+  .scribble-evidence-panel .scribble-gallery-item.is-excluded { opacity: .5; }
+  .scribble-evidence-panel .scribble-gallery-thumb img {
+    width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line);
+  }
+  .scribble-evidence-panel .scribble-gallery-meta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .scribble-evidence-panel .scribble-gallery-filename { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scribble-evidence-panel .scribble-gallery-caption {
+    width: 100%; background: transparent; color: var(--ink); border: 1px solid transparent;
+    border-radius: 6px; padding: 4px 6px; font: inherit;
+  }
+  .scribble-evidence-panel .scribble-gallery-caption:hover, .scribble-evidence-panel .scribble-gallery-caption:focus { border-color: var(--line-strong); outline: none; }
+  .scribble-evidence-panel .scribble-gallery-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .scribble-evidence-panel .scribble-gallery-delete { flex: 0 0 auto; color: var(--danger); }
+  .scribble-evidence-panel .scribble-gallery-empty { margin-top: 10px; }
 </style>
+
+<section class="card scribble-evidence-panel" id="engagement-evidence-panel">
+  <div class="scribble-gallery-head">
+    <h2>Engagement evidence</h2>
+    <p class="muted">
+      Evidence attached to this engagement directly (not to a finding) publishes into the client
+      report's Evidence appendix by default -- untick "include" to keep working material out of the
+      deliverable.
+    </p>
+  </div>
+  <ul class="scribble-gallery-list">
+    {% for a in engagement_artifacts %}
+    {% set kind_value = a.kind.value if a.kind is defined and a.kind is not string else a.kind %}
+    {% set raw_url = url_for('scribble_api.artifact_raw', artifact_id=a.id) %}
+    <li
+      class="scribble-gallery-item{% if not a.include_in_report %} is-excluded{% endif %}"
+      data-id="{{ a.id }}"
+      data-update-url="{{ url_for('scribble_api.update_artifact', artifact_id=a.id) }}"
+      data-delete-url="{{ url_for('scribble_api.delete_artifact', artifact_id=a.id) }}"
+      data-raw-url="{{ raw_url }}"
+    >
+      {% if kind_value == 'screenshot' or (a.content_type and a.content_type.startswith('image/')) %}
+      <a href="{{ raw_url }}" target="_blank" rel="noopener" class="scribble-gallery-thumb">
+        <img src="{{ raw_url }}" alt="{{ a.caption or a.filename }}" loading="lazy" />
+      </a>
+      {% else %}
+      <a href="{{ raw_url }}" target="_blank" rel="noopener" class="scribble-gallery-file-icon pill">
+        {{ kind_value }}
+      </a>
+      {% endif %}
+      <div class="scribble-gallery-meta">
+        <div class="scribble-gallery-filename mono">{{ a.filename }}</div>
+        <input
+          type="text"
+          class="scribble-gallery-caption"
+          value="{{ a.caption or '' }}"
+          placeholder="Caption"
+        />
+      </div>
+      <label class="scribble-gallery-toggle">
+        <input type="checkbox" class="scribble-gallery-include" {% if a.include_in_report %}checked{% endif %} />
+        include
+      </label>
+      <button type="button" class="btn scribble-gallery-delete" title="Delete artifact">&times;</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if not engagement_artifacts %}
+  <p class="muted scribble-gallery-empty">No engagement-level evidence attached.</p>
+  {% endif %}
+</section>
 
 <section class="ckp card" id="checklist-panel"
          data-engagement-id="{{ engagement.id }}"
@@ -215,4 +289,11 @@
 
 <script src="{{ url_for('scribble.static', filename='board.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='checklists.js') }}"></script>
+{#
+  Engagement-evidence panel above (ext#51) reuses the finding gallery's item markup/classes so
+  artifacts.js's delegated toggle/caption/delete handlers apply to it unmodified -- no upload form
+  here, so outbox.js is not needed (artifacts.js's own `if (window.ScribbleOutbox)` guard skips the
+  upload-resolve wiring cleanly when it's absent).
+#}
+<script src="{{ url_for('scribble.static', filename='artifacts.js') }}" defer></script>
 {% endblock %}

@@ -393,20 +393,22 @@ added alongside it is the ability to decide and to check:
 - **Decide at upload.** `include_in_report: false` on the upload attaches the file without publishing it —
   for working material (a raw scan file, internal notes, a `.pcap`, vector's `export.html`). The response
   echoes `include_in_report` either way, so it is never a silent outcome.
-- **See the set.** `GET /scribble/machine/engagements/<id>/artifacts?unattached=1` lists exactly the rows
-  the appendix publishes, each with its `include_in_report`. Before this there was no such surface at all:
-  the cookie API only lists a FINDING's artifacts (`GET /scribble/api/findings/<id>/artifacts`), which by
-  construction cannot show a `finding_id`-null row, and there is no UI for them either — so the rendered
-  report was the only place they became visible.
+- **See the set.** `GET /scribble/machine/engagements/<id>/artifacts?unattached=1` (machine) or
+  `GET /scribble/api/engagements/<id>/artifacts` (cookie, ext#51) lists exactly the rows the appendix
+  publishes, each with its `include_in_report`. The cookie route lists every artifact on the
+  engagement — finding-attached and engagement-level alike — where `GET /scribble/api/findings/<id>/artifacts`
+  by construction cannot show a `finding_id`-null row. The **engagement page** also has its own "Engagement
+  evidence" panel now (ext#51): the same include/caption/delete controls the finding editor's gallery has,
+  for evidence attached to the engagement rather than to a finding — before this the rendered report was
+  the only place these rows became visible.
 - **Take one back out.** `POST /scribble/machine/engagements/<id>/artifacts/<artifact_id>` with
   `{"include_in_report": false}`, or from a session the cookie routes `POST /scribble/api/artifacts/<id>`
-  and `.../delete`.
+  and `.../delete` (both reachable from the engagement page's evidence panel).
 
 Note what still holds regardless: **rows that predate this change were created under the old meaning**, so
 the first render after upgrading publishes any engagement-level artifact an operator attached on the
-reasonable assumption that nothing rendered it. Use the list route on an existing engagement, and read the
-Evidence appendix, before sending a report. An engagement-artifact list + toggle on the engagement PAGE
-(the cookie/UI half) is still filed as its own change.
+reasonable assumption that nothing rendered it. Use the list route (or the engagement page's evidence
+panel) on an existing engagement, and read the Evidence appendix, before sending a report.
 
 **The printed deliverable opens like a document** (ext#43, 2026-08-17 — it opened on the masthead and then
 straight into the executive summary before). Two blocks exist only in `@media print`:

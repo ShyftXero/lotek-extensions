@@ -156,9 +156,16 @@ def _facts_line(variables: dict) -> str:
     return ""
 
 
-def _artifact_ctxs(artifacts) -> list[ArtifactCtx]:
+def _artifact_ctxs(artifacts, *, engagement_id=None) -> list[ArtifactCtx]:
     """``ArtifactCtx``\\s for an evidence gallery, in board order, honoring ``include_in_report`` and
-    skipping ``inline``-placed artifacts (those are already embedded in a content block's HTML)."""
+    skipping ``inline``-placed artifacts (those are already embedded in a content block's HTML).
+
+    ``engagement_id``, when given, is a defence-in-depth cross-check (ext#52): a gallery must never
+    render an artifact whose ``engagement_id`` differs from the one it is being built for, even if one
+    somehow slipped past the write-time tenancy check. Every legitimate row already carries the right
+    ``engagement_id`` (routes set it to the finding's own engagement), so this can never drop a real
+    artifact -- it only guards against the write-time check having a gap.
+    """
     return [
         ArtifactCtx(
             id=a.id,
@@ -170,7 +177,9 @@ def _artifact_ctxs(artifacts) -> list[ArtifactCtx]:
             byte_size=a.byte_size,
         )
         for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))
-        if a.include_in_report and a.placement.value == "attached"
+        if a.include_in_report
+        and a.placement.value == "attached"
+        and (engagement_id is None or a.engagement_id == engagement_id)
     ]
 
 
@@ -197,7 +206,7 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         blocks_html[block] = render_html.render_block(
             resolved, resolve_var=resolve_var, artifact_url=artifact_url
         )
-    artifacts = _artifact_ctxs(finding.artifacts)
+    artifacts = _artifact_ctxs(finding.artifacts, engagement_id=engagement.id)
     return FindingCtx(
         id=finding.id,
         title=finding.title,
@@ -402,7 +411,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         # Engagement-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
         # These have no finding gallery to appear in, so without this list they reached no deliverable at
         # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
-        artifacts=_artifact_ctxs([a for a in engagement.artifacts if a.finding_id is None]),
+        artifacts=_artifact_ctxs(
+            [a for a in engagement.artifacts if a.finding_id is None], engagement_id=engagement.id
+        ),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
