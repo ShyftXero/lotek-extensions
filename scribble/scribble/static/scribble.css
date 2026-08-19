@@ -98,29 +98,20 @@ h1, h2, h3 { margin: 0 0 .6rem; }
 }
 
 /* ---- engagement checklists (coverage panel) + library ------------------------------------------ */
-.ckp { margin-top: 18px; padding: 14px 16px; }
-.ckp-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.ckp-head h2 { margin: 0; font-size: 16px; }
-.ckp-tray { margin: 10px 0; padding: 8px; border: 1px dashed var(--line-strong); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
-.ckp-tray-h { width: 100%; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-top: 4px; }
-.ckp-list { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
-.ckp-list-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ckp-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
-.ckp-rollup { display: flex; gap: 5px; flex-wrap: wrap; }
-.ckp-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
-.ckp-toggle { font-size: 12px; color: var(--muted); margin-left: auto; display: inline-flex; gap: 4px; align-items: center; }
-.ckp-remove { padding: 2px 9px; }
-.ckp-section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 10px 0 3px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
-.ckp-item { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
-.ckp-item-mid { flex: 1; }
-.ckp-item-text { font-size: 14px; }
-.ckp-ctrl { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.ckp-status { font-size: 12px; min-width: 92px; }
-.ckp-note { display: block; width: 100%; margin-top: 3px; font-size: 12px; background: var(--field-bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; color: var(--ink); }
-.ck-satisfied { border-color: var(--accent-strong) !important; color: var(--accent) !important; }
-.ck-deficient { border-color: var(--sev-high) !important; color: var(--sev-high) !important; }
-.ck-not_applicable { border-color: var(--line-strong) !important; }
-.ck-open { border-color: var(--sev-info) !important; color: var(--sev-info) !important; }
+/* The coverage panel's own rules (`.ckp-*`, `.ck-*`) moved to static/checklists_panel.css in ext#44:
+   this stylesheet is linked by scribble's base template ONLY, so nothing in it reached the panel when
+   scribble is MOUNTED in lotek (which renders inside the HOST's base.html). The panel's pages link that
+   file through their `head_extra` block instead, which works in both contexts. Do NOT move them back,
+   and do NOT link this stylesheet from a host page — it redefines `:root`, `body`, `.card`, `.btn` and
+   the shell, so it would restyle lotek itself.
+   The `.cklib-*` library-page rules below are a DIFFERENT case, measured: their only consumer is
+   templates/scribble/checklists_library.html, which hardcodes `{% extends "scribble/base.html" %}`
+   instead of `scribble_base`, so that page renders in scribble's own shell — and therefore links this
+   stylesheet — even when scribble is mounted in lotek. They reach the host today. What they depend on is
+   that hardcode: the day that page is switched to `scribble_base` (a separate, filed defect), it starts
+   rendering inside the host's base, this stylesheet stops arriving, and these rules need the same
+   treatment the `.ckp-*` ones just got. `test_mounted_library_page_still_ships_its_cklib_rules` fails at
+   that moment so it cannot happen silently. */
 
 .cklib-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .cklib-showhidden { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }

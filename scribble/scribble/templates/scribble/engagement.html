@@ -1,5 +1,11 @@
 {% extends scribble_base %}
 {% block title %}{{ engagement.name }} — Scribble{% endblock %}
+{# The coverage panel's stylesheet travels with the PAGE, not with scribble.css: mounted in lotek this
+   template renders inside the host's base.html and scribble.css is never linked there, so the panel
+   arrived unstyled on the host (ext#44). `head_extra` exists in both bases, so this reaches either. #}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('scribble.static', filename='checklists_panel.css') }}" />
+{% endblock %}
 {% block appbar_actions %}
 <a class="btn" href="{{ url_for('scribble.dashboard') }}">Dashboard</a>
 <a class="btn" href="{{ url_for('scribble.engagement_report', engagement_id=engagement.id) }}"

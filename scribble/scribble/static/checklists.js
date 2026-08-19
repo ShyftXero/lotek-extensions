@@ -140,7 +140,11 @@
         if (!g[1] || !g[1].length) return;
         tray.appendChild(el("div", "ckp-tray-h", g[0]));
         g[1].forEach(function (t) {
-          var b = el("button", "btn ghost ckp-tmpl",
+          // `ckp-tmpl` dropped: no stylesheet ever defined it, so it read as styling intent that does
+          // not exist. `.btn` carries the whole look of these buttons (ext#44). `ghost` stays as-is
+          // here and on `.ckp-remove` — it is also undefined in scribble/lotek's shared CSS, but that
+          // is one class across two panels and belongs in its own change, not this one.
+          var b = el("button", "btn ghost",
             t.name + " (" + t.kind + ", " + t.item_count + ")");
           b.addEventListener("click", function () {
             jpost(API + "/engagements/" + eid + "/checklists", { template_id: t.id }).then(function () {
@@ -151,6 +155,14 @@
           tray.appendChild(b);
         });
       });
+      // An OPEN tray with zero children paints the SAME empty dashed rectangle ext#44 reported — the
+      // `[hidden]` rule only covers the closed one. `suggest` legitimately returns two empty lists
+      // (fresh install, or every template `hidden`/inactive via the library page's Hide button), and
+      // revealing an empty box there tells the operator nothing except that the button is broken.
+      if (!tray.children.length) {
+        tray.appendChild(el("p", "ckp-tray-empty",
+          "No checklist templates available — add or unhide one in the checklist library."));
+      }
       tray.hidden = false;
     });
   });
