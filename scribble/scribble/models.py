@@ -116,6 +116,11 @@ class Engagement(Base, TimestampMixin):
     checklists: Mapped[list[EngagementChecklist]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan"
     )
+    diagrams: Mapped[list[EngagementDiagram]] = relationship(
+        back_populates="engagement",
+        cascade="all, delete-orphan",
+        order_by="EngagementDiagram.order_index",
+    )
 
     def resolve_client(self, session):
         """Load this engagement's client through the currently-mounted client model, or ``None``.
@@ -407,6 +412,36 @@ class Artifact(Base, TimestampMixin):
     finding: Mapped[EngagementFinding | None] = relationship(back_populates="artifacts")
 
 
+# --------------------------------------------------------------------------- attack-path diagrams
+
+
+class EngagementDiagram(Base, TimestampMixin):
+    """A linked vector attack-path diagram, embedded in the report as a self-contained HTML SNAPSHOT
+    (ext#48). Scribble is a separate extension from vector and has no seam to reach it at render time
+    (no host hook exposes vector), so this table stores vector's already-self-contained
+    ``export.html`` verbatim rather than fetching it live — a caller GETs
+    ``/vector/machine/diagrams/<id>/export.html`` and POSTs the result here (see
+    ``scribble_link_attack_path`` in ``api_pat.py``). ``diagram_ref`` is a soft reference (the vector
+    diagram's UUID, stored as text) kept for provenance/dedup only; nothing here re-fetches through it.
+
+    ``engagement_id`` is a real FK to ``scribble_engagements.id``, matching that column's CURRENT
+    Integer PK type. ext#36 (``feat/scribble-alembic-uuid-pks``, in flight) migrates engagement ids to
+    UUIDv7 — if that lands first, this FK's column type needs the same trivial rebase.
+    """
+
+    __tablename__ = "scribble_engagement_diagram"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    engagement_id: Mapped[int] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    diagram_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    caption: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    engagement: Mapped[Engagement] = relationship(back_populates="diagrams")
+
+
 # --------------------------------------------------------------------------- template variables
 
 
@@ -637,6 +672,7 @@ __all__ = [
     "ScribbleVulnMap",
     "EngagementFinding",
     "Artifact",
+    "EngagementDiagram",
     "TemplateVariable",
     "VariableValue",
     "Tag",

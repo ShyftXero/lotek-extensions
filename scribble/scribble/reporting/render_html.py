@@ -43,7 +43,7 @@ from urllib.parse import quote, unquote
 import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
-from scribble.reporting.context import ArtifactCtx, FindingCtx, GroupCtx, ReportContext
+from scribble.reporting.context import ArtifactCtx, DiagramCtx, FindingCtx, GroupCtx, ReportContext
 from scribble.reporting.templates import ReportTemplate, get_template, list_templates
 
 ArtifactBytes = Callable[[str], "bytes | None"]
@@ -61,6 +61,7 @@ _BLOCK_ORDER = ("description", "remediation", "details")
 _NAV_LABELS = {
     "summary": "Summary",
     "findings": "Findings",
+    "diagrams": "Attack Paths",
     "methodology": "Methodology",
     "evidence": "Evidence",
 }
@@ -1146,6 +1147,48 @@ def _render_methodology(ctx: ReportContext) -> str:
     return "\n".join(out)
 
 
+def _render_diagram_item(d: DiagramCtx) -> str:
+    """One linked attack-path diagram: vector's self-contained ``export.html`` snapshot inside a
+    SANDBOXED iframe (``sandbox="allow-scripts"`` only — deliberately NOT ``allow-same-origin``, so the
+    snapshot's own animation JS still runs but the embedded document can never reach this report's DOM,
+    cookies, or storage). ``embed_html`` is operator/agent-supplied content (came in over a PAT POST — see
+    ``api_pat.scribble_link_attack_path``), so it is HTML-escaped into the ``srcdoc`` ATTRIBUTE like any
+    other untrusted string, never interpolated as raw markup."""
+    caption = f'<figcaption class="diagram-caption">{_esc(d.caption)}</figcaption>' if d.caption else ""
+    return (
+        '<figure class="attack-path-item">'
+        f'<iframe class="attack-path-frame" sandbox="allow-scripts" '
+        f'srcdoc="{_esc(d.embed_html)}" loading="lazy" '
+        f'title="Attack path diagram{" — " + _esc(d.caption) if d.caption else ""}">'
+        "</iframe>"
+        f"{caption}"
+        "</figure>"
+    )
+
+
+def _render_diagrams(ctx: ReportContext) -> str:
+    """Attack Paths block (ext#48): linked vector diagrams, embedded as self-contained HTML snapshots.
+
+    Renders NOTHING when the engagement has no linked diagram — which is every report today, since the
+    field is new and additive. That empty return is the load-bearing half of "reports without a diagram
+    render identically": combined with ``_render_document``'s empty-block filter, a template that lists
+    ``diagrams`` produces byte-for-byte the same document as before this block existed whenever
+    ``ctx.diagrams`` is empty (pinned by ``tests/test_report_attack_path.py``).
+    """
+    if not ctx.diagrams:
+        return ""
+    items = "".join(_render_diagram_item(d) for d in ctx.diagrams)
+    return (
+        '<section class="sec group" id="sec-diagrams">'
+        '<h2 class="sec-h">Attack Paths <span class="chev">▾</span>'
+        f'<span class="count">{len(ctx.diagrams)} '
+        f'diagram{"s" if len(ctx.diagrams) != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Attack-path diagrams linked to this '
+        "engagement, showing how discovered issues chain into a broader compromise.</p>"
+        f"{items}</div></section>"
+    )
+
+
 def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
     with no ``finding_id``.
@@ -1217,6 +1260,9 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
             entries.append((1, "sec-methodology", _methodology_heading(ctx), ""))
             if any(c.kind == "compliance" for c in ctx.checklists):
                 entries.append((1, "sec-compliance", _COMPLIANCE_HEADING, ""))
+        elif key == "diagrams":
+            if ctx.diagrams:
+                entries.append((1, "sec-diagrams", "Attack Paths", ""))
         elif key == "evidence":
             if ctx.artifacts:
                 entries.append((1, "sec-evidence", "Evidence", ""))
@@ -1270,6 +1316,8 @@ def _render_block_by_key(
             '<div id="sec-findings"></div>\n'
             f"{_render_groups(ctx, resolver)}"
         )
+    if key == "diagrams":
+        return _render_diagrams(ctx)
     if key == "methodology":
         return _render_methodology(ctx)
     if key == "evidence":
@@ -1875,6 +1923,15 @@ table.index td.ix-cvss {
 
 /* engagement-level evidence appendix */
 .evidence-intro { font-size: 14px; margin: 0 0 12px; }
+
+/* attack-path diagrams (ext#48) */
+.attack-path-item { margin: 0 0 20px; }
+.attack-path-frame {
+  width: 100%; min-height: 480px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+}
+.diagram-caption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+@media print { .attack-path-frame { min-height: 600px; } }
 
 /* checklists */
 .ck-list {

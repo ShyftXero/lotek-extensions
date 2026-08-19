@@ -61,6 +61,7 @@ from scribble.api_schemas import (
     CreateEngagementRequest,
     CreateGroupRequest,
     CreateTemplateRequest,
+    LinkAttackPathRequest,
     MoveFindingRequest,
     PatchFindingRequest,
     ReorderGroupsRequest,
@@ -83,6 +84,7 @@ from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingS
 from scribble.models import (
     Artifact,
     Engagement,
+    EngagementDiagram,
     EngagementFinding,
     FindingGroup,
     ScribbleVulnMap,
@@ -100,6 +102,16 @@ machine_bp.before_request(host.authenticate)
 # screenshots/captures/small docs, so 25 MiB is generous while stopping a write token from exhausting
 # memory/disk with one giant payload.
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
+
+# Upper bound on a linked diagram's self-contained HTML snapshot (see scribble_link_attack_path). Vector's
+# export.html inlines its own assets, so it can run larger than a screenshot; this table's ``embed_html``
+# is a ``Text`` column held whole in memory on every report render (like ``content_json`` — see
+# ``_CONTENT_BLOCK_MAX``'s comment for why persistent, per-render costs get their own explicit cap rather
+# than relying on the host's ``MAX_CONTENT_LENGTH`` alone), so a bound is owed here too. 10 MiB is well
+# above any real diagram snapshot and far below where either cost bites.
+_MAX_DIAGRAM_HTML_BYTES = 10 * 1024 * 1024
+_DIAGRAM_REF_MAX_LEN = 64      # EngagementDiagram.diagram_ref  String(64)
+_DIAGRAM_CAPTION_MAX_LEN = 255  # EngagementDiagram.caption      String(255)
 
 # A whole ASCII decimal integer and nothing else -- no sign, no exponent, no decimal point. See
 # ``_finding_id_or_400`` for why a plain ``int()`` is not good enough here.
@@ -2596,6 +2608,112 @@ def scribble_reorder_groups(engagement_id: int):
 
     body, status = _with_idempotency(_idempotency_key(data), _produce)
     return jsonify(body), status
+
+
+# ── attack-path diagrams (ext#48) ───────────────────────────────────────────────────────────────────
+
+
+def _diagram_dict(d: EngagementDiagram) -> dict:
+    return {
+        "id": d.id,
+        "engagement_id": d.engagement_id,
+        "diagram_ref": d.diagram_ref,
+        "caption": d.caption or "",
+        "include_in_report": d.include_in_report,
+        "order_index": d.order_index,
+        # The snapshot itself is potentially large and is not useful in a listing — a caller that wants
+        # it renders the report, or re-fetches vector's export directly. Its presence (not its content)
+        # is what a review surface needs, matching artifacts_api leaving byte content out of listings.
+        "has_embed_html": bool(d.embed_html),
+    }
+
+
+@machine_bp.post(f"/engagements/<{_ID}:engagement_id>/attack-paths")
+@host.require_scope("write")
+@request_body(LinkAttackPathRequest)
+def scribble_link_attack_path(engagement_id: int):
+    """Link a vector attack-path diagram into this engagement's report (ext#48).
+
+    Scribble has no seam to reach vector directly (a separate extension, no host hook exposes it), so
+    THIS route accepts an already-rendered, self-contained HTML snapshot rather than fetching one: the
+    caller GETs vector's ``/vector/machine/diagrams/{id}/export.html`` and POSTs the result here as
+    ``embed_html``. The report embeds it verbatim inside a sandboxed iframe
+    (``render_html._render_diagram_item``) — this route stores it, never parses or executes it.
+
+    Tenancy is checked BEFORE the body is read (same rule as ``scribble_upload_artifact``, for the same
+    reason: a caller must not be able to map the id space by diffing 400s against 404s for an engagement
+    it cannot see). ``idempotency_key`` (body or ``Idempotency-Key`` header) makes a retry return the
+    original link (200) rather than creating a duplicate.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+    data = request.get_json(silent=True) or {}
+    embed_html, err = _opt_str(data, "embed_html")
+    if err:
+        return err
+    if not embed_html:
+        return _bad_request("embed_html is required")
+    if len(embed_html.encode("utf-8")) > _MAX_DIAGRAM_HTML_BYTES:
+        return jsonify({
+            "error": "payload_too_large",
+            "detail": f"embed_html exceeds the {_MAX_DIAGRAM_HTML_BYTES // (1024 * 1024)} MiB limit",
+        }), 413
+
+    diagram_ref, err = _opt_str(data, "diagram_ref")
+    if err:
+        return err
+    if (err := _too_long("diagram_ref", diagram_ref or "", cap=_DIAGRAM_REF_MAX_LEN)) is not None:
+        return err
+    caption, err = _opt_str(data, "caption")
+    if err:
+        return err
+    if (err := _too_long("caption", caption or "", cap=_DIAGRAM_CAPTION_MAX_LEN)) is not None:
+        return err
+    publish, err = _include_in_report_or_400(data.get("include_in_report"))
+    if err:
+        return err
+
+    idempotency_key = _idempotency_key(data)
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as wdb:
+            eng = wdb.get(Engagement, engagement_id)
+            if eng is None:
+                return {"error": "not_found", "detail": "engagement not found"}, 404
+            siblings = list(eng.diagrams)
+            diagram = EngagementDiagram(
+                engagement_id=engagement_id,
+                diagram_ref=diagram_ref,
+                caption=caption,
+                embed_html=embed_html,
+                order_index=len(siblings),
+                include_in_report=publish if publish is not None else True,
+            )
+            wdb.add(diagram)
+            wdb.commit()
+            return _diagram_dict(diagram), 201
+
+    body, status = _with_idempotency(idempotency_key, _produce)
+    return jsonify(body), status
+
+
+@machine_bp.get(f"/engagements/<{_ID}:engagement_id>/attack-paths")
+@host.require_scope("read")
+def scribble_list_attack_paths(engagement_id: int):
+    """List the attack-path diagrams linked to this engagement — the review surface for what the
+    report's Attack Paths block will publish (mirrors ``scribble_list_artifacts``)."""
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        rows = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
+        out = [_diagram_dict(d) for d in rows]
+    return jsonify({"diagrams": out, "count": len(out)})
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────
