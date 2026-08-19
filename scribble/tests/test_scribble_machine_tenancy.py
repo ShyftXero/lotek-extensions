@@ -60,6 +60,20 @@ _TENANT_FREE_ENDPOINTS = frozenset(
     }
 )
 
+# View-arg names that identify an engagement INDIRECTLY, via a child row that belongs to exactly one
+# engagement. The findings-CRUD routes (ext#41) are keyed on a finding id rather than an engagement id —
+# `PATCH /findings/<fid>`, `DELETE /findings/<fid>`, `POST /findings/<fid>/move` — mirroring the cookie
+# routes they replace, and they resolve tenancy by loading the child and following it to its engagement
+# (`api_pat._visible_finding`). That makes them engagement-scoped in substance while carrying no
+# `engagement_id` in the URL, so the classification test below has to recognize this shape or it would
+# either fail closed on a correctly-authorized route or (worse, if someone "fixed" it by exempting them)
+# leave the whole findings surface out of the denial sweep.
+#
+# The obligation is the SAME as for an `engagement_id` route: the sweeps seed these children under the
+# ACME engagement and require a 404 for a token holding another client, and a non-404 for a granted one.
+# This mirrors `authz._CHILD_RESOLVERS`, which does the same job for the cookie blueprints' gate.
+_CHILD_ID_ARGS: tuple[str, ...] = ("finding_id", "group_id")
+
 # Machine routes that legitimately answer 200 to ANY token because they are SCOPED LISTS: they return
 # only the rows the caller may see, so the correct answer for a foreign token is an EMPTY list, not a 404.
 # A 404 here would be wrong (the collection exists for everyone) and a blanket tenant-free exemption would
@@ -79,13 +93,26 @@ def _machine_rules(app):
     )
 
 
-def _build_url(app, rule, *, engagement_id: int, job_id: str, artifact_id: int = 0) -> str:
+def _build_url(
+    app,
+    rule,
+    *,
+    engagement_id: int,
+    job_id: str,
+    artifact_id: int = 0,
+    finding_id: int = 0,
+    group_id: int = 0,
+) -> str:
     """Build a real URL for a machine rule via `url_for`.
 
     Deliberately NOT string substitution on `rule.rule`: an unsubstituted placeholder (the day a
     converter changes to `<uuid:engagement_id>`, say) would 404 at Werkzeug's routing layer, and a
     denial sweep asserting 404 would keep passing while testing nothing at all. `url_for` raises
     instead, and `_http_methods`' companion ALLOW sweep would fail too.
+
+    `finding_id`/`group_id` default to 0 (an id no row ever has) rather than being optional keywords a
+    caller can forget: a sweep that silently built a URL with a MISSING child would be asserting 404 on a
+    route that 404s for the wrong reason. The sweeps below pass real, seeded ids.
     """
     values = {}
     for arg in rule.arguments:
@@ -98,6 +125,10 @@ def _build_url(app, rule, *, engagement_id: int, job_id: str, artifact_id: int =
             # "artifact not found" — which would make the DENY sweep pass for the wrong reason (not
             # tenancy) and the ALLOW sweep fail for the wrong reason.
             values[arg] = artifact_id
+        elif arg == "finding_id":
+            values[arg] = finding_id
+        elif arg == "group_id":
+            values[arg] = group_id
         else:  # pragma: no cover - fails loudly rather than guessing a value
             raise AssertionError(f"{rule.endpoint} has an unrecognized view arg {arg!r}")
     with app.test_request_context():
@@ -140,6 +171,26 @@ def _artifact_on(session_factory, engagement_id: int) -> int:
         return art.id
 
 
+def _children(session_factory, engagement_id: int) -> tuple[int, int]:
+    """Seed a FRESH finding + group under `engagement_id` and return their ids.
+
+    Fresh per request, not once per test: the sweep exercises `DELETE /findings/<id>` and
+    `DELETE /engagements/<id>/groups/<id>` too, and a shared row would be gone by the time the next
+    route in the sweep asked for it — turning every later assertion into an accidental 404 and hiding
+    whatever those routes actually do.
+    """
+    with session_factory() as db:
+        group = fm.FindingGroup(engagement_id=engagement_id, name="Sweep section", order_index=0)
+        db.add(group)
+        db.flush()
+        finding = fm.EngagementFinding(
+            engagement_id=engagement_id, group_id=group.id, title="Sweep finding", order_index=0
+        )
+        db.add(finding)
+        db.commit()
+        return finding.id, group.id
+
+
 def _template(session_factory) -> int:
     with session_factory() as db:
         tmpl = fm.VulnerabilityTemplate(name="Machine target template", content_json={}, content_html={})
@@ -160,11 +211,13 @@ def test_every_machine_route_is_classified(app):
         if rule.endpoint not in _TENANT_FREE_ENDPOINTS
         and rule.endpoint not in _SCOPED_LIST_ENDPOINTS
         and "engagement_id" not in rule.arguments
+        and not (set(rule.arguments) & set(_CHILD_ID_ARGS))
     ]
     assert unclassified == [], (
-        "machine route(s) neither engagement-scoped, scoped-list, nor declared tenant-free — classify "
-        "them (add the engagement_id check in api_pat.py, or justify the addition to "
-        f"_TENANT_FREE_ENDPOINTS / _SCOPED_LIST_ENDPOINTS here): {unclassified}"
+        "machine route(s) neither engagement-scoped (directly or via a child id), scoped-list, nor "
+        "declared tenant-free — classify them (add the engagement/child tenancy check in api_pat.py, or "
+        "justify the addition to _TENANT_FREE_ENDPOINTS / _SCOPED_LIST_ENDPOINTS here): "
+        f"{unclassified}"
     )
 
 
@@ -209,9 +262,20 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
     for rule in _machine_rules(app):
         if rule.endpoint in _TENANT_FREE_ENDPOINTS or rule.endpoint in _SCOPED_LIST_ENDPOINTS:
             continue
-        url = _build_url(app, rule, engagement_id=eid, job_id="job-1", artifact_id=aid)
         for method in _http_methods(rule):
-            resp = client.open(url, method=method, json={})
+            # Real child rows, under the ACME engagement, per request — so a `finding_id`/`group_id`
+            # route is denied because of TENANCY and not because the id happened not to exist.
+            fid, gid = _children(session_factory, eid)
+            url = _build_url(
+                app,
+                rule,
+                engagement_id=eid,
+                job_id="job-1",
+                artifact_id=aid,
+                finding_id=fid,
+                group_id=gid,
+            )
+            resp = client.open(url, method=method, json={"finding_ids": [fid], "group_id": gid})
             if resp.status_code != 404:
                 allowed.append((rule.endpoint, method, url, resp.status_code))
 
@@ -273,12 +337,24 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
     for rule in _machine_rules(app):
         if rule.endpoint in _TENANT_FREE_ENDPOINTS:
             continue
-        url = _build_url(app, rule, engagement_id=eid, job_id="job-1", artifact_id=aid)
         for method in _http_methods(rule):
+            # Fresh children per request: this sweep really does exercise the two DELETE routes, so a
+            # shared finding/group would be gone for every rule sorted after them and every later
+            # assertion would pass for the wrong reason (see `_children`).
+            fid, gid = _children(session_factory, eid)
+            url = _build_url(
+                app,
+                rule,
+                engagement_id=eid,
+                job_id="job-1",
+                artifact_id=aid,
+                finding_id=fid,
+                group_id=gid,
+            )
             # An empty body is a business 400 on add-finding; only 404 (the tenancy refusal) is a failure.
             resp = client.open(url, method=method, json={})
             if resp.status_code == 404:
-                denied.append((rule.endpoint, method, url))
+                denied.append((rule.endpoint, method, url, resp.get_json()))
 
     assert denied == [], f"a granted token was WRONGLY denied on: {denied}"
 

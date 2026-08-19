@@ -1,6 +1,9 @@
 {% extends cream_base %}
-{% block title %}CREAM — Edit document{% endblock %}
-{% block appbar_title %}Edit draft{% endblock %}
+{# The tab title names the draft, because two editors open on two drafts both reading "Edit document" is
+   exactly the complaint in ext#46 — one surface further in. `doc.handle` is `draft …b839c91e20` (the
+   editor only ever renders a draft; a frozen document is redirected to view.html). #}
+{% block title %}CREAM — Edit {{ doc.handle }}{% endblock %}
+{% block appbar_title %}Edit {{ doc.handle }}{% endblock %}
 {% block content %}
 {% include "cream/_ui.html" %}
 <style>
@@ -26,7 +29,7 @@
 <div class="cr-wrap">
   <div class="cr-head">
     <div>
-      <h1>{{ doc.kind|capitalize }} draft</h1>
+      <h1 title="{{ doc_id }}">{{ doc.kind|capitalize }} {{ doc.handle }}</h1>
       <p>The preview on the right is rendered by the server, through the same code that produces the
          PDF — what you see is what prints. Nothing is saved until you press Save.</p>
     </div>

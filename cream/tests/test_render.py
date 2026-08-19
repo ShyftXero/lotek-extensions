@@ -93,6 +93,33 @@ def test_standalone_wraps_a_whole_page():
     assert "<title>Invoice INV-2026-0001</title>" in html
 
 
+def test_an_unnumbered_standalone_page_is_titled_by_the_name_it_is_given():
+    """The exported page's ``<title>`` is the browser tab AND the PDF's metadata title. Unnumbered it was
+    a bare ``Invoice`` — identical for every draft (ext#46 review round 1)."""
+    view = _view(status="draft", number=None)
+    assert "<title>Invoice</title>" in render_document_html(view, standalone=True)
+    named = render_document_html(view, standalone=True, name="draft …b839c91e20")
+    assert "<title>Invoice draft …b839c91e20</title>" in named
+
+
+def test_a_name_titles_the_page_without_printing_itself_on_the_document():
+    """The boundary: naming is app-side. An id tail printed where the invoice number goes would read as an
+    invoice number on the copy a client receives."""
+    named = render_document_html(_view(status="draft", number=None), standalone=True,
+                                 name="draft …b839c91e20")
+    document = named.split("</head>", 1)[1]
+    assert "b839c91e20" not in document
+    assert '<div class="num">' not in document
+    assert "<h1>Invoice</h1>" in document
+
+
+def test_a_name_is_ignored_once_the_document_has_a_number():
+    """An issued document is titled by its number; ``document_handle`` returns exactly that, so the two
+    paths cannot disagree."""
+    html = render_document_html(_view(), standalone=True, name="INV-2026-0001")
+    assert "<title>Invoice INV-2026-0001</title>" in html
+
+
 # --- hostile input --------------------------------------------------------------------------------
 
 

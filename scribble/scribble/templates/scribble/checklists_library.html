@@ -1,6 +1,17 @@
 {% extends "scribble/base.html" %}
 {% block title %}Checklists — Scribble{% endblock %}
 {% block appbar_title %}Checklists{% endblock %}
+{# This page's rows carry `.ckp-kind`, which lives in the coverage panel's stylesheet (ext#44) — link it
+   here too. (Unlike every other page this one hardcodes scribble's own base instead of `scribble_base`,
+   so a mounted host gets scribble's shell here; that is a separate defect, not this change's business —
+   the link works either way, since both bases expose `head_extra`.)
+   That hardcode is also the ONLY reason this page's `.cklib-*` rules reach a mounted host: they live in
+   scribble.css, which scribble's base links and the host's does not. So whoever switches this page to
+   `scribble_base` owes `.cklib-*` the same move into a page-linked stylesheet — see
+   `test_mounted_library_page_still_ships_its_cklib_rules`, which is what will fail. #}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('scribble.static', filename='checklists_panel.css') }}" />
+{% endblock %}
 {% block content %}
 <section class="cklib" id="checklist-library"
          data-templates-url="{{ url_for('scribble_api.list_checklist_templates') }}">

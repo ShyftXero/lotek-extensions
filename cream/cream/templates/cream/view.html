@@ -1,12 +1,16 @@
 {% extends cream_base %}
-{% block title %}CREAM — Document{% endblock %}
-{% block appbar_title %}Document{% endblock %}
+{# Same rule as the heading below and as edit.html: a page showing exactly ONE document names it, in the
+   browser tab as well as on the page — a tab reading "CREAM — Document" identifies nothing (ext#46). #}
+{% block title %}CREAM — {{ meta.kind|capitalize }} {{ meta.handle }}{% endblock %}
+{% block appbar_title %}{{ meta.kind|capitalize }} {{ meta.handle }}{% endblock %}
 {% block content %}
 {% include "cream/_ui.html" %}
 <div class="cr-wrap" style="max-width:900px">
   <div class="cr-head">
     <div>
-      <h1>{{ meta.kind|capitalize }} {{ meta.number or '(draft)' }}</h1>
+      {# meta.handle is the number once issued, else `draft …b839c91e20` — an unissued document still
+         names itself, rather than reading `Invoice (draft)` like every other draft. #}
+      <h1 title="{{ doc_id }}">{{ meta.kind|capitalize }} {{ meta.handle }}</h1>
       <p>
         <span class="cr-pill {{ meta.status }}">{{ meta.status }}</span>
         {% if not meta.editable %}

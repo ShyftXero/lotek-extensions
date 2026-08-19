@@ -71,7 +71,17 @@ Board order *is* document order.
 - Ungrouped findings sit in their own bucket, always shown severity-first.
 - A group can be excluded from the rendered report without deleting it. **Deleting a group detaches its
   findings** (they go ungrouped) rather than destroying them — a report section is not the same thing as
-  the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both.
+  the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both — but
+  **not its nested children**: a promoted parent is an umbrella over the vuln-DB write-up while each child
+  holds the per-host evidence, so the children are detached (they become top-level findings) and survive.
+  The same split applies to everything else that points at a finding — six columns in all, enumerated at the
+  top of `scribble/findings_service.py`: its own state (co-editing CRDT doc, per-finding variable values,
+  tags, artifacts) goes with it, while a **checklist item** that linked to it survives with `finding_id`
+  cleared. Handling only *some* of that set is not a smaller bug: any surviving reference makes the DELETE an
+  FK violation, i.e. a 500 that deletes nothing, and the same applies to deleting a whole engagement.
+- Every rule above is enforced by `scribble/findings_service.py`, which the **machine API calls too** (see
+  "The board" under the machine API). The browser and a PAT therefore place a finding identically; there is
+  no second implementation of the ordering rules to drift.
 
 Drag-and-drop is native HTML5 with no external sortable library; lotek is CSP-strict, so nothing here
 loads from a CDN.
@@ -163,17 +173,29 @@ severity strings are accepted.
 
 ## Machine (PAT) API
 
-Nine routes under `/scribble/machine`, Bearer-token authenticated, scope-gated, CSRF-exempt. They mint
-no auth of their own: the blueprint's `before_request` delegates to the host's PAT authenticator, and
+Twenty-three routes under `/scribble/machine`, Bearer-token authenticated, scope-gated, CSRF-exempt. They
+mint no auth of their own: the blueprint's `before_request` delegates to the host's PAT authenticator, and
 each route's scope check delegates to the host's own RBAC. `write` scope already implies the token's
 user is operator/admin, not a demoted viewer.
 
+**Anything the browser board can do to a finding, a PAT can do too** (since ext#41). That was not true
+before: the machine API could create a finding and nothing else, so an agent could not read back what it
+had authored, fix wording, group, reorder or delete — its only recovery was delete-and-recreate, which it
+also could not do. The board routes below share their mutation logic with the cookie UI
+(`scribble/findings_service.py`), so the two surfaces cannot drift on ordering or cascade behaviour.
+
+### Engagements, templates, evidence, promotion
+
 | Method · path | Scope | Purpose |
 |---|---|---|
-| `POST /scribble/machine/engagements` | write | Create an engagement. `name` **and** `client_id` required when mounted; optional `scope_type` (default `external`), `company_name`. |
+| `POST /scribble/machine/engagements` | write | Create an engagement. `name` **and** `client_id` required when mounted; optional `scope_type` (default `external`), `company_name`. Every string is length-capped to its column width (400, never a Postgres truncation 500). |
+| `GET /scribble/machine/engagements` | read | List the engagements this token may see (scoped — never the whole table). |
+| `GET /scribble/machine/engagements/<engagement_id>` | read | One engagement + `finding_count` / `group_count` / `artifact_count`. |
+| `GET /scribble/machine/engagements/<engagement_id>/report` | read | Stream the rendered deliverable: `?format=html` (default) or `docx`. Emits an `ext:scribble:report_read` audit row. |
+| `POST /scribble/machine/templates` | write | Author a reusable vuln template. Excluded from AUTOMATIC vuln-map adoption (`machine_authored`). `name`/`category`/`cvss_vector` are length-capped like every other string on this surface. |
 | `GET /scribble/machine/templates` | read | List active library templates. Filters: `?q=` (name contains), `?category=`, `?severity=`. |
 | `GET /scribble/machine/templates/<template_id>` | read | One template with full `content_json`, CVSS and references. 404 if missing or retired. |
-| `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id` **or** by promoting one `lotek_finding_id`. Optional `group_id`, `target_host`, `target_port`, `target_url`. |
+| `POST /scribble/machine/engagements/<engagement_id>/findings` | write | Add a finding from a `template_id`, by promoting one `lotek_finding_id`, **or** by authoring directly from `title` + `severity`. Optional `group_id`, `target_host`, `target_port`, `target_url`. String values are length-capped to their column widths (a 400, never a Postgres truncation 500) — the same caps `PATCH` enforces. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts` | write | Upload evidence — `multipart/form-data` (`file` field) or JSON with `content_base64` (aliases `data_base64`, `data`) + `filename`. Optional `finding_id`, `caption`, `kind`, `placement`, `idempotency_key`. The response echoes `finding_id` (null = attached to the engagement itself, which renders in the report's Evidence appendix) and `finding_id_dropped`, which is `true` when the request named a `finding_id` that was not honored — a finding belonging to another engagement is silently dropped rather than 404'd (see the comment at the check), and this is how a caller detects it. A `finding_id` that is not a **whole number in range** is refused `400 invalid finding_id` rather than dropped, so `finding_id_dropped: false` cannot mean "your id was gibberish"; an empty/absent one still means engagement-level. That covers a core UUID (scribble's finding ids are sequential ints), a JSON float or boolean — `2.9` and `true` used to be coerced by `int()` to findings 2 and 1, i.e. a DIFFERENT finding than the caller named, reported as honoured — and an id wider than the column, which used to reach `db.get` and raise (`OverflowError` on SQLite, `DataError` on Postgres) after the bytes were already on disk. Also optional: `include_in_report` (default `true`) — send `false` for working material you are attaching but do not want in the client deliverable. The response echoes `include_in_report` alongside the two `finding_id` fields. |
 | `GET /scribble/machine/engagements/<engagement_id>/artifacts` | read | List the engagement's evidence — the review surface for what a report is about to publish. `?unattached=1` narrows to the engagement-level rows (`finding_id` null) the Evidence appendix ships. Each row carries `include_in_report`, `byte_size`, `caption`, `created_by`, `created_at`. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts/<artifact_id>` | write | Change `include_in_report` and/or `caption` on one artifact; omitted fields are unchanged. The artifact is addressed THROUGH its engagement, so an id belonging to another engagement is 404 whatever the caller's grants are. |
@@ -190,6 +212,41 @@ defect, session-authenticated, not swept here.
 | `GET /scribble/machine/vuln-map` | read | List the mappings. |
 | `POST /scribble/machine/resolve-template` | read | Resolve `(source, title, dedupe_key)` to a mapped `template_id`, or null. |
 
+### The board: findings CRUD, grouping, ordering
+
+| Method · path | Scope | Purpose |
+|---|---|---|
+| `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order** — the flat board list (`groups[]` each with their `findings[]`, plus `ungrouped[]`). `count` is board rows; `top_level_count` is how many findings the **report** renders, which is the smaller number whenever promotion nested per-host children (see below). |
+| `GET /scribble/machine/findings/<finding_id>` | read | One finding in full: content blocks, evidence artifacts, and its promoted per-host `children`. |
+| `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized; each value must be a real ProseMirror doc (`{"type": "doc", …}`), and a value that is not one is a **400**, never a silently emptied block). Omitted = unchanged, explicit `null` = cleared, and an **empty** `description`/`remediation`/`references` (`""` / `[]`) **clears that prose block**. An **unknown field is a 400**, not a silent no-op. |
+| `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files), its co-editing CRDT state and its per-finding variable values. Nested per-host **children are detached, not deleted** — their ids come back in `detached_children` and they become top-level findings — and a checklist item that linked to it keeps its place with `finding_id` cleared. |
+| `POST /scribble/machine/findings/<finding_id>/move` | write | `{"group_id": <id\|null>, "order_index": <int>}` — set group + position. `group_id` is required (`null` = ungrouped). |
+| `POST /scribble/machine/engagements/<engagement_id>/findings/move` | write | **Bulk** move: `{"finding_ids": [...], "group_id": <id\|null>, "order_index": <int>}`, listed order preserved. Atomic — one id outside the engagement refuses the whole request. At most **500** ids per call (`order` on the reorder route likewise). |
+| `POST /scribble/machine/engagements/<engagement_id>/groups` | write | Create a report section. `name` required; optional `assessment_type_id`. |
+| `PATCH /scribble/machine/engagements/<engagement_id>/groups/<group_id>` | write | Rename (`name`), toggle `include_in_report`, or set `order_mode` (`auto_severity` \| `manual`). |
+| `DELETE /scribble/machine/engagements/<engagement_id>/groups/<group_id>` | write | Delete the section; its findings are **detached, not deleted** (they return to `ungrouped`). |
+| `POST /scribble/machine/engagements/<engagement_id>/groups/reorder` | write | `{"order": [group_id, ...]}` — top-to-bottom section order. Stale/foreign/duplicate ids are ignored; unmentioned sections keep their relative order at the end. |
+
+Ordering semantics worth knowing before you drive these:
+
+- **`order_index` on a move is a slot in the RENDERED order**, not a raw column write. An `auto_severity`
+  group renders worst-severity-first, so `order_index: 0` means "where the board currently shows the first
+  card", which is what the browser sends too. It must be **`>= 0`** — `0` already means "before the first",
+  so a negative index is a 400 rather than something clamped (clamping reversed a bulk move's listed order,
+  every insert landing in slot 0 and pushing the previous one down).
+- **The board list is FLAT; the report NESTS.** Promotion aggregates per-host instances of a vuln type under
+  a parent finding, and the renderer draws those children inside their parent's card. They are separate rows
+  on the board (and in `GET …/findings`), which is deliberate — `order_index` indexes that flat list. So
+  `count` over-reports what a client sees: quote `top_level_count`. `GET /findings/<id>` returns a parent's
+  `children` explicitly.
+- **Any move flips the destination group to `order_mode: "manual"`** — a deliberate placement outranks
+  severity ranking. `PATCH …/groups/<id> {"order_mode": "auto_severity"}` is the way back ("re-rank by
+  severity").
+- **A group from another engagement is a 404**, never a silent re-home, on both move routes.
+- Every mutating route above emits an `ext:scribble:*` audit row and honours `Idempotency-Key`. One
+  exception worth knowing: a **retried `DELETE` answers 404**, because the route authorizes the finding
+  before it reaches the idempotency seam and by then the row is gone. The effect is still idempotent.
+
 **Discovery.** An agent does not need this table. lotek's `GET /api/v1/openapi.json` is introspective and
 every enabled extension's machine routes appear in it automatically — including their scopes and, where
 declared, typed request bodies (`CreateEngagementRequest`, `AddFindingRequest`,
@@ -204,10 +261,14 @@ them.
 | Extension disabled / not mounted | Flask's plain **404** — the blueprint does not exist. There is no "extension not enabled" 503 to special-case. |
 | Mounted without a host bundle (standalone Scribble) | **503** `unavailable` — the machine API refuses rather than running unauthenticated. |
 | Engagement missing, **or** its client outside your grants | **404**, byte-identical either way. Never 403 — a distinguishable refusal is an existence oracle over the whole id space. |
-| `client_id` outside your grants on create | **404** `client not found`, same reasoning. |
+| Finding missing, **or** belonging to an engagement outside your grants | **404** `finding not found`, byte-identical either way. `/findings/<id>` carries no engagement in the URL, so tenancy is resolved from the row's OWN `engagement_id` — a finding id cannot be paired with an engagement id you do hold. |
+| Group missing, **or** belonging to a different engagement | **404** `group not found on this engagement`, one message for both. |
+| `client_id` outside your grants on create | **404**, same reasoning — and byte-identical for "no such client" and "exists but you hold no grant". The `detail` carries a STATIC next-step hint: a core client created with `POST /api/v1/clients` is *record-only*, and the first engagement under it (`POST /api/v1/engagements`, **admin-only**, which self-grants the creator an `operator` membership) is what mints the membership Scribble checks. Appended unconditionally, so it distinguishes nothing between the two cases. |
 | `client_id` omitted while mounted | **400**. A client-less engagement is readable by nobody, creator included, so creating one is a 201 for work that produced nothing usable. |
 | Job missing, or one you cannot view | **404**, decided inside the host, never by Scribble. |
 | Artifact over 25 MiB | **413**. |
+| A string longer than its column, or a `cvss_score` outside 0.0–10.0 | **400** at the boundary. Bounded in code, not left to the database: on Postgres an over-long `String(n)` value raises `StringDataRightTruncation` (a 500 for what is really a bad request), and SQLite hides it entirely. |
+| More than **64** `content_json` blocks, or more than **500** `references` entries | **400** at the boundary, on every route that writes content (`PATCH …/findings/<id>`, `POST …/findings`, `POST /templates`). These are the two content inputs whose *length* costs work per element and whose cost is **persistent** — they land in `content_json`, so every later render of that finding walks them again. Measured before the cap: 5,000 blocks in one 204 KB `PATCH` stored 5,001 blocks; a 200,000-entry `references` list stored 22.2 MB into a single finding. A real deliverable uses three blocks and a handful of references, so the caps are far above legitimate use. A single block's *prose length* is deliberately NOT capped (a long write-up is legitimate; the request body is already bounded by the host's `MAX_CONTENT_LENGTH`). |
 
 ### Getting scan findings in
 
@@ -220,9 +281,10 @@ them.
         |                              -> every scan finding lands in the engagement,
         |                                 template-rendered or bridged verbatim
         |                              -> { engagement_id, promoted, skipped, parents }
-4. Arrange the board                   groups, ordering, exclude what doesn't belong
-        |
-5. Edit each finding                   write-ups, severity/CVSS/target, evidence artifacts
+4. Arrange the board                   POST …/groups, POST …/findings/move (bulk), …/groups/reorder
+        |                              -> sections, ordering, exclude what doesn't belong
+5. Edit each finding                   GET …/findings (read back) then PATCH …/findings/<id>
+        |                              -> write-ups, severity/CVSS/target; POST …/artifacts for evidence
         |
 6. Export                              HTML (print to PDF) / zip / .docx
 ```
@@ -291,7 +353,9 @@ consume, so HTML and `.docx` cannot drift apart):
 What enters the report: groups in board order (a synthetic *Ungrouped* bucket last), findings ordered by
 the group's own mode, `include_in_report` respected at group, finding **and** artifact level, plus a
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
-into the report.
+into the report. Promoted per-host findings render **nested inside their parent's card** (one level), so the
+report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
+answers that number as `top_level_count`.
 
 **Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before) — in
 the **HTML/PDF** report. `render_docx` is **not** covered by this and is the outstanding gap: it renders a
@@ -452,7 +516,13 @@ seam. Three shapes, all live:
    own URL converters (`engagement_id`/`eid` directly; `finding_id`/`group_id`/`artifact_id`/`cid`/`iid`
    resolved to their engagement). A recognized id that does not resolve aborts 404 too.
 2. Explicit per-route checks on the machine blueprint, which cannot use that gate — its principal is the
-   PAT actor, not a browser session, so the shared gate would 404 every machine route.
+   PAT actor, not a browser session, so the shared gate would 404 every machine route. A machine route
+   keyed on a CHILD id (`/machine/findings/<id>`) does the same resolution the gate does for the cookie
+   surface: load the row, follow it to its engagement, ask `can_view_engagement`. The tenancy anchor is
+   always the stored `engagement_id`, never an engagement id supplied alongside the child id.
+   `tests/test_scribble_machine_tenancy.py` fails closed on any machine route that is neither
+   engagement-scoped (directly or via a child id), a declared scoped list, nor argued tenant-free — so a
+   new route cannot be added without classifying it.
 3. Filtering (not aborting) on list surfaces — the dashboard and engagement list scope in SQL when the
    host supplies a visible-client-id set, otherwise through the per-client predicate. An empty set means
    *this actor holds nothing*, which is not the same as *no set available*; conflating them is how a
@@ -474,7 +544,14 @@ host's `Job.owner_id`, as an access key.
 **Evidence is untrusted input.** Artifacts always download as attachments, never render inline in the
 app origin. Uploads are capped at 25 MiB (checked after base64 decode, with a preflight cap on the
 encoded string so an oversized payload is refused before it is buffered), filenames are sanitized and
-stored under a UUID-prefixed name inside a per-engagement directory.
+stored under a UUID-prefixed name inside a per-engagement directory. `filename` and `caption` are
+type-checked at the boundary (a non-string is a 400, not a 500), and `filename` is capped at **222
+characters** — the UUID prefix costs 33 of the filesystem's 255, so a longer name is refused with a 400
+rather than truncated into the column. That cap counts the *caller's* characters and is therefore not the
+whole guard: `secure_filename` NFKD-normalizes, which can make a name **longer** (`"½"` → `"12"`), so a
+204-character unicode name passed the cap and still hit `ENAMETOOLONG` — a 500. The stored basename is
+bounded in `artifacts_storage.save_bytes`, after sanitization and preserving the extension, which is the
+layer that knows the final name and the one the cookie upload path also goes through.
 
 **Machine-surface hygiene.** The CSRF exemption on `/scribble/machine` is only sound because those
 routes accept no ambient session cookie. Never add a cookie fallback there, and never widen
