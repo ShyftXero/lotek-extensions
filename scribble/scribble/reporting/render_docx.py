@@ -116,7 +116,16 @@ def _children_html(children: list[FindingCtx]) -> str:
     the ``.docx`` template's finding loop is authored as a flat paragraph sequence
     (``build_default_docx.py``), not a per-finding sub-scope a nested ``{%tr for %}`` row-loop could
     cleanly hang off of. This is the DOCX-side mirror of ``render_html._render_children``'s
-    ``<details>``/table."""
+    ``<details>``/table.
+
+    A child's OWN artifacts render here too (issue #54, the docx half of ext#40 mechanism 2): before
+    this, a screenshot attached to a promoted per-host instance never appeared in the docx report at
+    all -- exactly the render_html gap ``_render_child_evidence_cell`` fixed on the HTML side. Each
+    artifact becomes a placeholder ``<img>`` (this module's OWN ``make_inline_artifact_url``/
+    ``_INLINE_PREFIX``, resolved by the ``image_resolver`` already threaded into ``html_to_richtext``
+    -- see ``_finding_body_richtext``); a non-image or an image whose bytes are unavailable/oversized
+    degrades to ``content/render_docx.py``'s existing bracketed placeholder rather than the render
+    failing."""
     items = []
     for c in children:
         host = _html_escape(_child_host_label(c))
@@ -125,6 +134,12 @@ def _children_html(children: list[FindingCtx]) -> str:
             items.append(f"<li><strong>{host}</strong> — {_html_escape(summary)}</li>")
         else:
             items.append(f"<li><strong>{host}</strong></li>")
+        for a in c.artifacts:
+            src = make_inline_artifact_url(a.storage_path)
+            if not src:
+                continue
+            cap = _html_escape(a.caption or a.filename)
+            items.append(f'<li><img src="{src}" alt="{cap}"/> {cap}</li>')
     return f"<h4>Affected Hosts ({len(children)})</h4><ul>{''.join(items)}</ul>"
 
 
@@ -336,6 +351,48 @@ def _append_checklists(doc, ctx: ReportContext) -> None:
                     cells[3].text = note
 
 
+def _append_evidence_appendix(doc, ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None) -> None:
+    """Append engagement-level evidence (``ReportContext.artifacts`` -- artifacts attached to the
+    ENGAGEMENT with no ``finding_id``) to the RENDERED document, mirroring ``_append_checklists``
+    (programmatic, post-render -- no Jinja loop authored into the binary template). This is the docx
+    half of issue #54 / ext#40 mechanism 1: before this, such an upload was accepted, stored, answered
+    201 with a URL, and then appeared in no docx deliverable at all -- the exact HTML-side gap
+    ``_render_evidence_appendix`` (render_html.py) already closed.
+
+    Only added when ``ctx.artifacts`` is non-empty, so an engagement with no engagement-level evidence
+    renders exactly as it did before this section existed. Each item: an image within the size bound
+    embeds via ``doc.add_picture``; anything else (non-image, oversized, or unavailable bytes) gets a
+    caption/filename paragraph instead of the render failing. There is no zip delivery mode for docx
+    (issue #62 does not apply here), so this is the one size bound this format needs."""
+    if not ctx.artifacts:
+        return
+    doc.add_heading("Evidence Appendix", level=1)
+    doc.add_paragraph(
+        "Evidence recorded against this engagement as a whole rather than against one finding."
+    )
+    for a in ctx.artifacts:
+        is_image = (a.content_type or "").startswith("image/")
+        data: bytes | None = None
+        if is_image and artifact_bytes:
+            try:
+                data = artifact_bytes(a.storage_path)
+            except Exception:
+                data = None
+            if data and len(data) > _MAX_EVIDENCE_BYTES:
+                data = None  # oversized: fall back to caption-only rather than embed a huge blob
+        caption = a.caption or a.filename
+        if data:
+            try:
+                doc.add_picture(io.BytesIO(data), width=_EVIDENCE_IMAGE_WIDTH)
+                doc.add_paragraph(caption)
+                continue
+            except Exception:
+                pass  # fall through to the caption-only path below
+        p = doc.add_paragraph()
+        p.add_run(f"{caption} ").italic = True
+        p.add_run(f"({a.filename} -- not embedded)").italic = True
+
+
 def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:
     """Render ``ctx`` to a ``.docx`` document (bytes) using ``report_templates/default.docx``.
 
@@ -354,6 +411,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
+    _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 
     buf = io.BytesIO()
     tpl.save(buf)
