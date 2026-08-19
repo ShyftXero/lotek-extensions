@@ -22,14 +22,18 @@ or saying *which* of the two cases applies) is exactly the leak the 404 exists t
 
 from __future__ import annotations
 
+import uuid
+
 import scribble.models as fm
 from tests.conftest import StubActor
 
 M = "/scribble/machine"
 
-GRANTED = 601      # a client the token under test holds a grant under
-UNGRANTED = 602    # a client that EXISTS (a real row, below) but which the token holds nothing under
-NONEXISTENT = 603  # an id with no row anywhere
+# lotek#335 -- Scribble's own `Client` table (the standalone/unmounted client model) is UUID-keyed too,
+# so these are UUIDs, not the small ints this file used before the PK migration.
+GRANTED = uuid.uuid7()      # a client the token under test holds a grant under
+UNGRANTED = uuid.uuid7()    # a client that EXISTS (a real row, below) but which the token holds nothing under
+NONEXISTENT = uuid.uuid7()  # an id with no row anywhere
 
 
 def _token(stub_host) -> None:

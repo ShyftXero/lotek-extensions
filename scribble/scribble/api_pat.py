@@ -1284,6 +1284,34 @@ _TRUE_WORDS = {"1", "true", "yes", "on"}
 _FALSE_WORDS = {"0", "false", "no", "off"}
 
 
+def _finding_id_or_400(raw) -> tuple[uuid.UUID | None, tuple[Response, int] | None]:
+    """``(finding_id, refusal)`` for a caller-supplied ``finding_id``. Exactly one is non-None.
+
+    Absent or empty means "engagement-level evidence" -- a legitimate request (the appendix renders it),
+    and the multipart surface submits ``finding_id=""`` for an untouched field, so an empty string must
+    not be an error.
+
+    Anything else that ``_as_uuid`` cannot parse is REFUSED here rather than silently treated as "no
+    finding_id" -- exactly the class of bug closed for the old int-keyed id (adversarial review,
+    2026-08-17): a caller-supplied id that fails to parse must not silently land as engagement-level
+    evidence while the 201 asserts ``finding_id_dropped: false`` ("you did not ask for one") about a
+    request that plainly did. ``_as_uuid`` itself already rejects every shape that used to need
+    individual reasoning under the old ``int()``-based parse (floats, bools, out-of-range ints, non-ASCII
+    digit strings) -- there is no coercion path left to close case by case, so this wrapper only has to
+    decide what "absent" means and turn a parse failure into a 400.
+
+    A WELL-FORMED id belonging to another engagement (or none at all) is still silently dropped rather
+    than refused here -- that case would leak whether the id exists; a malformed one cannot leak anything,
+    so there is no reason to be quiet about it.
+    """
+    if raw is None or raw == "":
+        return None, None
+    fid = _as_uuid(raw)
+    if fid is None:
+        return None, (jsonify({"error": "bad_request", "detail": "invalid finding_id"}), 400)
+    return fid, None
+
+
 def _include_in_report_or_400(raw) -> tuple[bool | None, tuple[Response, int] | None]:
     """``(include_in_report, refusal)`` for the caller-supplied publish flag. None means "not specified".
 
@@ -1339,7 +1367,9 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = request.form.get("kind")
         placement_raw = request.form.get("placement")
         idempotency_key = request.form.get("idempotency_key")
-        fid = _as_uuid(request.form.get("finding_id"))
+        fid, bad_fid = _finding_id_or_400(request.form.get("finding_id"))
+        if bad_fid is not None:
+            return bad_fid
         publish, bad_publish = _include_in_report_or_400(request.form.get("include_in_report"))
         if bad_publish is not None:
             return bad_publish
@@ -1350,7 +1380,9 @@ def scribble_upload_artifact(engagement_id: int):
         kind_raw = payload.get("kind")
         placement_raw = payload.get("placement")
         idempotency_key = payload.get("idempotency_key")
-        fid = _as_uuid(payload.get("finding_id"))
+        fid, bad_fid = _finding_id_or_400(payload.get("finding_id"))
+        if bad_fid is not None:
+            return bad_fid
         publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
         if bad_publish is not None:
             return bad_publish
@@ -1492,10 +1524,10 @@ def scribble_upload_artifact(engagement_id: int):
             # URL, and a dropped one then landed as engagement-level evidence. `finding_id` is what the
             # artifact is actually attached to (null = the engagement itself) and `finding_id_dropped`
             # says the request asked for one that was not honored. ``requested_fid`` is the PARSED id and
-            # is trustworthy because an unparseable one never reaches here (``_as_uuid`` returns ``None``
-            # for anything that is not a UUID rather than coercing it): if it
-            # is None the caller really did ask for engagement-level evidence, so a false
-            # ``finding_id_dropped: false`` is not reachable through a malformed value.
+            # is trustworthy because an unparseable one never reaches here -- ``_finding_id_or_400``
+            # refuses it with a 400 before the body is even fully read: if it is None the caller really
+            # did ask for engagement-level evidence, so a false ``finding_id_dropped: false`` is not
+            # reachable through a malformed value.
             "finding_id": artifact.finding_id,
             "finding_id_dropped": requested_fid is not None and artifact.finding_id != requested_fid,
             # Whether this artifact will appear in the rendered report. Echoed for the same reason as the
@@ -1959,7 +1991,7 @@ def _apply_content_blocks(finding: EngagementFinding, blocks: dict) -> None:
 # ── 10a. GET /engagements/<id>/findings — the board, read back ───────────────────────────────────────
 
 
-@machine_bp.get("/engagements/<int:engagement_id>/findings")
+@machine_bp.get("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("read")
 def scribble_list_findings(engagement_id: int):
     """Every finding in an engagement, in BOARD order — the flat list the drag board shows, NOT the nested
@@ -2012,7 +2044,7 @@ def scribble_list_findings(engagement_id: int):
 # ── 10b. GET /findings/<id> — one finding, in full ───────────────────────────────────────────────────
 
 
-@machine_bp.get("/findings/<int:finding_id>")
+@machine_bp.get("/findings/<uuid:finding_id>")
 @host.require_scope("read")
 def scribble_get_finding(finding_id: int):
     actor = host.actor()
@@ -2026,7 +2058,7 @@ def scribble_get_finding(finding_id: int):
 # ── 10c. PATCH /findings/<id> — edit in place ────────────────────────────────────────────────────────
 
 
-@machine_bp.patch("/findings/<int:finding_id>")
+@machine_bp.patch("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 @request_body(PatchFindingRequest)
 def scribble_update_finding(finding_id: int):
@@ -2088,7 +2120,7 @@ def scribble_update_finding(finding_id: int):
 # ── 10d. DELETE /findings/<id> ───────────────────────────────────────────────────────────────────────
 
 
-@machine_bp.delete("/findings/<int:finding_id>")
+@machine_bp.delete("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 def scribble_delete_finding(finding_id: int):
     """Delete a finding and its evidence — ``findings_service.delete_finding``, the same cascade the
@@ -2182,7 +2214,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
 
     if data.get("group_id") is None:
         return None, order_index, None
-    group_id, err = _opt_int(data, "group_id")
+    group_id, err = _opt_uuid(data, "group_id")
     if err:
         return None, 0, err
     target_group = _group_of(db, engagement_id, group_id)
@@ -2191,7 +2223,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
     return target_group, order_index, None
 
 
-@machine_bp.post("/findings/<int:finding_id>/move")
+@machine_bp.post("/findings/<uuid:finding_id>/move")
 @host.require_scope("write")
 @request_body(MoveFindingRequest)
 def scribble_move_finding(finding_id: int):
@@ -2247,7 +2279,7 @@ def scribble_move_finding(finding_id: int):
 # ── 10f. POST /engagements/<id>/findings/move — BULK ─────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/findings/move")
+@machine_bp.post("/engagements/<uuid:engagement_id>/findings/move")
 @host.require_scope("write")
 @request_body(BulkMoveFindingsRequest)
 def scribble_move_findings(engagement_id: int):
@@ -2278,14 +2310,11 @@ def scribble_move_findings(engagement_id: int):
         # de-duplicated one, because the work this refuses is the walk itself.
         if len(raw_ids) > _BULK_ID_LIST_MAX:
             return _bad_request(f"finding_ids may contain at most {_BULK_ID_LIST_MAX} ids")
-        finding_ids: list[int] = []
+        finding_ids: list[uuid.UUID] = []
         for raw in raw_ids:
-            if isinstance(raw, bool) or not isinstance(raw, (int, str)):
-                return _bad_request("finding_ids must contain integers")
-            try:
-                parsed = int(raw)
-            except (TypeError, ValueError):
-                return _bad_request("finding_ids must contain integers")
+            parsed = _as_uuid(raw)
+            if parsed is None:
+                return _bad_request("finding_ids must contain UUIDs")
             if parsed not in finding_ids:
                 finding_ids.append(parsed)
 
@@ -2344,7 +2373,7 @@ def scribble_move_findings(engagement_id: int):
 # ── 10g. groups: create / update / delete / reorder ──────────────────────────────────────────────────
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/groups")
+@machine_bp.post("/engagements/<uuid:engagement_id>/groups")
 @host.require_scope("write")
 @request_body(CreateGroupRequest)
 def scribble_create_group(engagement_id: int):
@@ -2370,7 +2399,7 @@ def scribble_create_group(engagement_id: int):
     # to the database (Postgres 500s, SQLite stores the over-long value silently).
     if (err := _too_long("name", name, cap=_GROUP_NAME_MAX_LEN)) is not None:
         return err
-    assessment_type_id, err = _opt_int(data, "assessment_type_id")
+    assessment_type_id, err = _opt_uuid(data, "assessment_type_id")
     if err:
         return err
 
@@ -2399,7 +2428,7 @@ def scribble_create_group(engagement_id: int):
     return jsonify(body), status
 
 
-@machine_bp.patch("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@machine_bp.patch("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 @request_body(UpdateGroupRequest)
 def scribble_update_group(engagement_id: int, group_id: int):
@@ -2466,7 +2495,7 @@ def scribble_update_group(engagement_id: int, group_id: int):
     return jsonify(body), status
 
 
-@machine_bp.delete("/engagements/<int:engagement_id>/groups/<int:group_id>")
+@machine_bp.delete("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 def scribble_delete_group(engagement_id: int, group_id: int):
     """Delete a report section. Its findings are DETACHED (``group_id`` -> NULL), not deleted — removing a
@@ -2499,7 +2528,7 @@ def scribble_delete_group(engagement_id: int, group_id: int):
     return jsonify(body), status
 
 
-@machine_bp.post("/engagements/<int:engagement_id>/groups/reorder")
+@machine_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
 @host.require_scope("write")
 @request_body(ReorderGroupsRequest)
 def scribble_reorder_groups(engagement_id: int):
