@@ -21,6 +21,7 @@ import pytest
 
 import scribble.models as fm
 from scribble import api_pat
+from scribble.artifacts_storage import SAFE_NAME_MAX, resolve_path
 from scribble.host import SCOPE_ATTR
 from tests.conftest import StubActor
 
@@ -103,6 +104,35 @@ def test_upload_multipart_attaches_evidence(client, stub_host, session_factory):
         art = db.get(fm.Artifact, resp.get_json()["id"])
         assert art.filename == "capture.png"
         assert art.byte_size == len(PNG)
+
+
+def test_upload_rejects_overlong_filename(client, stub_host):
+    """The machine route's own input-side cap (``_ARTIFACT_FILENAME_MAX_LEN``, == ``SAFE_NAME_MAX``)
+    refuses a name over budget before a single byte is written."""
+    eid = _engagement(client, stub_host)
+    long_name = "a" * (SAFE_NAME_MAX + 1) + ".png"
+    resp = _upload_json(client, eid, filename=long_name)
+    assert resp.status_code == 400
+
+
+def test_upload_bounds_stored_name_after_secure_filename_expansion(client, stub_host, session_factory, app):
+    """#55 residual 1: ``secure_filename`` NFKD-normalizes and can EXPAND the caller's filename well
+    past what this route's own input-side cap looks like it should allow for -- 200 '½' characters
+    (well under the ``SAFE_NAME_MAX`` == 222 input cap) secure_filename to 400 ASCII characters, which
+    would overrun ``NAME_MAX`` (255) once ``save_bytes`` prefixes the uuid. Proves the on-disk write
+    survives: ``artifacts_storage._bounded_name`` truncates the SECURED name, not the wire-length one."""
+    eid = _engagement(client, stub_host)
+    filename = "½" * 200 + ".png"
+    resp = _upload_json(client, eid, filename=filename)
+    assert resp.status_code == 201, resp.get_json()
+
+    cfg = app.extensions["scribble"]
+    with session_factory() as db:
+        art = db.get(fm.Artifact, resp.get_json()["id"])
+        path = resolve_path(cfg, art.storage_path)
+        assert path.is_file()
+        assert len(path.name.encode()) <= 255
+        assert art.storage_path.endswith(".png")
 
 
 def test_a_text_artifact_is_classified_as_text(client, stub_host):

@@ -39,7 +39,12 @@ _MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
 # ``secure_filename`` returns pure ASCII (it NFKD-normalizes then ``encode("ascii", "ignore")``), so
 # characters and bytes are the same count by the time we measure.
 _NAME_MAX = 255
-_SAFE_NAME_MAX = _NAME_MAX - 32 - 1  # len(uuid4().hex) + len("_")
+# Public (no leading underscore): the budget left for the CALLER's filename once ``save_bytes`` has
+# prefixed "<uuid4hex>_" (33 chars). Exported so every upload route that wants to reject an over-long
+# name up front (a 400, before writing any bytes) uses the same number this module truncates to,
+# rather than each route computing its own copy of "255 - 32 - 1" and the two silently drifting apart.
+SAFE_NAME_MAX = _NAME_MAX - 32 - 1
+_SAFE_NAME_MAX = SAFE_NAME_MAX  # internal alias kept for the docstring/comments below
 # Longest trailing ".<ext>" worth preserving through a truncation; anything longer is not an extension, it
 # is the tail of a very long name, and keeping it would eat the whole budget.
 _EXT_MAX = 16

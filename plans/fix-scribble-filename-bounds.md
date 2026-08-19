@@ -19,22 +19,37 @@ and the DB column value, on both upload paths.
 - [x] Worktree + identity + plan doc
 
 ## Remaining
-- [ ] `artifacts_storage.py`: add `bounded_filename()` helper + `_STORED_NAME_MAX_BYTES`
-- [ ] `artifacts_storage.py save_bytes()`: use `bounded_filename` (defense-in-depth)
-- [ ] `api_pat.py` machine upload: bound + store `stored_filename`
-- [ ] `artifacts_api.py` cookie upload: bound + store `stored_filename`
-- [ ] Tests: unit `save_bytes` bound test + machine-route test + cookie-route test, each red-before/green-after
-- [ ] `cream/pyproject.toml`: drop `-q` from `addopts`
-- [ ] ruff + pyrefly + scribble test suite
-- [ ] adversarial-reviewer + security-review, ack markers
+- [x] Investigated main's actual state — CORRECTED the plan's premise (see Notes)
+- [x] `artifacts_storage.py`: export `SAFE_NAME_MAX` (was private `_SAFE_NAME_MAX`) — `_bounded_name`
+      (which truncates the SECURED name after `secure_filename`, protecting the on-disk write from
+      NFKD expansion) already exists on main and is unchanged
+- [x] `api_pat.py` machine upload: already had an input-side cap (`_ARTIFACT_FILENAME_MAX_LEN`) —
+      refactored to import the shared `SAFE_NAME_MAX` instead of recomputing `255-32-1` a second time
+- [x] `artifacts_api.py` cookie upload: had NO cap at all — added the same length check (400) before
+      any tenancy check / disk write
+- [x] Tests: `test_save_bytes_bounds_name_after_secure_filename` (unit), 4 new cookie-route tests
+      (reject-over-cap multipart + JSON, accept-at-cap), 2 new machine-route tests (reject-over-cap,
+      NFKD-expansion-survives-on-disk) — all pass; ruff + pyrefly clean
+- [ ] `cream/pyproject.toml` addopts fold-in — SKIPPED, see Notes (PR #65/#56 already owns it)
+- [x] ruff + pyrefly clean on all changed files
+- [ ] full scribble suite run (in progress) + adversarial-reviewer + security-review, ack markers
 - [ ] PR opened, issue #55 linked
 
 ## Notes / gotchas
-- Bug confirmed NOT present on main today (no width cap anywhere) — issue's
-  premise about `feat/scribble-machine-findings-crud` adding a cap is not
-  reflected on main; still, same root fix closes #55.
+- **Corrected the plan's premise after reading main directly.** `_bounded_name` (the fix for
+  residual #1 — `secure_filename` NFKD-expansion overrunning `NAME_MAX`/the on-disk write) was
+  ALREADY present in `artifacts_storage.save_bytes` on origin/main (landed in #41/#60,
+  `feat/scribble-machine-findings-crud`), and `api_pat.py` already had an input-side length cap
+  (`_ARTIFACT_FILENAME_MAX_LEN = 222`) that protects its write of `Artifact.filename` (String(512))
+  from overflow too. So residual #1 in the issue is already fixed on main for BOTH the filesystem
+  and the machine route's DB column. **Residual #2 — the cookie route (`artifacts_api.py`) had
+  ZERO filename bound at all** — was the only real gap, and is what this branch fixes: added the
+  same length check the machine route already had, sourced from one shared constant
+  (`artifacts_storage.SAFE_NAME_MAX`) so the two routes' caps can't drift apart. Net diff is smaller
+  than the plan anticipated because most of the described fix was already shipped.
 - `secure_filename` output is pure ASCII, so a plain string slice for
-  truncation is byte-safe (no multi-byte split risk).
-- `cream/pyproject.toml` addopts `-q` fold-in is separate/minor — noted in PR
-  body; a sibling worktree (`cream-addopts-q`) may already touch this file —
-  check for conflict before opening PR.
+  truncation is byte-safe (no multi-byte split risk) — unchanged, verified in the pre-existing
+  `_bounded_name`.
+- `cream/pyproject.toml` addopts `-q` fold-in from the issue is DELIBERATELY SKIPPED here: PR #65
+  (branch `fix/cream-addopts-q-count`, closing #56) already lands exactly this fix. Touching the
+  same file here would conflict/duplicate; left out to keep this PR focused on #55.
