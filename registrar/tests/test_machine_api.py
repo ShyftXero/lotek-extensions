@@ -176,18 +176,25 @@ def test_staged_list_shows_the_pending_action(pat_client):
     assert staged[0]["verb"] == "create_node"
 
 
-def test_audit_read_surfaces_the_staged_record(pat_client):
+def test_audit_read_surfaces_the_staged_record(pat_client, hooks):
     pat_client.post(f"{MACHINE}/action", json={"verb": "create_node", "args": {"name": "c2-1"}})
+    # Audit is admin-only now (INV-TENANCY-06: the trail spans engagements and has no engagement_id
+    # column to scope by), so read it back as an admin token.
+    hooks["pat_actor"] = type(hooks["pat_actor"])(role="admin")
     audit = pat_client.get(f"{MACHINE}/audit").get_json()["audit"]
     assert any(a["verb"] == "create_node" and a["result"] == "staged" for a in audit)
 
 
-def test_the_sms_audit_detail_carries_no_recipient_or_body(pat_client):
+def test_the_sms_audit_detail_carries_no_recipient_or_body(pat_client, hooks):
     """INV-SECRET-05: the audit projection is allow-listed, so staging an SMS records that it happened
     without storing who it was to or what it said."""
     pat_client.post(f"{MACHINE}/action",
                     json={"verb": "send_sms", "args": {"to": "+15551234567", "body": "secret"}})
+    # Read the trail back as an admin (audit is admin-only per INV-TENANCY-06) so the redaction check is
+    # made against a NON-EMPTY projection rather than passing vacuously on an empty operator view.
+    hooks["pat_actor"] = type(hooks["pat_actor"])(role="admin")
     audit = pat_client.get(f"{MACHINE}/audit").get_json()["audit"]
+    assert audit, "the staged SMS must appear in the admin audit view"
     details = " ".join(a["detail"] or "" for a in audit)
     assert "+15551234567" not in details
     assert "secret" not in details
