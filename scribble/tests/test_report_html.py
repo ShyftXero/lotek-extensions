@@ -10,6 +10,7 @@ document (no external stylesheet/script hosts).
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 
 from scribble.content import schema
@@ -560,3 +561,64 @@ def test_unresolvable_inline_image_note_is_a_real_guard(session_factory):
     # Now prove the assertion actually detects an absent note (i.e. it isn't vacuously true):
     stripped = resolved.replace("evidence not embedded", "")
     assert "evidence not embedded" not in stripped
+
+
+def _engagement_with_screenshot(db):
+    """A one-finding engagement with a screenshot artifact attached — the BUG-1/BUG-2 fixture."""
+    client = Client(name="Acme")
+    db.add(client)
+    db.flush()
+    eng = Engagement(name="Evidence Engagement", client_id=client.id, company_name="Acme")
+    group = FindingGroup(engagement=eng, name="Web App", order_index=0)
+    finding = EngagementFinding(
+        engagement=eng, group=group, title="Stored XSS", severity=Severity.high, order_index=0,
+        content_json={"description": _block("See evidence below.")},
+    )
+    db.add(eng)
+    db.flush()
+    db.add(Artifact(
+        engagement=eng, finding=finding, kind=ArtifactKind.screenshot,
+        placement=ArtifactPlacement.attached, filename="poc.png", content_type="image/png",
+        storage_path="poc.png", caption="Proof of concept", order_index=0,
+    ))
+    db.commit()
+    return eng.id
+
+
+def test_evidence_images_render_readable_not_cropped_thumbnail(session_factory):
+    """BUG-1 (ext#75): evidence images inline at a READABLE size, not a 128px cover-cropped thumbnail.
+    The readable rule (content-column cap, natural aspect via object-fit: contain, no upscaling) must be
+    present and the old crop rule gone — for the MAIN finding gallery, not the compact child-evidence one."""
+    with session_factory() as db:
+        eng_id = _engagement_with_screenshot(db)
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        html_doc = render_report_html(
+            ctx, inline_assets=True, artifact_bytes={"poc.png": b"\x89PNG\r\n\x1a\nFAKE"}.get
+        )
+    # the screenshot actually inlines (readable image is really there)
+    assert "data:image/png;base64," in html_doc
+    # readable, uncropped, capped, never-upscaled
+    assert "max-width: min(100%, 680px)" in html_doc
+    assert ".evidence-item img" in html_doc
+    # the old thumbnail crop must be gone from the main evidence image rule
+    assert "width: 100%; height: 128px; object-fit: cover" not in html_doc
+    # the compact CHILD evidence override is preserved (still allowed to be small)
+    assert ".children-table td.child-evidence .evidence-item img" in html_doc
+
+
+def test_report_has_no_cookie_authed_artifact_raw_url(session_factory):
+    """BUG-2 (ext#76): the rendered report must NOT reference /artifacts/<id>/raw — that route 302s to
+    /login without a dashboard cookie, so such a reference breaks images in export / print / offline.
+    Evidence is inlined as data: URIs instead, so the document is self-contained."""
+    with session_factory() as db:
+        eng_id = _engagement_with_screenshot(db)
+    with session_factory() as db:
+        engagement = db.get(Engagement, eng_id)
+        ctx = build_report_context(engagement)
+        html_doc = render_report_html(
+            ctx, inline_assets=True, artifact_bytes={"poc.png": b"\x89PNG\r\n\x1a\nFAKE"}.get
+        )
+    assert re.search(r"/artifacts/\d+/raw", html_doc) is None
+    assert "data:image/png;base64," in html_doc

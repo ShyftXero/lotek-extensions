@@ -1910,13 +1910,20 @@ table.index td.ix-cvss {
   font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
   color: var(--muted); font-weight: 600; margin-bottom: 8px;
 }
-.evidence-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+/* BUG-1 (ext#75): evidence images inline at a READABLE size, not a cropped 128px thumbnail — a
+   screenshot is the core of a pentest deliverable and must be legible in the report itself. Single
+   column so each image + caption stands on its own; natural size capped to the content column
+   (<=680px wide) and by height (<=860px) so a portrait shot can't dominate a page; width/height:auto
+   so a small test tile is never upscaled/blurred. Full detail via the existing #ev-<id> lightbox
+   (cursor: zoom-in advertises it). The compact child-evidence grid override below is left intact. */
+.evidence-grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
 .evidence-item {
   border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
-  background: var(--surface-2); margin: 0;
+  background: var(--surface-2); margin: 0; width: fit-content; max-width: 100%;
 }
 .evidence-item img {
-  display: block; width: 100%; height: 128px; object-fit: cover; background: var(--surface-2);
+  display: block; width: auto; height: auto; max-width: min(100%, 680px); max-height: 860px;
+  object-fit: contain; background: var(--surface-2); cursor: zoom-in;
 }
 .evidence-item figcaption, .evidence-item .cap {
   padding: 7px 9px; font-size: 11.5px; color: var(--muted); word-break: break-word;
