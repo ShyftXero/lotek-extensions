@@ -414,7 +414,13 @@ class Artifact(Base, TimestampMixin):
     # query-based lookup on (engagement_id, idempotency_key) in artifacts_api.create_artifact, not a DB
     # constraint, because the additive migration in scribble/db.py can only retrofit plain indexes onto
     # an existing table, never a composite UNIQUE constraint.
-    idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    #
+    # TEXT, not a bounded VARCHAR: the client derives this key from the engagement id, finding id and file
+    # basename (lotek's attach-evidence.sh emits `ev-<eng>-<finding>-<name>-<sha>`). Once #372 migrated
+    # engagement/finding PKs to 36-char UUIDs a routine key runs ~120 chars, overflowing the old
+    # VARCHAR(80) — Postgres raises StringDataRightTruncation (a 500 on every evidence upload) while SQLite
+    # silently stored it. The basename alone is a String(512), so no bounded length is safe here.
+    idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
 
     engagement: Mapped[Engagement] = relationship(back_populates="artifacts")
     finding: Mapped[EngagementFinding | None] = relationship(back_populates="artifacts")
