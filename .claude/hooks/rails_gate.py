@@ -200,6 +200,87 @@ def _runs_gh_pr_create(cmd: str) -> bool:
     return bool(re.search(r"\bgh\s+pr\s+create\b", R.strip_quoted(cmd)))
 
 
+# --------------------------------------------------------------------- push identity (ported from lotek)
+# A `git push` to GitHub from an agent session must authenticate as the bot, never over SSH / the human's
+# credentials — else the HUMAN becomes the "last pusher" and require_last_push_approval bars them from
+# approving. Ported from lotek core (2026-08-22) so this repo has parity; the primary lever is the
+# transparent bot-auth wired into agent WORKTREES by lotek's scripts/install-bot-push-auth.sh, and this
+# gate is the backstop for a plain push from a PRIMARY checkout.
+
+_PUSH_OPT_TAKES_VALUE = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+
+
+def _push_args(cmd: str) -> list[str] | None:
+    """The argument tokens following `git [-C <dir>] push` on its own segment, or None if not a push."""
+    m = re.search(r"\bgit\b(?:\s+-C\s+\S+)?\s+push\b(?P<rest>[^\n;|&]*)", R.strip_quoted(cmd))
+    return m.group("rest").split() if m else None
+
+
+def _push_remote(cmd: str) -> str:
+    """The remote a `git push` targets: first positional (skipping flags + value-taking flag values), or
+    `origin` when none is given. Token may be a remote NAME or a bare URL."""
+    skip = False
+    for tok in _push_args(cmd) or []:
+        if skip:
+            skip = False
+            continue
+        if tok in _PUSH_OPT_TAKES_VALUE:
+            skip = True
+            continue
+        if tok.startswith("-"):
+            continue
+        return tok
+    return "origin"
+
+
+def _bot_auth_active(cwd: str) -> bool:
+    """True when this checkout is wired for TRANSPARENT bot-identity pushes: a
+    `url.https://github.com/.insteadOf git@github.com:` rewrite PLUS a github.com credential helper that
+    mints the bot's App token (`x-access-token` / gh-app-token.py). That is what lotek's
+    scripts/install-bot-push-auth.sh installs (~/.config/git/lotek-bot.inc), scoped by an
+    `includeIf gitdir:…/lotek*/.git/worktrees/` to AGENT worktrees only. There a plain `git push` to an
+    SSH-form remote is rewritten to an `x-access-token` HTTPS push at transport time — so the BOT is the
+    pusher even though `git remote get-url` still shows `git@github.com:`, which is why the URL check
+    below cannot see it and this predicate is needed to avoid a false deny on the sanctioned path."""
+    insteadof = R.git(cwd, "config", "--get", "url.https://github.com/.insteadOf")
+    if insteadof != "git@github.com:":
+        return False
+    helpers = R.git(cwd, "config", "--get-all", "credential.https://github.com.helper") or ""
+    return "x-access-token" in helpers or "gh-app-token" in helpers
+
+
+def _g_push_identity(ctx: Ctx) -> Verdict:
+    """Deny a `git push` to GitHub that would authenticate as the human (SSH / stored creds). Two
+    sanctioned paths make the BOT the pusher: an AGENT WORKTREE wired by lotek-bot.inc (a plain push is
+    transparently bot-authed — see `_bot_auth_active`), or `scripts/agent-push.sh` (ephemeral token
+    remote). Primary checkouts are not wired, so a plain push there is denied."""
+    args = _push_args(ctx.cmd)
+    if args is None:
+        return None
+    if "--dry-run" in args or "-n" in args:
+        return None  # no ref change ⇒ no pusher change
+    remote = _push_remote(ctx.cmd)
+    url = remote if ("://" in remote or remote.startswith("git@")) \
+        else R.git(ctx.cwd, "remote", "get-url", remote)
+    if not url or "github.com" not in url.lower():
+        return None  # non-GitHub, or a remote we cannot resolve — not this gate's concern
+    if "x-access-token" in url:
+        return None  # the sanctioned bot-token push (explicit token remote, e.g. agent-push.sh)
+    if _bot_auth_active(ctx.cwd):
+        return None  # transparent bot-auth worktree: SSH-form URL rewritten to an x-access-token push
+    return ("deny",
+            "A `git push` to GitHub from an agent session must authenticate as the bot, not over SSH "
+            "or the human's stored credentials. Pushing as the human makes the HUMAN the \"last "
+            "pusher\", and branch protection (require_last_push_approval) then bars them from approving "
+            "the PR.\n\n"
+            "Two sanctioned paths make the BOT the pusher:\n"
+            "  • work in an AGENT WORKTREE (.claude/worktrees/…) — bot auth is automatic there, a plain "
+            "`git push` just works (installed by lotek's scripts/install-bot-push-auth.sh); or\n"
+            "  • scripts/agent-push.sh <refspec>      # e.g.  scripts/agent-push.sh HEAD:refs/heads/<branch>\n\n"
+            f"Resolved push URL: {url}\n"
+            "Exceptional bypass (e.g. pushing your OWN branch as yourself): prefix RAILS_OVERRIDE=1.")
+
+
 def _read_marker(gd: str, basename: str) -> dict | None:
     """The marker dict, or None if absent/unreadable/malformed."""
     try:
@@ -462,6 +543,7 @@ class Gate(NamedTuple):
 GATES: list[Gate] = [
     Gate("explicit-staging", _g_explicit_staging),
     Gate("protected-branch", _g_protected_branch),
+    Gate("push-identity", _g_push_identity),
     Gate("pre-pr-review", _g_pre_pr_review),
     Gate("invariant-pointer", _g_invariant_pointer),
     Gate("clean-checks", _g_clean_checks),
