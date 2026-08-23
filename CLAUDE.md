@@ -99,11 +99,16 @@ must be re-acked. A branch whose every changed path is `.md` is exempt from `--a
 review/adversarial). Override any single gate with `RAILS_OVERRIDE=1 <cmd>` (logged to
 `<git-dir>/claude-rails-audit.jsonl`, same as every deny/fail-open/warn).
 
-**Not ported (deliberately, out of scope for this pass):** lotek core's `branch-owner` (shared-
-worktree session collision guard), `merge-gate` (local `git merge` into main), `push-identity`
-(bot-token push enforcement), and the `regression-test`/`ci-required-checks` soft advisories. This
-pass only imposes the same lint/type/review/test BAR, not lotek's full concurrent-session
-machinery — add those later if this repo grows the same multi-session pressure lotek did.
+**`push-identity` — PORTED (2026-08-22).** A `git push` to GitHub must authenticate as the bot, never as
+the human (else the human is the "last pusher" and `require_last_push_approval` bars their approval). The
+gate denies a plain SSH push and points at `scripts/agent-push.sh` (now also present here); it recognises a
+transparent bot-auth AGENT WORKTREE (`_bot_auth_active`: lotek's `install-bot-push-auth.sh` wires an
+`includeIf` bot-auth include scoped to `…/lotek*/.git/worktrees/`, which covers this repo's worktrees too)
+and allows the plain push there. Byte-identical to lotek core's gate; its exhaustive unit tests live there.
+
+**Still not ported (deliberately):** lotek core's `branch-owner` (shared-worktree session collision guard),
+`merge-gate` (local `git merge` into main), and the `regression-test`/`ci-required-checks` soft advisories —
+add those later if this repo grows the same multi-session pressure lotek did.
 
 ### Invariant divergence (intentional) — this repo has NO local invariant contract
 
