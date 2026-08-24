@@ -114,6 +114,16 @@ class ChecklistCtx:
 
 
 @dataclass
+class ActivityEntry:
+    """One row of the engagement activity trail (lotek#442) — a timestamped, report-relevant action
+    (finding added, evidence uploaded, diagram created), assembled from scribble's own TimestampMixin
+    ``created_at`` columns. No cross-seam sourcing; this is scribble's view of its own engagement."""
+    timestamp: str  # display string, UTC (empty if the row has no created_at)
+    kind: str        # "engagement" | "finding" | "evidence" | "diagram"
+    summary: str     # human-readable, e.g. "Finding added: SMB signing not required"
+
+
+@dataclass
 class ReportContext:
     engagement_id: int
     engagement_name: str
@@ -141,6 +151,11 @@ class ReportContext:
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
+    # ADDITIVE (lotek#442): OPT-IN engagement activity trail, rendered as an appendix ONLY when a
+    # template includes the ``activity_log`` block (the "checkbox"). Built from the engagement's own
+    # created_at timestamps in ``build_report_context``. Defaults empty — an engagement renders
+    # identically to before unless a template opts the block in.
+    activity_log: list[ActivityEntry] = field(default_factory=list)
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -374,6 +389,41 @@ def _build_checklists(engagement) -> list[ChecklistCtx]:
     return out
 
 
+def _build_activity_log(engagement) -> list[ActivityEntry]:
+    """Chronological engagement activity trail from scribble's OWN timestamps (TimestampMixin) — no
+    cross-seam sourcing. Rows: engagement creation, each report-included finding added, each evidence
+    upload, each attack-path diagram. Oldest-first; a row with no ``created_at`` sorts last. Filtered by
+    ``include_in_report`` so the appendix never leaks an excluded draft into the deliverable."""
+    def _fmt(dt) -> str:
+        return dt.strftime("%Y-%m-%d %H:%M UTC") if dt is not None else ""
+
+    events: list[tuple[object, ActivityEntry]] = []
+    created = getattr(engagement, "created_at", None)
+    if created is not None:
+        events.append((created, ActivityEntry(_fmt(created), "engagement",
+                                               f"Engagement created: {engagement.name}")))
+    for f in engagement.findings:
+        if not getattr(f, "include_in_report", True):
+            continue
+        events.append((f.created_at, ActivityEntry(_fmt(f.created_at), "finding",
+                                                    f"Finding added: {f.title}")))
+    for a in engagement.artifacts:
+        if not getattr(a, "include_in_report", True):
+            continue
+        events.append((a.created_at, ActivityEntry(_fmt(a.created_at), "evidence",
+                                                    f"Evidence uploaded: {a.filename}")))
+    for d in engagement.diagrams:
+        if not getattr(d, "include_in_report", True):
+            continue
+        label = d.caption or "attack path"
+        events.append((d.created_at, ActivityEntry(_fmt(d.created_at), "diagram",
+                                                    f"Diagram added: {label}")))
+    # Oldest-first; None created_at sorts last. The leading bool keeps None out of a datetime comparison
+    # (tuples stop at the first differing element, so a present vs None row never compares the datetimes).
+    events.sort(key=lambda e: (e[0] is None, e[0]))
+    return [entry for _, entry in events]
+
+
 def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     """Assemble a ``ReportContext`` from a loaded ``Engagement`` (with relationships available).
 
@@ -452,4 +502,5 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
+        activity_log=_build_activity_log(engagement),
     )

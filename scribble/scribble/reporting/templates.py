@@ -48,6 +48,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "diagrams",
     "methodology",
     "evidence",
+    "activity_log",
 )
 THEMES: tuple[str, ...] = ("auto", "light", "dark")
 
