@@ -41,8 +41,8 @@ from scribble.models import (
     FindingGroup,
 )
 from scribble.reporting import build_report_context
+from scribble.reporting.layouts import ReportLayout, list_layouts
 from scribble.reporting.render_html import _AssetResolver, _render_document, render_report_html
-from scribble.reporting.templates import ReportTemplate, list_templates
 
 try:
     from playwright.sync_api import sync_playwright
@@ -133,10 +133,10 @@ def _render(session_factory, eng_id: int, **kw) -> str:
     return render_report_html(ctx, **kw)
 
 
-def _render_with_template(session_factory, eng_id: int, template: ReportTemplate) -> str:
+def _render_with_layout(session_factory, eng_id: int, layout: ReportLayout) -> str:
     with session_factory() as db:
         ctx = build_report_context(db.get(Engagement, eng_id))
-    return _render_document(ctx, _AssetResolver("none", None), template=template)
+    return _render_document(ctx, _AssetResolver("none", None), layout=layout)
 
 
 def _cover(html: str) -> str:
@@ -207,8 +207,8 @@ def test_a_template_without_a_cover_block_renders_none_and_keeps_its_masthead(se
     (``body.has-cover`` is what suppresses the masthead in print; a stale class would leave that PDF with
     no title anywhere)."""
     eid = _full_engagement(session_factory)
-    bare = ReportTemplate("no-cover", "No cover", "auto", ("summary", "findings"))
-    html = _render_with_template(session_factory, eid, bare)
+    bare = ReportLayout("no-cover", "No cover", ("summary", "findings"))
+    html = _render_with_layout(session_factory, eid, bare)
     assert 'class="cover"' not in html
     assert "<body>" in html
     assert 'class="has-cover"' not in html
@@ -250,20 +250,20 @@ def test_the_contents_list_every_section_and_finding_in_document_order(session_f
     assert re.search(r'toc-sev sev-critical">Critical<', toc)
 
 
-@pytest.mark.parametrize("template", [t.name for t in list_templates()])
-def test_every_contents_link_targets_an_anchor_in_the_document(session_factory, template):
+@pytest.mark.parametrize("layout", [lay.name for lay in list_layouts()])
+def test_every_contents_link_targets_an_anchor_in_the_document(session_factory, layout):
     """Half one of the two-way guard: the contents may not link a section the document does not have."""
     eid = _full_engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), template=template)
+        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
     targets = _toc_targets(html)
     assert targets, "the contents have no entries at all"
     for target in targets:
         assert f'id="{target}"' in html, f"the contents link #{target} but nothing carries that id"
 
 
-@pytest.mark.parametrize("template", [t.name for t in list_templates()])
-def test_every_anchored_section_in_the_document_appears_in_the_contents(session_factory, template):
+@pytest.mark.parametrize("layout", [lay.name for lay in list_layouts()])
+def test_every_anchored_section_in_the_document_appears_in_the_contents(session_factory, layout):
     """Half two, and the one that catches DRIFT: every anchored section of the document must be listed.
 
     ``_toc_entries`` is a declarative map from block key to entries, so a section added later can be
@@ -273,7 +273,7 @@ def test_every_anchored_section_in_the_document_appears_in_the_contents(session_
     """
     eid = _full_engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), template=template)
+        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
     anchored = {
         m.group(1)
         for m in re.finditer(r'<section class="[^"]*" id="([^"]+)"', html)
@@ -288,14 +288,14 @@ def test_the_contents_follow_the_template_order(session_factory):
     """The contents are derived from the template's block list, so a template that reorders whole sections
     reorders the contents with it — without the TOC knowing anything about that template."""
     eid = _full_engagement(session_factory)
-    toc = _toc(_render(session_factory, eid, template="compliance"))
+    toc = _toc(_render(session_factory, eid, layout="compliance"))
     assert toc.index("Methodology and Coverage") < toc.index("Web Application")
 
 
 def test_a_template_that_drops_a_block_drops_its_contents_entry(session_factory):
     eid = _full_engagement(session_factory)
-    only_findings = ReportTemplate("just-findings", "Findings only", "auto", ("cover", "toc", "findings"))
-    toc = _toc(_render_with_template(session_factory, eid, only_findings))
+    only_findings = ReportLayout("just-findings", "Findings only", ("cover", "toc", "findings"))
+    toc = _toc(_render_with_layout(session_factory, eid, only_findings))
     assert "Executive Summary" not in toc
     assert "Methodology" not in toc
     assert "Evidence" not in toc
@@ -493,9 +493,9 @@ def test_a_coverless_template_still_prints_its_masthead(browser, session_factory
     """The other side of ``body.has-cover``: suppressing the masthead unconditionally would leave a
     template that drops the cover block with no title on paper at all."""
     eid = _full_engagement(session_factory)
-    bare = ReportTemplate("no-cover", "No cover", "auto", ("summary", "findings"))
+    bare = ReportLayout("no-cover", "No cover", ("summary", "findings"))
     page = _page_for(
-        browser, tmp_path, _render_with_template(session_factory, eid, bare), name="no-cover.html"
+        browser, tmp_path, _render_with_layout(session_factory, eid, bare), name="no-cover.html"
     )
     try:
         page.emulate_media(media="print")

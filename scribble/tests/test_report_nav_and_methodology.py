@@ -26,8 +26,8 @@ from scribble.models import (
     FindingGroup,
 )
 from scribble.reporting import build_report_context
+from scribble.reporting.layouts import ReportLayout, list_layouts
 from scribble.reporting.render_html import _AssetResolver, _render_document, render_report_html
-from scribble.reporting.templates import ReportTemplate, list_templates
 
 
 def _block(text: str) -> dict:
@@ -109,9 +109,9 @@ def _region_after(html: str, anchor: str) -> str:
     return rest[: ends[0]] if ends else rest
 
 
-@pytest.mark.parametrize("template", [t.name for t in list_templates()])
-def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, template):
-    """A toolbar link must lead somewhere a reader can read, for every shipped template.
+@pytest.mark.parametrize("layout", [lay.name for lay in list_layouts()])
+def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, layout):
+    """A toolbar link must lead somewhere a reader can read, for every shipped Layout.
 
     NOT the ext#42 invariant, and it used to claim it was: ext#42's symptom was a live link to an anchor
     with NO CONTENT — ``<div id="sec-methodology"></div>`` followed by an empty string — and "an element
@@ -130,7 +130,7 @@ def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, template):
     placed above the groups — so the region, not the anchor's own markup, is what has to be measured."""
     eid = _engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), template=template)
+        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
     targets = re.findall(r'<a href="#(sec-[a-z]+)"', _topbar(html))
     assert targets, "the toolbar has no section links at all"
     for target in targets:
@@ -143,14 +143,14 @@ def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, template):
         )
 
 
-def test_a_template_that_drops_the_methodology_block_emits_no_methodology_link(session_factory):
-    """``reporting/templates.py`` says a template may drop whole sections. When it does, the toolbar must
+def test_a_layout_that_drops_the_methodology_block_emits_no_methodology_link(session_factory):
+    """``reporting/layouts.py`` says a Layout may drop whole sections. When it does, the toolbar must
     drop the link with it — the nav is derived from what rendered, not from a fixed list."""
     eid = _engagement(session_factory)
     with session_factory() as db:
         ctx = build_report_context(db.get(Engagement, eid))
-    bare = ReportTemplate("no-method", "No methodology", "auto", ("summary", "findings"))
-    html = _render_document(ctx, _AssetResolver("none", None), template=bare)
+    bare = ReportLayout("no-method", "No methodology", ("summary", "findings"))
+    html = _render_document(ctx, _AssetResolver("none", None), layout=bare)
     assert 'id="sec-methodology"' not in html
     assert 'href="#sec-methodology"' not in html
     # the blocks it DOES carry still get their links
