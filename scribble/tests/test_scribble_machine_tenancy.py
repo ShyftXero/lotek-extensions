@@ -61,6 +61,11 @@ _TENANT_FREE_ENDPOINTS = frozenset(
         # client: a template is a reusable vuln description ("Weak TLS configuration"), never client data.
         # Classified with its sibling read routes above for exactly that reason.
         "scribble_machine.scribble_create_template",
+        # The published OpenAPI document (#116). It describes the SHAPE of this API — route templates,
+        # scopes, request and response schemas — and reads no tenant row of any kind: it is generated
+        # from `app.url_map` and a static schema table, never from the database. It is still `read`-scoped
+        # (a token is required), so it discloses nothing to an unauthenticated caller either.
+        "scribble_machine.scribble_machine_openapi",
     }
 )
 
@@ -106,6 +111,7 @@ def _build_url(
     artifact_id: int = 0,
     finding_id: int = 0,
     group_id: int = 0,
+    attack_path_id: int = 0,
 ) -> str:
     """Build a real URL for a machine rule via `url_for`.
 
@@ -133,6 +139,12 @@ def _build_url(
             values[arg] = finding_id
         elif arg == "group_id":
             values[arg] = group_id
+        elif arg == "attack_path_id":
+            # A REAL diagram on that engagement, seeded fresh per request by the caller — same reason as
+            # `artifact_id` above, plus one specific to this trio: the sweeps walk rules sorted by
+            # endpoint name, so `scribble_delete_attack_path` runs BEFORE `..._get_...`/`..._update_...`
+            # and a shared row would be gone by the time they asked for it.
+            values[arg] = attack_path_id
         else:  # pragma: no cover - fails loudly rather than guessing a value
             raise AssertionError(f"{rule.endpoint} has an unrecognized view arg {arg!r}")
     with app.test_request_context():
@@ -173,6 +185,19 @@ def _artifact_on(session_factory, engagement_id: int) -> int:
         db.add(art)
         db.commit()
         return art.id
+
+
+def _diagram_on(session_factory, engagement_id: int):
+    """A real linked attack path on ``engagement_id``, for the per-item routes added in #114.
+
+    Fresh per request for the same reason as `_children`: one of the three routes is a DELETE."""
+    with session_factory() as db:
+        diagram = fm.EngagementDiagram(
+            engagement_id=engagement_id, diagram_ref="d", embed_html="<html></html>", order_index=0
+        )
+        db.add(diagram)
+        db.commit()
+        return diagram.id
 
 
 def _children(session_factory, engagement_id: int) -> tuple[int, int]:
@@ -278,6 +303,7 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
                 artifact_id=aid,
                 finding_id=fid,
                 group_id=gid,
+                attack_path_id=_diagram_on(session_factory, eid),
             )
             resp = client.open(url, method=method, json={"finding_ids": [fid], "group_id": gid})
             if resp.status_code != 404:
@@ -354,6 +380,7 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
                 artifact_id=aid,
                 finding_id=fid,
                 group_id=gid,
+                attack_path_id=_diagram_on(session_factory, eid),
             )
             # An empty body is a business 400 on add-finding; only 404 (the tenancy refusal) is a failure.
             resp = client.open(url, method=method, json={})

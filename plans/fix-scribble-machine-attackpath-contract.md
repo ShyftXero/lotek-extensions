@@ -56,11 +56,62 @@ branch that is the actual defect — so the harness is no kinder than production
 
 ## Done
 
-- [ ] filled in as work lands
+- [x] **The shared idempotency fix** — `api_pat._with_idempotency` now normalises `produce()`'s body
+      through the app's JSON provider (`_json_safe`) before handing it to the host seam. Five lines;
+      repairs `Idempotency-Key` on **every** machine-API collection, not just attack-paths.
+- [x] **Per-item attack-path routes** — `GET` / `PATCH` / `DELETE`
+      `…/engagements/<eid>/attack-paths/<ap_id>`. `GET` adds the `embed_html` snapshot the listing
+      omits; `PATCH` takes `include_in_report` + `caption` (the non-destructive unpublish); `DELETE`
+      removes the row and RE-PACKS the survivors' `order_index` (it is a slot in the rendered list, so
+      a hole would collide with the next link's `len(siblings)`).
+- [x] **Tenancy** — the new routes carry the collection route's gate (`_visible_engagement`) plus
+      `_diagram_of`, the diagram-shaped twin of `_group_of`: a diagram addressed through the WRONG
+      engagement is the same 404 as one that never existed.
+- [x] **`attack_paths` key** on the listing, with `diagrams` kept as a deprecated duplicate alias.
+- [x] **`finding_id` read alias** on every finding payload (`_finding_summary`).
+- [x] **`GET /scribble/machine/openapi.json`** — OpenAPI 3.1, `read` scope. Paths/params/scopes/request
+      bodies introspected from the live `url_map` (so a new route cannot be absent); response schemas
+      declared in `scribble/openapi.py::_RESPONSES`, drift-guarded.
+- [x] **Test harness** — conftest now publishes a faithful `idempotent` extra (see below).
+- [x] Docs: `scribble/docs/SCRIBBLE.md` — the three new routes, the discovery section rewritten around
+      the published document, a "response shapes that have surprised clients" block, and a correction to
+      a stale paragraph that still described machine path ids as bounded **integer** converters (they
+      have been `<uuid:>` since #36).
+
+## Evals — measured
+
+| # | Baseline (`origin/main` behaviour) | After | Grader |
+|---|---|---|---|
+| E1 | 2 rows, 2 different UUIDs from one `Idempotency-Key` | `count == 1`, the SAME `id` echoed | `test_repeated_link_with_same_idempotency_key_creates_ONE_row` |
+| E2 | `DELETE …/attack-paths/<id>` → 404 (no route) | 200, count drops to 0 | `test_delete_attack_path_drops_the_count_to_zero` |
+| E3 | groups duplicated under one key | replay; key reuse for a different request → 422 | `test_the_idempotency_seam_is_honoured_across_the_machine_api` |
+| E4 | `GET …/machine/openapi.json` → 404 | 200, OpenAPI 3.1, a response schema on all 31 routes | `tests/test_machine_openapi.py` |
+| E5 | n/a | drift guard green; fails on a route with no declared response | `test_every_machine_route_is_documented_with_a_response_schema` |
+| E6 | see PR body | see PR body | full `scribble` suite |
+
+### Red→green transcripts (every guard neutralised, watched fail, restored)
+
+| Guard | Red | Green |
+|---|---|---|
+| `_json_safe` in `_with_idempotency` | 2 failed | 2 passed |
+| **harness fidelity**: stub `_storable` branch made kinder AND the bug restored | **1 passed — a FALSE green** | with the faithful stub: 1 failed → fix restored: 1 passed |
+| `_diagram_of` engagement-ownership check | 1 failed, 17 passed | 18 passed |
+| engagement gate on `DELETE …/attack-paths/<id>` (proves the tenancy SWEEP covers the new routes) | 1 failed, 16 passed | 17 passed |
+| `order_index` re-pack on delete | 1 failed | 1 passed |
+| `attack_paths` key | 3 failed, 14 passed | 17 passed |
+| `finding_id` alias | 1 failed | 1 passed |
+| an entry removed from `_RESPONSES` | 1 failed | 1 passed |
+| the `/openapi.json` route renamed | 1 passed, 5 errors | 6 passed |
+
+Worth recording from the second row: a stub that is KINDER than production would have hidden #114
+completely — the acceptance test passes against the unfixed code as soon as the stub stops modelling the
+`json.dumps`-storability branch. And from the fourth: the existing tenancy SWEEP does not catch a missing
+`_diagram_of` ownership check (it never gets that far — the engagement gate refuses first), which is why
+the cross-engagement case has its own dedicated test.
 
 ## Remaining
 
-- [ ] E1–E6
+- [ ] reviews + acks + PR
 
 ## Notes / gotchas
 

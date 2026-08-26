@@ -200,15 +200,20 @@ also could not do. The board routes below share their mutation logic with the co
 | `GET /scribble/machine/engagements/<engagement_id>/artifacts` | read | List the engagement's evidence — the review surface for what a report is about to publish. `?unattached=1` narrows to the engagement-level rows (`finding_id` null) the Evidence appendix ships. Each row carries `include_in_report`, `byte_size`, `caption`, `created_by`, `created_at`. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts/<artifact_id>` | write | Change `include_in_report` and/or `caption` on one artifact; omitted fields are unchanged. The artifact is addressed THROUGH its engagement, so an id belonging to another engagement is 404 whatever the caller's grants are. |
 | `POST /scribble/machine/engagements/<engagement_id>/attack-paths` | write | Link a vector attack-path diagram into the report's Attack Paths block (ext#48). Scribble has no seam to reach vector directly, so the caller does the fetch: `GET` vector's `/vector/machine/diagrams/<id>/export.html` (already self-contained) and POST the result here as `embed_html`, plus optional `diagram_ref` (vector's diagram id, provenance only), `caption`, `include_in_report` (default `true`), `idempotency_key`. The snapshot is embedded verbatim in a sandboxed `<iframe sandbox="allow-scripts">` (no `allow-same-origin`) — never parsed or executed server-side. Capped at 10 MiB. An engagement with no linked diagram renders no Attack Paths section at all (the block is fully backward-compatible). |
-| `GET /scribble/machine/engagements/<engagement_id>/attack-paths` | read | List the diagrams linked to this engagement — the review surface for what the Attack Paths block will publish. Each row carries `caption`, `include_in_report`, `order_index`, `has_embed_html` (the snapshot body itself is omitted from the listing). |
+| `GET /scribble/machine/engagements/<engagement_id>/attack-paths` | read | List the diagrams linked to this engagement — the review surface for what the Attack Paths block will publish. Each row carries `caption`, `include_in_report`, `order_index`, `has_embed_html` (the snapshot body itself is omitted from the listing). The list is under **`attack_paths`**; the original key `diagrams` is emitted as a duplicate alias and is **deprecated** (see the note below). |
+| `GET /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | read | One linked attack path **including** its stored `embed_html` snapshot (which the listing omits — a row can be 10 MiB). |
+| `PATCH /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | write | Edit in place: `include_in_report` and/or `caption`. `include_in_report: false` is the **non-destructive** way to keep a wrongly-linked diagram out of the deliverable — reach for it before `DELETE`. An unknown field is a 400. |
+| `DELETE /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | write | Unlink the diagram and delete its snapshot. Survivors are re-packed to a contiguous `order_index`. Only Scribble's snapshot is destroyed — the source diagram lives in vector, so a delete is recoverable by re-linking. |
 
-Every id in a machine route's PATH is a **bounded** converter (`int(min=1, max=2147483647)`, the `Integer`
-PK column's range — `api_pat._ID`). Werkzeug's bare `<int:>` has no maximum, so a 30-digit path segment used
-to route successfully and then 500 inside `db.get()` (`OverflowError` on SQLite; on Postgres a `DataError`
-that also poisons the open transaction). Out of range is now a routing refusal, which is also the right
-answer for "no such id", and `tests/test_scribble_machine_tenancy.py::test_every_machine_route_id_converter_is_BOUNDED`
-fails if a route is added with an unbounded one. 🔴 The **cookie** blueprints still use bare `<int:>` — same
-defect, session-authenticated, not swept here.
+Every id in a machine route's PATH is a **`<uuid:>`** converter (Scribble's PKs became UUIDv7 in #36 /
+lotek#335), so a value that is not a UUID does not match the rule at all and answers a routing 404 —
+which is also the correct answer for "no such id", and no view runs. Before that, the ids were `Integer`
+and the converters were bounded by hand (`int(min=1, max=2147483647)`): Werkzeug's bare `<int:>` has no
+maximum, so a 30-digit path segment routed successfully and then 500'd inside `db.get()` (`OverflowError`
+on SQLite; on Postgres a `DataError` that also poisons the open transaction).
+`tests/test_scribble_machine_tenancy.py::test_every_machine_route_id_converter_is_BOUNDED` still fails if
+a route is ever added with an unbounded integer converter. 🔴 The **cookie** blueprints still use bare
+`<int:>` — same defect, session-authenticated, not swept here.
 | `POST /scribble/machine/engagements/<engagement_id>/promote-job/<job_id>` | write | **Bulk-promote every finding of a scan job** into the engagement. |
 | `POST /scribble/machine/vuln-map` | write | Curate a scan-finding → template mapping. `template_id` required, plus at least one of `source`, `title_pattern`, `dedupe_prefix`. |
 | `GET /scribble/machine/vuln-map` | read | List the mappings. |
@@ -249,12 +254,29 @@ Ordering semantics worth knowing before you drive these:
   exception worth knowing: a **retried `DELETE` answers 404**, because the route authorizes the finding
   before it reaches the idempotency seam and by then the row is gone. The effect is still idempotent.
 
-**Discovery.** An agent does not need this table. lotek's `GET /api/v1/openapi.json` is introspective and
-every enabled extension's machine routes appear in it automatically — including their scopes and, where
-declared, typed request bodies (`CreateEngagementRequest`, `AddFindingRequest`,
-`UploadArtifactRequest` are hoisted into `components.schemas`). `GET /api/v1/guide` is the prose
-companion. Read those for the auth scheme, token format and error envelope; this page does not restate
-them.
+**Discovery — `GET /scribble/machine/openapi.json` (read scope).** An agent does not need this table.
+This surface publishes its own OpenAPI 3.1 document, generated by introspecting the live `url_map` plus
+the declared response schemas in `scribble/openapi.py`, so it describes exactly the routes THIS instance
+has. lotek's `GET /api/v1/openapi.json` lists these routes too (it keys off the same `require_scope`
+stamp) and is the right document when you are driving core *and* extensions together — but it documents
+no **response** bodies, and the response side is the half a client has to guess. Guessing it wrong is
+silent: a driver that assumed `attack_paths` when the payload said `diagrams` reported an uploaded
+attack path as *missing* (#116). Prefer the scribble document when writing a scribble client.
+`GET /api/v1/guide` is the prose companion for the auth scheme, token format and error envelope; this
+page does not restate them.
+
+**Response shapes that have surprised clients** (all three are described precisely in the OpenAPI
+document — this is the prose version):
+
+- **`GET …/attack-paths` returns `attack_paths`.** The original key was `diagrams`, which matched
+  neither the route nor the resource. Both keys are emitted, referencing the same list; **`diagrams` is
+  DEPRECATED and goes away the release after next.** Read `attack_paths`.
+- **`GET …/findings` nests.** Findings live in `groups[].findings[]` plus `ungrouped[]`; there is **no**
+  flat top-level `findings` key, so `for f in body["findings"]` raises `KeyError`. `count` is board rows
+  (children included); `top_level_count` is what the report renders.
+- **Every finding carries `finding_id` as well as `id`.** Same value. `finding_id` is the field name the
+  artifact-upload route *accepts*, so reading a finding back and passing `f["finding_id"]` straight to an
+  upload used to raise `KeyError`. `id` remains canonical and is not going away.
 
 ### Refusal codes worth knowing
 

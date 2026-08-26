@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from flask import Flask
+from flask import Flask, has_request_context, request
 from sqlalchemy import create_engine, event
 
 import scribble
@@ -236,6 +238,70 @@ class StubHost:
         return client_id in self.viewable_client_ids
 
 
+def _make_stub_idempotent():
+    """A faithful in-memory port of lotek's `app/idempotency.py::make_idempotent`, for `extras['idempotent']`.
+
+    This stub did NOT exist until #114, and its absence is why the extension suite could not catch that
+    bug: with no `idempotent` extra, `api_pat._with_idempotency` fails open and calls `produce()`
+    directly, so every "honours Idempotency-Key" claim in this suite was vacuous while the MOUNTED
+    behaviour silently duplicated rows. A stub proves logic, never the mount — but a stub that is KINDER
+    than production proves nothing at all, so the branch that actually broke is reproduced exactly:
+
+      * a non-2xx, or a body `json.dumps` cannot serialize, RELEASES the claim so a retry re-executes.
+        A raw `uuid.UUID` in the body is exactly such a body (that was the bug).
+      * same key + same request fingerprint -> the STORED response is replayed.
+      * same key + a DIFFERENT request -> 422, nothing created, nothing replayed.
+    """
+    store: dict[tuple[Any, str], dict[str, Any]] = {}
+
+    def _fingerprint() -> str:
+        endpoint = path_args = ""
+        payload = b""
+        if has_request_context():
+            endpoint = request.endpoint or ""
+            path_args = repr(sorted((request.view_args or {}).items(), key=lambda kv: kv[0]))
+            payload = (request.get_data() or b"")[:65536]
+        return hashlib.sha256(
+            f"{endpoint}\x1f{path_args}\x1f{hashlib.sha256(payload).hexdigest()}".encode()
+        ).hexdigest()
+
+    def idempotent(principal, key, produce):
+        # The real host scopes the slot to the principal's UUID and treats an unresolvable one as
+        # "not idempotent". `StubActor.id` is a plain int here, so the slot is scoped to whatever the
+        # principal's `.id` is — same SCOPING property, without demanding the fixtures mint UUID actors.
+        principal_id = getattr(principal, "id", principal)
+        if not key or principal_id is None:
+            return produce()
+        slot = (principal_id, str(key)[:255])
+        fingerprint = _fingerprint()
+        claimed = store.get(slot)
+        if claimed is not None:
+            if claimed["fingerprint"] != fingerprint:
+                return {
+                    "error": "unprocessable_entity",
+                    "detail": "this Idempotency-Key was already used for a different request; "
+                              "use a new key for a new operation",
+                }, 422
+            return claimed["body"] or {}, claimed["status"]
+        store[slot] = {"fingerprint": fingerprint, "body": None, "status": None}
+        try:
+            body, status = produce()
+        except Exception:
+            del store[slot]  # the op failed — release the claim, don't poison the key
+            raise
+        try:
+            storable = len(json.dumps(body)) <= 65536
+        except (TypeError, ValueError):
+            storable = False
+        if 200 <= status < 300 and storable:
+            store[slot].update(body=body, status=status)
+        else:
+            del store[slot]
+        return body, status
+
+    return idempotent
+
+
 def _wire_stub_host(cfg, stub: StubHost) -> None:
     """Fill `cfg.extras` the same way `app/extensions.py::_inject_host` does, with `stub`'s fakes."""
 
@@ -273,6 +339,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
     cfg.extras["can_view_client"] = stub.can_view_client
     cfg.extras["audit"] = stub.audit
+    cfg.extras["idempotent"] = _make_stub_idempotent()
 
 
 @pytest.fixture

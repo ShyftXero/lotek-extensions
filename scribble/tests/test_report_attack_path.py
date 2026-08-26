@@ -227,3 +227,148 @@ def test_link_attack_path_404s_for_invisible_engagement(client, stub_host):
     assert resp.status_code == 404
     listing = client.get(f"{M}/engagements/{eid}/attack-paths")
     assert listing.status_code == 404
+
+
+# ── 4. #114: retry safety + the per-item routes that undo a duplicate ────────────────────────────────
+
+
+def test_repeated_link_with_same_idempotency_key_creates_ONE_row(client, stub_host):
+    """The reporter's acceptance for #114: POST the same attack path twice under one
+    ``Idempotency-Key`` and the collection still reports ``count: 1``."""
+    eid = _engagement_via_pat(client, stub_host)
+    payload = {"diagram_ref": "33333333-3333-3333-3333-333333333333", "embed_html": SNAPSHOT_HTML}
+    headers = {"Idempotency-Key": "ap-retry-1"}
+
+    first = client.post(f"{M}/engagements/{eid}/attack-paths", json=payload, headers=headers)
+    assert first.status_code == 201, first.get_json()
+    second = client.post(f"{M}/engagements/{eid}/attack-paths", json=payload, headers=headers)
+    assert second.status_code == 201, second.get_json()
+    assert second.get_json()["id"] == first.get_json()["id"]
+
+    listing = client.get(f"{M}/engagements/{eid}/attack-paths").get_json()
+    assert listing["count"] == 1
+
+
+def test_delete_attack_path_drops_the_count_to_zero(client, stub_host, session_factory):
+    """The second half of the reporter's acceptance for #114: a linked attack path can be removed over
+    the machine API. Before this route the only remedy for a duplicate was the dashboard UI."""
+    eid = _engagement_via_pat(client, stub_host)
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
+    ).get_json()
+
+    resp = client.delete(f"{M}/engagements/{eid}/attack-paths/{ap['id']}")
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["deleted"] is True
+
+    assert client.get(f"{M}/engagements/{eid}/attack-paths").get_json()["count"] == 0
+    with session_factory() as db:
+        assert db.get(Engagement, eid).diagrams == []
+
+
+def test_delete_repacks_the_remaining_order_indices(client, stub_host):
+    """``order_index`` is a slot in the rendered list, so removing a middle row must not leave a hole —
+    the next link computes its own index from ``len(siblings)`` and would collide with the survivor."""
+    eid = _engagement_via_pat(client, stub_host)
+    ids = [
+        client.post(
+            f"{M}/engagements/{eid}/attack-paths",
+            json={"embed_html": SNAPSHOT_HTML, "caption": f"d{n}"},
+        ).get_json()["id"]
+        for n in range(3)
+    ]
+    assert client.delete(f"{M}/engagements/{eid}/attack-paths/{ids[1]}").status_code == 200
+
+    rows = client.get(f"{M}/engagements/{eid}/attack-paths").get_json()["attack_paths"]
+    assert [r["order_index"] for r in rows] == [0, 1]
+    assert [r["caption"] for r in rows] == ["d0", "d2"]
+
+    fresh = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML, "caption": "d3"}
+    ).get_json()
+    assert fresh["order_index"] == 2
+
+
+def test_get_attack_path_reads_the_snapshot_back(client, stub_host):
+    """The listing omits ``embed_html`` (up to 10 MiB a row); the per-item GET is where it is readable."""
+    eid = _engagement_via_pat(client, stub_host)
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
+    ).get_json()
+    assert "embed_html" not in client.get(
+        f"{M}/engagements/{eid}/attack-paths"
+    ).get_json()["attack_paths"][0]
+
+    detail = client.get(f"{M}/engagements/{eid}/attack-paths/{ap['id']}")
+    assert detail.status_code == 200
+    assert detail.get_json()["embed_html"] == SNAPSHOT_HTML
+
+
+def test_patch_attack_path_withholds_it_from_the_report(client, stub_host):
+    """``include_in_report: false`` is the non-destructive way to unpublish a wrongly-linked diagram —
+    the same convention findings/groups/artifacts already use."""
+    eid = _engagement_via_pat(client, stub_host)
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
+    ).get_json()
+
+    resp = client.patch(
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}",
+        json={"include_in_report": False, "caption": "excluded"},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["include_in_report"] is False
+    assert resp.get_json()["caption"] == "excluded"
+
+    assert client.patch(
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}", json={"nope": 1}
+    ).status_code == 400
+    assert client.patch(
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}", json={}
+    ).status_code == 400
+
+
+def test_per_item_routes_carry_the_collection_route_tenancy(client, stub_host):
+    """Every new route must refuse exactly as the collection route does — a diagram belonging to an
+    engagement the token cannot see, and one addressed through the WRONG engagement, are both the same
+    404 as a diagram that never existed (no existence oracle over the id space)."""
+    eid = _engagement_via_pat(client, stub_host, name="A")
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
+    ).get_json()
+    other = _engagement_via_pat(client, stub_host, name="B")
+
+    # Right diagram, WRONG engagement in the path -> 404 on all three verbs.
+    assert client.get(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
+    assert client.patch(
+        f"{M}/engagements/{other}/attack-paths/{ap['id']}", json={"include_in_report": False}
+    ).status_code == 404
+    assert client.delete(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
+
+    # Engagement outside the actor's grants -> the engagement's own 404, before the diagram is touched.
+    stub_host.actor = StubActor(id=2, username="operator", role="operator")
+    stub_host.viewable_client_ids = set()
+    for resp in (
+        client.get(f"{M}/engagements/{eid}/attack-paths/{ap['id']}"),
+        client.patch(f"{M}/engagements/{eid}/attack-paths/{ap['id']}", json={"caption": "x"}),
+        client.delete(f"{M}/engagements/{eid}/attack-paths/{ap['id']}"),
+    ):
+        assert resp.status_code == 404
+        assert resp.get_json()["error"] == "not_found"
+
+
+def test_the_idempotency_seam_is_honoured_across_the_machine_api(client, stub_host):
+    """#114's root cause was NOT attack-path-specific: `_with_idempotency` handed the host seam a body
+    carrying raw `uuid.UUID` values, `json.dumps` refused it, and the seam released the claim so every
+    retry re-executed. Pin a SECOND collection so a regression cannot be papered over by fixing one route.
+    """
+    eid = _engagement_via_pat(client, stub_host)
+    headers = {"Idempotency-Key": "grp-1"}
+    first = client.post(f"{M}/engagements/{eid}/groups", json={"name": "Findings"}, headers=headers)
+    second = client.post(f"{M}/engagements/{eid}/groups", json={"name": "Findings"}, headers=headers)
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.get_json()["id"] == second.get_json()["id"]
+
+    # Same key, DIFFERENT request: neither replayed nor re-executed.
+    reused = client.post(f"{M}/engagements/{eid}/groups", json={"name": "Other"}, headers=headers)
+    assert reused.status_code == 422
