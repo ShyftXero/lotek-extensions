@@ -1,0 +1,26 @@
+# How this extension MOUNTS into a host (lotek). Named [mount], NOT [extension], on purpose — a host
+# may emit its own [extension] table before appending this file and TOML forbids a duplicate table, so
+# an [extension] header here would make tomllib raise and silently un-discover the whole extension.
+# Bugreport has NO seed step, so the `seed` key is omitted.
+[mount]
+name = "bugreport"
+entrypoint = "bugreport"          # importable module exposing register(...)
+url_prefix = "/bugreport"
+
+[[nav]]
+label = "Bug reports"
+path = "/"
+icon = "🐛"
+
+[host]
+# Path (relative to url_prefix) of this extension's PAT/Bearer MACHINE api — how an AGENT files a
+# report. The host treats it as a machine surface: skipped by the cookie/session dashboard gate and
+# CSRF-exempt, exactly like lotek's own /api/v1. MUST be a proper sub-path of url_prefix.
+machine_prefix = "/machine"
+docs = "docs/BUGREPORT.md"
+docs_title = "Bug reports (capture)"
+
+# Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
+[db]
+base = "bugreport.models:Base"   # the module whose IMPORT registers the tables
+table_prefix = "bugreport_"
