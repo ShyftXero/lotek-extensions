@@ -198,3 +198,16 @@ def test_machine_admin_cannot_hard_delete_someone_elses_report(pat_client, hooks
     hooks["pat_actor"] = StubActor(username="root", role="admin")
     assert pat_client.delete(f"/bugreport/machine/reports/{alices_pat_report}").status_code == 403
     assert load(pat_client, alices_pat_report) is not None
+
+
+def test_an_admin_cannot_rewrite_someone_elses_report_text(pat_client, hooks, alices_pat_report):
+    """An admin reaching a row is not an admin OWNING it. `load_visible` lets them through (they may
+    read every report) and `update_own` still refuses — the README's "an admin responds to your report,
+    they do not rewrite it" is enforced, not just documented. 403 rather than 404 here is correct: the
+    admin already knows the row exists."""
+    hooks["pat_actor"] = StubActor(username="root", role="admin")
+    resp = pat_client.patch(f"/bugreport/machine/reports/{alices_pat_report}",
+                            json={"title": "rewritten by an admin", "body": "not what alice wrote"})
+    assert resp.status_code == 403
+    row = loaded(pat_client, alices_pat_report)
+    assert row.title == "alice's agent bug" and row.body == "secret repro"
