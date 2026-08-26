@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from conftest import StubActor, load, loaded
 
 from bugreport.models import ReportStatus
@@ -130,3 +131,25 @@ def test_the_admin_tombstone_round_trips_to_the_reporter(pat_client, hooks):
     hooks["pat_actor"] = reporter
     got = pat_client.get(f"{URL}/{rid}").get_json()["report"]
     assert got["status"] == "deleted" and got["admin_note"] == "not a bug"
+
+
+@pytest.mark.parametrize("payload", [
+    {"title": 123, "body": "x"},
+    {"title": {"a": 1}, "body": "x"},
+    {"title": ["x"], "body": "x"},
+    {"title": "ok", "body": 7},
+])
+def test_a_non_string_field_is_a_400_not_a_500(pat_client, payload):
+    """A JSON body is arbitrary: `{"title": 123}` is well-formed JSON. `.strip()` on it raises
+    AttributeError and the route 500s (leaking a traceback under a debug config); `str()`-coercing it
+    would silently store "{'a': 1}". Refuse it."""
+    assert pat_client.post(URL, json=payload).status_code == 400
+
+
+@pytest.mark.parametrize("bad", [{"status": {"a": 1}}, {"status": ["deleted"]}, {"note": 5}])
+def test_a_non_string_admin_field_is_a_400_not_a_500(pat_client, hooks, bad):
+    """An UNHASHABLE status raises TypeError out of the enum lookup, not ValueError — a 500, not a 400."""
+    hooks["pat_actor"] = StubActor(username="root", role="admin")
+    rid = pat_client.post(URL, json={"title": "typed", "body": ""}).get_json()["report"]["id"]
+    assert pat_client.patch(f"{URL}/{rid}", json=bad).status_code == 400
+    assert loaded(pat_client, rid).status is ReportStatus.open
