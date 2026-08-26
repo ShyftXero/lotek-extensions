@@ -37,6 +37,11 @@ like an id that does not exist, on purpose.
 Admins see every report and respond to it. An admin cannot rewrite the text of your report; they can
 only respond to it.
 
+## Limits
+
+Text only: a 200-character title and a 20,000-character body, and nothing else — no files, no images,
+no links that get fetched. Lists show the newest 500 reports.
+
 ## Read-only accounts
 
 A viewer-role account can read its own reports but cannot file or change one — the same rule the rest of

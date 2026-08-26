@@ -37,6 +37,9 @@ and telling them is the whole point of the issue. The reporter sees *"An admin m
   | `PATCH /reports/<id>` | `write` | `title`/`body` = reporter edit · `status`/`note` = admin response. Not both in one call |
   | `DELETE /reports/<id>` | `write` | owner only, even for an admin (admins tombstone) |
 
+Every list surface returns the **newest 500** (`service.LIST_LIMIT`). Filing is not rate-limited and a
+body runs to 20 KB, so an uncapped admin list is a lever any authenticated user can pull.
+
 ## Data
 
 One table, `bugreport_reports`. UUIDv7 PK; `reporter_id` is a **`sqlalchemy.Uuid` soft reference** to a
