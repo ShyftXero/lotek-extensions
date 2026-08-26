@@ -70,13 +70,65 @@ An LLM judge buys nothing here: every outcome is a status code or a row state.
 - [x] Claim #112 (`status:todo → status:doing`, `### CLAIM` comment, bot token)
 - [x] Worktree + split-identity git config
 - [x] This plan
+- [x] `bugreport/` package — models, db, deps, service, blueprint, api_pat, host, templates
+- [x] packaging: `pyproject.toml`, `lotek-extension.toml`, `README.md`, `docs/BUGREPORT.md`
+- [x] **51 tests green**, ruff clean, pyrefly 0 errors
+- [x] E1/E2: 17 guards neutralised one at a time, each turning its own test red (below)
+- [x] E5: validated against the **real** host parser — see "Mount proof"
+- [x] `/adversarial-reviewer` → 4 warnings, all fixed with a red-then-green test each
 
 ## Remaining
 
-- [ ] `bugreport/` package (models, db, deps, service, blueprint, api_pat, host, templates)
-- [ ] packaging: `pyproject.toml`, `lotek-extension.toml`, `README.md`, `docs/BUGREPORT.md`
-- [ ] tests + red-then-green transcripts for E1/E2
-- [ ] `/security-review` + `/adversarial-reviewer`, `--ack-*` markers, bot-authored PR
+- [ ] `/security-review`, `--ack-*` markers, bot-authored PR, issue → `status:review`
+
+## Eval results
+
+**E2 — guard neutralisation (the deliverable, since a new extension has no baseline to diff).** Each
+guard was reverted one at a time and the suite re-run; every one turned its own test red, and the two
+tenancy predicates turned BOTH surfaces red at once, which is the property that proves they are one
+decision and not two copies:
+
+| mutation | result |
+|---|---|
+| `visible_reports` — drop the owner filter | **RED** 3 (browser list, machine list, unit) |
+| `load_visible` — return the row regardless of owner | **RED** 10 (browser update/delete/respond, machine get/patch×2/delete, forged-uuid, anonymous, unit) |
+| `_owns` — anyone owns anything | **RED** 11 |
+| `admin_act` — drop the admin-only check | **RED** 2 (browser + machine) |
+| `create` — allow an unattributable report | **RED** 2 |
+| `update_own` — allow editing an admin-deleted report | **RED** 1 |
+| `_clean` — drop title/length validation | **RED** 2 |
+| `_require_write` — ignore the host's viewer gate | **RED** 1 |
+| `current_actor_id` — accept a non-UUID host id | **RED** 1 |
+| `current_actor_is_admin` — anonymous reads as admin | **RED** 1 |
+| `api_pat._principal` — any PAT role reads as admin | **RED** 6 |
+| `update_report` — let one call carry both a reporter edit and an admin response | **RED** 1 |
+| `delete_report` — bypass `load_visible` | **RED** 1 |
+| `admin_act` — blank the note on a status-only response (W1) | **RED** 1 |
+| `visible_reports` — drop the `LIST_LIMIT` cap (W2) | **RED** 1 |
+| `_owns` — drop the standalone arm (W3) | **RED** 1 |
+| manifest: empty `[audit] verbs` / traversal in `machine_prefix` | **RED** 1 / 2 |
+| `admin_act` — drop the status allow-list | **STILL GREEN** ⇒ the check was DEAD (`ReportStatus(...)` already raises); deleted rather than covered |
+
+**E5** — `uvx ruff check bugreport` clean · `pyrefly check bugreport tests` 0 errors · 51 passed.
+**E6** — `git diff --stat` names only `bugreport/` and `plans/`; no sibling extension touched.
+
+## Mount proof
+
+Rather than assert against a mirror of the host's rules, the built wheel was installed into a scratch
+venv and fed to lotek's **real** `app.extensions.discover_extensions()`:
+
+```
+discovered  : bugreport bugreport /bugreport
+nav         : (NavEntry(label='Bug reports', path='/', icon='🐛'),)
+machine url : /bugreport/machine/
+docs        : docs/BUGREPORT.md | Bug reports (capture)
+audit verbs : ('admin_update',) -> ('ext:bugreport:admin_update',)
+db decl     : ExtensionSchema(base_ref='bugreport.models:Base', table_prefix='bugreport_', problems=())
+```
+
+That also proves the wheel really carries `lotek-extension.toml` inside the package dir (the
+force-include trap: an `editable = true` path install skips the build and the extension silently
+never mounts).
 
 ## Notes / gotchas
 
@@ -89,3 +141,10 @@ An LLM judge buys nothing here: every outcome is a status code or a row state.
   path source + `uv sync --reinstall-package bugreport`.
 - `current_actor_is_admin()` treats *no hook at all* as standalone-admin and *a hook returning None*
   as anonymous → not admin. That asymmetry is the fail-closed line; do not "simplify" it away.
+  `is_standalone()` logs a one-shot WARNING when it takes the standalone arm, because absence of the
+  hook is the one input that WIDENS access and it would otherwise fail open mutely.
+- **Owed at re-pin time, not here:** an extension's real contract is how it behaves MOUNTED, and a stub
+  host proves logic, never the mount. When lotek pins this extension, land
+  `lotek/tests/test_bugreport_extension.py` covering the cross-user 404 with a REAL `g.principal` — the
+  seam gap that bit scribble (a PAT authenticating and then being refused every write) was invisible in
+  the extension's own suite and only appeared mounted.
