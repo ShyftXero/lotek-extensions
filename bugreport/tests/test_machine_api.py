@@ -153,3 +153,34 @@ def test_a_non_string_admin_field_is_a_400_not_a_500(pat_client, hooks, bad):
     rid = pat_client.post(URL, json={"title": "typed", "body": ""}).get_json()["report"]["id"]
     assert pat_client.patch(f"{URL}/{rid}", json=bad).status_code == 400
     assert loaded(pat_client, rid).status is ReportStatus.open
+
+
+def test_a_partial_mount_can_only_leave_the_fail_CLOSED_surface_live(tmp_path, monkeypatch):
+    """The host injects `cfg.extras` only AFTER `register()` returns, so a blueprint registered before a
+    raise stays live with `extras` empty forever. The two surfaces degrade in OPPOSITE directions on an
+    empty `extras` — the machine API 503s, the browser page reads it as standalone and treats every
+    dashboard user as an admin. So the fail-open one must be registered LAST."""
+    from flask import Flask
+    from sqlalchemy import create_engine
+
+    import bugreport
+
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "test"
+    real = app.register_blueprint
+    seen: list[str] = []
+
+    def exploding(blueprint, **kwargs):
+        seen.append(blueprint.name)
+        if len(seen) == 2:  # whatever is registered SECOND fails to mount
+            raise RuntimeError("simulated partial mount")
+        return real(blueprint, **kwargs)
+
+    monkeypatch.setattr(app, "register_blueprint", exploding)
+    with pytest.raises(RuntimeError):
+        bugreport.register(app, create_engine(f"sqlite:///{tmp_path / 'p.db'}", future=True),
+                           instance_path=str(tmp_path))
+
+    assert seen[0] == "bugreport_machine", f"the fail-OPEN browser blueprint went live first: {seen}"
+    # The survivor refuses rather than serving an unauthenticated, unscoped surface.
+    assert app.test_client().get(URL).status_code == 503

@@ -211,3 +211,23 @@ def test_an_admin_cannot_rewrite_someone_elses_report_text(pat_client, hooks, al
     assert resp.status_code == 403
     row = loaded(pat_client, alices_pat_report)
     assert row.title == "alice's agent bug" and row.body == "secret repro"
+
+
+def test_an_is_admin_METHOD_does_not_make_everyone_an_admin(client, hooks, alices_report):
+    """`bool(<bound method>)` is True. If a host's User ever grows an `is_admin()` METHOD rather than a
+    property, a `bool(getattr(actor, "is_admin", False))` read would silently promote EVERY logged-in
+    user — and in this extension that predicate is the only thing widening a read past its owner."""
+    class MethodUser:
+        def __init__(self):
+            self.id = uuid.uuid7()
+            self.username = "bob"
+            self.role = None
+
+        def is_admin(self):  # a METHOD, not a property — truthy as an attribute
+            return False
+
+    hooks["actor"] = MethodUser()
+    assert "alice private bug" not in client.get("/bugreport/").get_data(as_text=True)
+    assert client.post(f"/bugreport/{alices_report}/respond",
+                       data={"status": "deleted", "note": "pwned"}).status_code == 404
+    assert loaded(client, alices_report).status is ReportStatus.open

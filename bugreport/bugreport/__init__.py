@@ -55,9 +55,17 @@ def register(
     )
     app.extensions["bugreport"] = cfg
 
-    app.register_blueprint(bp, url_prefix=url_prefix)
+    # ORDER MATTERS. The host injects its capabilities into `cfg.extras` only AFTER this function
+    # returns, so between here and there `extras` is empty — and the two blueprints degrade in OPPOSITE
+    # directions on an empty `extras`: the machine API 503s (closed), while the browser page reads "no
+    # current_actor hook" as standalone and treats every dashboard user as an admin (open). If the
+    # second register_blueprint raises, the host logs and skips the extension, but whatever was already
+    # registered stays live with `extras` empty forever. So register the fail-CLOSED surface first and
+    # the fail-open one last: a partial mount can then only leave a 503, never an open one.
+    #
     # PAT/Bearer machine API — SEPARATE blueprint, prefix DISJOINT from the browser page. The host exempts
     # this prefix from CSRF + its session gate (manifest [host] machine_prefix), so the blueprint's own
     # before_request/scope gates are the ONLY thing standing in front of it.
     app.register_blueprint(machine_bp, url_prefix=f"{url_prefix}/machine")
+    app.register_blueprint(bp, url_prefix=url_prefix)
     return cfg

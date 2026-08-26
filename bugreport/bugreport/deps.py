@@ -105,7 +105,10 @@ def current_actor_is_admin() -> bool:
             val = getattr(role, "value", role)
             if isinstance(val, str) and val.lower() == "admin":
                 return True
-        return bool(getattr(actor, "is_admin", False))
+        # `is True`, NOT `bool(...)`. If a host's User ever grows an `is_admin()` METHOD, `bool(<bound
+        # method>)` is True and EVERY logged-in user becomes a bugreport admin — and this predicate is
+        # the only thing widening a read past its owner. Same discipline as the `role.is_admin` arm above.
+        return getattr(actor, "is_admin", False) is True
     except Exception:  # noqa: BLE001
         return False
 
