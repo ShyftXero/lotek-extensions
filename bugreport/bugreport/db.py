@@ -6,8 +6,19 @@ engine/session factory and simply creates Bugreport's one table in the shared da
 
 ``create_all`` additionally runs a minimal, additive, idempotent migration (ADD COLUMN + CREATE INDEX IF
 NOT EXISTS) so a model that gains a nullable/defaulted column keeps working on a database that already had
-the table. Copied verbatim from ``registrar/db.py`` — the shape every extension in this repo uses. There
-is no Alembic tree here: no extension in this repo owns one.
+the table. Copied verbatim from ``registrar/db.py``.
+
+**Why no Alembic tree — and when this extension will owe one.** The repo has BOTH conventions:
+``scribble`` owns a real Alembic tree in this repo (``scribble/alembic.ini``,
+``scribble/scribble/migrations/`` with four revisions, and ``scribble/tests/test_alembic_adoption.py``),
+while ``cream``, ``registrar`` and ``vector`` own zero revisions and use ``create_all``. Bugreport
+follows the majority: one table whose first schema version IS its creation has nothing to migrate, and
+an empty revision tree is scaffolding for a change that has not happened.
+
+The honest consequence: **the day ``bugreport_reports`` needs a NON-ADDITIVE schema change — renaming,
+dropping, or retyping a column — it owes an Alembic tree**, because the pass below deliberately cannot
+do any of those (it only ADDs nullable/defaulted columns; see the note in ``create_all``). Copy
+scribble's setup at that point; do not extend this function to rewrite columns.
 """
 
 from __future__ import annotations

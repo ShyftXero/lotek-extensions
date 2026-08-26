@@ -45,9 +45,16 @@ their **own** report is a real `DELETE` — there is nobody to notify.
 **Admin actions are audited** through the host seam in the same transaction (INV-AUDIT-03),
 `ext:bugreport:admin_update`. Self-CRUD on your own row is not audited.
 
-**Schema:** `create_all` + registrar's additive ADD-COLUMN pass, like `cream`/`registrar`/`vector`.
-No Alembic — no extension in this repo owns an Alembic tree (scribble's revisions are core-side), and
-this table's first migration is its creation.
+**Schema:** `create_all` + registrar's additive ADD-COLUMN pass, as in `cream`/`registrar`/`vector`.
+
+No Alembic tree — and the reason matters, because an earlier draft of this plan got it wrong. The repo
+has **both** conventions: `scribble` owns a real Alembic tree *in this repo* (`scribble/alembic.ini`,
+`scribble/scribble/migrations/` + 4 revisions, `scribble/tests/test_alembic_adoption.py`); `cream`,
+`registrar` and `vector` own zero revisions. This extension follows the majority — one table whose first
+schema version IS its creation has nothing to migrate. **Consequence to accept: the day
+`bugreport_reports` needs a non-additive change (rename / drop / retype a column) it owes an Alembic
+tree**, because the inherited additive pass only ever ADDs nullable-or-defaulted columns. Copy
+scribble's setup then; do not teach `create_all` to rewrite columns.
 
 ## Evals
 

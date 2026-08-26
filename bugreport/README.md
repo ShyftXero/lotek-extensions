@@ -45,7 +45,13 @@ body runs to 20 KB, so an uncapped admin list is a lever any authenticated user 
 One table, `bugreport_reports`. UUIDv7 PK; `reporter_id` is a **`sqlalchemy.Uuid` soft reference** to a
 core `User` (never `Integer`/`String` — INV-INTEGRITY-03), with no FK, because the core table is unknown
 until mount time. `reporter_name` is denormalised so a report stays attributable after the account is
-gone. Schema is `create_all` + an additive ADD-COLUMN pass, like every sibling extension here.
+gone. Schema is `create_all` + an additive ADD-COLUMN pass, as in `cream`/`registrar`/`vector`.
+
+**No Alembic tree, deliberately** — but note the repo has both conventions: `scribble` owns a real one
+here (`scribble/alembic.ini`, four revisions), the other three do not. A single table whose first schema
+version is its creation has nothing to migrate. **When it needs a non-additive change — a rename, a drop,
+a retype — it owes an Alembic tree**, because the additive pass cannot do those; copy scribble's setup
+then rather than extending `create_all`.
 
 ## Deliberately not built
 
