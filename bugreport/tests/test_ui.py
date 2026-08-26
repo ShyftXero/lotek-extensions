@@ -6,9 +6,12 @@ user's reports should be given to the users"), so it is asserted on the rendered
 
 from __future__ import annotations
 
+import uuid
+
 from conftest import FakeUser, file_report, load, loaded
 
-from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
+from bugreport.models import MAX_BODY, MAX_TITLE, Report, ReportStatus
+from bugreport.service import LIST_LIMIT, admin_act, visible_reports
 
 
 def _page(client) -> str:
@@ -154,3 +157,55 @@ def test_standalone_is_a_single_local_user_who_is_their_own_admin(standalone_app
     assert "local bug" in page
     # One local user owns everything, so there is no separate admin table to split it into.
     assert "All reports (admin)" not in page
+
+
+# ── regressions found by the pre-PR adversarial review ───────────────────────────
+
+
+def test_standalone_can_edit_and_delete_its_own_report(standalone_app):
+    """W3: standalone writes `reporter_id = NULL` and has no actor id, so the ownership check refused the
+    single local user their own rows — file-only, no U and no D."""
+    client = standalone_app.test_client()
+    rid = file_report(client, title="local", body="v1")
+    assert client.post(f"/bugreport/{rid}/update",
+                       data={"title": "local", "body": "v2"}).status_code == 302
+    assert loaded(client, rid).body == "v2"
+    assert client.post(f"/bugreport/{rid}/delete").status_code == 302
+    assert load(client, rid) is None
+
+
+def test_a_status_only_response_keeps_the_existing_note(client, hooks):
+    """W1: the note IS the feedback #112 asks for. A second admin action that sends no note must not
+    silently destroy the first one's."""
+    rid = file_report(client, title="two-step triage")
+    hooks["actor"] = FakeUser(username="root", role="admin")
+    client.post(f"/bugreport/{rid}/respond", data={"status": "acknowledged", "note": "reproduced"})
+
+    # A machine PATCH carrying only a status omits `note` entirely (the browser form always sends it).
+    with client.application.extensions["bugreport"].session_factory() as db:
+        admin_act(db, db.get(Report, uuid.UUID(rid)), is_admin=True, status="resolved", note=None)
+    after = loaded(client, rid)
+    assert after.status is ReportStatus.resolved
+    assert after.admin_note == "reproduced"
+
+
+def test_an_explicitly_empty_note_still_clears_it(client, hooks):
+    rid = file_report(client, title="clearable")
+    hooks["actor"] = FakeUser(username="root", role="admin")
+    client.post(f"/bugreport/{rid}/respond", data={"status": "acknowledged", "note": "oops"})
+    client.post(f"/bugreport/{rid}/respond", data={"status": "acknowledged", "note": ""})
+    assert loaded(client, rid).admin_note is None
+
+
+def test_every_list_surface_is_bounded(client, session_factory, hooks):
+    """W2: filing is unrated-limited and each body is up to MAX_BODY, so an unbounded admin list is a
+    memory-exhaustion lever any authenticated user can pull."""
+    reporter_id = hooks["actor"].id
+    with session_factory() as db:
+        db.add_all(Report(reporter_id=reporter_id, title=f"r{i}", body="") for i in range(LIST_LIMIT + 25))
+        db.commit()
+    with session_factory() as db:
+        assert len(visible_reports(db, actor_id=reporter_id, is_admin=False)) == LIST_LIMIT
+        assert len(visible_reports(db, actor_id=reporter_id, is_admin=True)) == LIST_LIMIT
+    # …and the rendered page shows no more than the cap either.
+    assert _page(client).count('class="br-card') == LIST_LIMIT

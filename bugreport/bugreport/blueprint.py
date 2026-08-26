@@ -109,6 +109,7 @@ def update(report_id: uuid.UUID):
                 actor_id=current_actor_id(),
                 title=request.form.get("title"),
                 body=request.form.get("body"),
+                standalone=is_standalone(),
             )
         except Denied as exc:
             abort(403, str(exc))
@@ -124,7 +125,7 @@ def delete(report_id: uuid.UUID):
     with get_config().session_factory() as db:
         report = _load_or_404(db, report_id)
         try:
-            delete_own(db, report, actor_id=current_actor_id())
+            delete_own(db, report, actor_id=current_actor_id(), standalone=is_standalone())
         except Denied as exc:
             abort(403, str(exc))
     return redirect(url_for("bugreport.index"))

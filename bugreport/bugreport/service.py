@@ -22,6 +22,11 @@ from sqlalchemy.orm import Session
 
 from bugreport.models import MAX_BODY, MAX_TITLE, Report, ReportStatus
 
+#: Newest-N ceiling on every list surface. A report body is up to MAX_BODY, filing is unrated-limited, and
+#: an admin's list is unscoped — so without a cap one user can make the admin page (and `GET /reports`)
+#: materialise an unbounded response. ponytail: fixed cap, add cursor pagination if anyone hits it.
+LIST_LIMIT = 500
+
 #: Bound the admin note copied into the core audit row — the note itself is free text, the audit is not
 #: the place for 20k of it.
 _AUDIT_NOTE_CHARS = 200
@@ -31,17 +36,20 @@ class Denied(PermissionError):
     """The caller is authenticated but not permitted (admin-only verb, or not the owner on a write)."""
 
 
-def _owns(report: Report, actor_id: uuid.UUID | None) -> bool:
-    # `actor_id is None` short-circuits BEFORE the comparison: an anonymous caller must never match a row
-    # whose reporter_id is also NULL (standalone-authored rows).
+def _owns(report: Report, actor_id: uuid.UUID | None, standalone: bool = False) -> bool:
+    # `actor_id is None` short-circuits BEFORE the comparison: an anonymous MOUNTED caller must never match
+    # a row whose reporter_id is also NULL. Standalone is the single-local-user case and is the ONLY thing
+    # that makes a NULL-owner row ownable — which is why it is an explicit argument, not a None check.
+    if standalone:
+        return True
     return actor_id is not None and report.reporter_id == actor_id
 
 
 def visible_reports(db: Session, *, actor_id: uuid.UUID | None, is_admin: bool) -> list[Report]:
-    """Every report the caller may READ, newest first. Admin -> all; otherwise the caller's own only.
-    An anonymous caller (``actor_id is None``, not admin) sees nothing — the filter is applied in SQL, so
-    no out-of-scope row is ever loaded into the process."""
-    stmt = select(Report).order_by(Report.created_at.desc())
+    """The newest :data:`LIST_LIMIT` reports the caller may READ. Admin -> all; otherwise the caller's own
+    only. An anonymous caller (``actor_id is None``, not admin) sees nothing — the filter is applied in
+    SQL, so no out-of-scope row is ever loaded into the process."""
+    stmt = select(Report).order_by(Report.created_at.desc()).limit(LIST_LIMIT)
     if not is_admin:
         if actor_id is None:
             return []
@@ -103,12 +111,13 @@ def create(
 
 
 def update_own(
-    db: Session, report: Report, *, actor_id: uuid.UUID | None, title: str | None, body: str | None
+    db: Session, report: Report, *, actor_id: uuid.UUID | None, title: str | None, body: str | None,
+    standalone: bool = False,
 ) -> Report:
     """The reporter edits their OWN report's text. Admin is deliberately NOT allowed here: an admin
     silently rewriting somebody else's words is not "admin CRUD", it is a forgery surface. An admin
     responds through :func:`admin_act`."""
-    if not _owns(report, actor_id):
+    if not _owns(report, actor_id, standalone):
         raise Denied("only the reporter may edit a report")
     if report.status is ReportStatus.deleted:
         raise Denied("this report was deleted by an admin and can no longer be edited")
@@ -117,10 +126,12 @@ def update_own(
     return report
 
 
-def delete_own(db: Session, report: Report, *, actor_id: uuid.UUID | None) -> None:
+def delete_own(
+    db: Session, report: Report, *, actor_id: uuid.UUID | None, standalone: bool = False
+) -> None:
     """The reporter deletes their OWN report — a real row delete. There is nobody left to give feedback
     to, which is exactly why an ADMIN delete is a tombstone instead (see :func:`admin_act`)."""
-    if not _owns(report, actor_id):
+    if not _owns(report, actor_id, standalone):
         raise Denied("only the reporter may delete their own report")
     db.delete(report)
     db.commit()
@@ -142,9 +153,10 @@ def admin_act(
     failure is not swallowed, it aborts the action."""
     if not is_admin:
         raise Denied("admin only")
-    note = (note or "").strip()
-    if len(note) > MAX_BODY:
-        raise ValueError(f"note is longer than {MAX_BODY} characters")
+    if note is not None:
+        note = note.strip()
+        if len(note) > MAX_BODY:
+            raise ValueError(f"note is longer than {MAX_BODY} characters")
 
     before = {"status": report.status.value, "admin_note": (report.admin_note or "")[:_AUDIT_NOTE_CHARS]}
     if status is not None:
@@ -152,7 +164,11 @@ def admin_act(
         # already maps to 400. A second allow-list next to it would be a copy to keep in sync, and the
         # red-then-green pass proved it dead — deleting it changed no test.
         report.status = ReportStatus(status)
-    report.admin_note = note or None
+    # `note is None` means "the caller did not send one" -> KEEP the existing note. Only an explicitly
+    # empty string clears it. Blanking it on a status-only PATCH would silently destroy the reporter's
+    # feedback, which is the one thing this extension exists to deliver.
+    if note is not None:
+        report.admin_note = note or None
     after = {"status": report.status.value, "admin_note": (report.admin_note or "")[:_AUDIT_NOTE_CHARS]}
 
     if host_audit is not None:

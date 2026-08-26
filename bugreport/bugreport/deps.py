@@ -37,9 +37,26 @@ def _extras() -> dict:
         return {}
 
 
+_warned_standalone = False
+
+
 def is_standalone() -> bool:
-    """True when no host injected an identity hook — a single local user who is their own admin."""
-    return _extras().get("current_actor") is None
+    """True when no host injected an identity hook — a single local user who is their own admin.
+
+    This is the ONE input whose ABSENCE widens access (no hook -> admin -> every report visible), so a
+    host that forgot to inject ``current_actor`` would fail OPEN and do it mutely. It cannot happen under
+    lotek (``extensions._inject_host`` always sets it), which is exactly why it would go unnoticed
+    somewhere else — so say so, once, at WARNING."""
+    global _warned_standalone
+    standalone = _extras().get("current_actor") is None
+    if standalone and not _warned_standalone:
+        _warned_standalone = True
+        logging.getLogger("bugreport").warning(
+            "no host `current_actor` hook: running STANDALONE — the local user is treated as admin and "
+            "sees every report. If this is a mounted deployment, the host failed to inject its identity "
+            "hook and reports are NOT tenancy-scoped."
+        )
+    return standalone
 
 
 def _actor():
