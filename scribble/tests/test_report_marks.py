@@ -49,10 +49,47 @@ def test_raster_mark_accepts_a_vetted_png_data_uri():
     assert clean_raster_mark(_TINY_PNG) == _TINY_PNG
 
 
+# Real magic bytes per format. The payloads used to be a uniform `QQ==` (base64 of b"A"), which is not
+# an image in ANY format — the old gate only ever compared the caller's own `image/<fmt>` label against
+# itself, so a stand-in that decoded to one letter passed as all five.
+_MAGIC_B64 = {
+    "png": "iVBORw0KGgo=",       # \x89PNG\r\n\x1a\n
+    "jpeg": "/9j/4A==",           # \xff\xd8\xff\xe0
+    "jpg": "/9j/4A==",
+    "gif": "R0lGODlh",            # GIF89a
+    "webp": "UklGRgAAAABXRUJQ",   # RIFF<len>WEBP
+}
+
+
 def test_raster_mark_accepts_every_cream_format():
     for fmt in ("png", "jpeg", "jpg", "gif", "webp"):
-        uri = f"data:image/{fmt};base64,QQ=="
+        uri = f"data:image/{fmt};base64,{_MAGIC_B64[fmt]}"
         assert clean_raster_mark(uri) == uri
+
+
+def test_raster_mark_refuses_a_payload_relabelled_as_a_raster_format():
+    """The declared `image/<fmt>` is the submitter's claim, so it must be checked against the bytes.
+
+    An SVG document base64'd under an `image/png` label is the whole way around the "an `override`
+    Mark is raster-only" rule: `clean_raster_mark` returns it as raster, so `resolve_mark` never even
+    reaches the Provenance branch that would refuse SVG. Neutralise the magic-byte check in
+    `_decoded_matches_declared_format` (return True) and this test goes red.
+    """
+    import base64
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" onload="fetch(1)"/>'
+    relabelled = "data:image/png;base64," + base64.b64encode(svg).decode()
+    assert clean_raster_mark(relabelled) is None
+
+    for fmt in ("png", "jpeg", "gif", "webp"):
+        # every other format's magic under a png label, and vice versa
+        wrong = f"data:image/{fmt};base64,{_MAGIC_B64['png' if fmt != 'png' else 'gif']}"
+        assert clean_raster_mark(wrong) is None
+
+
+def test_raster_mark_refuses_a_body_that_is_not_really_base64():
+    """The regex charset admits `A=B=C`; `b64decode(validate=True)` is what actually refuses it."""
+    assert clean_raster_mark("data:image/png;base64,A=B=C") is None
 
 
 def test_raster_mark_rejects_remote_http_url():
@@ -86,7 +123,7 @@ def test_raster_mark_rejects_garbage():
 
 
 def test_raster_mark_strips_internal_whitespace():
-    spaced = "data:image/png;base64,QQ== \n QQ=="
+    spaced = "data:image/png;base64,iVBORw0K \n Ggo="
     cleaned = clean_raster_mark(spaced)
     assert cleaned is not None
     assert " " not in cleaned and "\n" not in cleaned

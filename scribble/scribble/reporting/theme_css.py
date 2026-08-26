@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from scribble.reporting import theme_files
 from scribble.reporting.marks import ResolvedMark
 from scribble.reporting.themes import ReportTheme
-from scribble.reporting.tokens import validate_tokens
+from scribble.reporting.tokens import render_token_block, validate_tokens
 
 # 0-2-0, matching the dark and print rules rather than trying to outrank them; later in the sheet, so
 # it wins the tie. Deliberately NOT `!important`: that would leak a screen palette onto paper for a
@@ -84,11 +84,6 @@ class ThemeAssets:
     @property
     def is_empty(self) -> bool:
         return not self.css and self.mark is None
-
-
-def _declaration_block(selector: str, tokens: dict[str, str]) -> str:
-    body = "".join(f"  --{name}: {value};\n" for name, value in sorted(tokens.items()))
-    return f"{selector} {{\n{body}}}\n"
 
 
 def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
@@ -131,18 +126,29 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
 
     parts: list[str] = []
 
-    font_css = theme_files.build_font_face_css(loaded)
-    if font_css:
-        parts.append(font_css if font_css.endswith("\n") else font_css + "\n")
+    # Composition gets the same "degrade, never 500" contract as loading. Only `load_theme_file` used to
+    # be guarded, so a font read or an emission failure raised straight through `_render_document` and
+    # turned a cosmetic Theme fault into a 500 on `/engagements/<id>/report` — the report route failing
+    # closed over branding, which is precisely the trade this module exists to refuse.
+    try:
+        font_css = theme_files.build_font_face_css(loaded)
+        if font_css:
+            parts.append(font_css if font_css.endswith("\n") else font_css + "\n")
 
-    if tokens:
-        parts.append(f"@media screen {{\n{_declaration_block(_OVERRIDE_SELECTOR, tokens)}}}\n")
+        if tokens:
+            parts.append(f"@media screen {{\n{render_token_block(tokens, _OVERRIDE_SELECTOR)}}}\n")
 
-    # Paper ONLY if the Theme declared paper values. See the module docstring: screen tokens are tuned
-    # against a screen, and shipping them to paper is how the dark ramp reached a printed deliverable.
-    paper = validate_tokens(getattr(loaded, "print_tokens", {}) or {})
-    if paper:
-        parts.append(f"@media print {{\n{_declaration_block(_OVERRIDE_SELECTOR, paper)}}}\n")
+        # Paper ONLY if the Theme declared paper values. See the module docstring: screen tokens are
+        # tuned against a screen, and shipping them to paper is how the dark ramp reached a printed
+        # deliverable.
+        paper = validate_tokens(getattr(loaded, "print_tokens", {}) or {})
+        if paper:
+            parts.append(f"@media print {{\n{render_token_block(paper, _OVERRIDE_SELECTOR)}}}\n")
+    except Exception as exc:  # noqa: BLE001 — degrade to the base sheet, never to a 500
+        _log.warning(
+            "scribble: report Theme %r failed to compose, rendering unthemed: %s", theme.name, exc
+        )
+        return ThemeAssets(css="", mark=None)
 
     # Marks are NOT wired yet, and this is the honest state rather than an oversight: `reporting.marks`
     # (#104) is built and tested, but the Theme *schema* carries only a reserved `[marks]` placeholder —

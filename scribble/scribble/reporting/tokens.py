@@ -206,7 +206,12 @@ def _validate_font_stack(value: object) -> str | None:
 
 
 _DIMENSION_MAX_LEN = 12
-_DIMENSION_RE = re.compile(r"(\d{1,4})(?:\.(\d{1,2}))?(px|rem|em|ch|%)")
+# [0-9], not \d: Python's \d is Unicode-aware and matches all 750 characters in the Nd
+# category, so "\u0661\u0660px" (Arabic-Indic one-zero) validated and was emitted verbatim as
+# --maxw: \u0661\u0660px; — which no browser parses, so the declaration was silently dropped and the
+# Theme half-applied. Not a breakout (the charset carries nothing dangerous and float() still
+# bounded it), but the docstring below promises "plain decimal digits" and now that is true.
+_DIMENSION_RE = re.compile(r"([0-9]{1,4})(?:\.([0-9]{1,2}))?(px|rem|em|ch|%)")
 # Per-unit ceilings: bounded so an override cannot blow the layout up to something unusable (a
 # multi-thousand-percent ``--maxw`` or a negative ``--radius`` is a self-inflicted DoS on the report's
 # readability, not a confidentiality issue, but "bounded" is explicitly part of this ticket's brief and
@@ -281,8 +286,14 @@ def validate_tokens(raw: Mapping[str, object]) -> dict[str, str] | None:
     return validated
 
 
-def render_token_block(tokens: Mapping[str, str]) -> str:
-    """Emit ``:root { --name: value; ... }`` for an already-:func:`validate_tokens`-cleared mapping.
+def render_token_block(tokens: Mapping[str, str], selector: str = ":root") -> str:
+    """Emit ``<selector> { --name: value; ... }`` for an already-:func:`validate_tokens`-cleared mapping.
+
+    ``selector`` is the caller's, because WHERE in the cascade an override sits is a composition
+    decision (see :mod:`scribble.reporting.theme_css`), not a token-contract one. It defaults to the
+    lowest-specificity ``:root`` this module reasons about below. This function is the ONLY emitter:
+    a second one that skipped the re-validation below is exactly the write-path/render-path split
+    ``marks.resolve_mark`` was restructured to eliminate, after cream shipped a real bug that way.
 
     See the module docstring's "Composing with the four palettes" section for the full specificity
     argument; in short, this emits the single lowest-specificity selector the base stylesheet uses for
@@ -301,10 +312,10 @@ def render_token_block(tokens: Mapping[str, str]) -> str:
     if not tokens:
         return ""
     lines: list[str] = []
-    for name, value in tokens.items():
+    for name, value in sorted(tokens.items()):
         validator = _VALIDATORS.get(name)
         if validator is None or validator(value) != value:
             raise ValueError(f"refusing to emit unvalidated theme token {name!r}")
         lines.append(f"  --{name}: {value};")
     body = "\n".join(lines)
-    return f":root {{\n{body}\n}}\n"
+    return f"{selector} {{\n{body}\n}}\n"

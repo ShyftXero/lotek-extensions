@@ -47,6 +47,7 @@ and leaves placement to whatever assembles the page.
 
 from __future__ import annotations
 
+import base64
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -63,9 +64,15 @@ from typing import Literal
 # same way `ReportTheme`/`ReportLayout` assert their own closed sets rather than guessed at.
 PROVENANCES: tuple[str, ...] = ("bundled", "installed", "override")
 
-# The only Provenance forbidden from carrying an SVG Mark. See the module docstring for why the other
-# two may.
-_SVG_FORBIDDEN_PROVENANCES: frozenset[str] = frozenset({"override"})
+# The only Provenances PERMITTED to carry an SVG Mark. See the module docstring for why these two may.
+#
+# Stated as an allow-list, not as `{"override"}`-is-forbidden, so that an unrecognised value fails
+# CLOSED. The deny-list shape defaulted an unknown provenance to *permit SVG*, and that default is
+# reachable: `report_theme_snapshot` is a JSON column documented to freeze the resolved marks, so the
+# day a provenance round-trips through stored JSON (or a caller typos `"Override"`) it stops being "the
+# caller's own classification from a closed set" and becomes data. The `assert` below is also stripped
+# under `python -O`, so it cannot be the thing standing between that value and the parser.
+_SVG_ALLOWED_PROVENANCES: frozenset[str] = frozenset({"bundled", "installed"})
 
 
 # --- raster marks --------------------------------------------------------------------------------------
@@ -83,6 +90,35 @@ _RASTER_MARK_RE = re.compile(r"^data:image/(png|jpeg|jpg|gif|webp);base64,[A-Za-
 MAX_RASTER_MARK_CHARS = 2_000_000
 
 
+# The declared `image/<fmt>` label is chosen by whoever supplies the Mark, so on its own it proves
+# nothing: `data:image/png;base64,<base64 of an SVG document>` matched the regex above and was accepted
+# as "raster" before this check existed, which quietly defeats the one rule that makes an `override`
+# Mark safe to accept at all. The label is now only believed if the decoded bytes agree with it.
+#
+# Today the practical blast radius is small — a browser will not render SVG bytes delivered under
+# `<img src="data:image/png,...">` — but that is the BROWSER's content-sniffing policy standing in for
+# our gate, and it stops standing there the moment a ResolvedMark reaches a PDF engine (cream already
+# uses one).
+_RASTER_MAGIC: dict[str, tuple[bytes, ...]] = {
+    "png": (b"\x89PNG\r\n\x1a\n",),
+    "jpeg": (b"\xff\xd8\xff",),
+    "jpg": (b"\xff\xd8\xff",),
+    "gif": (b"GIF87a", b"GIF89a"),
+    "webp": (b"RIFF",),  # plus a "WEBP" fourcc at offset 8 — see _decoded_matches_declared_format
+}
+
+
+def _decoded_matches_declared_format(fmt: str, raw: bytes) -> bool:
+    """Does `raw` actually begin like the `fmt` it was labelled as?"""
+    prefixes = _RASTER_MAGIC.get(fmt)
+    if not prefixes or not any(raw.startswith(pre) for pre in prefixes):
+        return False
+    if fmt == "webp":
+        # RIFF is a container fourcc, not a format: "RIFF<u32 size>WEBP".
+        return len(raw) >= 12 and raw[8:12] == b"WEBP"
+    return True
+
+
 def clean_raster_mark(value: str | None) -> str | None:
     """A vetted ``data:image/(png|jpeg|jpg|gif|webp);base64,...`` URI, or ``None``.
 
@@ -97,9 +133,19 @@ def clean_raster_mark(value: str | None) -> str | None:
     candidate = str(value).strip()
     # Length check first: `len()` is O(1) on a str and this order means an oversized payload is
     # rejected without the regex engine ever walking it, however cheap that walk would be.
-    if len(candidate) > MAX_RASTER_MARK_CHARS or not _RASTER_MARK_RE.match(candidate):
+    match = _RASTER_MARK_RE.match(candidate)
+    if len(candidate) > MAX_RASTER_MARK_CHARS or match is None:
         return None
-    return "".join(candidate.split())  # collapse the whitespace the regex tolerated inside the body
+    collapsed = "".join(candidate.split())  # collapse the whitespace the regex tolerated inside the body
+    try:
+        raw = base64.b64decode(collapsed.split(",", 1)[1], validate=True)
+    except ValueError:
+        # `binascii.Error` subclasses `ValueError`. A body that is not actually base64 (the regex's
+        # charset admits e.g. "A=B=C") is refused wholesale, never salvaged.
+        return None
+    if not _decoded_matches_declared_format(match.group(1), raw):
+        return None
+    return collapsed
 
 
 # --- SVG marks -----------------------------------------------------------------------------------------
@@ -158,7 +204,14 @@ ALLOWED_SVG_ATTRS: frozenset[str] = frozenset(
 # forbidden element. `javascript:` is checked for the same reason link `href`s are checked in
 # `prosemirror_sanitize.py`: an allowlisted attribute is still just a string, and nothing stops a future
 # edit from allowlisting one (e.g. a hypothetical `xlink:href` re-add) that a scheme check would catch.
-_BAD_ATTR_VALUE_SUBSTRINGS: tuple[str, ...] = ("url(", "javascript:")
+# `\\` is refused for a reason worth stating: an attribute value like `fill` is re-parsed by the
+# browser with the CSS tokenizer, and CSS ident tokenization decodes escapes BEFORE any function-name
+# comparison — so `\75 rl(` tokenizes to the ident `url` followed by `(`, a real url-token that this
+# substring check never sees. (Verified: `fill="\75 rl(https://evil/x)"`, `"\000075rl(...)"` and
+# `"u\72 l(...)"` all survived the pre-fix filter.) Nothing legitimate in the attribute allowlist —
+# `d`, `viewBox`, `transform`, `fill`, `stroke`, geometry, opacity, the *-rule attributes — needs a
+# backslash, so refusing it outright kills the entire escape-decoding family rather than one spelling.
+_BAD_ATTR_VALUE_SUBSTRINGS: tuple[str, ...] = ("url(", "javascript:", "\\")
 
 # `defs` -> `g` -> `path` is 3 deep for a typical export; 32 is generous headroom for a hand-nested mark
 # while still triggering long before Python's own default recursion limit (1000) on this module's
@@ -406,7 +459,7 @@ def resolve_mark(payload: str | None, *, provenance: str) -> ResolvedMark | None
     if raster is not None:
         return ResolvedMark(kind="raster", value=raster, width=None, height=None)
 
-    if provenance in _SVG_FORBIDDEN_PROVENANCES:
+    if provenance not in _SVG_ALLOWED_PROVENANCES:
         # Refused outright: an `override` Mark never even reaches the XML parser. This is the specific
         # branch the ticket's "positive control" test targets — remove this check and a clean SVG payload
         # under `override` would fall through to `sanitize_svg_mark` below and succeed.
