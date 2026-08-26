@@ -1,8 +1,9 @@
 # Plan: feat/bugreport-extension
 
 - **Branch:** `feat/bugreport-extension`  (worktree: `.claude/worktrees/bugreport`, off `origin/main`)
-- **PR:** not opened yet
-- **Status:** 🟢 ready to merge
+- **PR:** #122 — **DRAFT, do not merge alone.** Stacked: the orchestrator merges this onto an
+  integration branch, runs ONE full suite + `pytest -m invariant` there, and opens the real PR.
+- **Status:** 🟡 code complete, awaiting the stacked integration run
 - **Issue:** ShyftXero/lotek-extensions#112
 
 ## Purpose
@@ -81,9 +82,14 @@ An LLM judge buys nothing here: every outcome is a status code or a row state.
       closed (`bool(<bound method>)`, blueprint registration order). The same `bool()` shape in
       cream/registrar/vector is filed as #120 rather than folded into this branch
 
-## Remaining
+## Remaining — owned by the ORCHESTRATOR, not this branch
 
-- [ ] `--ack-*` markers, bot-authored PR, issue #112 → `status:review`
+- [ ] full suite + `pytest -m invariant` on the integration branch (deliberately NOT run here: five
+      workers are in flight on this box, and five concurrent `-n auto` runs blow Postgres
+      `max_connections` and manufacture a false RED)
+- [ ] `--ack-tests` (the marker I had recorded for `bbf56fe` was **deleted** — it overstated what I
+      verified) and the combined `/security-review` + `/adversarial-reviewer` on the merged diff
+- [ ] a real PR; #122 stays a draft. Issue #112 stays `status:doing`
 
 ## Eval results
 
