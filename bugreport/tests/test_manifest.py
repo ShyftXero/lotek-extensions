@@ -71,3 +71,21 @@ def test_the_declared_audit_verbs_are_exactly_what_the_code_emits():
         emitted |= set(re.findall(r'"(ext:bugreport:[a-z_]+)"', path.read_text()))
     assert emitted, "no audit action literals found — did the audit call site move?"
     assert emitted == declared, f"emitted={emitted} declared={declared}"
+
+
+def test_the_core_ref_columns_are_uuid_typed():
+    """INV-INTEGRITY-03. ``reporter_id`` holds a CORE (host) id, and core v2 keys every surrogate PK on
+    UUIDv7 — an ``Integer``/``String`` column here is the `cannot cast type uuid to integer` red path that
+    has taken production down. SQLite is dynamically typed and stores the value without complaint, so the
+    rest of this suite proves nothing about it; assert on the declared type instead.
+
+    Verified once against REAL Postgres (see the PR body): ``id`` and ``reporter_id`` both land as native
+    `uuid` columns, and the tenancy filter + tombstone round-trip there."""
+    from sqlalchemy import Uuid
+
+    cols = {c.name: c for c in Base.metadata.tables["bugreport_reports"].columns}
+    for name in ("id", "reporter_id"):
+        assert isinstance(cols[name].type, Uuid), f"{name} is {cols[name].type!r}, not Uuid"
+    # …and no OTHER column smuggles a core reference in under a non-Uuid type.
+    core_refs = [n for n in cols if n.endswith(("_id", "_by")) and n != "id"]
+    assert core_refs == ["reporter_id"], f"new core-ref column(s) {core_refs} — check their type"
