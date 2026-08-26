@@ -109,6 +109,31 @@ class Engagement(Base, TimestampMixin):
     # ``client_id`` above.
     owner_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
 
+    # --- Report Theme (#100/#105/#106) -------------------------------------------------------------
+    # The Theme this engagement's Report renders under (see scribble.reporting.themes.ReportTheme).
+    # NULLABLE, and NULL is load-bearing, not "unset": it means "inherit the install-wide default"
+    # (ScribbleSettings.default_report_theme), which itself falls back to
+    # ``scribble.reporting.themes.DEFAULT_THEME`` if the settings row carries no default either. Never
+    # eagerly copy the resolved name down onto every engagement at creation time, or an admin changing
+    # the install default would silently stop affecting engagements created before the change.
+    #
+    # No FK / no Enum: valid Theme names are a Python-level closed set (``themes.THEMES``) that a
+    # bundled/installed Theme package can extend without a schema change (#101, #104), so this column
+    # only stores the chosen name and ``themes.get_theme()`` is what validates it (falling back to a
+    # safe default for anything unrecognized, exactly as it already does for the ``?theme=`` query
+    # param).
+    report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The RESOLVED tokens + marks, frozen at delivery -- a self-contained payload, deliberately NOT a
+    # second name reference to whatever Theme produced it. This is the Snapshot half of the Layout/
+    # Theme split (see scribble/CONTEXT.md): a Report already handed to a client must keep rendering
+    # exactly as delivered even after the Theme it came from is later edited, or uninstalled outright
+    # (an "installed" Theme -- see themes.py's Provenance note -- is a separate package that can be
+    # removed). A name reference would silently reflect whatever that name means *today*; freezing the
+    # actual values here is what makes re-theming the install safe. NULL until first delivery (a draft
+    # engagement has nothing frozen yet); shaped as ``dict[str, Any]`` — the exact key layout for tokens
+    # vs. marks is #101/#104's payload, not this column's concern.
+    report_theme_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
     )
@@ -560,6 +585,49 @@ class ReportRender(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(128))
 
 
+# --------------------------------------------------------------------------- install-wide settings
+
+
+class ScribbleSettings(Base, TimestampMixin):
+    """Install-wide Scribble configuration -- a singleton row, one per Scribble install.
+
+    ``slot`` is unique and always ``"default"``, the same pattern as CREAM's ``Brand`` (see
+    ``cream/cream/models.py``): a settings dial that applies to every engagement belongs in the
+    database, not a config file, because it is edited from the UI and because a row is what makes
+    exactly-one enforceable (a UNIQUE constraint), where a config file can't stop a second one from
+    being deployed. Read/write the singleton with ``session.scalar(select(ScribbleSettings).where(
+    ScribbleSettings.slot == "default"))``, creating it on first read if absent -- the orchestrator's
+    concern, not this module's (this is schema only, no Flask/request/session-management code here).
+
+    **Why not fold this into ``TemplateVariable``?** ``TemplateVariable`` is tempting: it is already a
+    generic key -> value table. Resist it. ``TemplateVariable`` rows are ``{{VARIABLES}}`` interpolated
+    into report BODY TEXT (see its docstring) -- an entirely different axis from "which Theme does an
+    install default to". Storing the default Theme name as a ``TemplateVariable`` would re-collapse the
+    exact vocabulary #100/#105/#106 exist to untangle: Layout, Theme, and Token would once again share
+    one bucket with report prose, and a future reader grepping "report {{variables}}" would find an
+    install setting mixed in with document content. Keep them apart even though today it means two
+    tables where one *could* technically hold the bytes.
+
+    Kept deliberately SMALL: this is the first install-wide setting Scribble has ever needed, so it is
+    obviously the right home for the next one -- but it carries only what #105/#106 actually require.
+    Do not pre-add speculative columns for settings nobody has asked for yet; a later ticket earns its
+    own column the same way this one did.
+    """
+
+    __tablename__ = "scribble_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    slot: Mapped[str] = mapped_column(String(16), unique=True, default="default")
+
+    # The per-install default Theme name (scribble.reporting.themes.ReportTheme.name), used whenever an
+    # Engagement's own ``report_theme`` is NULL ("inherit"). NULLABLE -- and NULL here is itself a
+    # valid, meaningful state ("no install override; fall back further to
+    # ``themes.DEFAULT_THEME``"), not merely "not configured yet". Same no-FK/no-Enum reasoning as
+    # ``Engagement.report_theme`` above: ``themes.get_theme()`` validates the name at resolve time, so a
+    # Theme package installed after this row was last saved is reachable without a schema change.
+    default_report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 # --------------------------------------------------------------------------- collaboration (Phase B)
 
 
@@ -697,6 +765,7 @@ __all__ = [
     "TemplateTag",
     "ReportTemplate",
     "ReportRender",
+    "ScribbleSettings",
     "CollabDoc",
     "ChecklistTemplate",
     "ChecklistTemplateItem",

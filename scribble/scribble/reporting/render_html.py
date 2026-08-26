@@ -46,6 +46,7 @@ from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
 from scribble.reporting.context import ArtifactCtx, DiagramCtx, FindingCtx, GroupCtx, ReportContext
 from scribble.reporting.layouts import ReportLayout, list_layouts
 from scribble.reporting.selection import resolve_selection
+from scribble.reporting.theme_css import build_theme_assets
 from scribble.reporting.themes import ReportTheme, get_theme, list_themes
 
 # The Theme every report rendered under before Themes were selectable: stamps nothing, so the viewer's
@@ -1434,6 +1435,13 @@ def _render_document(
     # A Theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so the report
     # follows the viewer's prefers-color-scheme (the default behavior).
     theme_attr = theme.html_attr
+    # ...and contributes its Token payload as a SECOND <style>, after the base sheet. It has to be a
+    # separate element emitted here rather than concatenated into _CSS, because _CSS is a module-level
+    # constant shared by every render — splicing per-request content into it would leak one
+    # engagement's Theme into the next. See reporting/theme_css.py for why the override sits where it
+    # does in the cascade (short version: the dark and print rules are 0-2-0, so 0-1-0 loses to both).
+    assets = build_theme_assets(theme)
+    theme_style = f"<style>{assets.css}</style>\n" if assets.css else ""
     # Render the blocks FIRST, then build the toolbar from what they produced: a section link is emitted
     # only for a block that actually put its ``id="sec-<key>"`` anchor in this document, in document
     # order. Deriving the nav from the rendered output (rather than from a fixed list, as it was until
@@ -1462,7 +1470,7 @@ def _render_document(
         f'<html lang="en"{theme_attr}>\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(ctx.engagement_name)} — Report</title>\n"
-        f"<style>{_CSS}</style>\n</head>\n<body{body_class}>\n"
+        f"<style>{_CSS}</style>\n{theme_style}</head>\n<body{body_class}>\n"
         f"{header}\n"
         '<main class="wrap">\n'
         f"{blocks}\n"

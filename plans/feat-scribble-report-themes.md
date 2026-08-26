@@ -18,13 +18,18 @@ Vocabulary for all of this is pinned in `scribble/CONTEXT.md` — read it before
 
 - [x] `scribble/CONTEXT.md` — glossary: Layout / Theme / Token / Mark / Brand / Provenance / Snapshot,
       and the four things "template" used to mean.
+- [x] **#100 — split `Theme` from `Layout`** (`5c32f20`). `reporting/layouts.py` (structure only) +
+      `reporting/themes.py` (appearance only) + `reporting/selection.py` (resolves the pair, and
+      translates the pre-split `?template=` so bookmarked deliverable URLs survive). The dataclass
+      `ReportTemplate` is now `ReportLayout` and `reporting/templates.py` is gone, which frees the word
+      "template" for the three things in this extension that already meant it. `light` became
+      selectable for the first time. The full Layout × Theme matrix is tested — it was previously
+      unrepresentable, since a pairing existed only if someone had added a registry row for it.
+      Reporting suites green (44 passed); ruff + pyrefly clean.
 
 ## Remaining
 
 Tier A (the shipping target):
-
-- [ ] Split `Theme` from `Layout`; rename the dataclass `ReportTemplate` → `ReportLayout` (frees the word
-      "template" for the `.docx` file and the Vuln Library sense that already own it).
 - [ ] Closed Token allowlist + per-token validators; `:root{}` override block emitted after the base sheet.
       Reject-and-fall-back wholesale, never partially apply.
 - [ ] Retire the 4 literal colours that bypass the token layer (`#fff` ×3, and the print block's `a`).
@@ -81,6 +86,12 @@ Decisions settled by grilling before any code (all five rounds):
   light / dark (re-engineered in `1c00281`). A screen-only check will pass while the printed deliverable
   comes out in generic slate — hence print being part of acceptance.
 - `BLOCK_KEYS` is 8 blocks now, two of them (`cover`, `toc`) print-only. A Theme must not disturb them.
+
+Pre-existing failure on `main`, found while landing #100 and deliberately NOT fixed here:
+`test_machine_artifacts.py::test_upload_emits_audit_row` and `::test_update_emits_audit_with_transition`
+compare an audit `subject_id` (a `uuid.UUID`) against a JSON id string — UUIDv7-migration drift.
+Confirmed unrelated to reporting: that file imports nothing from `reporting` and contains zero
+layout/theme references. Worth its own issue.
 
 Open, pending the human: whether the firm-brand Theme package and this map's tickets may live in a
 **public** repo, given the source brand material is marked draft-and-unadopted.
