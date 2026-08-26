@@ -101,6 +101,49 @@ accent = "#0a5b3d"
     assert "--accent: #123456;" in _block_after(css, "@media screen")
 
 
+def test_a_broken_theme_degrades_unthemed_but_LOUDLY(monkeypatch, caplog):
+    """Degrading safely and degrading silently are two different decisions; only the first is wanted.
+
+    A Theme that fails to load still renders a perfectly clean report — just an unbranded one — so a
+    swallowed exception here means a client receives a wrong-looking deliverable with nothing raised,
+    nothing logged, and nothing in the UI. That is the exact behaviour `theme_discovery` was forbidden
+    from copying, and INV-EXT-05 requires a denial to be loud.
+    """
+    from scribble.reporting import theme_css as tc
+
+    def boom(name):
+        raise ValueError("malformed TOML")
+
+    monkeypatch.setattr(tc.theme_files, "load_theme_file", boom)
+    with caplog.at_level("WARNING"):
+        assets = tc.build_theme_assets(get_theme("dark"))
+
+    assert assets.css == ""  # degrades to the base sheet, never to a 500
+    assert any("failed to load" in r.getMessage() for r in caplog.records), (
+        "the failure must be logged, not swallowed"
+    )
+
+
+def test_auto_is_not_logged_as_a_failure(caplog):
+    """`auto` having no bundled file is by DESIGN, not an error — logging it would train the operator
+    to ignore the very warning that matters."""
+    with caplog.at_level("WARNING"):
+        build_theme_assets(get_theme("auto"))
+    assert not caplog.records
+
+
+def test_css_carrying_a_style_close_is_refused(monkeypatch):
+    """Defense in depth at the point the CSS becomes part of an HTML document. Unreachable through the
+    current grammar, but the payload is slated to start arriving from an operator (override
+    provenance), and a breakout would put chosen markup inside a document embedding client evidence."""
+    from scribble.reporting import theme_css as tc
+
+    monkeypatch.setattr(tc.theme_files, "build_font_face_css", lambda theme: "</style><script>x</script>")
+    css = tc.build_theme_assets(get_theme("dark")).css
+    assert css == ""
+    assert "</style" not in css.lower()
+
+
 def test_auto_theme_contributes_nothing():
     """`auto` has no bundled file by design — it IS the base stylesheet's own behaviour, so there is
     nothing to override and the report must come out byte-identical to an unthemed one."""

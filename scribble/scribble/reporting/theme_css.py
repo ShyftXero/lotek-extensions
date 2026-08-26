@@ -42,6 +42,7 @@ untouched. Screen still gets everything.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from scribble.reporting import theme_files
@@ -53,6 +54,24 @@ from scribble.reporting.tokens import validate_tokens
 # it wins the tie. Deliberately NOT `!important`: that would leak a screen palette onto paper for a
 # Theme that never declared `[print_tokens]`, which is the exact failure this module is built around.
 _OVERRIDE_SELECTOR = ":root:root"
+
+_log = logging.getLogger(__name__)
+
+
+def _assert_style_safe(css: str) -> str:
+    """Defense in depth at the ONE point the CSS becomes part of an HTML document.
+
+    Nothing that reaches here can currently carry ``</style>``: every value has been through
+    ``tokens``' closed grammar, and ``theme_files`` holds a font ``family`` to ``[A-Za-z0-9 -]+``. But
+    the checks that make that true live three modules away, and the Theme payload is explicitly slated
+    to start arriving from an operator (``override`` provenance, Tier B). A breakout here would put
+    attacker-chosen markup inside a document that also embeds client evidence, so the guarantee is
+    asserted where it is *relied upon* rather than only where it is established.
+    """
+    if "</style" in css.lower():
+        _log.error("scribble: report Theme CSS contained a style-closing sequence; refusing it")
+        return ""
+    return css
 
 
 @dataclass(frozen=True)
@@ -79,12 +98,21 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
     design: it *is* the base stylesheet's own behaviour) or when its payload fails validation. A Theme
     that cannot be resolved must degrade to the shipped appearance, not to a broken page.
     """
-    loaded = None
     try:
         loaded = theme_files.load_theme_file(theme.name)
-    except Exception:  # noqa: BLE001 — a malformed Theme degrades to the base sheet, never to a 500
-        loaded = None
+    except Exception as exc:  # noqa: BLE001 — degrade to the base sheet, never to a 500
+        # LOUDLY. A Theme that fails to load still renders a perfectly clean report — just an
+        # UNBRANDED one — so without this line the single artifact this feature exists to produce goes
+        # to a client looking wrong, with nothing raised, nothing logged, and nothing in the UI. That
+        # is precisely the swallow-everything behaviour `theme_discovery` was forbidden from copying
+        # (CLAUDE.md records how baffling lotek's silent extension discovery made a real bug), and
+        # INV-EXT-05 requires a denial to be loud. Degrading safely and degrading silently are two
+        # different decisions; only the first one is wanted here.
+        _log.warning("scribble: report Theme %r failed to load, rendering unthemed: %s", theme.name, exc)
+        return ThemeAssets(css="", mark=None)
     if loaded is None:
+        # Not an error: `auto` has no bundled file by design, and an unknown name already fell back to
+        # `auto` in `get_theme`. Nothing to say.
         return ThemeAssets(css="", mark=None)
 
     # theme_files validates on load, but re-validate at the render boundary anyway: this is the same
@@ -92,6 +120,13 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
     # disagreed about what was acceptable and the renderer was the lenient one.
     tokens = validate_tokens(loaded.tokens)
     if tokens is None:
+        # Reaching here means the two validation passes DISAGREED — load accepted a payload the render
+        # boundary rejects. That is a bug in the grammar, not bad input, and it must never be silent.
+        _log.error(
+            "scribble: report Theme %r passed load-time validation but failed at the render "
+            "boundary; rendering unthemed. This is a grammar inconsistency, not bad data.",
+            theme.name,
+        )
         return ThemeAssets(css="", mark=None)
 
     parts: list[str] = []
@@ -120,4 +155,4 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
     # override Theme arrives at "override" and is raster-only. That decision lives in marks.resolve_mark,
     # never here, so the write path and the render path cannot drift apart — which is exactly how cream
     # shipped a real bug (its API refused SVG while its renderer accepted it).
-    return ThemeAssets(css="".join(parts), mark=None)
+    return ThemeAssets(css=_assert_style_safe("".join(parts)), mark=None)
