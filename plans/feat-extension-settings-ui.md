@@ -1,8 +1,9 @@
 # Plan: feat/extension-settings-ui
 
 - **Branch:** `feat/extension-settings-ui`  (worktree: `.claude/worktrees/ext-settings-ui`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** none — this branch is **stacked** for an integration run (the orchestrator merges it with
+  its siblings, runs one suite, and opens a single PR per repo).
+- **Status:** 🟢 ready to merge (pending the integration suite)
 - **Issues:** ShyftXero/lotek-extensions#111 · cross-post ShyftXero/lotek#485
 - **Paired branch:** `feat/extension-settings-ui` in `ShyftXero/lotek` (the host half)
 
@@ -49,18 +50,26 @@ What vector gets:
   - [ ] `cd vector && uv run --extra dev pytest -q` — baseline recorded at base sha
   - [ ] `uvx ruff check vector`
 - **Graders:** vector's own suite; the mounted contract is graded by the lotek-side branch.
-- **Verdict:** _filled after the candidate run._
+- **Verdict:** all capability evals pass. `cd vector && uv run --extra dev pytest -q` → **74 passed**
+  (17 of them new); `uvx ruff check vector tests` clean; `pyrefly check` clean on every changed file.
+  **10 guards verified red-then-green.** The mounted half is NOT verified from here — see Notes.
 
 ## Done
 
 - [x] Design agreed with the lotek-side plan.
+- [x] `[[settings]] deliverable_footer` in `vector/lotek-extension.toml`
+- [x] `deps.host_setting()` — the read seam, fail-safe to the caller's default
+- [x] `render.py` stamps the footer (autoescaped) — threaded through all THREE export call sites
+- [x] `vector_user_prefs` + `GET/POST /vector/settings` + the ⚙ cog in vector's appbar
+- [x] 17 tests, 10 guards red-then-green
+- [x] `vector/docs/VECTOR.md`
+- [x] `[tool.pyrefly] search-path` so the commit gate can type-check this subproject's test files
 
 ## Remaining
 
-- [ ] `[[settings]]` in `vector/lotek-extension.toml` + `deps.host_setting()` + `render.py` footer
-- [ ] `vector_user_prefs` + `/vector/settings` + the ⚙ cog in vector's appbar
-- [ ] tests
-- [ ] `vector/docs/VECTOR.md`
+- [ ] the integration run + PR (orchestrator)
+- [ ] a release tag + a lotek-side `[tool.uv.sources]` re-pin, which is what makes the admin half
+      reachable in a real browser
 
 ## Notes / gotchas
 
