@@ -149,3 +149,19 @@
   .vap .edge.flow,.vap .edge.draw,.vap .node.is-new rect.box,.vap .pulse-ring{animation:none!important}
   .vap .edge.draw{stroke-dashoffset:0}
 }
+
+/* On paper (ext#115). The deliverable is printed two ways: on its own, and embedded in scribble's
+   report iframe. Both want the same thing — the finished diagram, not the walkthrough chrome:
+   - kill every animation, so what rasterizes is a settled frame rather than a mid-keyframe smear
+     (same selector list as the prefers-reduced-motion block above; the JS jumps to the final phase);
+   - drop the step buttons and the phase rail, which are interactive controls with nothing to click;
+   - let the topology own the page instead of being squeezed into a scrolling flex column. */
+@media print{
+  .vap .edge.flow,.vap .edge.draw,.vap .node.is-new rect.box,.vap .pulse-ring{animation:none!important}
+  .vap .edge.draw{stroke-dashoffset:0}
+  .vap .controls,.vap .rail,.vap .rail-labels{display:none!important}
+  .vap .grid{grid-template-columns:1fr}
+  .vap .brief{border-left:none;border-top:1px solid var(--vap-line)}
+  .vap .stage,.vap .brief-scroll{overflow:visible;max-height:none}
+  .vap .map{break-inside:avoid;page-break-inside:avoid}
+}

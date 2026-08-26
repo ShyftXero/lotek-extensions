@@ -26,6 +26,8 @@ to be embeddable here.
 from __future__ import annotations
 
 import io
+import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from html import escape as _html_escape
@@ -37,7 +39,13 @@ from docxtpl import DocxTemplate, InlineImage, RichText
 
 from scribble.content.render_docx import html_to_richtext
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
-from scribble.reporting.context import ArtifactCtx, FindingCtx, GroupCtx, ReportContext
+from scribble.reporting.context import (
+    ArtifactCtx,
+    FindingCtx,
+    GroupCtx,
+    ReportContext,
+    figure_caption,
+)
 
 ArtifactBytes = Callable[[str], "bytes | None"]
 
@@ -138,7 +146,7 @@ def _children_html(children: list[FindingCtx]) -> str:
             src = make_inline_artifact_url(a.storage_path)
             if not src:
                 continue
-            cap = _html_escape(a.caption or a.filename)
+            cap = _html_escape(_numbered_caption(a))  # ext#117 — same "Figure N" the HTML prints
             items.append(f'<li><img src="{src}" alt="{cap}"/> {cap}</li>')
     return f"<h4>Affected Hosts ({len(children)})</h4><ul>{''.join(items)}</ul>"
 
@@ -210,6 +218,13 @@ def _target_text(f: FindingCtx) -> str:
     return " · ".join(bits)
 
 
+def _numbered_caption(a: ArtifactCtx) -> str:
+    """``"Figure 3 — Payload firing in the browser"`` (ext#117). The number comes off the CONTEXT
+    (``context.number_figures``), never from a counter this renderer keeps, so it is the same number
+    the HTML deliverable prints for the same artifact."""
+    return figure_caption(a.figure_number, a.caption or a.filename)
+
+
 def _artifact_ctx(
     a: ArtifactCtx, artifact_bytes: ArtifactBytes | None, tpl: DocxTemplate
 ) -> dict[str, object]:
@@ -228,7 +243,7 @@ def _artifact_ctx(
             except Exception:
                 image = None
     return {
-        "caption": a.caption or a.filename,
+        "caption": _numbered_caption(a),
         "filename": a.filename,
         "image": image,
         "embedded": image is not None,
@@ -282,6 +297,233 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         },
         "groups": [_group_ctx(g, tpl=tpl, artifact_bytes=artifact_bytes) for g in ctx.groups],
     }
+
+
+# ── attack paths (ext#115) ───────────────────────────────────────────────────────────────────────────
+#
+# The HTML deliverable embeds vector's self-contained ``export.html`` in a sandboxed iframe and the
+# animation plays. Word has no browser, so until ext#115 the .docx simply had no attack path in it at
+# all: `Attack path` did not appear in `word/document.xml`, and a reader given only the .docx could not
+# tell that a diagram existed. That is a SILENT content drop between two deliverables of the same
+# engagement, which is worse than an ugly rendition.
+#
+# Why a native Word table and not a picture: a picture in a .docx must be RASTER (python-docx/docxtpl
+# reject SVG; Word's `svgBlip` needs a PNG fallback anyway), and vector's diagram only exists as pixels
+# once a browser has run `vector-viewer.js`. Rasterizing it server-side means shipping a headless
+# browser or a rasterizer into a mounted production extension; re-drawing it in Python means a SECOND
+# renderer that drifts from the JS the first time anyone edits the viewer. So this draws the same
+# geometry the viewer draws -- `zone` is the column, `row` is the row (vector-viewer.js `geometry()`) --
+# with Word's own table, plus the phase walkthrough and the edge list. Static, selectable, searchable,
+# and it cannot drift out of a font metric.
+#
+# ponytail: table rendition, not pixels. Upgrade path if a true still is ever wanted: have vector's
+# viewer serialize its live <svg> at export time (`XMLSerializer`, ~5 lines, zero drift) and store it
+# alongside `embed_html`, then rasterize THAT here.
+
+# vector's ``render.py`` embeds the normalized model verbatim in
+# ``<script type="application/json" id="vap-model">…</script>`` and escapes ``<``/``>``/``&`` as
+# ``\uXXXX`` on the way in (``json_for_script``), so the payload cannot contain ``</script>`` and a
+# non-greedy match to the first close tag is exact rather than best-effort.
+_VAP_MODEL_RE = re.compile(r"<script\b[^>]*\bid=[\"']vap-model[\"'][^>]*>(.*?)</script>", re.S | re.I)
+
+# ``embed_html`` is operator/agent-supplied (it arrives over a PAT POST -- see
+# ``api_pat.scribble_link_attack_path``) and is stored verbatim, so nothing guarantees it came from
+# vector or is bounded the way vector's own schema bounds a model. Every number below is scribble's own
+# cap on how much of a snapshot this renderer will turn into document, independent of vector's limits.
+_MAX_DIAGRAM_SCAN_BYTES = 8 * 1024 * 1024  # don't regex-scan an unbounded snapshot
+_MAX_DIAGRAM_ZONES = 12  # a Word table wider than this is unreadable on a portrait page anyway
+_MAX_DIAGRAM_ROWS = 40
+_MAX_DIAGRAM_PHASES = 60
+_MAX_DIAGRAM_EDGES = 80
+_MAX_DIAGRAM_TEXT = 400  # per field, matching vector's own _MED/_LONG spirit
+
+
+def _d_str(value: object, cap: int = _MAX_DIAGRAM_TEXT) -> str:
+    """A capped, single-line string from an untrusted model field; anything non-scalar -> ``""``."""
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    return " ".join(str(value).split())[:cap]
+
+
+def _d_int(value: object, default: int = 0) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _d_list(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _diagram_model(embed_html: str | None) -> dict | None:
+    """The ``vector.attackpath/v1`` document carried inside a stored snapshot, or ``None``.
+
+    Reads a JSON blob out of HTML scribble already stores -- it does not import vector (extensions stay
+    independent -- CLAUDE.md) and does not execute anything. Never raises: a snapshot that is not
+    vector's, is truncated, or is not JSON degrades to ``None`` and the caller still emits the section
+    heading + caption, so the diagram is never silently absent."""
+    if not embed_html or len(embed_html) > _MAX_DIAGRAM_SCAN_BYTES:
+        return None
+    match = _VAP_MODEL_RE.search(embed_html)
+    if not match:
+        return None
+    try:
+        model = json.loads(match.group(1))
+    except (ValueError, RecursionError):
+        return None
+    return model if isinstance(model, dict) else None
+
+
+def _node_state_label(node: dict) -> str:
+    """The node's LAST state ("OWNED", "IMPACT", …) — the final keyframe is what a static frame shows."""
+    states = [s for s in _d_list(node.get("states")) if isinstance(s, dict)]
+    if not states:
+        return ""
+    last = max(states, key=lambda s: _d_int(s.get("at")))
+    return _d_str(last.get("state") or last.get("label"), 40).upper()
+
+
+def _node_cell_text(node: dict) -> str:
+    lines = [_d_str(node.get("label")) or _d_str(node.get("id"))]
+    addr = _d_str(node.get("ip")) or _d_str(node.get("domain"))
+    if addr:
+        lines.append(addr)
+    state = _node_state_label(node)
+    if state:
+        lines.append(f"[{state}]")
+    return "\n".join(x for x in lines if x)
+
+
+def _add_diagram_grid(doc, model: dict) -> bool:
+    """The static frame: zones as columns, ``row`` as rows — the same placement ``vector-viewer.js``'s
+    ``geometry()`` computes. Returns False when the model has nothing placeable to draw."""
+    zones = [z for z in _d_list(model.get("zones")) if isinstance(z, dict)]
+    zones.sort(key=lambda z: _d_int(z.get("order")))
+    zones = zones[:_MAX_DIAGRAM_ZONES]
+    if not zones:
+        return False
+    by_zone: dict[str, dict[int, list[dict]]] = {_d_str(z.get("id")): {} for z in zones}
+    max_row = 0
+    for node in _d_list(model.get("nodes")):
+        if not isinstance(node, dict):
+            continue
+        zone_id = _d_str(node.get("zone"))
+        if zone_id not in by_zone:
+            continue  # a node in a zone this table does not show (unknown id, or past the zone cap)
+        row = max(0, min(_d_int(node.get("row")), _MAX_DIAGRAM_ROWS - 1))
+        by_zone[zone_id].setdefault(row, []).append(node)
+        max_row = max(max_row, row)
+    if not any(by_zone.values()):
+        return False
+
+    table = doc.add_table(rows=1, cols=len(zones))
+    table.style = "Table Grid"
+    for cell, zone in zip(table.rows[0].cells, zones, strict=True):
+        cell.paragraphs[0].add_run(_d_str(zone.get("title")) or _d_str(zone.get("id"))).bold = True
+        subtitle = _d_str(zone.get("subtitle"))
+        if subtitle:
+            cell.add_paragraph(subtitle)
+    for row_idx in range(max_row + 1):
+        cells = table.add_row().cells
+        for cell, zone in zip(cells, zones, strict=True):
+            nodes = by_zone[_d_str(zone.get("id"))].get(row_idx, [])
+            cell.text = "\n".join(_node_cell_text(n) for n in nodes)
+    return True
+
+
+def _add_diagram_walkthrough(doc, model: dict) -> None:
+    """The phase-by-phase narrative the animation steps through — the part of an attack path that a
+    still frame genuinely cannot carry, and the part a report reader most needs."""
+    phases = [p for p in _d_list(model.get("phases")) if isinstance(p, dict)]
+    phases.sort(key=lambda p: _d_int(p.get("n")))
+    phases = phases[:_MAX_DIAGRAM_PHASES]
+    if not phases:
+        return
+    doc.add_paragraph("Walkthrough", style="Heading 3")
+    for phase in phases:
+        title = _d_str(phase.get("title")) or ("Overview" if phase.get("intro") else "")
+        head = f"Phase {_d_int(phase.get('n'))}"
+        if title:
+            head += f" — {title}"
+        mitre = _d_str(phase.get("mitre"), 120)
+        if mitre:
+            head += f"  ({mitre})"
+        p = doc.add_paragraph()
+        p.add_run(head).bold = True
+        desc = _d_str(phase.get("desc"), 1200)
+        if desc:
+            doc.add_paragraph(desc)
+
+
+def _add_diagram_edges(doc, model: dict) -> None:
+    """The connections, resolved to node LABELS — an edge list of bare ids is not a deliverable."""
+    labels = {
+        _d_str(n.get("id")): (_d_str(n.get("label")) or _d_str(n.get("id")))
+        for n in _d_list(model.get("nodes"))
+        if isinstance(n, dict)
+    }
+    edges = [e for e in _d_list(model.get("edges")) if isinstance(e, dict)][:_MAX_DIAGRAM_EDGES]
+    rendered = []
+    for edge in edges:
+        src, dst = _d_str(edge.get("from")), _d_str(edge.get("to"))
+        if src not in labels or dst not in labels:
+            continue  # vector drops dangling edges too — do not draw a line to nowhere
+        text = f"{labels[src]} → {labels[dst]}"
+        detail = " · ".join(x for x in (_d_str(edge.get("label")), _d_str(edge.get("kind"), 60)) if x)
+        rendered.append(f"{text}  ({detail})" if detail else text)
+    if not rendered:
+        return
+    doc.add_paragraph("Connections", style="Heading 3")
+    for line in rendered:
+        doc.add_paragraph(line, style="List Bullet")
+
+
+def _append_attack_paths(doc, ctx: ReportContext) -> None:
+    """Append the Attack Paths section to the RENDERED document (ext#115), mirroring
+    ``_append_checklists``/``_append_evidence_appendix``: programmatic and post-render, no Jinja loop
+    authored into the binary template.
+
+    Placed BEFORE the checklists and the evidence appendix so the .docx section order matches the HTML
+    templates' (``findings`` -> ``diagrams`` -> ``methodology`` -> ``evidence``, see
+    ``reporting/templates.py``) — which is also what makes ``context.number_figures``'s single
+    numbering sequence correct for both deliverables.
+
+    Renders nothing when the engagement has no linked diagram, so a report without one is byte-identical
+    to before this section existed (the same backward-compat guarantee ``render_html._render_diagrams``
+    makes on the HTML side)."""
+    if not ctx.diagrams:
+        return
+    doc.add_heading("Attack Paths", level=1)
+    doc.add_paragraph(
+        "Static rendition of each interactive attack path delivered with the HTML report: the zones "
+        "and hosts as placed in the diagram, and the phase walkthrough, at the final step."
+    )
+    for index, d in enumerate(ctx.diagrams, start=1):
+        model = _diagram_model(d.embed_html)
+        meta = model.get("meta") if isinstance(model, dict) else None
+        title = d.caption or _d_str((meta or {}).get("title")) or f"Attack path {index}"
+        doc.add_heading(title, level=2)
+        subtitle = _d_str((meta or {}).get("subtitle"))
+        if subtitle:
+            doc.add_paragraph(subtitle)
+        drew_grid = _add_diagram_grid(doc, model) if model else False
+        if model:
+            _add_diagram_walkthrough(doc, model)
+            _add_diagram_edges(doc, model)
+        if not model or not drew_grid:
+            # Be loud about a snapshot this renderer could not read: an honest "the diagram is over
+            # there" beats the silent omission ext#115 is about.
+            note = doc.add_paragraph()
+            note.add_run(
+                "This diagram is delivered as an interactive figure in the HTML report; a static "
+                "rendition of its layout is not available here."
+            ).italic = True
+        # The caption goes BENEATH the figure, carrying the same continuous number the HTML prints.
+        caption = doc.add_paragraph()
+        caption.add_run(figure_caption(d.figure_number, title)).italic = True
 
 
 def _append_checklists(doc, ctx: ReportContext) -> None:
@@ -380,7 +622,7 @@ def _append_evidence_appendix(doc, ctx: ReportContext, *, artifact_bytes: Artifa
                 data = None
             if data and len(data) > _MAX_EVIDENCE_BYTES:
                 data = None  # oversized: fall back to caption-only rather than embed a huge blob
-        caption = a.caption or a.filename
+        caption = _numbered_caption(a)  # ext#117
         if data:
             try:
                 doc.add_picture(io.BytesIO(data), width=_EVIDENCE_IMAGE_WIDTH)
@@ -410,6 +652,10 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
 
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
+    # Section order mirrors the HTML templates' block order (findings -> diagrams -> methodology ->
+    # evidence, reporting/templates.py), which is what makes context.number_figures' single figure
+    # sequence come out the same in both deliverables.
+    _append_attack_paths(tpl.docx, ctx)  # ext#115
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 

@@ -575,7 +575,23 @@
   function boot() {
     if (typeof window === "undefined" || !window.__VECTOR_MODEL__) return;
     var host = document.getElementById("vap") || document.body;
-    mount(host, window.__VECTOR_MODEL__, { captureKeys: true });
+    var inst = mount(host, window.__VECTOR_MODEL__, { captureKeys: true });
+    // On paper, an animated walkthrough is whatever phase it happened to be on — usually the intro,
+    // i.e. an empty diagram (ext#115). Print the FINAL keyframe instead: the whole path, every node in
+    // its end state. `goto` also stops the auto-play timer, so the printed frame cannot move under the
+    // print engine. This fires for the deliverable embedded in scribble's report iframe too — that is
+    // the print-to-PDF half of ext#115. Restoring the phase afterwards keeps the on-screen walkthrough
+    // where the reader left it.
+    if (typeof window.addEventListener === "function") {
+      var resume = null;
+      window.addEventListener("beforeprint", function () {
+        resume = inst.phase();
+        inst.goto(inst.max());
+      });
+      window.addEventListener("afterprint", function () {
+        if (resume !== null) { inst.goto(resume); resume = null; }
+      });
+    }
   }
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

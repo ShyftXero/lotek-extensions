@@ -7,9 +7,14 @@ order.
 
 from scribble.reporting.context import (  # noqa: F401
     ArtifactCtx,
+    DiagramCtx,
     FindingCtx,
     GroupCtx,
     ReportContext,
     SeverityRollup,
     build_report_context,
+    figure_anchor,
+    figure_caption,
+    figure_label,
+    number_figures,
 )

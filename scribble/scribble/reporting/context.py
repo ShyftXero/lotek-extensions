@@ -32,6 +32,9 @@ class ArtifactCtx:
     # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the
     # authority, and the field is additive + defaulted, so an existing consumer is unaffected.
     byte_size: int | None = None
+    # ADDITIVE (ext#117): the report-wide figure number, assigned by :func:`number_figures` in document
+    # order. ``None`` only for a context assembled by hand in a test that never called it.
+    figure_number: int | None = None
 
 
 @dataclass
@@ -70,6 +73,9 @@ class DiagramCtx:
     diagram_ref: str
     caption: str
     embed_html: str
+    # ADDITIVE (ext#117): see ``ArtifactCtx.figure_number``. A diagram is a figure like any other — it
+    # is numbered in the same continuous sequence so "Figure 4" means one thing across the report.
+    figure_number: int | None = None
 
 
 @dataclass
@@ -230,6 +236,68 @@ def _diagram_ctxs(diagrams) -> list[DiagramCtx]:
         for d in sorted(diagrams, key=lambda d: (d.order_index, d.id))
         if d.include_in_report and d.embed_html
     ]
+
+
+FIGURE_SEPARATOR = " — "  # "Figure 3 — Payload firing in the browser"
+
+
+def figure_label(number: int | None) -> str:
+    """``"Figure 3"`` for a numbered figure, ``""`` for an un-numbered one.
+
+    Single-sourced here rather than formatted in each renderer, because ext#117's requirement is that
+    the two deliverables agree — a figure that is "Figure 3" on screen and unnumbered in Word is worse
+    than neither. Same reason :func:`number_figures` assigns the numbers here and not in a renderer."""
+    return "" if number is None else f"Figure {number}"
+
+
+def figure_caption(number: int | None, caption: str) -> str:
+    """``"Figure 3 — <caption>"``; degrades to just the number, or just the caption, or ``""``."""
+    label = figure_label(number)
+    text = (caption or "").strip()
+    if label and text:
+        return label + FIGURE_SEPARATOR + text
+    return label or text
+
+
+def figure_anchor(number: int | None) -> str:
+    """The stable in-document id a cross-reference targets (``fig-3``); ``""`` when un-numbered."""
+    return "" if number is None else f"fig-{number}"
+
+
+def number_figures(
+    groups: list[GroupCtx], diagrams: list[DiagramCtx], artifacts: list[ArtifactCtx]
+) -> int:
+    """Stamp a continuous, report-wide ``figure_number`` (1-based) on every figure, in DOCUMENT order.
+    Returns the count assigned.
+
+    Document order is: each finding's evidence gallery in board order (a parent's own artifacts, then
+    each nested child's, matching how both renderers walk them) -> attack-path diagrams -> the
+    engagement-level evidence appendix. That is the order the ``default`` AND ``compliance`` HTML
+    templates render (``reporting/templates.py``: ``findings`` -> ``diagrams`` -> ``evidence``) and the
+    order ``render_docx.render_report_docx`` appends its post-render sections in, so the two
+    deliverables number the same figure the same way *structurally* — not by two renderers separately
+    remembering to.
+
+    EVERY gallery artifact is numbered, embeddable or not. Whether an artifact's bytes actually make it
+    into a given deliverable depends on that renderer's inlining budget and on whether the caller
+    supplied an artifact reader at all, so numbering off embed success would hand the same report
+    different figure numbers in HTML and DOCX — precisely the defect ext#117 is about."""
+    n = 0
+
+    def _stamp(items: list[ArtifactCtx] | list[DiagramCtx]) -> None:
+        nonlocal n
+        for item in items:
+            n += 1
+            item.figure_number = n
+
+    for group in groups:
+        for finding in group.findings:
+            _stamp(finding.artifacts)
+            for child in finding.children:
+                _stamp(child.artifacts)
+    _stamp(diagrams)
+    _stamp(artifacts)
+    return n
 
 
 def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
@@ -482,6 +550,15 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or (client.name if client else "")
+    # Engagement-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
+    # These have no finding gallery to appear in, so without this list they reached no deliverable at
+    # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
+    engagement_artifacts = _artifact_ctxs(
+        [a for a in engagement.artifacts if a.finding_id is None], engagement_id=engagement.id
+    )
+    diagrams = _diagram_ctxs(engagement.diagrams)
+    # ext#117: assigned HERE, once, so both renderers read the same numbers off the same context.
+    number_figures(groups_out, diagrams, engagement_artifacts)
     return ReportContext(
         engagement_id=engagement.id,
         engagement_name=engagement.name,
@@ -492,13 +569,8 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         end_date=engagement.end_date.isoformat() if engagement.end_date else None,
         groups=groups_out,
         rollup=rollup,
-        # Engagement-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
-        # These have no finding gallery to appear in, so without this list they reached no deliverable at
-        # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
-        artifacts=_artifact_ctxs(
-            [a for a in engagement.artifacts if a.finding_id is None], engagement_id=engagement.id
-        ),
-        diagrams=_diagram_ctxs(engagement.diagrams),
+        artifacts=engagement_artifacts,
+        diagrams=diagrams,
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
