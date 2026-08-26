@@ -6,11 +6,12 @@ top of the [lotek](https://github.com/ShyftXero/lotek) framework. One repo, one 
 | Extension | `/prefix` | What |
 |---|---|---|
 | **cream** | `/cream` | Client quoting + invoicing (SOW/quotes + invoices; no payment processing) |
+| **exploiteer** | `/exploiteer` | Deterministic exploitable-path engine — a job's findings → ranked real exploit paths, report-only in the browser |
 | **registrar** | `/registrar` | Offensive-infra inventory + control (servers/domains/DNS, provider-agnostic) |
 | **scribble** | `/scribble` | Pentest reporting + the vuln-enrichment proposal seam |
 | **vector** | `/vector` | Attack-path (kill-chain) diagram editor + HTML deliverable |
 
-Each is **bundled with lotek and enabled by default** — a fresh lotek install mounts all four out of the
+Each is **bundled with lotek and enabled by default** — a fresh lotek install mounts all five out of the
 box (opt out per extension with `[extensions] <name> = false` or the admin Settings → Extensions toggle).
 
 ## Layout
@@ -22,6 +23,7 @@ the wheel and rendered on lotek's in-app Docs page):
 ```
 lotek-extensions/
   cream/       pyproject.toml · lotek-extension.toml · README.md · docs/CREAM.md · cream/       (the package)
+  exploiteer/  …               · …                    · …         · docs/…        · exploiteer/
   registrar/   …               · …                    · …         · docs/…        · registrar/
   scribble/    …
   vector/      …
@@ -38,7 +40,7 @@ create_tables, **host_models) -> Config` and reaches lotek **only** through the 
 - **No authorization data in the extension** — core owns identity/authz/engagements; an extension
   *references* core and resolves engagement rights through the host seam
   (`can_operate_on` / `visible_engagement_ids`), never a request body.
-- Own tables, **prefixed** (`cream_*`, `registrar_*`, …).
+- Own tables, **prefixed** (`cream_*`, `exploiteer_*`, `registrar_*`, …).
 
 ## How lotek consumes these (pinned git deps — vendoring is retired)
 
