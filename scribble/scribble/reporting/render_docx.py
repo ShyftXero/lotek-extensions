@@ -222,7 +222,7 @@ def _numbered_caption(a: ArtifactCtx) -> str:
     """``"Figure 3 — Payload firing in the browser"`` (ext#117). The number comes off the CONTEXT
     (``context.number_figures``), never from a counter this renderer keeps, so it is the same number
     the HTML deliverable prints for the same artifact."""
-    return figure_caption(a.figure_number, a.caption or a.filename)
+    return _xml_safe(figure_caption(a.figure_number, a.caption or a.filename))
 
 
 def _artifact_ctx(
@@ -320,29 +320,40 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
 # viewer serialize its live <svg> at export time (`XMLSerializer`, ~5 lines, zero drift) and store it
 # alongside `embed_html`, then rasterize THAT here.
 
-# vector's ``render.py`` embeds the normalized model verbatim in
-# ``<script type="application/json" id="vap-model">…</script>`` and escapes ``<``/``>``/``&`` as
-# ``\uXXXX`` on the way in (``json_for_script``), so the payload cannot contain ``</script>`` and a
-# non-greedy match to the first close tag is exact rather than best-effort.
-_VAP_MODEL_RE = re.compile(r"<script\b[^>]*\bid=[\"']vap-model[\"'][^>]*>(.*?)</script>", re.S | re.I)
-
 # ``embed_html`` is operator/agent-supplied (it arrives over a PAT POST -- see
 # ``api_pat.scribble_link_attack_path``) and is stored verbatim, so nothing guarantees it came from
 # vector or is bounded the way vector's own schema bounds a model. Every number below is scribble's own
 # cap on how much of a snapshot this renderer will turn into document, independent of vector's limits.
-_MAX_DIAGRAM_SCAN_BYTES = 8 * 1024 * 1024  # don't regex-scan an unbounded snapshot
+_MAX_DIAGRAM_SCAN_CHARS = 8 * 1024 * 1024  # don't scan an unbounded snapshot at all
+_MAX_DIAGRAMS = 50  # a report section, not an archive (cf. render_html's _MAX_APPENDIX_ITEMS)
 _MAX_DIAGRAM_ZONES = 12  # a Word table wider than this is unreadable on a portrait page anyway
 _MAX_DIAGRAM_ROWS = 40
+_MAX_DIAGRAM_NODES = 2000
 _MAX_DIAGRAM_PHASES = 60
 _MAX_DIAGRAM_EDGES = 80
 _MAX_DIAGRAM_TEXT = 400  # per field, matching vector's own _MED/_LONG spirit
 
+# Codepoints legal in a Python str and legal in JSON, but ILLEGAL in XML 1.0 -- lxml (under
+# python-docx) raises ``ValueError`` on any of them, which would turn one poisoned diagram into an
+# uncaught 500 on every ``.docx`` export of that engagement, forever. They cannot be filtered at the
+# link route: the JSON blob carries them as the six ASCII characters ``\u0000``, so the stored
+# ``embed_html`` holds no literal control byte for ``api_pat._nul_safe`` to strip, and ``json.loads``
+# materializes the real character here. (Tab/LF/CR are legal in XML and are collapsed by ``_d_str``'s
+# whitespace split anyway.)
+_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _xml_safe(text: str) -> str:
+    """Drop the characters python-docx cannot serialize. Applied at the TWO places untrusted text
+    becomes document -- here and in :func:`_numbered_caption` -- not at each ``add_run`` call."""
+    return _XML_ILLEGAL_RE.sub("", text)
+
 
 def _d_str(value: object, cap: int = _MAX_DIAGRAM_TEXT) -> str:
-    """A capped, single-line string from an untrusted model field; anything non-scalar -> ``""``."""
+    """A capped, single-line, XML-safe string from an untrusted model field; non-scalar -> ``""``."""
     if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return ""
-    return " ".join(str(value).split())[:cap]
+    return " ".join(_xml_safe(str(value)).split())[:cap]
 
 
 def _d_int(value: object, default: int = 0) -> int:
@@ -350,12 +361,48 @@ def _d_int(value: object, default: int = 0) -> int:
         if isinstance(value, bool):
             return default
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is an ArithmeticError, NOT a ValueError: ``int(float("inf"))`` raises it, and
+        # JSON's non-standard ``Infinity`` / an overflowing ``1e999`` both produce that float. Missing
+        # it made a one-token payload an uncaught 500 on the whole deliverable.
         return default
 
 
 def _d_list(value: object) -> list:
     return value if isinstance(value, list) else []
+
+
+def _find_model_blob(embed_html: str) -> str | None:
+    """The text inside ``<script … id="vap-model">…</script>``, by LINEAR scans.
+
+    This was a regex (``<script\\b[^>]*\\bid=["']vap-model["'][^>]*>(.*?)</script>``) and that was a
+    denial of service: two unanchored ``[^>]*`` runs before a literal mean every ``<script`` in the
+    input is a start position costing O(n), so the match is O(n²) in a string an operator PAT chooses.
+    Measured on the real pattern: ``"<script " * 8000`` (64 KiB) took **15.9 s**, and the curve
+    extrapolates to ~71 minutes at 1 MiB -- well inside the 10 MiB the link route accepts. CPython's
+    ``re`` holds the GIL and never yields to the gevent hub, so that is not a slow request, it is the
+    whole worker. Lowering the size cap does not fix a quadratic; removing the backtracking does.
+    (Re-measured after: 8 MiB of the same payload, 0.02 s.)
+
+    Deliberately strict about what it accepts, because the job is to read VECTOR's output, not to
+    parse hostile HTML: the id attribute must sit inside a ``<script`` tag that opens within 256
+    characters before it, and the body ends at the first ``</script``. vector's ``json_for_script``
+    escapes ``<``/``>``/``&`` as ``\\uXXXX``, so a genuine model never contains either."""
+    for needle in ('id="vap-model"', "id='vap-model'"):
+        at = embed_html.find(needle)
+        if at < 0:
+            continue
+        start = embed_html.rfind("<script", max(0, at - 256), at)
+        if start < 0:
+            continue
+        body = embed_html.find(">", at)
+        if body < 0:
+            continue
+        end = embed_html.find("</script", body + 1)
+        if end < 0:
+            continue
+        return embed_html[body + 1 : end]
+    return None
 
 
 def _diagram_model(embed_html: str | None) -> dict | None:
@@ -365,13 +412,15 @@ def _diagram_model(embed_html: str | None) -> dict | None:
     independent -- CLAUDE.md) and does not execute anything. Never raises: a snapshot that is not
     vector's, is truncated, or is not JSON degrades to ``None`` and the caller still emits the section
     heading + caption, so the diagram is never silently absent."""
-    if not embed_html or len(embed_html) > _MAX_DIAGRAM_SCAN_BYTES:
+    if not embed_html or len(embed_html) > _MAX_DIAGRAM_SCAN_CHARS:
         return None
-    match = _VAP_MODEL_RE.search(embed_html)
-    if not match:
+    blob = _find_model_blob(embed_html)
+    if blob is None:
         return None
     try:
-        model = json.loads(match.group(1))
+        # ``parse_constant`` kills JSON's non-standard ``Infinity``/``-Infinity``/``NaN`` at the parser
+        # rather than leaving every downstream ``int()`` to survive a float special.
+        model = json.loads(blob, parse_constant=lambda _name: None)
     except (ValueError, RecursionError):
         return None
     return model if isinstance(model, dict) else None
@@ -407,7 +456,11 @@ def _add_diagram_grid(doc, model: dict) -> bool:
         return False
     by_zone: dict[str, dict[int, list[dict]]] = {_d_str(z.get("id")): {} for z in zones}
     max_row = 0
-    for node in _d_list(model.get("nodes")):
+    # ``nodes`` is the one list vector's own caps do not reach here, and every node sharing a
+    # ``(zone, row)`` is concatenated into ONE cell -- one ``<w:br/>`` element each. Measured
+    # uncapped: 100k nodes = 8.8s and 204 MB peak per render, multiplied by however many diagrams are
+    # linked. Cap it like the rest.
+    for node in _d_list(model.get("nodes"))[:_MAX_DIAGRAM_NODES]:
         if not isinstance(node, dict):
             continue
         zone_id = _d_str(node.get("zone"))
@@ -462,7 +515,7 @@ def _add_diagram_edges(doc, model: dict) -> None:
     """The connections, resolved to node LABELS — an edge list of bare ids is not a deliverable."""
     labels = {
         _d_str(n.get("id")): (_d_str(n.get("label")) or _d_str(n.get("id")))
-        for n in _d_list(model.get("nodes"))
+        for n in _d_list(model.get("nodes"))[:_MAX_DIAGRAM_NODES]
         if isinstance(n, dict)
     }
     edges = [e for e in _d_list(model.get("edges")) if isinstance(e, dict)][:_MAX_DIAGRAM_EDGES]
@@ -501,10 +554,23 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         "Static rendition of each interactive attack path delivered with the HTML report: the zones "
         "and hosts as placed in the diagram, and the phase walkthrough, at the final step."
     )
-    for index, d in enumerate(ctx.diagrams, start=1):
+    # Nothing caps how many diagrams may be linked to an engagement (``scribble_link_attack_path``
+    # appends unconditionally), so cap what one section renders -- same reasoning as render_html's
+    # ``_MAX_APPENDIX_ITEMS``, and SAY SO in the document rather than truncating silently.
+    withheld = max(0, len(ctx.diagrams) - _MAX_DIAGRAMS)
+    if withheld:
+        note = doc.add_paragraph()
+        note.add_run(
+            f"{withheld} further diagram{'s' if withheld != 1 else ''} linked to this engagement "
+            f"{'are' if withheld != 1 else 'is'} not shown here "
+            f"(this section lists at most {_MAX_DIAGRAMS})."
+        ).italic = True
+    for index, d in enumerate(ctx.diagrams[:_MAX_DIAGRAMS], start=1):
         model = _diagram_model(d.embed_html)
         meta = model.get("meta") if isinstance(model, dict) else None
-        title = d.caption or _d_str((meta or {}).get("title")) or f"Attack path {index}"
+        # ``d.caption`` comes from the link route, which strips NUL but not the other 22 XML-illegal
+        # control characters -- and those reach lxml unfiltered through add_heading/add_run.
+        title = _xml_safe(d.caption or "") or _d_str((meta or {}).get("title")) or f"Attack path {index}"
         doc.add_heading(title, level=2)
         subtitle = _d_str((meta or {}).get("subtitle"))
         if subtitle:

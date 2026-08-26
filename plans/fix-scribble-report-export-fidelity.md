@@ -1,8 +1,8 @@
 # Plan: fix/scribble-report-export-fidelity
 
 - **Branch:** `fix/scribble-report-export-fidelity`  (worktree: `.claude/worktrees/report-export-fidelity`, off `origin/main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** not opened yet — stacked onto the orchestrator's integration branch (no PR from this session, by direction)
+- **Status:** 🟢 ready to merge — stacked for the orchestrator's integration branch (no PR from this session)
 
 ## Purpose
 
@@ -69,19 +69,90 @@ rendered DOCX/HTML — it renders it and reads it back with `zipfile` + `python-
   `html.fig_anchor_ids == ["fig-1" … "fig-5"]`.
 - Nothing else in the outcome set moves (no evidence drawing lost, HTML iframe still there).
 
+### Measured after
+
+Every target hit, and nothing else in the outcome set moved:
+
+```json
+{
+  "docx.has_attack_path_str": true,     // was false
+  "docx.has_diagram_caption": true,     // was false
+  "docx.zone_titles_present": 3,        // was 0
+  "docx.node_labels_present": 3,        // was 0
+  "docx.phase_titles_present": 2,       // was 0
+  "docx.figure_labels": ["Figure 1" … "Figure 5"],   // was []
+  "html.figure_labels": ["Figure 1" … "Figure 5"],   // was []  — IDENTICAL to the docx
+  "html.fig_anchor_ids": ["fig-1" … "fig-5"],        // was []
+  "docx.drawing_elements": 4,           // unchanged — no evidence image lost
+  "docx.media_files": 1,                // unchanged
+  "html.has_attack_path_iframe": true,  // unchanged
+  "html.figcaptions": 5,                // unchanged
+  "html.print_color_adjust": 3,         // unchanged (BUG-3)
+  "html.has_methodology_section": true  // unchanged (BUG-4)
+}
+```
+
 ## Done
 
 - [x] Claimed #115 + #117 (`status:todo` → `status:doing`, `### CLAIM` comment naming this branch).
 - [x] Worktree + split-identity git config.
-- [x] Baseline recorded (above).
+- [x] Baseline recorded, then re-measured on the same scope (above).
+- [x] DOCX carries the attack path (ext#115).
+- [x] Print path shows the final keyframe, not an arbitrary animation frame (ext#115).
+- [x] Continuous `Figure N — ` numbering + `#fig-N` anchors, identical in HTML and DOCX (ext#117).
+- [x] Red-then-green transcript for every guard added (12 mutations, all red then green).
+- [x] BUG-3 / BUG-4 re-verified — **neither regressed**; see below.
+- [x] Independent security review; four findings fixed on this branch (see below).
+- [x] Docs updated on this branch (`scribble/docs/SCRIBBLE.md`, `vector/docs/VECTOR.md`).
+
+## BUG-3 / BUG-4 verdict
+
+- **BUG-3 (ext#77 — severity colour on paper): genuinely fixed, not regressed.**
+  `tests/test_report_print_media.py` ran for real here (Chromium + poppler present, **0 skips**): it
+  renders the deliverable to a `file://` URL, emulates print, prints to PDF and *counts
+  severity-coloured pixels* per page — an operator-level check passes either way, so it rasterizes.
+  `print-color-adjust: exact` is present and effective on the severity bar/legend, the severity
+  tags/badges and the metric/methodology tiles, and the light paper palette is pinned above the
+  dark-theme selectors. 31 passed across that file plus the methodology file.
+- **BUG-4 (ext#78 — Methodology without a checklist): genuinely fixed in the HTML, not regressed.**
+  `test_methodology_renders_with_no_checklist_at_all` and
+  `test_the_methodology_anchor_is_a_section_not_an_empty_div` both pass.
+- **New, adjacent, NOT fixed here:** the `.docx` has **no Methodology section at all**, with or
+  without a checklist (`_append_checklists` returns early on an empty `ctx.checklists`, and even with
+  one it emits only the checklist items, never the standing prose the HTML always carries). Same "the
+  `.docx` silently carries less" class as BUG-7, different section, different fix (the prose lives as
+  HTML constants in `render_html.py`). **Filed as ext#118** rather than widening this branch — and it
+  may well be what the reporter was still seeing when they listed BUG-4 as observed.
+
+## Security review findings — all fixed on this branch
+
+An independent review of the branch diff found four, all in the new untrusted-snapshot path:
+
+1. **HIGH — ReDoS.** `_VAP_MODEL_RE` had two unanchored `[^>]*` runs before a literal, so every
+   `<script` in `embed_html` was a start position costing O(n). Measured: `"<script " * 8000` (64 KiB)
+   = **15.9s**, extrapolating to ~71 min at 1 MiB and ~76 h at 8 MiB — all inside the link route's
+   10 MiB cap, on an engine that holds the GIL and never yields to the gevent hub, i.e. the whole
+   worker wedges on any `GET report.docx` by any viewer. Lowering the size cap does not fix a
+   quadratic. Replaced with three linear `str.find` scans (`_find_model_blob`). Re-measured: **8 MiB
+   in 0.021s**.
+2. **MEDIUM — `OverflowError`.** `int(float("inf"))` raises `OverflowError`, an `ArithmeticError`, not
+   a `ValueError`; JSON's non-standard `Infinity` (and an overflowing `1e999`) produce that float. One
+   token made every future `.docx` export of that engagement an uncaught 500. Fixed at the parser
+   (`json.loads(..., parse_constant=...)`) *and* in the `except`.
+3. **MEDIUM — XML-illegal control characters.** 23 codepoints lxml refuses survive `str.split()`, and
+   the link route's NUL scrub cannot see them: the JSON carries them as the six ASCII characters
+   `\u0000`, so the stored snapshot holds no literal control byte. Fixed with one `_xml_safe` scrub at
+   the two places untrusted text becomes document (`_d_str` and `_numbered_caption`/the diagram title).
+4. **MEDIUM — uncapped `nodes` and uncapped diagram count.** `nodes` was the one list without a cap
+   and every node sharing a `(zone, row)` concatenates into one cell (one `<w:br/>` each): 100k nodes
+   measured 8.8s / 204 MB peak per render, multiplied by however many diagrams are linked (nothing
+   capped that either). Added `_MAX_DIAGRAM_NODES` and `_MAX_DIAGRAMS`, with the shortfall NAMED in
+   the document rather than truncated silently.
 
 ## Remaining
 
-- [ ] DOCX carries the attack path (ext#115).
-- [ ] Print path shows the final keyframe, not an arbitrary animation frame (ext#115).
-- [ ] Continuous `Figure N — ` numbering + `#fig-N` anchors, identical in HTML and DOCX (ext#117).
-- [ ] Red-then-green transcripts for every guard added.
-- [ ] BUG-3 / BUG-4 verdict.
+- [ ] Nothing on this branch. It is stacked for the orchestrator's integration branch: **no
+      `--ack-tests`, no PR**, issues stay at `status:doing`.
 
 ## Notes / gotchas
 

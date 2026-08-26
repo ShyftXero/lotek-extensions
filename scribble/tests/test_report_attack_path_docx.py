@@ -239,11 +239,11 @@ def test_a_hostile_snapshot_cannot_render_an_unbounded_table(session_factory):
 
 
 def test_an_oversized_snapshot_is_not_scanned(session_factory):
-    """A snapshot past the scan bound is not regex-walked at all — it degrades to the honest note
-    rather than costing a multi-megabyte backtracking scan on every report render."""
-    from scribble.reporting.render_docx import _MAX_DIAGRAM_SCAN_BYTES
+    """A snapshot past the scan bound is not walked at all — it degrades to the honest note rather
+    than costing a multi-megabyte scan on every report render."""
+    from scribble.reporting.render_docx import _MAX_DIAGRAM_SCAN_CHARS
 
-    huge = "<html>" + ("x" * (_MAX_DIAGRAM_SCAN_BYTES + 1)) + "</html>"
+    huge = "<html>" + ("x" * (_MAX_DIAGRAM_SCAN_CHARS + 1)) + "</html>"
     eng_id = _engagement(session_factory, diagrams=[("Huge", huge)])
     text = _text(_render(session_factory, eng_id))
     assert "Huge" in text and "interactive figure in the HTML report" in text
@@ -264,3 +264,105 @@ def test_untrusted_model_fields_are_coerced_not_trusted(session_factory):
     assert "Coerced" in text
     assert "Z" * 401 not in text  # the 5000-char zone title was capped
     assert "d" * 1201 not in text
+
+
+# ── hostile-snapshot hardening (found by the branch's independent security review) ───────────────────
+
+# XML-illegal control characters, written as ESCAPES so this file itself stays clean text.
+_CTRL = "\x00\x01\x02\x07\x08\x0b\x1b\x7f"
+
+
+def test_a_pathological_snapshot_does_not_wedge_the_renderer(session_factory):
+    """ReDoS. Extraction used to be a regex with two unanchored ``[^>]*`` runs before a literal, so
+    every ``<script`` in the input was a start position costing O(n) -- measured 15.9s at 64 KiB of
+    ``"<script " * 8000``, extrapolating to ~71 minutes at 1 MiB, which the link route's 10 MiB cap
+    happily accepts. CPython's ``re`` holds the GIL and never yields to the gevent hub, so that is not
+    a slow request, it is the whole worker; and lowering the size cap does not fix a quadratic.
+
+    A wall-clock budget is the only assertion that can distinguish "linear" from "quadratic" here. It
+    is generous (5s for work that measures in milliseconds) precisely so it fails on the ALGORITHM and
+    not on a loaded box."""
+    import time
+
+    hostile = "<script " * 8000  # the exact shape that measured 15.9s against the old pattern
+    eng_id = _engagement(session_factory, diagrams=[("Pathological", hostile)])
+    started = time.monotonic()
+    text = _text(_render(session_factory, eng_id))
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"extraction took {elapsed:.1f}s -- the scan is not linear"
+    assert "Pathological" in text and "interactive figure in the HTML report" in text
+
+
+def test_json_float_specials_do_not_500_the_deliverable(session_factory):
+    """``json`` accepts the non-standard ``Infinity`` and overflows ``1e999`` to ``float("inf")``;
+    ``int(float("inf"))`` raises ``OverflowError``, which is an ``ArithmeticError`` and was NOT in the
+    coercion's ``except``. One token in a linked snapshot made every future ``.docx`` export of that
+    engagement an uncaught 500 -- defeating the section's own "degrade, never raise" contract."""
+    model = {
+        "meta": {"title": "Infinities"},
+        "zones": [{"id": "z", "title": "Zed", "order": 1e999}],
+        "nodes": [{"id": "n", "zone": "z", "label": "host", "row": 1e999,
+                   "states": [{"at": 1e999, "state": "owned"}]}],
+        "edges": [], "phases": [{"n": 1e999, "title": "Phase", "desc": "dee"}],
+    }
+    eng_id = _engagement(session_factory, diagrams=[("Infinities", snapshot(model))])
+    text = _text(_render(session_factory, eng_id))  # must not raise
+    assert "Infinities" in text and "Zed" in text and "host" in text
+
+
+def test_xml_illegal_control_characters_do_not_500_the_deliverable(session_factory):
+    """lxml (under python-docx) refuses 23 codepoints that are legal in a Python str and legal in
+    JSON. They cannot be filtered at the link route: the JSON blob carries them as the six ASCII
+    characters ``\\u0000``, so the stored ``embed_html`` holds no literal control byte for the route's
+    NUL scrub to find, and ``json.loads`` materializes the real character here. Both the model fields
+    and the operator-typed CAPTION are affected -- the caption never goes through the model coercion
+    at all."""
+    model = {
+        "meta": {"title": "Ctrl" + _CTRL},
+        "zones": [{"id": "z", "title": "Zone" + _CTRL, "order": 0}],
+        "nodes": [{"id": "n", "zone": "z", "label": "host" + _CTRL, "ip": "10.0.0.1"}],
+        "edges": [], "phases": [{"n": 1, "title": "Phase" + _CTRL, "desc": "desc" + _CTRL}],
+    }
+    eng_id = _engagement(
+        session_factory, diagrams=[("Caption" + _CTRL, snapshot(model))]
+    )
+    text = _text(_render(session_factory, eng_id))  # must not raise
+    assert "Caption" in text
+    assert "Zone" in text and "host" in text and "Phase" in text
+    for bad in _CTRL:
+        assert bad not in text
+
+
+def test_the_node_count_is_capped(session_factory):
+    """``nodes`` was the one list with no cap, and every node sharing a ``(zone, row)`` concatenates
+    into ONE cell -- one ``<w:br/>`` element each. Measured uncapped: 100k nodes = 8.8s and 204 MB
+    peak per render, multiplied by however many diagrams are linked."""
+    from scribble.reporting.render_docx import _MAX_DIAGRAM_NODES
+
+    model = {
+        "meta": {"title": "Node flood"},
+        "zones": [{"id": "z", "title": "Zone", "order": 0}],
+        "nodes": [{"id": f"n{i}", "zone": "z", "label": f"host{i}", "row": 0}
+                  for i in range(_MAX_DIAGRAM_NODES + 500)],
+        "edges": [], "phases": [],
+    }
+    eng_id = _engagement(session_factory, diagrams=[("Flood", snapshot(model))])
+    text = _text(_render(session_factory, eng_id))
+    assert f"host{_MAX_DIAGRAM_NODES - 1}" in text
+    assert f"host{_MAX_DIAGRAM_NODES}" not in text
+
+
+def test_the_diagram_count_is_capped_and_says_so(session_factory):
+    """Nothing caps how many diagrams may be linked to one engagement, so cap what one section
+    renders -- and NAME the shortfall, because a silently truncated section is the same defect class
+    this whole branch exists to fix."""
+    from scribble.reporting.render_docx import _MAX_DIAGRAMS
+
+    eng_id = _engagement(
+        session_factory,
+        diagrams=[(f"Diagram {i}", snapshot()) for i in range(_MAX_DIAGRAMS + 3)],
+    )
+    text = _text(_render(session_factory, eng_id))
+    assert f"Diagram {_MAX_DIAGRAMS - 1}" in text
+    assert f"Diagram {_MAX_DIAGRAMS + 2}" not in text
+    assert "3 further diagrams" in text

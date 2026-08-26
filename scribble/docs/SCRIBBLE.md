@@ -359,16 +359,26 @@ into the report. Promoted per-host findings render **nested inside their parent'
 report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
 answers that number as `top_level_count`.
 
-**Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before) — in
-the **HTML/PDF** report. `render_docx` is **not** covered by this and is the outstanding gap: it renders a
-top-level finding's gallery only, its *Affected Hosts* list is text-only, and `_build_context` never reads
-`ctx.artifacts`, so neither child evidence nor the engagement appendix exists in the editable hand-off:
+**Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before), in
+**both** deliverables (the `.docx` half followed in issue #54; the table below used to record it as an
+outstanding gap and no longer does):
 
 | attached to | where it renders (HTML/PDF) | `.docx` |
 |---|---|---|
-| a top-level finding | that finding's evidence gallery | yes |
-| a nested per-host **child** finding | inside that child's row of the parent's *Affected hosts* table | **no** |
-| the **engagement** (no `finding_id`) | the **Evidence** appendix section, last in the document | **no** |
+| a top-level finding | that finding's evidence gallery | yes — the finding's evidence list |
+| a nested per-host **child** finding | inside that child's row of the parent's *Affected hosts* table | yes — inside the parent's *Affected Hosts* list |
+| the **engagement** (no `finding_id`) | the **Evidence** appendix section, last in the document | yes — the *Evidence Appendix* section |
+
+**Every figure is numbered `Figure N — …`, continuously across the report, and the number is the SAME in
+both deliverables** (ext#117). The numbers are assigned once, in `reporting/context.py`'s
+`number_figures`, in document order — each finding's evidence (a parent's own, then each nested child's),
+then the attack-path diagrams, then the engagement-level appendix. That is the order both the `default`
+and `compliance` HTML templates render and the order `render_report_docx` appends its post-render
+sections in, which is what makes the two agree structurally rather than by two renderers separately
+remembering to. In the HTML each figure also carries an `id="fig-N"` anchor, so a finding's body text can
+cross-reference `#fig-3`. Numbering is assigned to **every** gallery artifact, embedded or not: embed
+success depends on the renderer's inlining budget and on whether the caller supplied an artifact reader,
+so numbering off it would give one engagement two different sequences.
 
 An engagement-level artifact is exposed to the renderers as `ReportContext.artifacts` (an additive field
 on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
@@ -471,7 +481,36 @@ masthead as the document's own title block (ext#45).
 There is **no server-side PDF renderer**. The HTML is a print-to-PDF deliverable; the `.docx` is the
 editable hand-off — and the cover page, the contents and the summary front matter are **HTML/PDF only**
 (Word owns pagination and has its own TOC field, so docx parity is a separate change against the authored
-`default.docx`). The print stylesheet marks the elements whose BACKGROUND carries meaning
+`default.docx`).
+
+**The attack path reaches the `.docx` too** (ext#115). The HTML embeds vector's self-contained
+`export.html` in a sandboxed iframe and the animation plays; Word has no browser, so `render_docx`
+appends an **Attack Paths** section instead — placed before the checklists and the evidence appendix so
+the `.docx` section order matches the HTML block order. Per diagram it draws the same geometry the viewer
+draws (`zone` is the column, `row` is the row — `vector-viewer.js`'s `geometry()`) as a native Word table,
+then the phase walkthrough and the connections resolved to node labels, with the numbered caption
+beneath. The model is read out of the `<script type="application/json" id="vap-model">` block vector's
+`render.py` already embeds in the stored snapshot — Scribble does not import vector and executes nothing;
+every field is coerced and capped, under Scribble's own bounds (zones/rows/phases/edges, and how much
+snapshot it will scan at all), because `embed_html` arrives over a PAT POST and nothing proves it came
+from vector. A snapshot it cannot read still emits the heading, the caption, and an explicit note that the
+figure is interactive in the HTML report: before ext#115 the Word deliverable dropped the diagram in
+total silence, which is the defect. Four bounds make a hostile snapshot survivable, all of them found
+by this branch's own security review: extraction is three **linear** `str.find` scans, not a regex
+(the regex it replaced was O(n²) — `"<script " * 8000` measured 15.9s, extrapolating to ~71 minutes at
+1 MiB, inside the 10 MiB the link route accepts, on a `re` engine that never yields the GIL to the
+gevent hub); `json.loads` runs with `parse_constant` so `Infinity`/`NaN` cannot reach an `int()` and
+raise `OverflowError`; every string is scrubbed of the 23 XML-illegal control characters lxml refuses
+(they arrive as the six ASCII characters `\u0000` inside the JSON, so the route's NUL scrub never sees
+them); and the node count and the per-section diagram count are capped like everything else, with the
+shortfall named in the document. A raster still was rejected — a `.docx` picture must be raster, and
+the diagram only becomes pixels once a browser has run the viewer, so it would mean shipping a headless
+browser (or a second, drifting Python renderer) into a mounted extension.
+
+**Printed, the embedded diagram shows its FINAL keyframe.** vector's viewer jumps to the last phase on
+`beforeprint` and restores the reader's phase on `afterprint`, and its `@media print` block drops the step
+controls and stops the animations — otherwise the printed page rasterized whatever phase the walkthrough
+happened to be on, normally the intro, i.e. an empty diagram. The print stylesheet marks the elements whose BACKGROUND carries meaning
 (severity bar and legend, severity tags/badges, the metric and methodology tiles) `print-color-adjust:
 exact`, so they survive Chrome's *Background graphics: off* — the print-dialog default, under which the
 severity block used to print blank (ext#39). It also pins the light paper palette at a specificity that

@@ -153,6 +153,14 @@ renderer would choke on.
 - **Export JSON** — round-trips the model as a `vector.attackpath/v1` document, re-importable via the
   editor's **Import JSON** or `POST /vector/api/import`.
 
+**On paper the deliverable shows its FINAL keyframe** (ext#115). A walkthrough printed at whatever phase
+it happened to be on is normally the intro — an empty diagram — so the viewer jumps to the last phase on
+`beforeprint` (which also stops auto-play, so the printed frame cannot move under the print engine) and
+restores the reader's phase on `afterprint`. Its `@media print` block drops the step controls and the
+phase rail (interactive furniture with nothing to click) and stops every animation, so what rasterizes is
+a settled frame. This applies to the deliverable printed on its own **and** to the copy Scribble embeds
+in its report iframe, which is the print-to-PDF half of that issue.
+
 ---
 
 ## Security posture / gotchas
