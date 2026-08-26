@@ -72,10 +72,11 @@ An LLM judge buys nothing here: every outcome is a status code or a row state.
 - [x] This plan
 - [x] `bugreport/` package — models, db, deps, service, blueprint, api_pat, host, templates
 - [x] packaging: `pyproject.toml`, `lotek-extension.toml`, `README.md`, `docs/BUGREPORT.md`
-- [x] **51 tests green**, ruff clean, pyrefly 0 errors
-- [x] E1/E2: 17 guards neutralised one at a time, each turning its own test red (below)
+- [x] **59 tests green**, ruff clean, pyrefly 0 errors
+- [x] E1/E2: 19 guards neutralised one at a time, each turning its own test red (below)
 - [x] E5: validated against the **real** host parser — see "Mount proof"
-- [x] `/adversarial-reviewer` → 4 warnings, all fixed with a red-then-green test each
+- [x] `/adversarial-reviewer` → 4 warnings + 1 later type-confusion 500, all fixed with a
+      red-then-green test each
 
 ## Remaining
 
@@ -107,9 +108,11 @@ decision and not two copies:
 | `visible_reports` — drop the `LIST_LIMIT` cap (W2) | **RED** 1 |
 | `_owns` — drop the standalone arm (W3) | **RED** 1 |
 | manifest: empty `[audit] verbs` / traversal in `machine_prefix` | **RED** 1 / 2 |
+| `update_own` — let an admin rewrite someone else's text | **RED** 1 |
+| `_text` — drop the non-string type guard | **RED** 7 (500s instead of 400s, both surfaces) |
 | `admin_act` — drop the status allow-list | **STILL GREEN** ⇒ the check was DEAD (`ReportStatus(...)` already raises); deleted rather than covered |
 
-**E5** — `uvx ruff check bugreport` clean · `pyrefly check bugreport tests` 0 errors · 51 passed.
+**E5** — `uvx ruff check bugreport` clean · `pyrefly check bugreport tests` 0 errors · 59 passed.
 **E6** — `git diff --stat` names only `bugreport/` and `plans/`; no sibling extension touched.
 
 ## Mount proof
