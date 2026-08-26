@@ -22,9 +22,6 @@ from sqlalchemy.orm import Session
 
 from bugreport.models import MAX_BODY, MAX_TITLE, Report, ReportStatus
 
-#: Statuses an admin may set. ``open`` is included so an acknowledgement can be undone.
-ADMIN_STATUSES = frozenset(s.value for s in ReportStatus)
-
 #: Bound the admin note copied into the core audit row — the note itself is free text, the audit is not
 #: the place for 20k of it.
 _AUDIT_NOTE_CHARS = 200
@@ -145,14 +142,15 @@ def admin_act(
     failure is not swallowed, it aborts the action."""
     if not is_admin:
         raise Denied("admin only")
-    if status is not None and status not in ADMIN_STATUSES:
-        raise ValueError(f"unknown status {status!r}")
     note = (note or "").strip()
     if len(note) > MAX_BODY:
         raise ValueError(f"note is longer than {MAX_BODY} characters")
 
     before = {"status": report.status.value, "admin_note": (report.admin_note or "")[:_AUDIT_NOTE_CHARS]}
     if status is not None:
+        # `ReportStatus(...)` IS the validator: an unknown status raises ValueError, which every caller
+        # already maps to 400. A second allow-list next to it would be a copy to keep in sync, and the
+        # red-then-green pass proved it dead — deleting it changed no test.
         report.status = ReportStatus(status)
     report.admin_note = note or None
     after = {"status": report.status.value, "admin_note": (report.admin_note or "")[:_AUDIT_NOTE_CHARS]}

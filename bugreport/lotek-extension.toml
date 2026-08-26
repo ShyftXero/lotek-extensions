@@ -20,6 +20,13 @@ machine_prefix = "/machine"
 docs = "docs/BUGREPORT.md"
 docs_title = "Bug reports (capture)"
 
+# The audit-verb vocabulary this extension emits, bare (the host namespaces each to
+# `ext:bugreport:<verb>`). INV-AUDIT-03's reader half: an action the /admin/audit filter does not know
+# about is written but not selectable, which is a trail nobody can read. Keep this in step with every
+# `host_audit(...)` call site — tests/test_manifest.py asserts they match.
+[audit]
+verbs = ["admin_update"]
+
 # Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
 [db]
 base = "bugreport.models:Base"   # the module whose IMPORT registers the tables
