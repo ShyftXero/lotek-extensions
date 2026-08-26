@@ -70,9 +70,21 @@ def load_visible(
     return None
 
 
-def _clean(title: str | None, body: str | None) -> tuple[str, str]:
-    title = (title or "").strip()
-    body = (body or "").strip()
+def _text(value: object, field: str) -> str:
+    """A JSON body is arbitrary — ``{"title": 123}`` and ``{"title": {"a": 1}}`` are both well-formed
+    JSON, and the pydantic schemas on the machine routes only STAMP the model for the host's OpenAPI
+    generator, they do not validate. Coercing with ``str()`` would silently store ``"{'a': 1}"``;
+    calling ``.strip()`` on it raises AttributeError and the route 500s. Refuse it as a 400."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text")
+    return value.strip()
+
+
+def _clean(title: object, body: object) -> tuple[str, str]:
+    title = _text(title, "title")
+    body = _text(body, "body")
     if not title:
         raise ValueError("title is required")
     if len(title) > MAX_TITLE:
@@ -87,8 +99,8 @@ def create(
     *,
     reporter_id: uuid.UUID | None,
     reporter_name: str | None,
-    title: str | None,
-    body: str | None,
+    title: object,
+    body: object,
     standalone: bool = False,
 ) -> Report:
     """File a report, attributed to ``reporter_id``.
@@ -111,7 +123,7 @@ def create(
 
 
 def update_own(
-    db: Session, report: Report, *, actor_id: uuid.UUID | None, title: str | None, body: str | None,
+    db: Session, report: Report, *, actor_id: uuid.UUID | None, title: object, body: object,
     standalone: bool = False,
 ) -> Report:
     """The reporter edits their OWN report's text. Admin is deliberately NOT allowed here: an admin
@@ -142,8 +154,8 @@ def admin_act(
     report: Report,
     *,
     is_admin: bool,
-    status: str | None,
-    note: str | None,
+    status: object,
+    note: object,
     host_audit=None,
 ) -> Report:
     """The admin's whole write surface: set the status and leave a note the reporter reads.
@@ -154,7 +166,7 @@ def admin_act(
     if not is_admin:
         raise Denied("admin only")
     if note is not None:
-        note = note.strip()
+        note = _text(note, "note")
         if len(note) > MAX_BODY:
             raise ValueError(f"note is longer than {MAX_BODY} characters")
 
@@ -162,8 +174,10 @@ def admin_act(
     if status is not None:
         # `ReportStatus(...)` IS the validator: an unknown status raises ValueError, which every caller
         # already maps to 400. A second allow-list next to it would be a copy to keep in sync, and the
-        # red-then-green pass proved it dead — deleting it changed no test.
-        report.status = ReportStatus(status)
+        # red-then-green pass proved it dead — deleting it changed no test. `_text` first because an
+        # UNHASHABLE JSON value (a dict or a list) raises TypeError out of the enum lookup, not
+        # ValueError, and a TypeError is a 500.
+        report.status = ReportStatus(_text(status, "status"))
     # `note is None` means "the caller did not send one" -> KEEP the existing note. Only an explicitly
     # empty string clears it. Blanking it on a status-only PATCH would silently destroy the reporter's
     # feedback, which is the one thing this extension exists to deliver.
