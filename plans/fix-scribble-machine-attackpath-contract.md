@@ -125,5 +125,19 @@ the cross-engagement case has its own dedicated test.
 - **Deliberately NOT done:** rejecting a second POST with the same `diagram_ref` (issue's fix #3,
   "would be a reasonable additional guard"). Re-linking a re-exported snapshot of the same vector
   diagram is legitimate; with `Idempotency-Key` honoured the retry case is already covered.
+- **Two host-seam properties this fix makes REACHABLE for the first time, worth knowing** (both are
+  pre-existing behaviour of lotek's `src/app/idempotency.py`, not introduced here — before this branch
+  nothing on this blueprint was ever memoized, so neither could fire):
+  1. **The request fingerprint hashes only the first 64 KiB of the body** (`_HASHED_BODY_BYTES`). A
+     caller that reuses ONE `Idempotency-Key` for two DIFFERENT attack paths whose first 64 KiB happen to
+     match (same vector export preamble, different graph further in) gets the first one replayed instead
+     of the `422` the mismatch is supposed to earn — and the second diagram is silently not stored. It
+     needs a caller to misuse the key, which is the thing the key exists to prevent, but the failure mode
+     is silent. → **lotek-side issue worth filing**; nothing sound can be done extension-side (folding
+     content into the slot key is explicitly the wrong design — see that module's docstring).
+  2. **A response over 64 KiB is still not memoized** (`_MAX_STORED_RESPONSE_BYTES`); the claim is
+     released and the retry re-executes. That is unchanged behaviour and it bounds the growth of
+     `idempotency_keys.response_json` to ≤64 KiB per key, but it means a very large
+     `PATCH /findings/<id>` response is still not replay-protected.
 - Standalone scribble (no mounting host) still has no idempotency store — `_with_idempotency` fails
   open exactly as every other host seam in this package does. Production is always mounted.

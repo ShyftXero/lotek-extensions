@@ -326,6 +326,18 @@ def test_patch_attack_path_withholds_it_from_the_report(client, stub_host):
     assert client.patch(
         f"{M}/engagements/{eid}/attack-paths/{ap['id']}", json={}
     ).status_code == 400
+    # An explicit null (and any non-boolean) is a 400 at the boundary, NOT a write of NULL into a NOT
+    # NULL column — which is a Postgres IntegrityError, i.e. a 500 for what is plainly a bad request.
+    # SQLite would store it, so this cannot be left to "the tests pass".
+    for bad in (None, "yes", 1, []):
+        resp = client.patch(
+            f"{M}/engagements/{eid}/attack-paths/{ap['id']}", json={"include_in_report": bad}
+        )
+        assert resp.status_code == 400, (bad, resp.status_code, resp.get_json())
+    # …and the stored value is untouched by the refusals above.
+    assert client.get(
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}"
+    ).get_json()["include_in_report"] is False
 
 
 def test_per_item_routes_carry_the_collection_route_tenancy(client, stub_host):

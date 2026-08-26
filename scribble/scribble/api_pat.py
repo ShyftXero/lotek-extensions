@@ -2885,10 +2885,15 @@ def scribble_update_attack_path(engagement_id, attack_path_id):
             return err
         updates["caption"] = caption
     if "include_in_report" in data:
-        publish, err = _include_in_report_or_400(data["include_in_report"])
-        if err:
-            return err
-        updates["include_in_report"] = publish
+        # Strict `isinstance(bool)`, matching ``scribble_update_group`` rather than
+        # ``_include_in_report_or_400`` (which exists for the MULTIPART artifact surface, where a flag can
+        # only arrive as text). That helper maps an explicit ``null``/``""`` to None meaning "not
+        # specified", which is right for a CREATE and wrong here: on a PATCH the key IS present, so None
+        # would be written to a NOT NULL column and a caller's `{"include_in_report": null}` would come
+        # back a 500 instead of the 400 it is.
+        if not isinstance(data["include_in_report"], bool):
+            return _bad_request("include_in_report must be true or false")
+        updates["include_in_report"] = data["include_in_report"]
     if not updates:
         return _bad_request("no updatable fields supplied")
 
