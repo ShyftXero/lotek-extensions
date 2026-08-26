@@ -52,8 +52,15 @@ def _env_and_template():
     return env, env.from_string(_read(_TEMPLATE))
 
 
-def render_deliverable(model, *, title: str | None = None) -> str:
-    """Return a complete, self-contained HTML document for ``model`` (any dict; normalized here)."""
+def render_deliverable(model, *, title: str | None = None, footer: str = "") -> str:
+    """Return a complete, self-contained HTML document for ``model`` (any dict; normalized here).
+
+    ``footer`` is the host-held ADMIN setting ``deliverable_footer`` (lotek#485) — a per-install line
+    stamped under the diagram. Passed IN rather than resolved here so this stays a pure function with
+    no app-context dependency: the three export call sites read it from
+    ``deps.host_setting("deliverable_footer", "")``. Autoescaped like ``title``, because an operator
+    typing HTML into an admin form must not inject markup into a client deliverable.
+    """
     doc = normalize(model)
     css = _read(_STATIC / "vector-viewer.css")
     js = _read(_STATIC / "vector-viewer.js")
@@ -64,4 +71,5 @@ def render_deliverable(model, *, title: str | None = None) -> str:
         css=Markup(css),
         js=Markup(js),
         model_json=Markup(json_for_script(doc)),
+        footer=(footer or "").strip(),  # autoescaped
     )

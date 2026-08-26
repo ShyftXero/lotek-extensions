@@ -71,3 +71,10 @@ select = ["E", "F", "I", "W", "UP", "B"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.pyrefly]
+# pytest puts `tests/` on sys.path (rootdir conftest collection), so `from conftest import FakeUser`
+# resolves at runtime; pyrefly infers only the package root and reports it as missing-import on EVERY
+# test file in this subproject. Mirrors lotek core's `[tool.pyrefly] search-path`. Without it the
+# commit gate's per-subproject `pyrefly check` denies any commit that stages a test file.
+search-path = [".", "tests"]

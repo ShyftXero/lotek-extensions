@@ -52,3 +52,29 @@ class Diagram(Base, TimestampMixin):
     builtin: Mapped[bool] = mapped_column(default=False, index=True)
     # The whole vector.attackpath/v1 document, normalized before store.
     model_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class UserPref(Base, TimestampMixin):
+    """One host user's PERSONAL Vector preferences (lotek-extensions#111 / lotek#485).
+
+    The USER half of the settings split, and it lives HERE rather than in the host on purpose: a
+    personal preference crosses no privilege boundary, so it needs no admin gate, no audit row and no
+    host storage — it is an ordinary owner-scoped row, reached through Vector's own ⚙ cog. The ADMIN
+    half (``[[settings]]`` in ``lotek-extension.toml``) is the mirror image: the host owns the form,
+    the gate, the store and the audit, and Vector only reads it.
+
+    ``owner_id`` is a SOFT reference (no FK) to the host user, UUID-typed for the same reason
+    ``Diagram.owner_id`` is — lotek keys ``User`` on UUIDv7 and an Integer column cannot hold one.
+    Unique, so this is a per-user singleton; a user with no row simply gets the defaults.
+
+    NOTE: nothing here may become an authorization input. ``blueprint.visible_diagrams_stmt()`` is the
+    IDOR guard and is deliberately untouched by these — a preference filters what is ALREADY visible.
+    """
+
+    __tablename__ = "vector_user_prefs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid, unique=True, index=True)
+    #: Hide the seeded read-only example(s) from MY diagram list. Off by default so a new user still
+    #: discovers the example; once you've seen it, it is clutter forever.
+    hide_builtin_diagrams: Mapped[bool] = mapped_column(default=False)

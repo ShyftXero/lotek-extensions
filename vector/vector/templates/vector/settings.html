@@ -1,0 +1,40 @@
+{% extends vector_base %}
+{% block title %}Vector — My settings{% endblock %}
+{% block appbar_title %}My settings{% endblock %}
+{% block content %}
+<style>
+  /* Scoped to .vec-settings so nothing here leaks into the host's shell when mounted. */
+  .vec-settings{max-width:680px;margin:0 auto;padding:28px 20px;width:100%}
+  .vec-settings h1{font-size:20px;margin:0 0 4px}
+  .vec-settings .lead{color:#7f93a3;margin:0 0 20px;font-size:13px}
+  .vec-settings .row{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-top:1px solid #14202a}
+  .vec-settings .row label{font-weight:600;cursor:pointer}
+  .vec-settings .hint{color:#7f93a3;font-size:12px;margin-top:3px}
+  .vec-settings .saved{color:#37c9d6;font-size:13px;margin-bottom:14px}
+  .vec-settings .vec-btn{font:600 13px/1 system-ui;color:#dfe9f0;background:#131e27;border:1px solid #2a3d4c;border-radius:6px;padding:9px 13px;cursor:pointer}
+  .vec-settings .vec-btn.primary{background:#8f2a34;border-color:#ff4d5e}
+</style>
+<div class="vec-settings" data-vector-settings>
+  <h1>My Vector settings</h1>
+  <p class="lead">
+    These are <strong>yours alone</strong> — they change nothing for anyone else. Settings that apply to
+    the whole install (like the footer stamped on exported deliverables) are admin-only and live on the
+    dashboard's Extensions page.
+  </p>
+  {% if saved %}<p class="saved" data-saved>Saved.</p>{% endif %}
+  <form method="post" action="{{ url_for('vector.user_settings') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}"/>
+    <div class="row">
+      <input type="checkbox" id="vec-hide-builtin" name="hide_builtin_diagrams" value="1"
+             {% if hide_builtin_diagrams %}checked{% endif %}/>
+      <div>
+        {# Explicit for= — a control inside a <label> without one has bitten this project before. #}
+        <label for="vec-hide-builtin">Hide the built-in example diagrams</label>
+        <div class="hint">The seeded read-only example is useful once. Tick this to keep it out of your
+          diagram list; it stays available to everyone else.</div>
+      </div>
+    </div>
+    <div style="padding:16px 0 0"><button class="vec-btn primary" type="submit">Save</button></div>
+  </form>
+</div>
+{% endblock %}

@@ -35,7 +35,7 @@ from sqlalchemy import or_, select
 
 from vector import host
 from vector.api_schemas import CreateDiagramRequest, UpdateDiagramRequest, request_body
-from vector.deps import get_config
+from vector.deps import get_config, host_setting
 from vector.models import Diagram
 from vector.render import render_deliverable
 from vector.schema import normalize
@@ -201,7 +201,9 @@ def export_diagram(diagram_id: uuid.UUID):
         d = _load_visible_or_none(db, actor, diagram_id)
         if d is None:
             return jsonify({"error": "not_found"}), 404
-        html = render_deliverable(json.loads(d.model_json or "{}"), title=d.name)
+        html = render_deliverable(
+            json.loads(d.model_json or "{}"), title=d.name, footer=host_setting("deliverable_footer", ""),
+        )
         fname = _safe_filename(d.name)
     return Response(
         html, mimetype="text/html",

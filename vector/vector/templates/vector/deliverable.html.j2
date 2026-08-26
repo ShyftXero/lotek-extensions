@@ -7,11 +7,13 @@
 <title>{{ title }}</title>
 <style>
 html,body{margin:0;height:100%;background:#0a0f14}
+.vap-deliverable-footer{position:fixed;left:0;right:0;bottom:0;padding:6px 14px;font:600 11px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#7f93a3;background:rgba(10,15,20,.92);border-top:1px solid #1c2a35;text-align:center;z-index:9}
 {{ css }}
 </style>
 </head>
 <body>
 <div id="vap"></div>
+{% if footer %}<footer class="vap-deliverable-footer">{{ footer }}</footer>{% endif %}
 <script type="application/json" id="vap-model">{{ model_json }}</script>
 <script>
   try { window.__VECTOR_MODEL__ = JSON.parse(document.getElementById('vap-model').textContent); }

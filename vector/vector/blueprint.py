@@ -13,13 +13,19 @@ from __future__ import annotations
 import json
 import uuid
 
-from flask import Blueprint, abort, redirect, render_template, url_for
+from flask import Blueprint, abort, redirect, render_template, request, url_for
 from markupsafe import Markup
 from sqlalchemy import or_, select
 
 from vector._version import __version__
-from vector.deps import current_actor_id, current_actor_is_admin, get_config, host_can_write
-from vector.models import Diagram
+from vector.deps import (
+    current_actor_id,
+    current_actor_is_admin,
+    get_config,
+    host_can_write,
+    host_setting,
+)
+from vector.models import Diagram, UserPref
 from vector.render import json_for_script
 from vector.schema import blank_model, normalize
 
@@ -39,6 +45,9 @@ def _inject_base():
         "vector_can_write": host_can_write(),
         "api_base": api_base(),
         "export_html_base": api_base() + "/export.html",
+        # The ⚙ cog renders only when there is a host identity to scope a preference to (see
+        # user_settings) — standalone Vector has one user and nothing to prefer against.
+        "vector_has_user_settings": current_actor_id() is not None,
     }
 
 
@@ -68,13 +77,76 @@ def _counts(model_json: str) -> tuple[int, int]:
     return len(phases), len(m.get("nodes") or [])
 
 
+# ── per-USER preferences ───────────────────────────────────────────────────────────────────────
+#
+# The user half of the settings split (lotek-extensions#111): a personal preference crosses no
+# privilege boundary, so it lives in Vector's own table behind Vector's own ⚙ cog rather than in the
+# host's admin Extensions page. The ADMIN half is the mirror image — declared in
+# `lotek-extension.toml` [[settings]], owned/gated/audited by the host, read via `host_setting`.
+#
+# 🔴 These must never become an authorization input. `visible_diagrams_stmt` above is the IDOR guard
+# and is deliberately untouched: a preference filters what is ALREADY visible to you.
+
+
+def _prefs(db) -> UserPref | None:
+    """The current host user's preference row, or None (anonymous / standalone / never saved)."""
+    uid = current_actor_id()
+    if uid is None:
+        return None
+    return db.scalars(select(UserPref).where(UserPref.owner_id == uid)).first()
+
+
+@bp.get("/settings")
+def user_settings():
+    """Vector's own ⚙ page — MY preferences, nobody else's.
+
+    Requires a host identity: without one there is no "my" to scope a preference to, and writing a
+    NULL-owner row would make one anonymous session's choice apply to every other. Standalone Vector
+    (single local user, no host identity) therefore has no preferences page; that is honest, not a
+    gap — it has exactly one user and nothing to distinguish them from.
+    """
+    if current_actor_id() is None:
+        abort(404)
+    cfg = get_config()
+    with cfg.session_factory() as db:
+        row = _prefs(db)
+        hide_builtin = bool(row.hide_builtin_diagrams) if row is not None else False
+    return render_template("vector/settings.html", hide_builtin_diagrams=hide_builtin,
+                           saved=request.args.get("saved") == "1")
+
+
+@bp.post("/settings")
+def user_settings_save():
+    """Save MY preferences. Scoped to `current_actor_id()` — the form carries no owner field, so
+    there is nothing for a caller to point at someone else's row."""
+    uid = current_actor_id()
+    if uid is None:
+        abort(404)
+    hide = str(request.form.get("hide_builtin_diagrams") or "").strip().lower() in ("1", "true", "on")
+    cfg = get_config()
+    with cfg.session_factory() as db:
+        row = _prefs(db)
+        if row is None:
+            row = UserPref(owner_id=uid)
+            db.add(row)
+        row.hide_builtin_diagrams = hide
+        db.commit()
+    return redirect(url_for("vector.user_settings", saved="1"))
+
+
 @bp.get("/")
 @bp.get("/diagrams")
 def dashboard():
     cfg = get_config()
     rows = []
     with cfg.session_factory() as db:
+        # The preference filters the ALREADY-SCOPED result; it is not folded into
+        # visible_diagrams_stmt(), which is the access guard.
+        prefs = _prefs(db)
+        hide_builtin = bool(prefs.hide_builtin_diagrams) if prefs is not None else False
         for d in db.scalars(visible_diagrams_stmt().order_by(Diagram.updated_at.desc())).all():
+            if hide_builtin and d.builtin:
+                continue
             pc, nc = _counts(d.model_json)
             rows.append(
                 {
@@ -142,7 +214,7 @@ def api_export_html(diagram_id: uuid.UUID):
         doc = json.loads(d.model_json or "{}")
         title = d.name
         fname = _safe_filename(d.name) + ".html"
-    html = render_deliverable(doc, title=title)
+    html = render_deliverable(doc, title=title, footer=host_setting("deliverable_footer", ""))
     return Response(
         html,
         mimetype="text/html",
