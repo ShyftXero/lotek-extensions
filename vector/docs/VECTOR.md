@@ -189,6 +189,11 @@ Stored in Vector's own `vector_user_prefs` table (unique soft `owner_id` → the
 changing it changes nothing for anyone else. The form carries **no owner field** — the row is keyed off
 `current_actor_id()` alone, so there is nothing for a caller to point at someone else's preferences.
 
+Two mounted-only consequences: a **viewer cannot save** one, because lotek's app-wide role gate
+refuses every mutating request from a read-only role before Vector's view runs (the page renders, the
+save is refused — a host policy, and it fails in the safe direction); and a request with **no host
+actor** gets a 404 rather than a null-owner row that would silently apply to everybody.
+
 🔴 **A preference is never an authorization input.** `blueprint.visible_diagrams_stmt()` is the IDOR
 guard and is deliberately blind to `hide_builtin_diagrams`; the list view filters what that guard
 already returned. Folding a preference into an access predicate is how a preference bug becomes a

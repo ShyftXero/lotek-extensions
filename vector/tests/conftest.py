@@ -110,12 +110,11 @@ def make_app():
         # set one without a host. Absent key -> the caller's default, matching the real reader.
         host_settings: dict = {}
         cfg.extras["extension_setting"] = lambda key, default=None: host_settings.get(key, default)
-        app_settings_holder = host_settings
         pat = {"actor": StubActor(), "authenticate": None}
         _wire_pat_hooks(cfg, pat)
         app.holder = holder  # type: ignore[attr-defined]
         app.pat = pat  # type: ignore[attr-defined]
-        app.host_settings = app_settings_holder  # type: ignore[attr-defined]
+        app.host_settings = host_settings  # type: ignore[attr-defined]
         created.append(app)
         return app
 
