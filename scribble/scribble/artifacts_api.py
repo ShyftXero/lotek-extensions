@@ -54,13 +54,12 @@ from flask import jsonify, request, send_file, url_for
 from scribble.artifacts_storage import (
     MAX_OBJECT_BYTES,
     SAFE_NAME_MAX,
-    artifact_ref,
     delete_file,
     guess_content_type,
     object_id_of,
+    persist_bytes,
     read_object_bytes,
     resolve_path,
-    save_bytes,
 )
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
@@ -303,22 +302,24 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         else:
             placement = ArtifactPlacement.attached
 
-        # DISK, DELIBERATELY — do not "finish the cutover" by calling store_bytes here.
+        # The SAME persist call the machine route makes — that is the point of it. This surface used
+        # to write to disk directly, so which backend held a piece of evidence depended on which route
+        # a human happened to use, and every reader downstream had to cope with both answers.
         #
-        # This is the COOKIE surface. ``HostObjects`` authorizes against the host's PAT actor, and
-        # ``host_contract.pat_actor()`` reads ``g.api_user_id``, which is set ONLY by PAT
-        # authentication (``api_v1._authenticate_pat`` and ``host_contract.pat_authenticate``). A
-        # browser request therefore has actor ``None``, ``_resolve_principal`` returns None, and
-        # ``HostObjects.put`` raises ``PermissionError`` — every browser upload would 500.
-        #
-        # It is a CORE capability gap, not a scribble one: the host exposes no session principal to
-        # the object surface, and an extension must not manufacture one (attribution is observed by
-        # the host, never supplied by the extension). Closing it needs a core-side session actor;
-        # until then the browser stores on disk, which is where it stored before this branch, and the
-        # read paths below already resolve either kind of reference, so nothing here changes when it
-        # lands.
-        object_id = None
-        storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
+        # `core_engagement_id` is read in its own short session so the S3 put holds no DB connection
+        # and cannot read a detached attribute.
+        with open_session() as db:
+            engagement_row = db.get(Engagement, engagement_id)
+            core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
+        try:
+            storage_path, sha256, byte_size = persist_bytes(
+                cfg, engagement_id=engagement_id, core_engagement_id=core_engagement_id,
+                filename=filename, data=data, content_type=content_type)
+        except PermissionError:
+            # The host refused the put: this actor may VIEW the engagement (checked above) without
+            # holding an operator capability on it in core. An honest 403 — never a disk write, which
+            # would turn a refused upload into a successful one, and never a 500.
+            return jsonify(error="not an operator on this engagement in the host"), 403
 
         with open_session() as db:
             artifact = Artifact(
@@ -329,7 +330,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
                 filename=filename,
                 content_type=content_type,
                 storage_path=storage_path,
-                object_id=object_id,
                 byte_size=byte_size,
                 sha256=sha256,
                 caption=caption,
@@ -356,7 +356,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
                 return jsonify(error="not found"), 404
-            storage_path = artifact_ref(artifact)
+            storage_path = artifact.storage_path
             filename = artifact.filename
             content_type = artifact.content_type
 
@@ -425,7 +425,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
                 return jsonify(error="not found"), 404
-            storage_path = artifact_ref(artifact)
+            storage_path = artifact.storage_path
             db.delete(artifact)
             db.commit()
         delete_file(cfg, storage_path)

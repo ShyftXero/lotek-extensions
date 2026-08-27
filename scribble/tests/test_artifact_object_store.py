@@ -1,26 +1,28 @@
-"""Evidence bytes in the CORE object store, and the four places that has to agree with itself.
+"""Evidence bytes in the CORE object store — ONE persist path, ONE reference, ONE reader.
 
-The cutover is not one change, it is a WRITE side and three READ-shaped sides that must all use the
-same reference:
+The shape that matters here is not "can we talk to SeaweedFS". It is that nothing downstream has to
+know where a given file went:
 
-* the two upload routes (cookie + machine) write either an ``object_id`` or a ``storage_path``;
-* every byte reader has to resolve whichever it got;
-* the report context builder has to hand the reader a reference rather than a raw path;
-* every delete has to reach the store, or the blob outlives every row that pointed at it.
+* `persist_bytes` is the only writer, so no route picks a backend and two routes cannot pick
+  differently;
+* `Artifact.storage_path` is the only column that answers "where are the bytes", so no reader has to
+  decide which of two columns is authoritative;
+* every reader resolves whichever kind of reference it is handed;
+* `delete_file` is the only deleter, so a blob cannot outlive the row that pointed at it.
 
-The first cut of this branch changed the BUILDERS and left three of the four readers on disk-only, and
-nothing went red — the reports simply rendered without their evidence. So most of what is pinned here
-is agreement between two places, not behaviour in one.
+An earlier cut of this branch had two columns, two writers and four readers, only one of which knew
+about store references. Nothing went red — the reports simply rendered without their evidence. Most
+of what is pinned below is therefore agreement between two places, not behaviour in one.
 """
 
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import io
 import pathlib
 import uuid
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -28,12 +30,12 @@ import pytest
 from scribble.artifacts_storage import (
     MAX_OBJECT_BYTES,
     OBJECT_REF_PREFIX,
-    artifact_ref,
+    _acting_principal,
     delete_file,
     object_id_of,
+    persist_bytes,
     read_object_bytes,
     save_bytes,
-    store_bytes,
 )
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
@@ -51,23 +53,26 @@ CORE_OBJECT_KINDS = frozenset({"artifact", "report", "screenshot", "evidence"})
 # --------------------------------------------------------------------------- the host's object surface
 
 
-@dataclass
+@dataclasses.dataclass
 class _Blob:
     kind: str
     data: bytes
     content_type: str
     filename: str
     engagement_id: object
+    actor: object
     deleted: bool = False
 
 
 class FakeObjects:
     """Stands in for core's ``HostObjects`` and REFUSES what core refuses.
 
-    A permissive fake is worse than none here: the whole class of bug this module exists for is
-    scribble handing core something core rejects, so the fake enforces core's contract (exactly one of
-    job_id/engagement_id, a real ``ObjectKind``, ``KeyError`` for anything not visible) rather than
-    accepting whatever it is given.
+    A permissive fake is worse than none. The bug class this module exists for is scribble handing
+    core something core rejects, and the first version of this fake ignored its ``actor`` argument
+    entirely — which let a change that would have raised ``PermissionError`` on every browser upload
+    pass green. It now models core's contract: exactly one of job_id/engagement_id, a real
+    ``ObjectKind``, a None principal holding zero engagements, and ``KeyError`` for anything not
+    visible.
     """
 
     def __init__(self) -> None:
@@ -76,9 +81,6 @@ class FakeObjects:
         self.refuse_put = False
 
     def put(self, actor, *, kind, stream, content_type, filename, job_id=None, engagement_id=None):
-        # A None principal holds zero engagements in core, so it can neither read nor write. Modelling
-        # that is the whole reason this fake exists: the first version ignored ``actor`` entirely, and
-        # a change that made every browser upload raise ``PermissionError`` in production passed here.
         if actor is None or self.refuse_put:
             raise PermissionError("not an operator on the engagement")
         if (job_id is None) == (engagement_id is None):
@@ -87,7 +89,7 @@ class FakeObjects:
             raise ValueError(f"invalid kind {kind!r}")
         data = stream.read()
         oid = uuid.uuid7()
-        blob = _Blob(kind, data, content_type, filename, engagement_id)
+        blob = _Blob(kind, data, content_type, filename, engagement_id, actor)
         self.blobs[oid] = blob
         self.puts.append(blob)
         # No ``s3_key``: the ref an extension gets back never carries one.
@@ -115,17 +117,14 @@ class FakeObjects:
         return True
 
     def list(self, actor, **_kw):
+        if actor is None:
+            return []
         return [SimpleNamespace(id=k) for k, v in self.blobs.items() if not v.deleted]
 
 
 @pytest.fixture
 def objects(app) -> FakeObjects:
-    """Mount an object surface on the app, the way ``app/extensions.py::_inject_host`` does.
-
-    Opt-in rather than part of ``stub_host``: a deployment with no object store is supported and is
-    what every other artifact test in this suite exercises, so the default must stay "no store" or
-    that fallback would silently stop being covered.
-    """
+    """Mount an object surface, the way ``app/extensions.py::_inject_host`` does."""
     surface = FakeObjects()
     app.extensions["scribble"].extras["objects"] = surface
     return surface
@@ -138,56 +137,65 @@ def engagement(app, stub_host, session_factory):
         client_row = Client(name="Acme")
         db.add(client_row)
         db.flush()
-        eng = Engagement(
-            name="Q3",
-            client_id=client_row.id,
-            company_name="Acme Corp",
-            core_engagement_id=uuid.uuid7(),
-        )
+        eng = Engagement(name="Q3", client_id=client_row.id, company_name="Acme Corp",
+                         core_engagement_id=uuid.uuid7())
         db.add(eng)
         db.commit()
         stub_host.viewable_client_ids = stub_host.viewable_client_ids | {client_row.id}
-        return SimpleNamespace(
-            id=eng.id, client_id=client_row.id, core_engagement_id=eng.core_engagement_id
-        )
+        return SimpleNamespace(id=eng.id, client_id=client_row.id,
+                               core_engagement_id=eng.core_engagement_id)
 
 
-# --------------------------------------------------------------------------- store_bytes
+@pytest.fixture
+def unmapped_engagement(app, stub_host, session_factory):
+    """A scribble engagement with NO core engagement behind it — the standalone-report case."""
+    with session_factory() as db:
+        client_row = Client(name="Beta")
+        db.add(client_row)
+        db.flush()
+        eng = Engagement(name="Q4", client_id=client_row.id, company_name="Beta Corp")
+        db.add(eng)
+        db.commit()
+        stub_host.viewable_client_ids = stub_host.viewable_client_ids | {client_row.id}
+        return SimpleNamespace(id=eng.id, client_id=client_row.id, core_engagement_id=None)
 
 
-def test_store_bytes_falls_back_to_disk_with_no_object_surface(app):
-    """An operator running without SeaweedFS is a supported deployment, not a broken one."""
+def _persist(app, cfg, engagement, **kw):
     with app.app_context():
-        object_id, sha256, size = store_bytes(uuid.uuid7(), "shot.png", PNG)
-    assert object_id is None
-    assert sha256 == hashlib.sha256(PNG).hexdigest()
-    assert size == len(PNG)
+        return persist_bytes(cfg, engagement_id=engagement.id,
+                             core_engagement_id=engagement.core_engagement_id,
+                             filename="shot.png", data=PNG, **kw)
 
 
-def test_store_bytes_falls_back_when_the_engagement_is_not_mapped_to_core(app, objects):
-    """A standalone scribble engagement has no CORE engagement to authorize a put against."""
-    with app.app_context():
-        object_id, _sha, _size = store_bytes(None, "shot.png", PNG)
-    assert object_id is None
-    assert objects.puts == [], "nothing may be uploaded when there is nothing to authorize against"
+# --------------------------------------------------------------------------- one column
 
 
-def test_store_bytes_uses_a_kind_core_actually_accepts(app, objects, engagement):
-    """The orphan-blob guard.
+def test_the_artifact_row_has_exactly_one_place_for_the_reference():
+    """The ratchet against reintroducing the split.
 
-    ``kind="scribble_evidence"`` is not an ``ObjectKind`` member. Core validated the kind only after
-    uploading, so the first evidence upload would have left a blob in the bucket with no row and no
-    way to find it again. ``FakeObjects`` refuses a non-member the way core does, so a regression here
-    is a ``ValueError`` out of ``put`` rather than a silent leak.
+    A second column (`object_id`) beside `storage_path` means every reader must decide which one is
+    authoritative for a given row. Five call sites had that choice; two of them chose wrong and the
+    evidence gallery rendered empty in both report renderers with the suite green.
     """
-    with app.app_context():
-        object_id, sha256, size = store_bytes(
-            engagement.core_engagement_id, "shot.png", PNG, content_type="image/png"
-        )
-    assert object_id is not None
+    columns = {c.name for c in Artifact.__table__.columns}
+    assert "storage_path" in columns
+    assert "object_id" not in columns, (
+        "two columns for one fact — `storage_path` already holds either an obj: reference or a disk "
+        "path, and a second column just gives readers something to disagree about"
+    )
+
+
+# --------------------------------------------------------------------------- persist_bytes
+
+
+def test_persist_bytes_stores_in_the_object_store(app, objects, engagement):
+    cfg = app.extensions["scribble"]
+    ref, sha256, size = _persist(app, cfg, engagement, content_type="image/png")
+
+    assert ref.startswith(OBJECT_REF_PREFIX)
     assert len(objects.puts) == 1
     put = objects.puts[0]
-    assert put.kind in CORE_OBJECT_KINDS
+    assert put.kind in CORE_OBJECT_KINDS, "a kind core would refuse orphans the blob it just uploaded"
     assert put.kind == "evidence"
     assert put.data == PNG
     assert put.engagement_id == engagement.core_engagement_id, "the CORE id, never scribble's own PK"
@@ -195,22 +203,54 @@ def test_store_bytes_uses_a_kind_core_actually_accepts(app, objects, engagement)
     assert size == len(PNG)
 
 
-def test_store_bytes_does_not_turn_a_refused_upload_into_a_stored_one(app, objects, engagement):
-    """A deny must propagate. Writing to disk on ``PermissionError`` would mean the store enforced the
-    refusal and the fallback defeated it."""
+def test_persist_bytes_uses_disk_when_there_is_no_host_object_surface(app, engagement):
+    """Standalone scribble has no host at all — disk is the only place the bytes can go."""
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, engagement)
+    assert not ref.startswith(OBJECT_REF_PREFIX)
+    assert (pathlib.Path(cfg.artifact_root) / ref).is_file()
+
+
+def test_persist_bytes_uses_disk_for_an_engagement_with_no_core_mapping(
+    app, objects, unmapped_engagement
+):
+    """Core files every blob under a core engagement — INV-OBJSTORE-01 makes that a database fact via
+    composite FKs — so an unmapped scribble engagement has nowhere in the bucket to put one."""
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, unmapped_engagement)
+    assert not ref.startswith(OBJECT_REF_PREFIX)
+    assert objects.puts == [], "nothing may be uploaded when there is nothing to authorize against"
+
+
+def test_persist_bytes_does_not_turn_a_refused_upload_into_a_disk_write(app, objects, engagement):
+    """A deny must propagate. Falling back to disk would mean the store enforced the refusal and the
+    fallback defeated it — and the operator would never learn the evidence went somewhere else."""
     objects.refuse_put = True
-    with app.app_context(), pytest.raises(PermissionError):
-        store_bytes(engagement.core_engagement_id, "shot.png", PNG)
+    cfg = app.extensions["scribble"]
+    with pytest.raises(PermissionError):
+        _persist(app, cfg, engagement)
+    root = pathlib.Path(cfg.artifact_root)
+    assert not [p for p in root.rglob("*") if p.is_file()], "no bytes may reach disk on a refusal"
 
 
-# --------------------------------------------------------------------------- the reference itself
+def test_the_acting_principal_falls_back_to_the_session_user(app, objects, engagement, stub_host):
+    """The change that let the BROWSER surface use the store at all.
+
+    ``host_contract.pat_actor()`` reads ``g.api_user_id``, which only PAT authentication sets, so on a
+    cookie request it is None. Reading only that hook is why the object store was reachable from
+    machine routes only, and why the browser surface kept its own parallel filesystem.
+    """
+    stub_host.actor = None  # a browser request: no PAT principal
+    with app.app_context():
+        assert _acting_principal() is not None, "a logged-in session user is still a principal"
+
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, engagement)
+    assert ref.startswith(OBJECT_REF_PREFIX), "a browser upload must reach the store"
+    assert objects.puts[0].actor is not None
 
 
-def test_artifact_ref_prefers_the_object_id_and_falls_back_to_the_path():
-    oid = uuid.uuid7()
-    assert artifact_ref(SimpleNamespace(object_id=oid, storage_path="")) == f"{OBJECT_REF_PREFIX}{oid}"
-    assert artifact_ref(SimpleNamespace(object_id=None, storage_path="7/x.png")) == "7/x.png"
-    assert artifact_ref(SimpleNamespace(object_id=None, storage_path="")) == ""
+# --------------------------------------------------------------------------- the reference
 
 
 def test_object_id_of_round_trips_and_refuses_anything_else():
@@ -228,17 +268,18 @@ def test_object_id_of_round_trips_and_refuses_anything_else():
 
 
 def test_read_object_bytes_returns_the_blob(app, objects, engagement):
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, engagement)
     with app.app_context():
-        object_id, _sha, _size = store_bytes(engagement.core_engagement_id, "shot.png", PNG)
-        assert read_object_bytes(f"{OBJECT_REF_PREFIX}{object_id}", MAX_OBJECT_BYTES) == PNG
+        assert read_object_bytes(ref, MAX_OBJECT_BYTES) == PNG
 
 
 def test_read_object_bytes_refuses_an_oversized_blob_and_a_missing_one(app, objects, engagement):
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, engagement)
     with app.app_context():
-        object_id, _sha, _size = store_bytes(engagement.core_engagement_id, "big.bin", PNG)
-        ref = f"{OBJECT_REF_PREFIX}{object_id}"
         # Exactly at the ceiling is fine; one byte under it refuses rather than truncating — a
-        # truncated screenshot would render as corrupt evidence instead of as absent evidence.
+        # truncated screenshot renders as corrupt evidence instead of as absent evidence.
         assert read_object_bytes(ref, len(PNG)) == PNG
         assert read_object_bytes(ref, len(PNG) - 1) is None
         assert read_object_bytes(f"{OBJECT_REF_PREFIX}{uuid.uuid7()}", MAX_OBJECT_BYTES) is None
@@ -255,17 +296,17 @@ def test_read_object_bytes_is_silent_with_no_object_surface(app):
 def test_delete_file_tombstones_a_store_backed_reference(app, objects, engagement):
     """The orphan guard on the DELETE side.
 
-    Every delete in scribble funnels through ``delete_file``. Before this, all six call sites handed it
-    a raw ``storage_path`` — empty for a store-backed row — so the DB row went and the blob stayed,
-    with nothing left pointing at it.
+    Every delete in scribble funnels through ``delete_file`` — artifact, finding and engagement
+    delete, on both surfaces. Before the store branch lived here, a store-backed row dropped its DB
+    row and left the blob in the bucket with nothing pointing at it.
     """
+    cfg = app.extensions["scribble"]
+    ref, _sha, _size = _persist(app, cfg, engagement)
+    key = object_id_of(ref)
+    assert objects.blobs[key].deleted is False
     with app.app_context():
-        object_id, _sha, _size = store_bytes(engagement.core_engagement_id, "shot.png", PNG)
-        # store_bytes hands back the id as a STRING (it goes into a ref); the store keys on the UUID.
-        key = uuid.UUID(object_id)
-        assert objects.blobs[key].deleted is False
-        delete_file(app.extensions["scribble"], f"{OBJECT_REF_PREFIX}{object_id}")
-        assert objects.blobs[key].deleted is True
+        delete_file(cfg, ref)
+    assert objects.blobs[key].deleted is True
 
 
 def test_delete_file_still_unlinks_a_disk_path(app):
@@ -292,72 +333,61 @@ def test_delete_file_swallows_a_store_that_cannot_delete(app, objects):
 # --------------------------------------------------------------------------- the report context
 
 
-def test_report_context_carries_the_object_reference_not_an_empty_path(
+def test_report_context_carries_the_reference_through_verbatim(
     app, objects, engagement, session_factory
 ):
     """The empty-gallery guard.
 
-    ``_artifact_ctxs`` fed the renderers ``a.storage_path``, which is EMPTY for a store-backed row. The
-    gallery then rendered nothing at all, in both renderers, with the whole suite green — the exact
-    silent evidence loss this cutover is supposed to prevent.
+    With two columns this had to pick one, and picked the empty one — so the gallery rendered nothing
+    in both renderers with the suite green. With one column it is a plain copy, which is the point:
+    there is no longer a choice to get wrong.
     """
-    object_id = uuid.uuid7()
+    cfg = app.extensions["scribble"]
+    ref, sha256, size = _persist(app, cfg, engagement)
     with session_factory() as db:
         group = FindingGroup(engagement_id=engagement.id, name="External", order_index=0)
         db.add(group)
         db.flush()
-        finding = EngagementFinding(
-            engagement_id=engagement.id, group_id=group.id, title="xss", severity=Severity.high
-        )
+        finding = EngagementFinding(engagement_id=engagement.id, group_id=group.id, title="xss",
+                                    severity=Severity.high)
         db.add(finding)
         db.flush()
-        artifact = Artifact(
-            engagement_id=engagement.id,
-            finding_id=finding.id,
-            kind=ArtifactKind.screenshot,
-            placement=ArtifactPlacement.attached,
-            filename="shot.png",
-            content_type="image/png",
-            storage_path="",
-            object_id=object_id,
-            byte_size=len(PNG),
-            sha256=hashlib.sha256(PNG).hexdigest(),
-            include_in_report=True,
-        )
-        db.add(artifact)
+        db.add(Artifact(
+            engagement_id=engagement.id, finding_id=finding.id, kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached, filename="shot.png", content_type="image/png",
+            storage_path=ref, byte_size=size, sha256=sha256, include_in_report=True,
+        ))
         db.commit()
         ctxs = _artifact_ctxs(list(finding.artifacts), engagement_id=engagement.id)
 
     assert len(ctxs) == 1
-    assert ctxs[0].storage_path == f"{OBJECT_REF_PREFIX}{object_id}"
+    assert ctxs[0].storage_path == ref
+    assert ctxs[0].storage_path.startswith(OBJECT_REF_PREFIX)
 
 
 def test_every_artifact_byte_reader_resolves_an_object_reference():
     """The drift ratchet, and the reason this module exists.
 
-    Three modules define the same ``_read(storage_path) -> bytes | None`` closure. The first cut of
-    this branch taught ONE of them about ``obj:`` references while switching all the builders to emit
-    them, so two renderers asked the filesystem for a path of the form ``obj:<uuid>``, got nothing, and
-    dropped every image without a word.
+    Three modules define the same ``_read(storage_path) -> bytes | None`` closure. One of them learned
+    about ``obj:`` references while every builder was switched to emit them, so two renderers asked
+    the filesystem for a path spelled ``obj:<uuid>``, got nothing, and dropped every image without a
+    word.
 
     A per-reader test only ever covers the readers somebody remembered to write one for, so this finds
-    them: any file defining that closure must resolve the prefix.
+    them all: any file defining that closure must resolve the prefix IN THE CLOSURE BODY. Checking the
+    whole file instead passes on the import line alone — this test was written that way first, and
+    neutralizing the branch left it green.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "scribble"
-    blind = []
-    readers = []
+    blind, readers = [], []
     for path in sorted(pkg.rglob("*.py")):
         src = path.read_text()
         start = src.find("def _read(storage_path")
         if start < 0:
             continue
         readers.append(path.name)
-        # The BODY, not the module. Checking the whole file passes on nothing more than the import
-        # line still being there — this test was written that way first, and neutralizing the branch
-        # left it green, which is the same "guard that cannot fire" it is here to catch.
         end = src.find("return _read", start)
-        body = src[start:end if end > start else len(src)]
-        if "OBJECT_REF_PREFIX" not in body:
+        if "OBJECT_REF_PREFIX" not in src[start:end if end > start else len(src)]:
             blind.append(path.name)
     assert len(readers) >= 3, f"expected the known byte readers, found {readers}"
     assert not blind, (
@@ -369,78 +399,23 @@ def test_every_artifact_byte_reader_resolves_an_object_reference():
 # --------------------------------------------------------------------------- end to end, over HTTP
 
 
-def test_the_object_surface_refuses_when_the_host_has_no_actor(app, objects, engagement, stub_host):
-    """WHY the cookie surface cannot use the object store, pinned at its source.
+def test_browser_upload_stores_and_downloads_back(client, app, objects, engagement, session_factory):
+    """The cookie surface — how a human actually attaches evidence — end to end.
 
-    ``HostObjects`` authorizes against the host's PAT actor. ``host_contract.pat_actor()`` reads
-    ``g.api_user_id``, which only PAT authentication sets — so on a browser request the actor is
-    ``None``, ``_resolve_principal`` returns None, and every call is refused. A cookie upload routed
-    at the store would therefore 500, which is why ``artifacts_api.create_artifact`` deliberately
-    still writes to disk.
-
-    This is a CORE gap: the host exposes no session principal to the object surface, and an extension
-    must never manufacture one. When core grows that hook, this test is the thing that should change.
+    This route used to write to disk directly, so which backend held a piece of evidence depended on
+    which route a human happened to use.
     """
-    stub_host.actor = None
-    with app.app_context():
-        with pytest.raises(PermissionError):
-            store_bytes(engagement.core_engagement_id, "shot.png", PNG)
-        assert read_object_bytes(f"{OBJECT_REF_PREFIX}{uuid.uuid7()}", MAX_OBJECT_BYTES) is None
-
-
-def test_browser_upload_stays_on_disk_even_with_a_store_mounted(
-    client, app, objects, engagement, session_factory
-):
-    """The cookie surface writes to disk BY DESIGN — see the test above for why.
-
-    Pinned rather than left implicit because "the machine path stores but the browser path does not"
-    reads like an oversight, and the obvious "fix" is a 500 on every upload.
-    """
-    resp = client.post(
-        "/scribble/api/artifacts",
-        json={
-            "engagement_id": str(engagement.id),
-            "filename": "shot.png",
-            "content_base64": base64.b64encode(PNG).decode(),
-        },
-    )
+    resp = client.post("/scribble/api/artifacts", json={
+        "engagement_id": str(engagement.id), "filename": "shot.png",
+        "content_base64": base64.b64encode(PNG).decode(),
+    })
     assert resp.status_code == 201, resp.get_json()
-    assert objects.puts == [], "the browser surface has no host actor and must not route at the store"
+    artifact_id = resp.get_json()["id"]
+
+    assert len(objects.puts) == 1, "a browser upload must reach the store, not the local filesystem"
     with session_factory() as db:
-        row = db.get(Artifact, uuid.UUID(str(resp.get_json()["id"])))
-        assert row.object_id is None
-        assert row.storage_path, "the bytes still have to land somewhere"
-
-    raw = client.get(f"/scribble/api/artifacts/{resp.get_json()['id']}/raw")
-    assert raw.status_code == 200
-    assert raw.data == PNG
-
-
-def test_download_resolves_a_store_backed_row(client, app, objects, engagement, session_factory):
-    """The download route's ``obj:`` branch, which the disk resolver answered "file missing" for.
-
-    Reaches the store through the stub's PAT actor. The separate question of whether a BROWSER request
-    has an actor at all is pinned by ``test_the_object_surface_refuses_when_the_host_has_no_actor``;
-    this one is about the branch existing.
-    """
-    with app.app_context():
-        object_id, sha256, byte_size = store_bytes(engagement.core_engagement_id, "shot.png", PNG)
-    with session_factory() as db:
-        artifact = Artifact(
-            engagement_id=engagement.id,
-            kind=ArtifactKind.screenshot,
-            placement=ArtifactPlacement.attached,
-            filename="shot.png",
-            content_type="image/png",
-            storage_path="",
-            object_id=uuid.UUID(object_id),
-            byte_size=byte_size,
-            sha256=sha256,
-            include_in_report=True,
-        )
-        db.add(artifact)
-        db.commit()
-        artifact_id = artifact.id
+        row = db.get(Artifact, uuid.UUID(str(artifact_id)))
+        assert row.storage_path.startswith(OBJECT_REF_PREFIX)
 
     raw = client.get(f"/scribble/api/artifacts/{artifact_id}/raw")
     assert raw.status_code == 200, raw.get_data(as_text=True)[:200]
@@ -451,17 +426,31 @@ def test_download_resolves_a_store_backed_row(client, app, objects, engagement, 
     assert all(b.deleted for b in objects.blobs.values()), "deleting the row must tombstone the blob"
 
 
-def test_machine_upload_answers_403_when_the_host_refuses_the_put(client, objects, engagement):
-    """A refused put must be an honest 403, not a 500.
-
-    ``store_bytes`` lets ``PermissionError`` propagate on purpose — falling back to disk would defeat
-    the refusal — but propagating it out of the ROUTE is a stack trace for a token that simply may
-    read an engagement without operating on it.
-    """
-    objects.refuse_put = True
+def test_machine_upload_stores_through_the_same_path(client, objects, engagement, session_factory):
+    """Both surfaces, one backend — the property that stops evidence splitting by route."""
     resp = client.post(
         f"/scribble/machine/engagements/{engagement.id}/artifacts",
         json={"filename": "shot.png", "content_base64": base64.b64encode(PNG).decode()},
     )
+    assert resp.status_code == 201, resp.get_data(as_text=True)[:200]
+    assert len(objects.puts) == 1
+    with session_factory() as db:
+        row = db.get(Artifact, uuid.UUID(str(resp.get_json()["id"])))
+        assert row.storage_path.startswith(OBJECT_REF_PREFIX)
+
+
+@pytest.mark.parametrize("surface", ["cookie", "machine"])
+def test_a_refused_put_is_403_on_both_surfaces(client, objects, engagement, surface):
+    """Not a 500, and not a silent disk write."""
+    objects.refuse_put = True
+    if surface == "cookie":
+        resp = client.post("/scribble/api/artifacts", json={
+            "engagement_id": str(engagement.id), "filename": "shot.png",
+            "content_base64": base64.b64encode(PNG).decode(),
+        })
+    else:
+        resp = client.post(
+            f"/scribble/machine/engagements/{engagement.id}/artifacts",
+            json={"filename": "shot.png", "content_base64": base64.b64encode(PNG).decode()},
+        )
     assert resp.status_code == 403, (resp.status_code, resp.get_data(as_text=True)[:200])
-    assert resp.get_json()["error"] == "forbidden"

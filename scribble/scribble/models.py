@@ -402,15 +402,19 @@ class Artifact(Base, TimestampMixin):
     )
     filename: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str | None] = mapped_column(String(128))
-    # Where the bytes are. EXACTLY one of these is authoritative per row, and both columns stay
-    # because this is a cutover with a fallback rather than a flag day: rows written before the
-    # object store existed keep working off `storage_path`, and there is no backfill.
+    # WHERE THE BYTES ARE — one column, one answer, and deliberately NOT two.
     #
-    # `object_id` is a CORE `objects.id` (SeaweedFS via the host contract). Scribble never sees the
-    # bucket or the S3 key — `HostObjects` returns a ref without one, which is what keeps the store
+    # Either an `obj:<uuid>` reference into the CORE object store (SeaweedFS, reached through the host
+    # contract) or a path relative to `artifact_root`. A first cut carried a second `object_id` column
+    # beside this one, and then every reader had to know which of the two was authoritative for a
+    # given row — five call sites free to disagree, and two of them did. A pre-cutover row's existing
+    # value is already a valid reference of the disk kind, so one column also means no backfill and no
+    # migration.
+    #
+    # `artifacts_storage.object_id_of()` is the only thing that parses it. Scribble never sees the
+    # bucket or the S3 key — `HostObjects` returns a ref without one, which keeps the store
     # dashboard-only.
-    storage_path: Mapped[str] = mapped_column(String(1024))  # relative to artifact_root (pre-cutover)
-    object_id: Mapped[uuid.UUID | None] = mapped_column(ScribbleUuid, nullable=True, index=True)
+    storage_path: Mapped[str] = mapped_column(String(1024))
     byte_size: Mapped[int | None] = mapped_column(Integer)
     sha256: Mapped[str | None] = mapped_column(String(64))
     caption: Mapped[str | None] = mapped_column(Text)

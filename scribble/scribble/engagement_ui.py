@@ -70,7 +70,7 @@ from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
 from scribble import findings_service
-from scribble.artifacts_storage import artifact_ref, delete_file
+from scribble.artifacts_storage import delete_file
 from scribble.authz import can_view_client_id, host_is_mounted, visible_engagements
 from scribble.content import schema
 from scribble.deps import (
@@ -370,9 +370,7 @@ def register(api_bp, bp) -> None:
             # (Engagement.artifacts, cascade="all, delete-orphan") removes the Artifact ROWS, but the
             # bytes on disk are not the ORM's to clean up -- collect the paths before the cascade delete,
             # then best-effort remove the files afterward, same as delete_finding does per-finding.
-            # artifact_ref, not the raw path: deleting an engagement must not leave its evidence
-            # blobs behind in the object store with every row that referenced them gone.
-            storage_paths = [artifact_ref(a) for a in engagement.artifacts]
+            storage_paths = [a.storage_path for a in engagement.artifacts]
             # Clear everything that references a FINDING of this engagement from OUTSIDE the cascade
             # graph, FIRST: the delete-orphan cascade below emits its finding DELETEs in one unordered
             # batch, so a surviving reference makes that batch violate an FK and the engagement cannot be
