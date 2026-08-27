@@ -274,3 +274,59 @@ def _download_only_attachment(client, session_factory, report_id):
     resp = client.get(f"/bugreport/attachments/{aid}/download")
     assert resp.status_code == 200, resp.status_code
     return resp
+
+
+# --- the capability grant leaves a trail ------------------------------------------------------------
+
+def test_minting_and_revoking_a_public_link_are_AUDITED(client, report_id, session_factory, audit_log):
+    """Sharing hands an unauthenticated stranger read access to a file.
+
+    That is an outward capability grant, and the one verb in this extension that widens who can read
+    something. A grant with no trail is what INV-AUDIT-03's registered vocabulary exists to prevent, so
+    both the mint and the revoke emit a row. Drop the `host_audit=` argument at either call site and
+    this goes red.
+    """
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    audit_log.events.clear()
+
+    client.post(f"/bugreport/attachments/{aid}/share")
+    assert "ext:bugreport:share_file" in audit_log.actions()
+
+    client.post(f"/bugreport/attachments/{aid}/unshare")
+    assert "ext:bugreport:unshare_file" in audit_log.actions()
+
+
+def test_the_audit_row_never_carries_the_live_token(client, report_id, session_factory, audit_log):
+    """A durable log is the last place a live credential should sit (INV-SECRET-04). The row records
+    THAT sharing happened, never the secret that was handed out."""
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    audit_log.events.clear()
+    client.post(f"/bugreport/attachments/{aid}/share")
+
+    from bugreport.models import Attachment
+
+    with session_factory() as db:
+        token = db.query(Attachment).one().share_token
+    assert token
+    assert token not in repr(audit_log.events)
+
+
+def test_rotating_is_distinguishable_from_first_publication_in_the_audit(
+    client, report_id, session_factory, audit_log
+):
+    """"Rotated" is the question a human reads this row to answer: was this a new public link, or was an
+    existing one revoked because it leaked?"""
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+
+    audit_log.events.clear()
+    client.post(f"/bugreport/attachments/{aid}/share")
+    first = [e for e in audit_log.events if e["action"] == "ext:bugreport:share_file"][-1]
+    assert first["after"]["rotated"] is False
+
+    audit_log.events.clear()
+    client.post(f"/bugreport/attachments/{aid}/share")
+    second = [e for e in audit_log.events if e["action"] == "ext:bugreport:share_file"][-1]
+    assert second["after"]["rotated"] is True

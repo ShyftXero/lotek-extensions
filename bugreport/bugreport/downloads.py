@@ -22,6 +22,8 @@ What that means concretely:
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from flask import Response
 
 from bugreport.models import INLINE_SAFE_TYPES, Attachment
@@ -34,16 +36,27 @@ def _disposition(row: Attachment) -> str:
     # already stripped of quotes and control characters at upload (`service._clean_filename`).
     ascii_name = row.filename.encode("ascii", "replace").decode("ascii")
     quoted = ascii_name.replace('"', "")
-    utf8 = row.filename.encode("utf-8").hex()
-    utf8 = "".join(f"%{utf8[i:i + 2]}" for i in range(0, len(utf8), 2))
+    # `quote` with an empty safe-set, not a hand-rolled hex loop: RFC 5987's ext-value is
+    # percent-encoding, and the stdlib already implements it correctly (including the characters a
+    # naive `.hex()` walk gets right by accident and the ones it does not).
+    utf8 = quote(row.filename, safe="")
     return f"{kind}; filename=\"{quoted}\"; filename*=UTF-8''{utf8}"
 
 
 def send_attachment(row: Attachment, blobs, *, chunk_size: int = 65536) -> Response:
-    """Stream one attachment back with the full header set. Raises ``KeyError`` if the bytes are gone."""
+    """Stream one attachment back with the full header set. Raises ``KeyError`` if the bytes are gone.
+
+    Every value the response needs is read from ``row`` EAGERLY, before returning. The body is a
+    generator that Flask iterates after the view returns — by which time the caller's ``with
+    session_factory() as db`` has closed and ``row`` is a detached ORM instance. Touching an attribute
+    on it there is a `DetachedInstanceError` waiting for the first time anything expires it, and it
+    would fire mid-stream, after the headers had already gone out. So the generator closes over a plain
+    UUID, never over the row.
+    """
+    blob_id = row.id
 
     def _stream():
-        with blobs.open(row.id) as body:
+        with blobs.open(blob_id) as body:
             while True:
                 chunk = body.read(chunk_size)
                 if not chunk:

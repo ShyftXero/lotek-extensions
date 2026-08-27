@@ -265,7 +265,9 @@ def share_attachment_api(attachment_id: uuid.UUID):
     actor_id, _name, is_admin = _principal()
     with get_config().session_factory() as db:
         try:
-            token = share_attachment(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+            token = share_attachment(
+                db, attachment_id, actor_id=actor_id, is_admin=is_admin, host_audit=host_audit()
+            )
         except Denied as exc:
             return _denied(exc)
         return jsonify({"share_token": token, "share_path": f"/s/{token}"})
@@ -277,7 +279,9 @@ def unshare_attachment_api(attachment_id: uuid.UUID):
     actor_id, _name, is_admin = _principal()
     with get_config().session_factory() as db:
         try:
-            unshare_attachment(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+            unshare_attachment(
+                db, attachment_id, actor_id=actor_id, is_admin=is_admin, host_audit=host_audit()
+            )
         except Denied as exc:
             return _denied(exc)
         return jsonify({"shared": False})

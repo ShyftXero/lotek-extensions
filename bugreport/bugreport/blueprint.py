@@ -273,7 +273,8 @@ def share(attachment_id: uuid.UUID):
     with get_config().session_factory() as db:
         try:
             share_attachment(
-                db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin()
+                db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin(),
+                host_audit=host_audit(),
             )
         except Denied as exc:
             abort(403, str(exc))
@@ -286,7 +287,8 @@ def unshare(attachment_id: uuid.UUID):
     with get_config().session_factory() as db:
         try:
             unshare_attachment(
-                db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin()
+                db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin(),
+                host_audit=host_audit(),
             )
         except Denied as exc:
             abort(403, str(exc))

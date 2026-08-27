@@ -36,7 +36,10 @@ docs_title = "Bug reports (capture)"
 # about is written but not selectable, which is a trail nobody can read. Keep this in step with every
 # `host_audit(...)` call site — tests/test_manifest.py asserts they match.
 [audit]
-verbs = ["admin_update"]
+# `share_file`/`unshare_file` are here because minting a public link hands an
+# UNAUTHENTICATED stranger read access to a file — an outward capability grant, which is the
+# kind of thing a human needs to be able to find in the audit log afterwards.
+verbs = ["admin_update", "share_file", "unshare_file"]
 
 # Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
 [db]

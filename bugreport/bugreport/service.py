@@ -330,7 +330,18 @@ def attach(
     ref = blobs.put(row.id, _CappedHeadReader(head, stream, MAX_ATTACHMENT_BYTES), content_type=serve_as)
     row.size = ref.size
     row.sha256 = ref.sha256
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # The bytes are already in the store but the row is not. Core writes no `objects` row for
+        # extension blobs, so nothing in core can ever find an orphan like this — the only party that
+        # knows the key is us, right here. Clean it up before the id is lost.
+        _log.warning("bugreport: attachment row failed to commit; removing its blob", exc_info=True)
+        try:
+            blobs.delete(row.id)
+        except Exception:  # noqa: BLE001 — best effort; the original failure is what matters
+            _log.warning("bugreport: could not remove orphaned blob %s", row.id, exc_info=True)
+        raise
     return row
 
 
@@ -397,26 +408,56 @@ def _attachment_for_write(
 
 
 def share_attachment(
-    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
+    host_audit=None,
 ) -> str:
     """Mint (or ROTATE) the bearer capability for one attachment and return it.
 
     Rotating is the revocation story for a link that leaked: every previously-issued URL stops working
     the moment this is called again.
+
+    AUDITED, and that is not optional decoration: this is the one verb in the extension that hands an
+    UNAUTHENTICATED stranger a way to read a file. An outward capability grant with no trail is exactly
+    what INV-AUDIT-03's vocabulary exists to make readable afterwards. The token itself is NEVER written
+    to the audit row — a durable log is the last place a live credential should sit (INV-SECRET-04);
+    the row records THAT sharing happened, not the secret.
     """
     row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    was_shared = row.share_token is not None
     token = secrets.token_urlsafe(32)
     row.share_token = token
+    if host_audit is not None:
+        host_audit(
+            db,
+            "ext:bugreport:share_file",
+            subject_type="bugreport_attachment",
+            subject_id=row.id,
+            before={"shared": was_shared},
+            # "rotated" distinguishes revoking-a-leak from first publication, which is the question a
+            # human reads this row to answer.
+            after={"shared": True, "rotated": was_shared},
+        )
     db.commit()
     return token
 
 
 def unshare_attachment(
-    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
+    host_audit=None,
 ) -> bool:
-    """Revoke the capability. Idempotent."""
+    """Revoke the capability. Idempotent, and audited for the same reason minting is."""
     row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    was_shared = row.share_token is not None
     row.share_token = None
+    if host_audit is not None:
+        host_audit(
+            db,
+            "ext:bugreport:unshare_file",
+            subject_type="bugreport_attachment",
+            subject_id=row.id,
+            before={"shared": was_shared},
+            after={"shared": False},
+        )
     db.commit()
     return True
 
