@@ -507,3 +507,23 @@ def attachment_to_dict(row: Attachment) -> dict:
         "share_token": row.share_token,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+def claimed_blob_ids(db: Session, ids: set) -> set:
+    """Which of ``ids`` this extension still has an ``Attachment`` row for.
+
+    The host calls this from its leader-only reclamation sweep (`[host] blob_claims` in the manifest ->
+    `object_store.reconcile_extension_blobs`) and deletes the bytes for anything we do NOT return.
+    Extension blobs carry no core `objects` row, so without this there is no path that can ever reclaim
+    a blob whose row never landed — a killed process between `put` and `commit` leaks storage forever.
+
+    Two deliberate properties, because the caller turns the answer into deletions:
+
+    * It answers ONLY about the ids it was asked about. It never volunteers a broader set, so a bug here
+      cannot widen what the host considers claimed.
+    * It queries rows, not the store. If the row exists, the blob is claimed — no heuristics, no
+      "probably still needed". The host applies its own age floor before it ever asks.
+    """
+    if not ids:
+        return set()
+    return set(db.scalars(select(Attachment.id).where(Attachment.id.in_(ids))))

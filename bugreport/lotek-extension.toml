@@ -28,6 +28,11 @@ machine_prefix = "/machine"
 # a full token returns one file, a wrong one is a flat 404. Sharing is off by default and the owner
 # mints, rotates and revokes the token.
 public_prefix = "/s"
+# OPT-IN to the host's orphaned-blob reclamation. The host asks this callable which blob ids we still
+# have rows for, and deletes the bytes for the rest — the only path that can ever reclaim a blob whose
+# metadata row never landed (a killed process between put and commit). Declaring nothing means never
+# swept, which is the safe default: core cannot tell a disabled extension from an uninstalled one.
+blob_claims = "bugreport.service:claimed_blob_ids"
 docs = "docs/BUGREPORT.md"
 docs_title = "Bug reports (capture)"
 

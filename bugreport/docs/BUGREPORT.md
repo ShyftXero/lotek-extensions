@@ -112,3 +112,16 @@ is ever allowed to execute there:
   no-store`.
 - The uploaded filename is used only for the download name. The stored object key comes from the row's
   own UUID, so a filename containing path separators has nowhere to go.
+
+### What happens to the bytes if something goes wrong
+
+Attachments live in lotek's object store under a namespace reserved for this extension, and carry no
+core `objects` row — which means core's own garbage collector structurally cannot see them. Two things
+close that gap:
+
+- If the database commit fails after the bytes are stored, this extension deletes the blob itself before
+  re-raising. It is the only party that knows the key at that moment.
+- For everything else (a killed process, a host that died mid-request) the manifest declares
+  `[host] blob_claims`, so lotek periodically asks which blob ids still have rows here and reclaims the
+  rest. It only ever asks about blobs older than a day, so a live upload is never swept, and it only asks
+  extensions that are currently mounted — a disabled extension is skipped rather than purged.

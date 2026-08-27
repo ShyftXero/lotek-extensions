@@ -380,3 +380,53 @@ def test_an_admin_who_owns_the_file_may_still_mint(client, report_id, hooks, ses
     # the default fixture actor filed the report; make them an admin without changing identity
     hooks["actor"] = StubActor(id=hooks["actor"].id, username=hooks["actor"].username, role="admin")
     assert client.post(f"/bugreport/attachments/{aid}/share").status_code in (200, 302)
+
+
+# --- the host's orphan-reclamation hook -------------------------------------------------------------
+
+def test_claimed_blob_ids_answers_only_about_the_ids_it_was_asked(client, report_id, session_factory):
+    """The host turns this answer into DELETIONS, so it must never volunteer a broader set — a bug here
+    could otherwise widen what core considers claimed and leak storage, or narrow it and delete a live
+    file. It queries rows, not the store: row exists => claimed, no heuristics."""
+    from bugreport.service import claimed_blob_ids
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    real = _only_attachment_id(session_factory, report_id)
+    stranger = uuid.uuid7()
+
+    with session_factory() as db:
+        assert claimed_blob_ids(db, {real, stranger}) == {real}
+        assert claimed_blob_ids(db, {stranger}) == set()
+        # asked about nothing, answers nothing — never "everything I own"
+        assert claimed_blob_ids(db, set()) == set()
+
+
+def test_a_deleted_attachment_stops_being_claimed(client, report_id, session_factory):
+    """Which is what makes its bytes reclaimable if the store delete failed at the time."""
+    from bugreport.service import claimed_blob_ids
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    with session_factory() as db:
+        assert claimed_blob_ids(db, {aid}) == {aid}
+
+    client.post(f"/bugreport/attachments/{aid}/delete")
+    with session_factory() as db:
+        assert claimed_blob_ids(db, {aid}) == set()
+
+
+def test_a_wrong_share_token_is_a_404_even_when_the_store_is_unavailable(
+    client, report_id, session_factory, hooks, monkeypatch
+):
+    """An anonymous prober with a junk token must learn nothing about our infrastructure.
+
+    Checking the store BEFORE the token meant a 503 when the object store was misconfigured and a 404
+    when it was fine — a free signal handed to someone who presented no credential. Move
+    `_blobs_or_503()` back above the token lookup and this goes red.
+    """
+    import bugreport.blueprint as bp
+
+    monkeypatch.setattr(bp, "host_blobs", lambda: None)  # store unavailable
+    hooks["actor"] = None
+    resp = client.get("/bugreport/s/" + "z" * 43)
+    assert resp.status_code == 404

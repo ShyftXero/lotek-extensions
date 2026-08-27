@@ -255,11 +255,15 @@ def shared_attachment(token: str):
       is what keeps a no-engagement row inside INV-TENANCY-06's rule;
     * a wrong token is a flat 404 with no hint whether the file exists.
     """
-    blobs = _blobs_or_503()
+    # Token FIRST, store second. Checking the store first meant an anonymous prober with a junk token
+    # got a 503 when the object store was misconfigured and a 404 when it was fine — a free signal about
+    # our infrastructure, handed to someone who has presented no credential. A wrong token is now always
+    # a flat 404.
     with get_config().session_factory() as db:
         row = load_attachment_by_token(db, token)
         if row is None:
             abort(404)
+        blobs = _blobs_or_503()
         try:
             return send_attachment(row, blobs)
         except KeyError:
