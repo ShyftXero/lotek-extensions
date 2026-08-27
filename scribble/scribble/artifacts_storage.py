@@ -185,7 +185,11 @@ def store_bytes(
     guessed = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     ref = surface.put(
         _host.actor(),
-        kind="scribble_evidence",
+        # A REAL core ObjectKind member. "scribble_evidence" is not one (artifact/report/screenshot/
+        # evidence), and core validated the kind only AFTER uploading the bytes — so the first
+        # evidence upload would have left an orphan blob in the bucket with no row, which nothing
+        # reclaims. Core now validates first; this passes a member either way.
+        kind="evidence",
         stream=io.BytesIO(data),
         content_type=guessed,
         filename=filename,
