@@ -132,11 +132,33 @@ def resolve_path(cfg: Any, storage_path: str) -> Path:
 
 
 def delete_file(cfg: Any, storage_path: str) -> None:
-    """Best-effort delete of the on-disk file for ``storage_path``.
+    """Best-effort delete of the bytes behind ``storage_path`` — a local file, OR an ``obj:`` reference
+    into the core object store.
 
-    Swallows an unsafe/already-missing path so callers can always clean up the DB row even if the file
-    is gone or the stored path is somehow bogus.
+    The store branch lives HERE, not at the call sites, because every delete in scribble already
+    funnels through this one function: artifact delete, finding delete and engagement delete, each on
+    both the cookie and the machine surface — six call sites, five of which only ever saw a raw
+    ``storage_path``. A store-backed row deleted through any of them would have dropped the DB row and
+    left the blob in the bucket with nothing left pointing at it, which no code path would ever notice
+    again. That is the same orphan-blob class the core review caught on the write side.
+
+    The store delete is a TOMBSTONE (``HostObjects.delete``); core's leader-only GC reclaims the bytes.
+
+    Swallows every failure — an unsafe path, a missing file, an unmounted host, a refused delete — so
+    the caller can always clean up the DB row. A refused store delete therefore leaks the blob rather
+    than 500-ing after the rows are already gone; core's GC is the backstop for that, not this.
     """
+    object_id = object_id_of(storage_path)
+    if object_id is not None:
+        from . import host as _host
+
+        surface = _host.objects()
+        if surface is not None:
+            try:
+                surface.delete(_host.actor(), object_id)
+            except (PermissionError, RuntimeError, OSError, ValueError):
+                pass
+        return
     try:
         target = resolve_path(cfg, storage_path)
     except ValueError:
@@ -146,7 +168,7 @@ def delete_file(cfg: Any, storage_path: str) -> None:
 
 
 def store_bytes(
-    engagement: Any,
+    core_engagement_id: Any,
     filename: str,
     data: bytes,
     *,
@@ -159,18 +181,21 @@ def store_bytes(
     errors:
 
     * the extension is unmounted, or this deployment runs no object store (``host.objects()`` None);
-    * the engagement has no ``core_engagement_id`` — scribble engagements may stand alone, and the
-      host authorizes a put against a CORE engagement, so there is nothing to authorize against;
-    * the host refuses the put.
+    * ``core_engagement_id`` is falsy — scribble engagements may stand alone, and the host authorizes
+      a put against a CORE engagement, so there is nothing to authorize against;
+    Those two conditions are STRUCTURAL — they are known before any byte moves, and they are the only
+    two that fall back. A failure of the put itself is NOT caught here and propagates: a refused upload
+    (``PermissionError``, the actor lacking an operator capability) must never be turned into a
+    successful one by writing to disk instead, and an object store that is merely down should fail the
+    upload loudly rather than silently scatter evidence onto a filesystem the operator believes is no
+    longer in use. Loud beats half-stored.
 
-    A ``PermissionError`` is NOT swallowed. The host raises it when the actor lacks an operator
-    capability on the engagement, and quietly writing the bytes to disk instead would turn a refused
-    upload into a successful one — the deny would be enforced by the store and defeated by the
-    fallback. Everything else degrades to disk.
-
-    THE ID TRAP: the host resolves a CORE ``Engagement``. Scribble's own PK is a different id space,
-    and passing it here would fail the authorization lookup rather than erroring loudly — this repo
-    has already taken production down once by crossing those two spaces.
+    THE ID TRAP, and why this takes the id rather than the engagement: the host resolves a CORE
+    ``Engagement``. Scribble's own PK is a different id space, and passing it here would fail the
+    authorization lookup rather than erroring loudly — this repo has already taken production down once
+    by crossing those two spaces. Naming the parameter ``core_engagement_id`` makes the call site say
+    which space it is in; taking the ORM object instead also meant reading a lazy attribute off a
+    possibly-detached row, or holding a DB session open across an S3 put.
     """
     from . import host as _host
 
@@ -178,7 +203,7 @@ def store_bytes(
     if surface is None:
         return None, hashlib.sha256(data).hexdigest(), len(data)
 
-    core_id = getattr(engagement, "core_engagement_id", None)
+    core_id = core_engagement_id
     if not core_id:
         return None, hashlib.sha256(data).hexdigest(), len(data)
 
@@ -198,6 +223,12 @@ def store_bytes(
     return str(getattr(ref, "id", "") or "") or None, hashlib.sha256(data).hexdigest(), len(data)
 
 
+#: Ceiling for bytes pulled OUT of the object store in one read. The disk readers each carry their
+#: own (``report_docx_api`` refuses over 25 MB; ``report_html_api`` historically had none), so the
+#: store path states one rather than inheriting an inconsistency: a renderer must never be the thing
+#: that pulls a gigabyte of evidence into memory.
+MAX_OBJECT_BYTES = 25 * 1024 * 1024
+
 #: Marks a reference that points at the CORE object store rather than at ``artifact_root``.
 #: A prefix keeps every existing ``storage_path -> bytes`` reader signature intact — there are five
 #: call sites across the report, docx and download paths, and widening all of them to take an
@@ -216,6 +247,20 @@ def artifact_ref(artifact: Any) -> str:
     return f"{OBJECT_REF_PREFIX}{object_id}" if object_id else (artifact.storage_path or "")
 
 
+def object_id_of(ref: str) -> uuid.UUID | None:
+    """The UUID inside an ``obj:<uuid>`` reference, or None when ``ref`` is a plain disk path.
+
+    One parser, because "is this row store-backed?" is asked on the read, delete and download paths
+    and three prefix checks would be three chances to disagree.
+    """
+    if not ref or not ref.startswith(OBJECT_REF_PREFIX):
+        return None
+    try:
+        return uuid.UUID(ref[len(OBJECT_REF_PREFIX):])
+    except (TypeError, ValueError):
+        return None
+
+
 def read_object_bytes(ref: str, max_bytes: int) -> bytes | None:
     """Bytes for an ``obj:`` reference, or None (absent, too large, unreadable, or not visible).
 
@@ -225,12 +270,9 @@ def read_object_bytes(ref: str, max_bytes: int) -> bytes | None:
     """
     from . import host as _host
 
+    object_id = object_id_of(ref)
     surface = _host.objects()
-    if surface is None or not ref.startswith(OBJECT_REF_PREFIX):
-        return None
-    try:
-        object_id = uuid.UUID(ref[len(OBJECT_REF_PREFIX):])
-    except (TypeError, ValueError):
+    if surface is None or object_id is None:
         return None
     try:
         with surface.open(_host.actor(), object_id) as body:

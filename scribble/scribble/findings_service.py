@@ -29,6 +29,7 @@ from typing import NamedTuple
 from sqlalchemy import delete, select, update
 
 from scribble.artifacts_api import _as_uuid  # noqa: E402 -- one shared body-id parser (lotek#335)
+from scribble.artifacts_storage import artifact_ref
 from scribble.enums import OrderMode, severity_rank
 from scribble.models import (
     CollabDoc,
@@ -447,7 +448,9 @@ def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:
     member are enumerated at the top of this module; :func:`clear_finding_referrers` does the rest of them
     here, and a guard test fails if a seventh referrer is added without a decision.
     """
-    storage_paths = [a.storage_path for a in finding.artifacts]
+    # artifact_ref, so a store-backed artifact's blob is tombstoned rather than orphaned — see
+    # artifacts_storage.delete_file, which is where every one of these lists ends up.
+    storage_paths = [artifact_ref(a) for a in finding.artifacts]
     for artifact in list(finding.artifacts):
         db.delete(artifact)
     clear_finding_referrers(db, [finding.id])

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import object_session
 
 from scribble import findings_service
+from scribble.artifacts_storage import artifact_ref
 from scribble.content import render_html
 from scribble.enums import OrderMode, Severity, risk_rating, severity_rank
 from scribble.templating import build_context, build_full_context, make_var_resolver
@@ -27,6 +28,10 @@ class ArtifactCtx:
     filename: str
     caption: str
     content_type: str | None
+    # WHERE THE BYTES ARE, not necessarily a path: either a disk path relative to ``artifact_root`` or
+    # an ``obj:<uuid>`` reference into the core object store. The paired ``artifact_bytes`` reader
+    # resolves whichever it is, so a renderer never has to know. The name is kept because
+    # ``ReportContext`` is a published contract that user templates read.
     storage_path: str
     # What the row recorded for this file, so a renderer can decide whether to carry its bytes WITHOUT
     # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the
@@ -206,7 +211,10 @@ def _artifact_ctxs(artifacts, *, engagement_id=None) -> list[ArtifactCtx]:
             filename=a.filename,
             caption=a.caption or "",
             content_type=a.content_type,
-            storage_path=a.storage_path,
+            # artifact_ref, NOT a.storage_path: a store-backed row carries an empty storage_path, and
+            # emitting that here rendered an empty evidence gallery in BOTH renderers while every test
+            # stayed green. The builder and the reader have to agree, so they share one helper.
+            storage_path=artifact_ref(a),
             byte_size=a.byte_size,
         )
         for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))

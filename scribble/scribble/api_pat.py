@@ -1578,7 +1578,7 @@ def scribble_upload_artifact(engagement_id: str):
     # lacks an operator capability on the engagement, and writing to disk instead would turn a refused
     # upload into a successful one.
     object_id, sha256, byte_size = store_bytes(
-        engagement, filename, data, content_type=content_type)
+        getattr(engagement, "core_engagement_id", None), filename, data, content_type=content_type)
     storage_path = ""
     if object_id is None:
         storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)

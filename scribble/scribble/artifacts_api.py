@@ -47,15 +47,21 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import (
+    MAX_OBJECT_BYTES,
     SAFE_NAME_MAX,
+    artifact_ref,
     delete_file,
     guess_content_type,
+    object_id_of,
+    read_object_bytes,
     resolve_path,
     save_bytes,
+    store_bytes,
 )
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
@@ -298,7 +304,21 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         else:
             placement = ArtifactPlacement.attached
 
-        storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
+        # The COOKIE upload surface stores exactly like the machine one (``api_pat``). These are the
+        # two ways a human's evidence enters scribble, and having only the machine path use the object
+        # store would mean a browser upload — the ordinary case — silently kept writing to one host's
+        # disk while the feature was reported as shipped.
+        #
+        # The core engagement id is read inside its own short session: ``store_bytes`` then does its S3
+        # put with no DB connection held, and a detached-instance read can't bite.
+        with open_session() as db:
+            engagement_row = db.get(Engagement, engagement_id)
+            core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
+        object_id, sha256, byte_size = store_bytes(
+            core_engagement_id, filename, data, content_type=content_type)
+        storage_path = ""
+        if object_id is None:
+            storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
 
         with open_session() as db:
             artifact = Artifact(
@@ -309,6 +329,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
                 filename=filename,
                 content_type=content_type,
                 storage_path=storage_path,
+                object_id=object_id,
                 byte_size=byte_size,
                 sha256=sha256,
                 caption=caption,
@@ -335,9 +356,30 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
                 return jsonify(error="not found"), 404
-            storage_path = artifact.storage_path
+            storage_path = artifact_ref(artifact)
             filename = artifact.filename
             content_type = artifact.content_type
+
+        # A store-backed row has no path to resolve. Without this branch the download route answered
+        # "file missing on disk" for every artifact the upload route had just stored successfully —
+        # evidence you could upload and never retrieve.
+        if object_id_of(storage_path) is not None:
+            # ONE 404 for absent, tombstoned, oversized and not-visible alike. That is deliberate and
+            # matches ``HostObjects.open``, which raises KeyError for "not yours" precisely so the
+            # route cannot become an existence oracle for another engagement's evidence.
+            #
+            # The ceiling sits ABOVE what the upload path can accept (the host's MAX_CONTENT_LENGTH),
+            # so it is not reachable by anything this route stored.
+            # ponytail: buffers the blob; stream it if evidence ever outgrows MAX_CONTENT_LENGTH.
+            data = read_object_bytes(storage_path, MAX_OBJECT_BYTES)
+            if data is None:
+                return jsonify(error="not found"), 404
+            return send_file(
+                io.BytesIO(data),
+                as_attachment=True,
+                download_name=filename,
+                mimetype=content_type or "application/octet-stream",
+            )
 
         try:
             path = resolve_path(cfg, storage_path)
@@ -383,7 +425,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
                 return jsonify(error="not found"), 404
-            storage_path = artifact.storage_path
+            storage_path = artifact_ref(artifact)
             db.delete(artifact)
             db.commit()
         delete_file(cfg, storage_path)
