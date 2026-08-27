@@ -40,6 +40,7 @@ from docxtpl import DocxTemplate, InlineImage, RichText
 from scribble.content.render_docx import html_to_richtext
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
 from scribble.reporting.context import (
+    DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
     FindingCtx,
     GroupCtx,
@@ -324,7 +325,10 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
 # ``api_pat.scribble_link_attack_path``) and is stored verbatim, so nothing guarantees it came from
 # vector or is bounded the way vector's own schema bounds a model. Every number below is scribble's own
 # cap on how much of a snapshot this renderer will turn into document, independent of vector's limits.
-_MAX_DIAGRAM_SCAN_CHARS = 8 * 1024 * 1024  # don't scan an unbounded snapshot at all
+# Matches ``api_pat._MAX_DIAGRAM_HTML_BYTES`` (10 MiB), so nothing the link route ACCEPTS is stored
+# and then permanently unrenderable in Word. Safe to raise now the scan is linear: 8 MiB measured
+# 0.02s (the regex this replaced would have taken hours).
+_MAX_DIAGRAM_SCAN_CHARS = 10 * 1024 * 1024
 _MAX_DIAGRAMS = 50  # a report section, not an archive (cf. render_html's _MAX_APPENDIX_ITEMS)
 _MAX_DIAGRAM_ZONES = 12  # a Word table wider than this is unreadable on a portrait page anyway
 _MAX_DIAGRAM_ROWS = 40
@@ -426,13 +430,69 @@ def _diagram_model(embed_html: str | None) -> dict | None:
     return model if isinstance(model, dict) else None
 
 
+def _styled_paragraph(doc, style: str):
+    """``doc.add_paragraph(style=...)``, degrading to an unstyled paragraph if the template lacks the
+    style. A missing style is a KeyError from python-docx, and losing the whole deliverable over a
+    cosmetic style would be absurd."""
+    try:
+        return doc.add_paragraph(style=style)
+    except KeyError:
+        return doc.add_paragraph()
+
+
+# vector's viewer picks a node's status chip by PRECEDENCE across every state reached so far, and
+# prints the style catalog's display LABEL -- not the raw key (``static/vector-viewer.js``'s
+# ``DEFAULT_STYLE.nodeStates`` / ``nodeVisual``). Taking the last state by ``at`` and uppercasing the
+# key disagrees with the picture for the two cases that matter: ``impacted`` renders "IMPACT" there and
+# would read "[IMPACTED]" here, and a later low-precedence state (``target`` after ``impacted``) would
+# override a higher one. Mirroring the four built-ins is the whole catalog; anything else falls back to
+# the uppercased key, which is what the viewer effectively shows for an unknown state too.
+_NODE_STATES = {
+    "target": (1, "TARGET"),
+    "owned": (3, "OWNED"),
+    "beacon": (3, "BEACON"),
+    "impacted": (4, "IMPACT"),
+}
+
+
+def _note_truncation(doc, model: dict) -> None:
+    """Name anything this renderer dropped from the model. Scribble's caps are TIGHTER than vector's
+    (12 zones vs 40, 60 phases vs 200, 80 edges vs 1500, 2000 nodes vs 600-per-vector), so a large
+    genuine diagram can lose content here -- and a silently truncated figure is the same defect class
+    ext#115 is about. Counted against what the model declares, not against what got drawn."""
+    dropped = []
+    for label, key, cap in (
+        ("zone", "zones", _MAX_DIAGRAM_ZONES),
+        ("host", "nodes", _MAX_DIAGRAM_NODES),
+        ("phase", "phases", _MAX_DIAGRAM_PHASES),
+        ("connection", "edges", _MAX_DIAGRAM_EDGES),
+    ):
+        over = len(_d_list(model.get(key))) - cap
+        if over > 0:
+            dropped.append(f"{over} {label}{'s' if over != 1 else ''}")
+    if not dropped:
+        return
+    note = doc.add_paragraph()
+    note.add_run(
+        "This rendition omits " + ", ".join(dropped)
+        + " beyond what a page-width table can carry; the HTML report shows the diagram in full."
+    ).italic = True
+
+
 def _node_state_label(node: dict) -> str:
-    """The node's LAST state ("OWNED", "IMPACT", …) — the final keyframe is what a static frame shows."""
-    states = [s for s in _d_list(node.get("states")) if isinstance(s, dict)]
-    if not states:
-        return ""
-    last = max(states, key=lambda s: _d_int(s.get("at")))
-    return _d_str(last.get("state") or last.get("label"), 40).upper()
+    """The node's status chip at the FINAL keyframe, chosen the way the viewer chooses it: highest
+    ``precedence`` across every state, then the catalog's display label (see ``_NODE_STATES``)."""
+    best_rank, best_label = -1, ""
+    for st in _d_list(node.get("states")):
+        if not isinstance(st, dict):
+            continue
+        key = _d_str(st.get("state"), 40)
+        rank, label = _NODE_STATES.get(key.lower(), (0, key.upper()))
+        if not label:
+            label = _d_str(st.get("label"), 40).upper()
+        if label and rank >= best_rank:
+            best_rank, best_label = rank, label
+    return best_label
 
 
 def _node_cell_text(node: dict) -> str:
@@ -451,6 +511,11 @@ def _add_diagram_grid(doc, model: dict) -> bool:
     ``geometry()`` computes. Returns False when the model has nothing placeable to draw."""
     zones = [z for z in _d_list(model.get("zones")) if isinstance(z, dict)]
     zones.sort(key=lambda z: _d_int(z.get("order")))
+    # De-dupe by id BEFORE capping: two zones sharing an id would otherwise key the same bucket and
+    # render identical columns. vector's ``geometry()`` is last-wins over the same map; first-wins here
+    # matches the model's own declared order, and either way one id is one column.
+    seen_ids: set[str] = set()
+    zones = [z for z in zones if not (_d_str(z.get("id")) in seen_ids or seen_ids.add(_d_str(z.get("id"))))]
     zones = zones[:_MAX_DIAGRAM_ZONES]
     if not zones:
         return False
@@ -567,29 +632,45 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         ).italic = True
     for index, d in enumerate(ctx.diagrams[:_MAX_DIAGRAMS], start=1):
         model = _diagram_model(d.embed_html)
-        meta = model.get("meta") if isinstance(model, dict) else None
+        # ``meta`` was only guarded against None: a snapshot carrying ``"meta": "oops"`` (or a list)
+        # reached ``.get`` on a str and raised AttributeError -- an uncaught 500 on EVERY future .docx
+        # export of that engagement, from one stored PAT write, while the HTML export kept working.
+        # That is this branch's own defect class inverted, so it is a dict or it is nothing.
+        raw_meta = model.get("meta") if isinstance(model, dict) else None
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         # ``d.caption`` comes from the link route, which strips NUL but not the other 22 XML-illegal
         # control characters -- and those reach lxml unfiltered through add_heading/add_run.
-        title = _xml_safe(d.caption or "") or _d_str((meta or {}).get("title")) or f"Attack path {index}"
+        # The HEADING may use the model's own title -- more informative than a bare fallback. The
+        # CAPTION may not: ``render_html`` falls back to the literal "Attack path", so using meta.title
+        # here would print one figure number under two different captions across the two deliverables,
+        # which is exactly what ext#117 says must not happen.
+        title = _xml_safe(d.caption or "") or _d_str(meta.get("title")) or f"Attack path {index}"
+        caption_text = _xml_safe(d.caption or "") or DIAGRAM_CAPTION_FALLBACK
         doc.add_heading(title, level=2)
-        subtitle = _d_str((meta or {}).get("subtitle"))
+        subtitle = _d_str(meta.get("subtitle"))
         if subtitle:
             doc.add_paragraph(subtitle)
         drew_grid = _add_diagram_grid(doc, model) if model else False
-        if model:
-            _add_diagram_walkthrough(doc, model)
-            _add_diagram_edges(doc, model)
-        if not model or not drew_grid:
+        if not drew_grid:
             # Be loud about a snapshot this renderer could not read: an honest "the diagram is over
-            # there" beats the silent omission ext#115 is about.
+            # there" beats the silent omission ext#115 is about. It goes HERE, where the figure would
+            # have been, and names ``diagram_ref`` -- for a reader holding only the .docx that is the
+            # sole handle on which diagram this was.
+            ref = _d_str(d.diagram_ref, 80)
             note = doc.add_paragraph()
             note.add_run(
                 "This diagram is delivered as an interactive figure in the HTML report; a static "
                 "rendition of its layout is not available here."
+                + (f" (diagram {ref})" if ref else "")
             ).italic = True
-        # The caption goes BENEATH the figure, carrying the same continuous number the HTML prints.
-        caption = doc.add_paragraph()
-        caption.add_run(figure_caption(d.figure_number, title)).italic = True
+        if model:
+            _add_diagram_walkthrough(doc, model)
+            _add_diagram_edges(doc, model)
+            _note_truncation(doc, model)
+        # The caption goes BENEATH the figure, carrying the same continuous number AND the same text
+        # the HTML prints. "Caption" is a real Word style, so the hand-off can build a List of Figures.
+        caption = _styled_paragraph(doc, "Caption")
+        caption.add_run(figure_caption(d.figure_number, caption_text)).italic = True
 
 
 def _append_checklists(doc, ctx: ReportContext) -> None:

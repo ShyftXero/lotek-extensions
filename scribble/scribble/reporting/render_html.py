@@ -44,6 +44,7 @@ import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
 from scribble.reporting.context import (
+    DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
     DiagramCtx,
     FindingCtx,
@@ -87,7 +88,7 @@ _ASSET_TAGS = {"figure", "figcaption", "a", "img", "div", "span"}
 _ASSET_ATTRS = {
     "a": {"href", "download", "class", "id"},
     "img": {"src", "alt", "class", "loading"},
-    "div": {"class"},
+    "div": {"class", "id"},
     "span": {"class"},
     "figure": {"class", "id"},
     "figcaption": {"class"},
@@ -331,7 +332,7 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
         )
     elif href:
         raw = (
-            f'<div class="evidence-item file"><a class="file-chip" href="{href}" '
+            f'<div class="evidence-item file"{fig_id}><a class="file-chip" href="{href}" '
             f'download="{_esc(artifact.filename)}">\U0001f4c4 {_esc(artifact.filename)}</a>'
             f'<div class="cap">{numbered}</div></div>'
         )
@@ -346,9 +347,12 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
         # The number is carried even here: this artifact IS a numbered figure in the DOCX (and in an
         # inline-assets render of this same report), so dropping it on the un-embedded path would make
         # the sequence disagree between two renders of one engagement.
-        caption = f'<div class="cap">{numbered}</div>' if artifact.caption or numbered else ""
+        # The filename is already in the chip, so this line carries the NUMBER plus whatever the
+        # operator actually captioned -- never the filename again.
+        cap_only = _esc(figure_caption(artifact.figure_number, artifact.caption))
+        caption = f'<div class="cap">{cap_only}</div>' if cap_only else ""
         raw = (
-            f'<div class="evidence-item file missing">\U0001f4c4 {_esc(artifact.filename)} '
+            f'<div class="evidence-item file missing"{fig_id}>\U0001f4c4 {_esc(artifact.filename)} '
             f'<span class="cap">({detail})</span>{caption}</div>'
         )
     return _sanitize_asset_html(raw)
@@ -526,8 +530,11 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         f'<div class="finding-head"><h3>{_esc(f.title)}</h3>'
         f'<div class="finding-badges">{badges}</div></div>'
         f'<div class="finding-body">{body}</div>'
-        f"{_render_gallery(f, resolver)}"
+        # Children BEFORE the parent's own gallery, so the figure numbers ``context.number_figures``
+        # assigns count upward as the reader scrolls -- the .docx emits the children's evidence first
+        # (it lives inside ``{{r f.body }}`` in a binary template) and cannot be reordered as cheaply.
         f"{_render_children(f, resolver)}"
+        f"{_render_gallery(f, resolver)}"
         "</article>"
     )
 
@@ -1211,7 +1218,7 @@ def _render_diagram_item(d: DiagramCtx) -> str:
     # ext#117: a diagram is a numbered figure like any other, so it always carries a caption line now —
     # falling back to "Attack path" when the operator left the caption blank, because the FIGURE NUMBER
     # is what body text cross-references and an unnumbered diagram breaks the sequence.
-    caption_text = figure_caption(d.figure_number, d.caption or "Attack path")
+    caption_text = figure_caption(d.figure_number, d.caption or DIAGRAM_CAPTION_FALLBACK)
     caption = f'<figcaption class="diagram-caption">{_esc(caption_text)}</figcaption>'
     return (
         f'<figure class="attack-path-item"{_figure_id_attr(d.figure_number)}>'

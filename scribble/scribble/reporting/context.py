@@ -240,6 +240,12 @@ def _diagram_ctxs(diagrams) -> list[DiagramCtx]:
 
 FIGURE_SEPARATOR = " — "  # "Figure 3 — Payload firing in the browser"
 
+# What an UNCAPTIONED attack-path diagram's figure caption says. Lives here, on the contract both
+# renderers consume, because the two deliverables must print one figure number under ONE caption --
+# the .docx used to fall back to the model's own ``meta.title`` while the HTML said "Attack path",
+# giving the same figure two names.
+DIAGRAM_CAPTION_FALLBACK = "Attack path"
+
 
 def figure_label(number: int | None) -> str:
     """``"Figure 3"`` for a numbered figure, ``""`` for an un-numbered one.
@@ -270,9 +276,9 @@ def number_figures(
     """Stamp a continuous, report-wide ``figure_number`` (1-based) on every figure, in DOCUMENT order.
     Returns the count assigned.
 
-    Document order is: each finding's evidence gallery in board order (a parent's own artifacts, then
-    each nested child's, matching how both renderers walk them) -> attack-path diagrams -> the
-    engagement-level evidence appendix. That is the order the ``default`` AND ``compliance`` HTML
+    Document order is: each finding's evidence in board order (each nested child's artifacts, then the
+    parent's own gallery -- see the comment in the loop for why that way round) -> attack-path diagrams
+    -> the engagement-level evidence appendix. That is the order the ``default`` AND ``compliance`` HTML
     templates render (``reporting/templates.py``: ``findings`` -> ``diagrams`` -> ``evidence``) and the
     order ``render_docx.render_report_docx`` appends its post-render sections in, so the two
     deliverables number the same figure the same way *structurally* — not by two renderers separately
@@ -292,9 +298,15 @@ def number_figures(
 
     for group in groups:
         for finding in group.findings:
-            _stamp(finding.artifacts)
+            # CHILDREN FIRST, deliberately. The .docx template emits ``{{r f.body }}`` -- which carries
+            # the "Affected Hosts" list and the children's evidence -- BEFORE the parent's own evidence
+            # loop (``report_templates/build_default_docx.py``), and that order is baked into a binary
+            # template. Numbering the parent first made Word print "Figure 3" above "Figure 1".
+            # ``render_html._render_finding`` renders children before the gallery to match, so both
+            # documents count upward as the reader scrolls.
             for child in finding.children:
                 _stamp(child.artifacts)
+            _stamp(finding.artifacts)
     _stamp(diagrams)
     _stamp(artifacts)
     return n

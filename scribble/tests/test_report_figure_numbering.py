@@ -43,7 +43,10 @@ _PNG = bytes.fromhex(
     "53de0000000c4944415478da6360606000000005000166ff0f0e0000000049454e44ae426082"
 )
 
-_FIGURE_RE = re.compile(r"Figure (\d+) — ([A-Za-z0-9 .()/-]+)")
+# Capture to end of line, not to a hand-picked charset: a charset chosen to fit the fixture's captions
+# silently truncates a caption containing a comma or an apostrophe -- on BOTH sides -- so the comparison
+# stays green while proving less than it looks like.
+_FIGURE_RE = re.compile(r"Figure (\d+) — ([^\n<]+)")
 
 
 def _block(text: str) -> dict:
@@ -51,11 +54,25 @@ def _block(text: str) -> dict:
 
 
 def _figures(text: str) -> list[tuple[int, str]]:
-    """Every ``Figure N — caption`` in a rendered deliverable, deduped, in numeric order. Deduped
-    because the HTML repeats a caption in its lightbox ``alt`` and the DOCX may repeat one in a
-    header/footer — what is being compared is the SEQUENCE, not how often each is printed."""
-    seen = {int(n): cap.strip() for n, cap in _FIGURE_RE.findall(text)}
-    return sorted(seen.items())
+    """Every ``Figure N — caption`` in a rendered deliverable, deduped, **in the order they appear in
+    the document**.
+
+    First-appearance order, NOT sorted by number. The first version of this helper built a dict keyed
+    by the number and returned it sorted, which threw document order away before the comparison — so
+    the "HTML and DOCX agree" test compared a MAP and passed for any ordering whatsoever. It did:
+    the .docx really was emitting Figure 3 above Figure 1 (a child finding's evidence lives inside
+    ``{{r f.body }}``, which the binary template emits before the parent's evidence loop), and this
+    file's headline test could not see it. Deduped because the HTML repeats a caption in its lightbox
+    ``alt`` — but deduped keeping the FIRST occurrence, which is where the figure actually is."""
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for n, cap in _FIGURE_RE.findall(text):
+        number = int(n)
+        if number in seen:
+            continue
+        seen.add(number)
+        out.append((number, cap.strip()))
+    return out
 
 
 def _docx_text(raw: bytes) -> str:
@@ -142,15 +159,34 @@ def test_html_and_docx_number_the_same_figures_the_same_way(session_factory, tmp
     html_figures = _figures(html)
     docx_figures = _figures(_docx_text(raw))
     assert html_figures == docx_figures, f"HTML {html_figures} != DOCX {docx_figures}"
-    # …and the sequence is a real one: continuous from 1, one per figure, no gaps and no repeats.
+    # …and the sequence is a real one, IN DOCUMENT ORDER: continuous from 1, ascending as the reader
+    # scrolls, no gaps and no repeats. Comparing the two documents is not enough on its own — two
+    # documents can agree on a mapping and both count 3, 1, 2 down the page.
     assert [n for n, _ in html_figures] == [1, 2, 3, 4, 5]
     assert [cap for _, cap in html_figures] == [
+        "Host b payload",              # a nested child's evidence renders before the parent's gallery
         "Payload firing in the browser",
         "Burp request and response",
-        "Host b payload",
         "Domain compromise chain",
         "Engagement wide network capture",
     ]
+
+
+def test_figure_numbers_ascend_down_the_page_in_both_deliverables(session_factory, tmp_path):
+    """The property the comparison above cannot state on its own. A reader scrolling either document
+    must meet Figure 1, then 2, then 3 — the .docx was emitting a nested child's Figure 3 above the
+    parent's Figure 1, because the child's evidence lives inside ``{{r f.body }}`` and the binary
+    template emits that before the parent's evidence loop."""
+    eng_id, store = _engagement(session_factory, tmp_path)
+    reader = _read(store)
+    with session_factory() as db:
+        ctx = build_report_context(db.get(Engagement, eng_id))
+        html_numbers = [n for n, _ in _figures(
+            render_report_html(ctx, inline_assets=True, artifact_bytes=reader))]
+        docx_numbers = [n for n, _ in _figures(
+            _docx_text(render_report_docx(ctx, artifact_bytes=reader)))]
+    assert html_numbers == sorted(html_numbers), f"HTML figures out of order: {html_numbers}"
+    assert docx_numbers == sorted(docx_numbers), f"DOCX figures out of order: {docx_numbers}"
 
 
 def test_numbering_does_not_depend_on_whether_the_bytes_embedded(session_factory, tmp_path):
@@ -215,10 +251,16 @@ def _finding(name: str, artifacts, children=()) -> FindingCtx:
 
 
 def test_number_figures_walks_findings_then_diagrams_then_the_appendix():
-    """Document order, pinned without a database: a parent's own evidence, then each nested child's,
-    then the diagrams, then the engagement-level appendix. That is the order BOTH HTML templates
-    (``findings`` -> ``diagrams`` -> ``evidence``) and ``render_report_docx``'s post-render appends
-    produce — which is the only reason the two deliverables agree."""
+    """Document order, pinned without a database: each nested CHILD's evidence, then the parent's own
+    gallery, then the diagrams, then the engagement-level appendix. That is the order BOTH HTML
+    templates (``findings`` -> ``diagrams`` -> ``evidence``) and ``render_report_docx``'s post-render
+    appends produce — which is the only reason the two deliverables agree.
+
+    Children first is not an arbitrary choice and this assertion is the guard on it: the .docx template
+    emits ``{{r f.body }}`` — which carries the children's evidence — BEFORE the parent's own evidence
+    loop, and that order is baked into a binary template we do not control. ``render_html._render_finding``
+    matches it deliberately (``_render_children`` is emitted before ``_render_gallery``, render_html.py:536).
+    Numbering the parent first made Word print "Figure 3" above "Figure 1"."""
     child = _finding("child", [_artifact("c1")])
     parent = _finding("parent", [_artifact("p1"), _artifact("p2")], children=[child])
     second = _finding("second", [_artifact("s1")])
@@ -227,8 +269,8 @@ def test_number_figures_walks_findings_then_diagrams_then_the_appendix():
     appendix = [_artifact("e1")]
 
     assert number_figures(groups, diagrams, appendix) == 6
-    assert [a.figure_number for a in parent.artifacts] == [1, 2]
-    assert [a.figure_number for a in child.artifacts] == [3]
+    assert [a.figure_number for a in child.artifacts] == [1]
+    assert [a.figure_number for a in parent.artifacts] == [2, 3]
     assert [a.figure_number for a in second.artifacts] == [4]
     assert diagrams[0].figure_number == 5
     assert appendix[0].figure_number == 6
@@ -239,3 +281,36 @@ def test_figure_caption_degrades_rather_than_printing_a_dangling_dash():
     assert figure_caption(3, "") == "Figure 3"
     assert figure_caption(None, "A capture") == "A capture"
     assert figure_caption(None, "") == ""
+
+
+def test_an_uncaptioned_diagram_reads_the_SAME_in_both_deliverables(session_factory, tmp_path):
+    """B3: the .docx used to fall back to the model's own ``meta.title`` while the HTML fell back to
+    the literal "Attack path", so one figure number printed under two different captions. #117's bar
+    is that a figure means ONE thing across the report — asserting each renderer's fallback in its own
+    test file is exactly how that shipped."""
+    eng_id, store = _engagement(session_factory, tmp_path)
+    with session_factory() as db:
+        eng = db.get(Engagement, eng_id)
+        eng.diagrams[0].caption = ""  # the model still carries meta.title = "Acme compromise chain"
+        db.commit()
+        ctx = build_report_context(db.get(Engagement, eng_id))
+        html = render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store))
+        raw = render_report_docx(ctx, artifact_bytes=_read(store))
+    html_fig = dict(_figures(html))
+    docx_fig = dict(_figures(_docx_text(raw)))
+    assert html_fig[4] == docx_fig[4] == "Attack path"
+
+
+def test_every_numbered_figure_has_its_anchor_even_when_the_bytes_are_absent(session_factory, tmp_path):
+    """C4: the ``id="fig-N"`` anchor sat only on the embedded-image branch, so for a non-image, an
+    over-budget artifact, or a render with no artifact reader, the caption promised "Figure 3" and
+    ``#fig-3`` dangled. A cross-reference that resolves only when the picture happened to embed is not
+    a stable anchor."""
+    eng_id, _store = _engagement(session_factory, tmp_path)
+    with session_factory() as db:
+        ctx = build_report_context(db.get(Engagement, eng_id))
+        html = render_report_html(ctx)  # no reader: every artifact degrades to a "not embedded" chip
+    numbers = [n for n, _ in _figures(html)]
+    assert numbers, "expected numbered figures even with nothing embedded"
+    for n in numbers:
+        assert f'id="fig-{n}"' in html, f"figure {n} is numbered but has no anchor"
