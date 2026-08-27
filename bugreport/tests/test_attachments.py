@@ -330,3 +330,53 @@ def test_rotating_is_distinguishable_from_first_publication_in_the_audit(
     client.post(f"/bugreport/attachments/{aid}/share")
     second = [e for e in audit_log.events if e["action"] == "ext:bugreport:share_file"][-1]
     assert second["after"]["rotated"] is True
+
+
+# --- who may publish vs who may revoke --------------------------------------------------------------
+
+def test_an_admin_may_NOT_mint_a_public_link_on_someone_elses_file(
+    client, report_id, hooks, session_factory
+):
+    """The declared policy, and a deliberate asymmetry.
+
+    Publishing another person's upload is not a moderation action. An admin who genuinely needs a file
+    published can ask the owner — the code should not do it silently on their behalf. Pass
+    `admin_may_act=True` from `share_attachment` and this goes red.
+    """
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+
+    hooks["actor"] = StubActor(id=uuid.uuid7(), username="root", role="admin")
+    assert client.post(f"/bugreport/attachments/{aid}/share").status_code in (403, 404)
+
+    from bugreport.models import Attachment
+
+    with session_factory() as db:
+        assert db.query(Attachment).one().share_token is None
+
+
+def test_an_admin_MAY_revoke_someone_elses_public_link(client, report_id, hooks, session_factory):
+    """The other half of the asymmetry: a leaked link is an incident, and waiting for the owner to wake
+    up is the wrong failure mode."""
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    client.post(f"/bugreport/attachments/{aid}/share")  # owner publishes
+
+    from bugreport.models import Attachment
+
+    with session_factory() as db:
+        assert db.query(Attachment).one().share_token is not None
+
+    hooks["actor"] = StubActor(id=uuid.uuid7(), username="root", role="admin")
+    assert client.post(f"/bugreport/attachments/{aid}/unshare").status_code in (200, 302)
+    with session_factory() as db:
+        assert db.query(Attachment).one().share_token is None
+
+
+def test_an_admin_who_owns_the_file_may_still_mint(client, report_id, hooks, session_factory):
+    """The narrowing is about OWNERSHIP, not about being an admin — an admin's own files are their own."""
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    # the default fixture actor filed the report; make them an admin without changing identity
+    hooks["actor"] = StubActor(id=hooks["actor"].id, username=hooks["actor"].username, role="admin")
+    assert client.post(f"/bugreport/attachments/{aid}/share").status_code in (200, 302)

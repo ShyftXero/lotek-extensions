@@ -394,17 +394,30 @@ def load_attachment_by_token(db: Session, token: object) -> Attachment | None:
 
 
 def _attachment_for_write(
-    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
+    admin_may_act: bool = True,
 ) -> Attachment:
+    """One attachment the caller may WRITE, or ``Denied``.
+
+    ``admin_may_act=False`` narrows the verb to the OWNER ONLY, even for an admin. That distinction is
+    the declared policy, not a nicety: an admin may **revoke** anyone's public link (a link that leaked
+    is an incident, and waiting for the owner is the wrong failure mode) but may **not mint one on
+    someone else's file**. Publishing another person's upload is not a moderation action, and an admin
+    who needs it can say so out loud rather than having the code do it silently.
+    """
     row = load_attachment_visible(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
     if row is None:
         raise Denied("no such attachment")
     report = db.get(Report, row.report_id)
     # Defence in depth: `load_attachment_visible` already decided, and an attachment whose report
     # vanished between the two reads is refused rather than treated as ownerless.
-    if report is None or not (is_admin or _owns(report, actor_id)):
-        raise Denied("only the reporter may change their own attachments")
-    return row
+    if report is None:
+        raise Denied("no such attachment")
+    if _owns(report, actor_id):
+        return row
+    if is_admin and admin_may_act:
+        return row
+    raise Denied("only the reporter may share their own attachments")
 
 
 def share_attachment(
@@ -422,7 +435,10 @@ def share_attachment(
     to the audit row — a durable log is the last place a live credential should sit (INV-SECRET-04);
     the row records THAT sharing happened, not the secret.
     """
-    row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    # admin_may_act=False: minting is the OWNER's verb. See _attachment_for_write.
+    row = _attachment_for_write(
+        db, attachment_id, actor_id=actor_id, is_admin=is_admin, admin_may_act=False
+    )
     was_shared = row.share_token is not None
     token = secrets.token_urlsafe(32)
     row.share_token = token
