@@ -70,7 +70,16 @@ from scribble.api_schemas import (
     request_body,
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
-from scribble.artifacts_storage import SAFE_NAME_MAX, delete_file, guess_content_type, save_bytes
+from scribble.artifacts_storage import (
+    OBJECT_REF_PREFIX,
+    SAFE_NAME_MAX,
+    artifact_ref,
+    delete_file,
+    guess_content_type,
+    read_object_bytes,
+    save_bytes,
+    store_bytes,
+)
 from scribble.authz import (
     can_view_client_id,
     can_view_engagement,
@@ -520,6 +529,8 @@ def _artifact_bytes_reader(artifact_root: Path) -> Callable[[str], bytes | None]
     def _read(storage_path: str) -> bytes | None:
         if not storage_path:
             return None
+        if storage_path.startswith(OBJECT_REF_PREFIX):
+            return read_object_bytes(storage_path, _MAX_ARTIFACT_BYTES)
         candidate = (root / storage_path).resolve()
         try:
             candidate.relative_to(root)
@@ -540,7 +551,7 @@ def _artifact_bytes_reader(artifact_root: Path) -> Callable[[str], bytes | None]
 def _inline_url_factory(engagement: Engagement, make_inline_artifact_url) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves an inline-image node's artifact id to the
     renderer-specific placeholder that bakes in the artifact's storage_path."""
-    by_id = {a.id: a.storage_path for a in engagement.artifacts}
+    by_id = {a.id: artifact_ref(a) for a in engagement.artifacts}
 
     def _url(artifact_id: int) -> str:
         return make_inline_artifact_url(by_id.get(artifact_id))
@@ -1558,7 +1569,19 @@ def scribble_upload_artifact(engagement_id: str):
     else:
         placement = ArtifactPlacement.attached
 
-    storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)
+    # Evidence goes to the CORE object store when this deployment has one, and to local disk when it
+    # does not. Disk was the only option before the host contract exposed an object surface, and it
+    # remains the honest fallback for a deployment running without SeaweedFS or for a scribble
+    # engagement that stands alone (no `core_engagement_id` to authorize a put against).
+    #
+    # `store_bytes` deliberately lets a PermissionError propagate: the host raises it when the actor
+    # lacks an operator capability on the engagement, and writing to disk instead would turn a refused
+    # upload into a successful one.
+    object_id, sha256, byte_size = store_bytes(
+        engagement, filename, data, content_type=content_type)
+    storage_path = ""
+    if object_id is None:
+        storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)
     with open_session() as db:
         # Never attach to ANOTHER engagement's finding — the same defensive rule `add_finding` applies to
         # `group_id`. `finding_id` is a caller-supplied id that was written straight through: the upload
@@ -1581,6 +1604,7 @@ def scribble_upload_artifact(engagement_id: str):
             filename=filename,
             content_type=content_type,
             storage_path=storage_path,
+            object_id=object_id,
             byte_size=byte_size,
             sha256=sha256,
             caption=caption,

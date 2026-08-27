@@ -12,6 +12,7 @@ a caller passes as ``storage_path``.
 from __future__ import annotations
 
 import hashlib
+import io
 import mimetypes
 import uuid
 from pathlib import Path
@@ -142,3 +143,94 @@ def delete_file(cfg: Any, storage_path: str) -> None:
         return
     if target.is_file():
         target.unlink()
+
+
+def store_bytes(
+    engagement: Any,
+    filename: str,
+    data: bytes,
+    *,
+    content_type: str | None = None,
+) -> tuple[str | None, str, int]:
+    """Put ``data`` in the CORE object store, returning ``(object_id, sha256, byte_size)``.
+
+    ``object_id`` is None when the store could not be used, and the caller must then fall back to
+    :func:`save_bytes` (local disk). Three ways that happens, all legitimate deployments rather than
+    errors:
+
+    * the extension is unmounted, or this deployment runs no object store (``host.objects()`` None);
+    * the engagement has no ``core_engagement_id`` — scribble engagements may stand alone, and the
+      host authorizes a put against a CORE engagement, so there is nothing to authorize against;
+    * the host refuses the put.
+
+    A ``PermissionError`` is NOT swallowed. The host raises it when the actor lacks an operator
+    capability on the engagement, and quietly writing the bytes to disk instead would turn a refused
+    upload into a successful one — the deny would be enforced by the store and defeated by the
+    fallback. Everything else degrades to disk.
+
+    THE ID TRAP: the host resolves a CORE ``Engagement``. Scribble's own PK is a different id space,
+    and passing it here would fail the authorization lookup rather than erroring loudly — this repo
+    has already taken production down once by crossing those two spaces.
+    """
+    from . import host as _host
+
+    surface = _host.objects()
+    if surface is None:
+        return None, hashlib.sha256(data).hexdigest(), len(data)
+
+    core_id = getattr(engagement, "core_engagement_id", None)
+    if not core_id:
+        return None, hashlib.sha256(data).hexdigest(), len(data)
+
+    guessed = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    ref = surface.put(
+        _host.actor(),
+        kind="scribble_evidence",
+        stream=io.BytesIO(data),
+        content_type=guessed,
+        filename=filename,
+        engagement_id=core_id,
+    )
+    return str(getattr(ref, "id", "") or "") or None, hashlib.sha256(data).hexdigest(), len(data)
+
+
+#: Marks a reference that points at the CORE object store rather than at ``artifact_root``.
+#: A prefix keeps every existing ``storage_path -> bytes`` reader signature intact — there are five
+#: call sites across the report, docx and download paths, and widening all of them to take an
+#: ``Artifact`` would have been a much larger diff for no extra safety.
+OBJECT_REF_PREFIX = "obj:"
+
+
+def artifact_ref(artifact: Any) -> str:
+    """Where THIS artifact's bytes live: an ``obj:<uuid>`` store reference, or its disk path.
+
+    One helper so the map-builders and the readers cannot drift — a builder that emitted a raw path
+    for a store-backed row would silently render an empty gallery, which is exactly the kind of
+    quiet evidence loss this cutover exists to prevent.
+    """
+    object_id = getattr(artifact, "object_id", None)
+    return f"{OBJECT_REF_PREFIX}{object_id}" if object_id else (artifact.storage_path or "")
+
+
+def read_object_bytes(ref: str, max_bytes: int) -> bytes | None:
+    """Bytes for an ``obj:`` reference, or None (absent, too large, unreadable, or not visible).
+
+    Streams and stops at ``max_bytes`` rather than reading first and checking after: the on-disk path
+    refuses an oversized artifact without loading it, and the store path must not be the one that
+    pulls a gigabyte into the renderer.
+    """
+    from . import host as _host
+
+    surface = _host.objects()
+    if surface is None or not ref.startswith(OBJECT_REF_PREFIX):
+        return None
+    try:
+        object_id = uuid.UUID(ref[len(OBJECT_REF_PREFIX):])
+    except (TypeError, ValueError):
+        return None
+    try:
+        with surface.open(_host.actor(), object_id) as body:
+            data = body.read(max_bytes + 1)
+    except (KeyError, PermissionError, RuntimeError, OSError):
+        return None
+    return None if data is None or len(data) > max_bytes else data

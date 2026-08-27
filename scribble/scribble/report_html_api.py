@@ -20,6 +20,7 @@ from pathlib import Path
 
 from flask import Response, abort, request, url_for
 
+from scribble.artifacts_storage import artifact_ref
 from scribble.authz import authorize_engagement_view
 from scribble.deps import get_config, open_session
 from scribble.models import Engagement
@@ -60,7 +61,7 @@ def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
     # as a JSON string (a UUID string since lotek#335; historically a JSON int), while ``a.id`` is a
     # ``uuid.UUID``. A plain dict keyed by the UUID would miss the string every time, silently dropping
     # every inline image from the report. str() on both sides normalises int/str/UUID uniformly.
-    by_id = {str(a.id): a.storage_path for a in engagement.artifacts}
+    by_id = {str(a.id): artifact_ref(a) for a in engagement.artifacts}
 
     def _url(artifact_id: int) -> str:
         return make_inline_artifact_url(by_id.get(str(artifact_id)) if artifact_id is not None else None)
