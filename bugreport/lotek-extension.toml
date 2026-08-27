@@ -1,0 +1,52 @@
+# How this extension MOUNTS into a host (lotek). Named [mount], NOT [extension], on purpose — a host
+# may emit its own [extension] table before appending this file and TOML forbids a duplicate table, so
+# an [extension] header here would make tomllib raise and silently un-discover the whole extension.
+# Bugreport has NO seed step, so the `seed` key is omitted.
+[mount]
+name = "bugreport"
+entrypoint = "bugreport"          # importable module exposing register(...)
+url_prefix = "/bugreport"
+
+[[nav]]
+label = "Bug reports"
+path = "/"
+icon = "🐛"
+
+[host]
+# Path (relative to url_prefix) of this extension's PAT/Bearer MACHINE api — how an AGENT files a
+# report. The host treats it as a machine surface: skipped by the cookie/session dashboard gate and
+# CSRF-exempt, exactly like lotek's own /api/v1. MUST be a proper sub-path of url_prefix.
+machine_prefix = "/machine"
+# Path (relative to url_prefix) of the UNAUTHENTICATED share surface — how a shared file is fetched by
+# someone with the link and no login. The host skips the cookie/session gate here (and validates that
+# this resolves to a strict sub-path of url_prefix, so it can only ever expose part of THIS extension).
+#
+# It is NOT CSRF-exempt, because it is read-only GET.
+#
+# What guards it instead of a session: the URL carries a 256-bit `secrets.token_urlsafe(32)` capability
+# that names exactly one attachment. There is no anonymous list, count, search or metadata surface —
+# a full token returns one file, a wrong one is a flat 404. Sharing is off by default and the owner
+# mints, rotates and revokes the token.
+public_prefix = "/s"
+# OPT-IN to the host's orphaned-blob reclamation. The host asks this callable which blob ids we still
+# have rows for, and deletes the bytes for the rest — the only path that can ever reclaim a blob whose
+# metadata row never landed (a killed process between put and commit). Declaring nothing means never
+# swept, which is the safe default: core cannot tell a disabled extension from an uninstalled one.
+blob_claims = "bugreport.service:claimed_blob_ids"
+docs = "docs/BUGREPORT.md"
+docs_title = "Bug reports (capture)"
+
+# The audit-verb vocabulary this extension emits, bare (the host namespaces each to
+# `ext:bugreport:<verb>`). INV-AUDIT-03's reader half: an action the /admin/audit filter does not know
+# about is written but not selectable, which is a trail nobody can read. Keep this in step with every
+# `host_audit(...)` call site — tests/test_manifest.py asserts they match.
+[audit]
+# `share_file`/`unshare_file` are here because minting a public link hands an
+# UNAUTHENTICATED stranger read access to a file — an outward capability grant, which is the
+# kind of thing a human needs to be able to find in the audit log afterwards.
+verbs = ["admin_update", "share_file", "unshare_file"]
+
+# Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
+[db]
+base = "bugreport.models:Base"   # the module whose IMPORT registers the tables
+table_prefix = "bugreport_"
