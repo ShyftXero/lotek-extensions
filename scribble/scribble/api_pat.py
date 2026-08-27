@@ -1576,9 +1576,18 @@ def scribble_upload_artifact(engagement_id: str):
     #
     # `store_bytes` deliberately lets a PermissionError propagate: the host raises it when the actor
     # lacks an operator capability on the engagement, and writing to disk instead would turn a refused
-    # upload into a successful one.
-    object_id, sha256, byte_size = store_bytes(
-        getattr(engagement, "core_engagement_id", None), filename, data, content_type=content_type)
+    # upload into a successful one. It is caught HERE and answered 403, because letting it out of the
+    # route means a 500 — a token that may read an engagement but not operate on it deserves an honest
+    # refusal rather than a stack trace, and the caller can tell the two apart.
+    try:
+        object_id, sha256, byte_size = store_bytes(
+            getattr(engagement, "core_engagement_id", None), filename, data,
+            content_type=content_type)
+    except PermissionError:
+        return jsonify({
+            "error": "forbidden",
+            "detail": "not an operator on this engagement in the host - evidence was not stored",
+        }), 403
     storage_path = ""
     if object_id is None:
         storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)

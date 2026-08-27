@@ -76,7 +76,10 @@ class FakeObjects:
         self.refuse_put = False
 
     def put(self, actor, *, kind, stream, content_type, filename, job_id=None, engagement_id=None):
-        if self.refuse_put:
+        # A None principal holds zero engagements in core, so it can neither read nor write. Modelling
+        # that is the whole reason this fake exists: the first version ignored ``actor`` entirely, and
+        # a change that made every browser upload raise ``PermissionError`` in production passed here.
+        if actor is None or self.refuse_put:
             raise PermissionError("not an operator on the engagement")
         if (job_id is None) == (engagement_id is None):
             raise ValueError("exactly one of job_id / engagement_id is required")
@@ -94,19 +97,19 @@ class FakeObjects:
 
     def open(self, actor, object_id):
         blob = self.blobs.get(object_id)
-        if blob is None or blob.deleted:
+        if actor is None or blob is None or blob.deleted:
             raise KeyError(object_id)  # absent and not-visible are one answer, as in core
         return io.BytesIO(blob.data)
 
     def stat(self, actor, object_id):
         blob = self.blobs.get(object_id)
-        if blob is None or blob.deleted:
+        if actor is None or blob is None or blob.deleted:
             return None
         return SimpleNamespace(id=object_id, byte_size=len(blob.data), kind=blob.kind)
 
     def delete(self, actor, object_id) -> bool:
         blob = self.blobs.get(object_id)
-        if blob is None or blob.deleted:
+        if actor is None or blob is None or blob.deleted:
             return False
         blob.deleted = True  # a tombstone, as in core — the GC reclaims the bytes later
         return True
@@ -366,14 +369,32 @@ def test_every_artifact_byte_reader_resolves_an_object_reference():
 # --------------------------------------------------------------------------- end to end, over HTTP
 
 
-def test_browser_upload_stores_in_the_object_store_and_downloads_back(
+def test_the_object_surface_refuses_when_the_host_has_no_actor(app, objects, engagement, stub_host):
+    """WHY the cookie surface cannot use the object store, pinned at its source.
+
+    ``HostObjects`` authorizes against the host's PAT actor. ``host_contract.pat_actor()`` reads
+    ``g.api_user_id``, which only PAT authentication sets — so on a browser request the actor is
+    ``None``, ``_resolve_principal`` returns None, and every call is refused. A cookie upload routed
+    at the store would therefore 500, which is why ``artifacts_api.create_artifact`` deliberately
+    still writes to disk.
+
+    This is a CORE gap: the host exposes no session principal to the object surface, and an extension
+    must never manufacture one. When core grows that hook, this test is the thing that should change.
+    """
+    stub_host.actor = None
+    with app.app_context():
+        with pytest.raises(PermissionError):
+            store_bytes(engagement.core_engagement_id, "shot.png", PNG)
+        assert read_object_bytes(f"{OBJECT_REF_PREFIX}{uuid.uuid7()}", MAX_OBJECT_BYTES) is None
+
+
+def test_browser_upload_stays_on_disk_even_with_a_store_mounted(
     client, app, objects, engagement, session_factory
 ):
-    """The cookie surface, which is how a human actually uploads evidence.
+    """The cookie surface writes to disk BY DESIGN — see the test above for why.
 
-    Only the machine route stored at first, so an ordinary browser upload kept writing to one host's
-    disk while the feature was reported as shipped — and the download route, which resolves a path,
-    answered "file missing on disk" for everything the machine route HAD stored.
+    Pinned rather than left implicit because "the machine path stores but the browser path does not"
+    reads like an oversight, and the obvious "fix" is a 500 on every upload.
     """
     resp = client.post(
         "/scribble/api/artifacts",
@@ -384,13 +405,42 @@ def test_browser_upload_stores_in_the_object_store_and_downloads_back(
         },
     )
     assert resp.status_code == 201, resp.get_json()
-    artifact_id = resp.get_json()["id"]
-
-    assert len(objects.puts) == 1, "a browser upload must reach the store, not the local filesystem"
+    assert objects.puts == [], "the browser surface has no host actor and must not route at the store"
     with session_factory() as db:
-        row = db.get(Artifact, uuid.UUID(str(artifact_id)))
-        assert row.object_id is not None
-        assert row.storage_path == "", "a store-backed row keeps no disk path"
+        row = db.get(Artifact, uuid.UUID(str(resp.get_json()["id"])))
+        assert row.object_id is None
+        assert row.storage_path, "the bytes still have to land somewhere"
+
+    raw = client.get(f"/scribble/api/artifacts/{resp.get_json()['id']}/raw")
+    assert raw.status_code == 200
+    assert raw.data == PNG
+
+
+def test_download_resolves_a_store_backed_row(client, app, objects, engagement, session_factory):
+    """The download route's ``obj:`` branch, which the disk resolver answered "file missing" for.
+
+    Reaches the store through the stub's PAT actor. The separate question of whether a BROWSER request
+    has an actor at all is pinned by ``test_the_object_surface_refuses_when_the_host_has_no_actor``;
+    this one is about the branch existing.
+    """
+    with app.app_context():
+        object_id, sha256, byte_size = store_bytes(engagement.core_engagement_id, "shot.png", PNG)
+    with session_factory() as db:
+        artifact = Artifact(
+            engagement_id=engagement.id,
+            kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached,
+            filename="shot.png",
+            content_type="image/png",
+            storage_path="",
+            object_id=uuid.UUID(object_id),
+            byte_size=byte_size,
+            sha256=sha256,
+            include_in_report=True,
+        )
+        db.add(artifact)
+        db.commit()
+        artifact_id = artifact.id
 
     raw = client.get(f"/scribble/api/artifacts/{artifact_id}/raw")
     assert raw.status_code == 200, raw.get_data(as_text=True)[:200]
@@ -401,25 +451,17 @@ def test_browser_upload_stores_in_the_object_store_and_downloads_back(
     assert all(b.deleted for b in objects.blobs.values()), "deleting the row must tombstone the blob"
 
 
-def test_upload_still_uses_disk_when_the_host_has_no_object_store(
-    client, app, stub_host, engagement, session_factory
-):
-    """No ``objects`` fixture here: the fallback deployment must keep working unchanged."""
-    resp = client.post(
-        "/scribble/api/artifacts",
-        json={
-            "engagement_id": str(engagement.id),
-            "filename": "shot.png",
-            "content_base64": base64.b64encode(PNG).decode(),
-        },
-    )
-    assert resp.status_code == 201, resp.get_json()
-    artifact_id = resp.get_json()["id"]
-    with session_factory() as db:
-        row = db.get(Artifact, uuid.UUID(str(artifact_id)))
-        assert row.object_id is None
-        assert row.storage_path, "with no store the bytes must still land on disk"
+def test_machine_upload_answers_403_when_the_host_refuses_the_put(client, objects, engagement):
+    """A refused put must be an honest 403, not a 500.
 
-    raw = client.get(f"/scribble/api/artifacts/{artifact_id}/raw")
-    assert raw.status_code == 200
-    assert raw.data == PNG
+    ``store_bytes`` lets ``PermissionError`` propagate on purpose — falling back to disk would defeat
+    the refusal — but propagating it out of the ROUTE is a stack trace for a token that simply may
+    read an engagement without operating on it.
+    """
+    objects.refuse_put = True
+    resp = client.post(
+        f"/scribble/machine/engagements/{engagement.id}/artifacts",
+        json={"filename": "shot.png", "content_base64": base64.b64encode(PNG).decode()},
+    )
+    assert resp.status_code == 403, (resp.status_code, resp.get_data(as_text=True)[:200])
+    assert resp.get_json()["error"] == "forbidden"

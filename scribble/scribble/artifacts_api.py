@@ -61,7 +61,6 @@ from scribble.artifacts_storage import (
     read_object_bytes,
     resolve_path,
     save_bytes,
-    store_bytes,
 )
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
@@ -304,21 +303,22 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         else:
             placement = ArtifactPlacement.attached
 
-        # The COOKIE upload surface stores exactly like the machine one (``api_pat``). These are the
-        # two ways a human's evidence enters scribble, and having only the machine path use the object
-        # store would mean a browser upload — the ordinary case — silently kept writing to one host's
-        # disk while the feature was reported as shipped.
+        # DISK, DELIBERATELY — do not "finish the cutover" by calling store_bytes here.
         #
-        # The core engagement id is read inside its own short session: ``store_bytes`` then does its S3
-        # put with no DB connection held, and a detached-instance read can't bite.
-        with open_session() as db:
-            engagement_row = db.get(Engagement, engagement_id)
-            core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
-        object_id, sha256, byte_size = store_bytes(
-            core_engagement_id, filename, data, content_type=content_type)
-        storage_path = ""
-        if object_id is None:
-            storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
+        # This is the COOKIE surface. ``HostObjects`` authorizes against the host's PAT actor, and
+        # ``host_contract.pat_actor()`` reads ``g.api_user_id``, which is set ONLY by PAT
+        # authentication (``api_v1._authenticate_pat`` and ``host_contract.pat_authenticate``). A
+        # browser request therefore has actor ``None``, ``_resolve_principal`` returns None, and
+        # ``HostObjects.put`` raises ``PermissionError`` — every browser upload would 500.
+        #
+        # It is a CORE capability gap, not a scribble one: the host exposes no session principal to
+        # the object surface, and an extension must not manufacture one (attribution is observed by
+        # the host, never supplied by the extension). Closing it needs a core-side session actor;
+        # until then the browser stores on disk, which is where it stored before this branch, and the
+        # read paths below already resolve either kind of reference, so nothing here changes when it
+        # lands.
+        object_id = None
+        storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
 
         with open_session() as db:
             artifact = Artifact(
