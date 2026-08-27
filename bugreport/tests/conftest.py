@@ -15,9 +15,13 @@ Two distinct identities on purpose:
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import hashlib
+import io
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask, jsonify
@@ -90,8 +94,49 @@ def hooks(audit_log):
     }
 
 
+
+class FakeBlobs:
+    """In-memory stand-in for core's `extras["blobs"]` (`ObjectStore.for_extension`).
+
+    Mirrors the real seam's contract exactly where it matters: `put` CONSUMES the stream (so the
+    service's size cap, which raises mid-read, actually fires), `open` raises `KeyError` for bytes that
+    are gone, and `delete` is idempotent. It does NOT reimplement the real one's prefix confinement —
+    that is core's property and is tested in lotek's `tests/test_extension_blob_seam.py`.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict = {}
+
+    def put(self, blob_id, stream, *, content_type):
+        buf = b""
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            buf += chunk
+        self.data[blob_id] = buf
+        return SimpleNamespace(
+            sha256=hashlib.sha256(buf).hexdigest(), size=len(buf), content_type=content_type
+        )
+
+    @contextlib.contextmanager
+    def open(self, blob_id):
+        if blob_id not in self.data:
+            raise KeyError(blob_id)
+        yield io.BytesIO(self.data[blob_id])
+
+    def delete(self, blob_id):
+        self.data.pop(blob_id, None)
+        return True
+
+
 @pytest.fixture
-def app(tmp_path, hooks):
+def blobs():
+    return FakeBlobs()
+
+
+@pytest.fixture
+def app(tmp_path, hooks, blobs):
     application = Flask(__name__)
     application.config["SECRET_KEY"] = "test"
     engine = create_engine(f"sqlite:///{tmp_path / 'bugreport.db'}", future=True)
@@ -103,6 +148,8 @@ def app(tmp_path, hooks):
     cfg.extras["current_actor"] = lambda: hooks["actor"]
     cfg.extras["can_write"] = lambda: hooks["can_write"]
     cfg.extras["audit"] = hooks["audit"]
+    # Core hands each mounted extension a handle already bound to its own prefix.
+    cfg.extras["blobs"] = blobs
     _wire_pat_hooks(cfg, hooks)
     return application
 

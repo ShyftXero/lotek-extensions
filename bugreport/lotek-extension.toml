@@ -17,6 +17,17 @@ icon = "🐛"
 # report. The host treats it as a machine surface: skipped by the cookie/session dashboard gate and
 # CSRF-exempt, exactly like lotek's own /api/v1. MUST be a proper sub-path of url_prefix.
 machine_prefix = "/machine"
+# Path (relative to url_prefix) of the UNAUTHENTICATED share surface — how a shared file is fetched by
+# someone with the link and no login. The host skips the cookie/session gate here (and validates that
+# this resolves to a strict sub-path of url_prefix, so it can only ever expose part of THIS extension).
+#
+# It is NOT CSRF-exempt, because it is read-only GET.
+#
+# What guards it instead of a session: the URL carries a 256-bit `secrets.token_urlsafe(32)` capability
+# that names exactly one attachment. There is no anonymous list, count, search or metadata surface —
+# a full token returns one file, a wrong one is a flat 404. Sharing is off by default and the owner
+# mints, rotates and revokes the token.
+public_prefix = "/s"
 docs = "docs/BUGREPORT.md"
 docs_title = "Bug reports (capture)"
 

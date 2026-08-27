@@ -131,3 +131,13 @@ def host_audit():
     or None standalone. NOT swallowed: an audit failure must abort the action it records (INV-AUDIT-03),
     so the caller runs it inside the same transaction as the change."""
     return _extras().get("audit")
+
+
+def host_blobs():
+    """The host's per-extension blob surface (``extras['blobs']``), or ``None`` when unmounted.
+
+    Core hands each mounted extension a handle ALREADY BOUND to its own name, so this extension can
+    only ever address ``ext/bugreport/``. Standalone (no host) there is no object store, so callers
+    render a clear "file storage is unavailable" rather than pretending an upload succeeded.
+    """
+    return _extras().get("blobs")

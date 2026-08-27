@@ -20,15 +20,22 @@ from flask import Blueprint, jsonify, request
 
 from bugreport import host
 from bugreport.api_schemas import CreateReportRequest, UpdateReportRequest, request_body
-from bugreport.deps import get_config, host_audit
+from bugreport.deps import get_config, host_audit, host_blobs
 from bugreport.service import (
     Denied,
     Invalid,
     admin_act,
+    attach,
+    attachment_to_dict,
+    attachments_for,
     create,
+    delete_attachment,
     delete_own,
+    load_attachment_visible,
     load_visible,
+    share_attachment,
     to_dict,
+    unshare_attachment,
     update_own,
     visible_reports,
 )
@@ -190,3 +197,102 @@ def delete_report(report_id: uuid.UUID):
         except Denied as exc:
             return _denied(exc)
         return jsonify(status="deleted", id=str(report_id))
+
+
+# --------------------------------------------------------------------------- attachments (machine)
+
+
+def _blobs_or_unavailable():
+    blobs = host_blobs()
+    if blobs is None:
+        return None
+    return blobs
+
+
+@machine_bp.get("/reports/<uuid:report_id>/attachments")
+@host.require_scope("read")
+def list_attachments(report_id: uuid.UUID):
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        report = load_visible(db, report_id, actor_id=actor_id, is_admin=is_admin)
+        if report is None:
+            return _not_found()
+        rows = attachments_for(db, report)
+        return jsonify({"count": len(rows), "attachments": [attachment_to_dict(r) for r in rows]})
+
+
+@machine_bp.post("/reports/<uuid:report_id>/attachments")
+@host.require_scope("write")
+def upload_attachment_api(report_id: uuid.UUID):
+    """Multipart upload — an agent attaches a log or a capture to a report it can see."""
+    blobs = _blobs_or_unavailable()
+    if blobs is None:
+        return jsonify({"error": "unavailable", "detail": "file storage is unavailable"}), 503
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "bad_request", "detail": "no file was supplied"}), 400
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        try:
+            row = attach(
+                db, blobs, report_id, actor_id=actor_id, is_admin=is_admin,
+                filename=upload.filename, claimed_type=upload.mimetype, stream=upload.stream,
+            )
+        except Denied as exc:
+            return _denied(exc)
+        except Invalid as exc:
+            return _bad(exc)
+        except ValueError:
+            return _bad_opaque()
+        return jsonify({"attachment": attachment_to_dict(row)}), 201
+
+
+@machine_bp.get("/attachments/<uuid:attachment_id>")
+@host.require_scope("read")
+def get_attachment(attachment_id: uuid.UUID):
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        row = load_attachment_visible(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+        if row is None:
+            return _not_found()
+        return jsonify({"attachment": attachment_to_dict(row)})
+
+
+@machine_bp.post("/attachments/<uuid:attachment_id>/share")
+@host.require_scope("write")
+def share_attachment_api(attachment_id: uuid.UUID):
+    """Mint or ROTATE the capability. The response is the only place the token is returned."""
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        try:
+            token = share_attachment(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+        except Denied as exc:
+            return _denied(exc)
+        return jsonify({"share_token": token, "share_path": f"/s/{token}"})
+
+
+@machine_bp.delete("/attachments/<uuid:attachment_id>/share")
+@host.require_scope("write")
+def unshare_attachment_api(attachment_id: uuid.UUID):
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        try:
+            unshare_attachment(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+        except Denied as exc:
+            return _denied(exc)
+        return jsonify({"shared": False})
+
+
+@machine_bp.delete("/attachments/<uuid:attachment_id>")
+@host.require_scope("write")
+def delete_attachment_api(attachment_id: uuid.UUID):
+    blobs = _blobs_or_unavailable()
+    if blobs is None:
+        return jsonify({"error": "unavailable", "detail": "file storage is unavailable"}), 503
+    actor_id, _name, is_admin = _principal()
+    with get_config().session_factory() as db:
+        try:
+            delete_attachment(db, blobs, attachment_id, actor_id=actor_id, is_admin=is_admin)
+        except Denied as exc:
+            return _denied(exc)
+        return jsonify({"deleted": True})

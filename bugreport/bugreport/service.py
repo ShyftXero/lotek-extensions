@@ -15,12 +15,26 @@ returns ``None`` for both cases so a caller cannot accidentally tell them apart.
 
 from __future__ import annotations
 
+import logging
+import secrets
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from bugreport.models import MAX_BODY, MAX_TITLE, Report, ReportStatus
+from bugreport.models import (
+    DEFAULT_CONTENT_TYPE,
+    INLINE_SAFE_TYPES,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS_PER_REPORT,
+    MAX_BODY,
+    MAX_TITLE,
+    Attachment,
+    Report,
+    ReportStatus,
+)
+
+_log = logging.getLogger(__name__)
 
 #: Newest-N ceiling on every list surface. A report body is up to MAX_BODY, filing is unrated-limited, and
 #: an admin's list is unscoped — so without a cap one user can make the admin page (and `GET /reports`)
@@ -221,4 +235,218 @@ def to_dict(report: Report) -> dict:
         "admin_note": report.admin_note,
         "created_at": report.created_at.isoformat(),
         "updated_at": report.updated_at.isoformat(),
+    }
+
+
+# --------------------------------------------------------------------------- attachments
+#
+# Visibility is INHERITED from the report, resolved by calling `load_visible` and adding nothing. There
+# is deliberately no second ownership predicate for attachments: a copy is what drifts out of step, and
+# this extension already keeps `db.get(Report, ...)` to exactly one call site for that reason.
+
+
+def _sniff(head: bytes, claimed: object) -> str:
+    """The content type we will SERVE this file as — never the uploader's claim.
+
+    A claimed type is honoured only if it is in `INLINE_SAFE_TYPES` **and** the file's magic bytes
+    agree. Everything else becomes `application/octet-stream` and is served as an attachment. This is
+    what stops `evil.html` (or an SVG) arriving labelled `image/png` and then being rendered inline
+    from lotek's own origin, where its JavaScript would run with the viewer's session.
+    """
+    want = str(claimed or "").split(";")[0].strip().lower()
+    prefixes = INLINE_SAFE_TYPES.get(want)
+    if not prefixes or not any(head.startswith(p) for p in prefixes):
+        return DEFAULT_CONTENT_TYPE
+    if want == "image/webp" and not (len(head) >= 12 and head[8:12] == b"WEBP"):
+        # RIFF is a container fourcc, not a format.
+        return DEFAULT_CONTENT_TYPE
+    return want
+
+
+class _CappedHeadReader:
+    """Streams `fp`, enforcing `limit` as the bytes go past, after replaying an already-read head.
+
+    The cap is applied to what is actually READ, never to `Content-Length` — that header is supplied by
+    the same client supplying the body, so trusting it would make the limit advisory.
+    """
+
+    def __init__(self, head: bytes, fp, limit: int) -> None:
+        self._head = head
+        self._fp = fp
+        self._limit = limit
+        self._seen = len(head)
+
+    def read(self, size: int = -1) -> bytes:
+        if self._head:
+            chunk, self._head = self._head, b""
+            if size is not None and size >= 0 and len(chunk) > size:
+                chunk, self._head = chunk[:size], chunk[size:]
+            return chunk
+        chunk = self._fp.read(size)
+        self._seen += len(chunk)
+        if self._seen > self._limit:
+            raise Invalid(f"file is larger than {self._limit} bytes")
+        return chunk
+
+
+def _clean_filename(raw: object) -> str:
+    """A display name for `Content-Disposition`. NEVER a path component.
+
+    The stored object key is derived from this row's UUID primary key, so a hostile filename has
+    nowhere to go — this only has to be safe to put in a header, so separators and control characters
+    go and the length is bounded.
+    """
+    name = str(raw or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in '"\r\n')
+    return name[:255] or "file"
+
+
+def attach(
+    db: Session, blobs, report_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
+    filename: object, claimed_type: object, stream,
+) -> Attachment:
+    """Store one uploaded file against a report the caller may see."""
+    report = load_visible(db, report_id, actor_id=actor_id, is_admin=is_admin)
+    if report is None:
+        raise Denied("no such report")
+    if report.status is ReportStatus.deleted:
+        raise Denied("this report was deleted by an admin and can no longer be changed")
+    existing = db.scalar(
+        select(func.count()).select_from(Attachment).where(Attachment.report_id == report.id)
+    )
+    if (existing or 0) >= MAX_ATTACHMENTS_PER_REPORT:
+        raise Invalid(f"a report may carry at most {MAX_ATTACHMENTS_PER_REPORT} attachments")
+
+    head = stream.read(16) or b""
+    serve_as = _sniff(head, claimed_type)
+    row = Attachment(
+        report_id=report.id,
+        uploader_id=actor_id,
+        filename=_clean_filename(filename),
+        content_type=serve_as,
+    )
+    db.add(row)
+    db.flush()  # assign the PK; the object key is derived from it
+    ref = blobs.put(row.id, _CappedHeadReader(head, stream, MAX_ATTACHMENT_BYTES), content_type=serve_as)
+    row.size = ref.size
+    row.sha256 = ref.sha256
+    db.commit()
+    return row
+
+
+def attachments_for(db: Session, report: Report) -> list[Attachment]:
+    """Every attachment on a report the caller has ALREADY been cleared to see."""
+    return list(
+        db.scalars(
+            select(Attachment)
+            .where(Attachment.report_id == report.id)
+            .order_by(Attachment.created_at.asc())
+            .limit(MAX_ATTACHMENTS_PER_REPORT)
+        )
+    )
+
+
+def load_attachment_visible(
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+) -> Attachment | None:
+    """One attachment the caller may READ, or ``None`` -> rendered as 404 either way (no oracle)."""
+    row = db.get(Attachment, attachment_id)
+    if row is None:
+        return None
+    if load_visible(db, row.report_id, actor_id=actor_id, is_admin=is_admin) is None:
+        return None
+    return row
+
+
+def load_attachment_by_token(db: Session, token: object) -> Attachment | None:
+    """The ANONYMOUS path: exactly one attachment, addressed by its bearer capability.
+
+    Strictly single-object on purpose. INV-TENANCY-06 permits an extension row with no engagement id
+    only behind an explicit declared platform rule, and forbids a list/count/queue surface disclosing
+    rows outside the caller's scope. A share link is neither a list nor a query — it is a 256-bit
+    capability naming one row — so this takes a full token and returns one row or nothing. There is no
+    anonymous listing, counting, searching or enumeration anywhere in this extension.
+
+    A tombstoned report's attachments stop resolving: an admin who removes a report should not leave
+    its evidence reachable by an old link.
+    """
+    tok = str(token or "")
+    if len(tok) < 32:  # a real token is 43 chars; refuse obvious probes without a query
+        return None
+    row = db.scalar(select(Attachment).where(Attachment.share_token == tok))
+    if row is None:
+        return None
+    report = db.get(Report, row.report_id)
+    if report is None or report.status is ReportStatus.deleted:
+        return None
+    return row
+
+
+def _attachment_for_write(
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+) -> Attachment:
+    row = load_attachment_visible(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    if row is None:
+        raise Denied("no such attachment")
+    report = db.get(Report, row.report_id)
+    # Defence in depth: `load_attachment_visible` already decided, and an attachment whose report
+    # vanished between the two reads is refused rather than treated as ownerless.
+    if report is None or not (is_admin or _owns(report, actor_id)):
+        raise Denied("only the reporter may change their own attachments")
+    return row
+
+
+def share_attachment(
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+) -> str:
+    """Mint (or ROTATE) the bearer capability for one attachment and return it.
+
+    Rotating is the revocation story for a link that leaked: every previously-issued URL stops working
+    the moment this is called again.
+    """
+    row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    token = secrets.token_urlsafe(32)
+    row.share_token = token
+    db.commit()
+    return token
+
+
+def unshare_attachment(
+    db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+) -> bool:
+    """Revoke the capability. Idempotent."""
+    row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    row.share_token = None
+    db.commit()
+    return True
+
+
+def delete_attachment(
+    db: Session, blobs, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool
+) -> bool:
+    """Remove the row and its bytes."""
+    row = _attachment_for_write(db, attachment_id, actor_id=actor_id, is_admin=is_admin)
+    blob_id = row.id
+    db.delete(row)
+    db.commit()
+    try:
+        blobs.delete(blob_id)
+    except Exception:  # noqa: BLE001 — the row is gone; an orphaned blob is a cleanup task, not a 500
+        _log.warning("bugreport: attachment %s row deleted but its blob was not", blob_id, exc_info=True)
+    return True
+
+
+def attachment_to_dict(row: Attachment) -> dict:
+    """Metadata only. The share token is included because only someone already cleared to see the
+    attachment ever reaches this, and it is what they need in order to share it."""
+    return {
+        "id": str(row.id),
+        "report_id": str(row.report_id),
+        "filename": row.filename,
+        "content_type": row.content_type,
+        "size": row.size,
+        "sha256": row.sha256,
+        "shared": row.share_token is not None,
+        "share_token": row.share_token,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }

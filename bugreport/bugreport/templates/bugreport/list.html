@@ -83,6 +83,46 @@
           <button type="submit">Save</button>
         </form>
         {% endif %}
+        <div class="br-files" style="margin-top:10px">
+          <strong>Files ({{ r.attachments | length }})</strong>
+          {% for a in r.attachments %}
+            <div style="margin:4px 0">
+              <a href="{{ url_for('bugreport.download_attachment', attachment_id=a.id) }}">{{ a.filename }}</a>
+              <span class="br-muted">{{ a.size }} bytes · {{ a.content_type }}</span>
+              {% if a.share_token %}
+                {# The share URL is a bearer capability: anyone holding it can fetch this one file
+                   without logging in. Shown only to someone already cleared to see the attachment. #}
+                <div class="br-muted">
+                  Public link:
+                  <code>{{ url_for('bugreport.shared_attachment', token=a.share_token, _external=True) }}</code>
+                </div>
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.unshare', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">Stop sharing</button>
+                </form>
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">New link (revokes the old one)</button>
+                </form>
+              {% else %}
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">Create public link</button>
+                </form>
+              {% endif %}
+              <form method="post" style="display:inline"
+                    action="{{ url_for('bugreport.remove_attachment', attachment_id=a.id) }}">
+                {{ csrf() }}<button type="submit">Delete file</button>
+              </form>
+            </div>
+          {% else %}
+            <div class="br-muted">No files attached.</div>
+          {% endfor %}
+          <form method="post" enctype="multipart/form-data" style="margin-top:6px"
+                action="{{ url_for('bugreport.upload_attachment', report_id=r.id) }}">
+            {{ csrf() }}<input type="file" name="file" required><button type="submit">Attach</button>
+          </form>
+        </div>
         <form method="post" action="{{ url_for('bugreport.delete', report_id=r.id) }}"
               style="margin-top:6px">
           {{ csrf() }}<button type="submit">Delete this report</button>
