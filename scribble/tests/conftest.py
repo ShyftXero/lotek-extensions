@@ -282,6 +282,17 @@ def _make_stub_idempotent():
                     "detail": "this Idempotency-Key was already used for a different request; "
                               "use a new key for a new operation",
                 }, 422
+            if claimed["status"] is None:
+                # Claimed but not yet answered: the original is STILL RUNNING. The host answers 409 and
+                # never reclaims the slot ("old" cannot be told from "slow", and slow is exactly when
+                # clients retry). Without this branch the stub fell through to `({}, None)` — a status of
+                # None, which `jsonify(...), None` would hard-error on — so it was BOTH kinder than
+                # production and incapable of exercising the one refusal a fast-retrying agent actually
+                # meets. Found by adversarial review, in the one stub branch that was still generous.
+                return {
+                    "error": "conflict",
+                    "detail": "a request with this Idempotency-Key is still in progress",
+                }, 409
             return claimed["body"] or {}, claimed["status"]
         store[slot] = {"fingerprint": fingerprint, "body": None, "status": None}
         try:

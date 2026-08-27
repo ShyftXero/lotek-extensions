@@ -66,8 +66,10 @@ from scribble.api_schemas import (
     PatchFindingRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
+    UpdateAttackPathRequest,
     UpdateGroupRequest,
     UploadArtifactRequest,
+    idempotent_route,
     request_body,
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
@@ -514,10 +516,26 @@ def _json_safe(body: dict) -> dict:
 
     Normalising through ``current_app.json`` rather than ``default=str`` is deliberate: it is the SAME
     provider ``jsonify`` uses, so a first response and its replay are byte-identical. ``default=str``
-    would render a ``datetime`` as ``2026-08-26 12:00:00+00:00`` where ``jsonify`` emits an HTTP date —
+    would render a ``datetime`` as ``2026-01-31 12:00:00+00:00`` where ``jsonify`` emits an HTTP date —
     a replay that quietly differs from the original is its own bug.
     """
     return json.loads(current_app.json.dumps(body))
+
+
+def _json_object_or_400(data: Any):
+    """``(body, None)`` when the request body is a JSON OBJECT, else ``(None, 400)``.
+
+    ``request.get_json(silent=True) or {}`` returns whatever JSON arrived, and every PATCH here then does
+    ``set(data) - {...allowed...}`` to reject unknown fields. Handed a non-dict that is truthy — ``[1,2]``,
+    ``123``, ``true`` — ``set()`` raises ``TypeError`` INSIDE the view and the caller gets a 500 for a
+    plainly malformed request. (``"hello"`` happened to answer 400 by accident, because a string IS
+    iterable, which is exactly how this stayed invisible.) ``_idempotency_key`` already guards itself with
+    ``isinstance(data, dict)`` for the same reason; this hoists that rule to the body as a whole so the
+    three PATCH routes share ONE implementation of it rather than three.
+    """
+    if isinstance(data, dict):
+        return data, None
+    return None, _bad_request("body must be a JSON object")
 
 
 def _with_idempotency(
@@ -663,6 +681,7 @@ def _author_content_json(data: dict) -> dict:
 @machine_bp.post("/engagements")
 @host.require_scope("write")
 @request_body(CreateEngagementRequest)
+@idempotent_route
 def scribble_create_engagement():
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -817,6 +836,7 @@ def scribble_get_template(template_id: int):
 @machine_bp.post("/templates")
 @host.require_scope("write")
 @request_body(CreateTemplateRequest)
+@idempotent_route
 def scribble_create_template():
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -905,6 +925,7 @@ def scribble_create_template():
 @machine_bp.post("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
+@idempotent_route
 def scribble_add_finding(engagement_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
@@ -1120,6 +1141,7 @@ def scribble_add_finding(engagement_id: str):
 
 @machine_bp.post("/vuln-map")
 @host.require_scope("write")
+@idempotent_route
 def scribble_create_vuln_map():
     data = request.get_json(silent=True) or {}
     template_id, err = _opt_uuid(data, "template_id")
@@ -2007,6 +2029,9 @@ def _parse_finding_patch(data: dict):
     failure. ``group_id``/``order_index`` get a pointed message because they are the two fields a caller
     most plausibly expects to work here; they belong to ``move``, which owns re-ordering semantics.
     """
+    data, bad_body = _json_object_or_400(data)
+    if bad_body is not None:
+        return None, None, bad_body
     unknown = set(data) - _PATCH_ALLOWED
     for moved in ("group_id", "order_index"):
         if moved in unknown:
@@ -2197,6 +2222,7 @@ def scribble_get_finding(finding_id: int):
 @machine_bp.patch("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 @request_body(PatchFindingRequest)
+@idempotent_route
 def scribble_update_finding(finding_id: int):
     """Partially update a finding — the machine counterpart of the cookie finding-detail form plus the
     per-block autosave route, in one call.
@@ -2258,6 +2284,7 @@ def scribble_update_finding(finding_id: int):
 
 @machine_bp.delete("/findings/<uuid:finding_id>")
 @host.require_scope("write")
+@idempotent_route
 def scribble_delete_finding(finding_id: int):
     """Delete a finding and its evidence — ``findings_service.delete_finding``, the same cascade the
     cookie board performs (artifact ROWS go with it; a group delete only detaches, a finding delete does
@@ -2362,6 +2389,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
 @machine_bp.post("/findings/<uuid:finding_id>/move")
 @host.require_scope("write")
 @request_body(MoveFindingRequest)
+@idempotent_route
 def scribble_move_finding(finding_id: int):
     """Set a finding's group and its position — ``{"group_id": <id|null>, "order_index": <int>}``.
 
@@ -2418,6 +2446,7 @@ def scribble_move_finding(finding_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/findings/move")
 @host.require_scope("write")
 @request_body(BulkMoveFindingsRequest)
+@idempotent_route
 def scribble_move_findings(engagement_id: int):
     """Move SEVERAL findings into one group in a single call —
     ``{"finding_ids": [...], "group_id": <id|null>, "order_index": <int>}``.
@@ -2512,6 +2541,7 @@ def scribble_move_findings(engagement_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/groups")
 @host.require_scope("write")
 @request_body(CreateGroupRequest)
+@idempotent_route
 def scribble_create_group(engagement_id: int):
     """Create a report section (``FindingGroup``) at the end of the board.
 
@@ -2567,6 +2597,7 @@ def scribble_create_group(engagement_id: int):
 @machine_bp.patch("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 @request_body(UpdateGroupRequest)
+@idempotent_route
 def scribble_update_group(engagement_id: int, group_id: int):
     """Rename a section, toggle whether it renders, or set its ordering mode.
 
@@ -2581,7 +2612,9 @@ def scribble_update_group(engagement_id: int, group_id: int):
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
-    data = request.get_json(silent=True) or {}
+    data, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
     unknown = set(data) - {"name", "order_mode", "include_in_report", "idempotency_key"}
     if unknown:
         return _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
@@ -2633,6 +2666,7 @@ def scribble_update_group(engagement_id: int, group_id: int):
 
 @machine_bp.delete("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
+@idempotent_route
 def scribble_delete_group(engagement_id: int, group_id: int):
     """Delete a report section. Its findings are DETACHED (``group_id`` -> NULL), not deleted — removing a
     section must never silently destroy authored findings. See ``findings_service.delete_group``."""
@@ -2667,6 +2701,7 @@ def scribble_delete_group(engagement_id: int, group_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
 @host.require_scope("write")
 @request_body(ReorderGroupsRequest)
+@idempotent_route
 def scribble_reorder_groups(engagement_id: int):
     """Set the section order for an engagement — ``{"order": [group_id, ...]}``.
 
@@ -2745,6 +2780,7 @@ def _diagram_dict(d: EngagementDiagram) -> dict:
 @machine_bp.post("/engagements/<uuid:engagement_id>/attack-paths")
 @host.require_scope("write")
 @request_body(LinkAttackPathRequest)
+@idempotent_route
 def scribble_link_attack_path(engagement_id):
     """Link a vector attack-path diagram into this engagement's report (ext#48).
 
@@ -2808,8 +2844,18 @@ def scribble_link_attack_path(engagement_id):
                 include_in_report=publish if publish is not None else True,
             )
             wdb.add(diagram)
+            wdb.flush()  # populate diagram.id before the audit row references it
+            body = _diagram_dict(diagram)
+            # The POST was the ONE route in this trio with no in-band audit row (it shipped that way in
+            # ext#48, covered only by core's generic `extension.machine_write` backstop). With update and
+            # delete now emitting semantic verbs, "who put this diagram in the deliverable" would have
+            # been the only one of the three questions the audit reader could not answer.
+            _audit(
+                wdb, "link_attack_path", subject_type="engagement_diagram", subject_id=diagram.id,
+                after={**body, "engagement_id": engagement_id},
+            )
             wdb.commit()
-            return _diagram_dict(diagram), 201
+            return body, 201
 
     body, status = _with_idempotency(idempotency_key, _produce)
     return jsonify(body), status
@@ -2828,10 +2874,15 @@ def scribble_list_attack_paths(engagement_id):
         rows = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
         out = [_diagram_dict(d) for d in rows]
     # ``attack_paths`` is the key that matches the ROUTE; ``diagrams`` is the original one, kept as a
-    # duplicate alias for one release (#116). A client that guessed ``attack_paths`` — the obvious guess,
-    # and the one a report driver actually made — got a KeyError and reported "no attack paths" for data
-    # that was there. Both keys reference the same list objects, so the duplication costs one pointer per
-    # row, not a second serialization. DEPRECATED: ``diagrams`` goes away the release after next.
+    # duplicate alias so a client written against it does not break in the same release that fixes the
+    # name (#116). A client that guessed ``attack_paths`` — the obvious guess, and the one a report driver
+    # actually made — got a KeyError and reported "no attack paths" for data that was there. Both keys
+    # reference the same list objects, so the duplication costs one pointer per row, not a second
+    # serialization.
+    #
+    # 🔴 DEPRECATED — ``diagrams`` is removed by #121, which is the tracking issue for exactly that and
+    # names every site to touch. A relative deadline ("one release") in a comment is a promise nothing
+    # enforces; an open issue is a hand that can act. Do not restate a date here — point at #121.
     return jsonify({"attack_paths": out, "diagrams": out, "count": len(out)})
 
 
@@ -2857,6 +2908,8 @@ def scribble_get_attack_path(engagement_id, attack_path_id):
 
 @machine_bp.patch("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")
 @host.require_scope("write")
+@request_body(UpdateAttackPathRequest)
+@idempotent_route
 def scribble_update_attack_path(engagement_id, attack_path_id):
     """Edit a linked attack path in place: ``include_in_report`` and/or ``caption``.
 
@@ -2872,7 +2925,9 @@ def scribble_update_attack_path(engagement_id, attack_path_id):
         if _diagram_of(db, engagement_id, attack_path_id) is None:
             return _attack_path_not_found()
 
-    data = request.get_json(silent=True) or {}
+    data, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
     unknown = set(data) - {"caption", "include_in_report", "idempotency_key"}
     if unknown:
         return _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
@@ -2919,6 +2974,7 @@ def scribble_update_attack_path(engagement_id, attack_path_id):
 
 @machine_bp.delete("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")
 @host.require_scope("write")
+@idempotent_route
 def scribble_delete_attack_path(engagement_id, attack_path_id):
     """Unlink an attack path from the report and delete its stored snapshot.
 
@@ -2949,7 +3005,14 @@ def scribble_delete_attack_path(engagement_id, attack_path_id):
             for index, sibling in enumerate(
                 sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
             ):
-                sibling.order_index = index
+                # Only WRITE a row whose slot actually moved. Rewriting every sibling unconditionally
+                # takes a row lock on all of them, and two concurrent deletes on one engagement (each
+                # skipping a different victim) then take those locks in different orders — the textbook
+                # deadlock shape. ponytail: this narrows the lock set, it does not serialize the two
+                # deletes; if concurrent deletes on ONE engagement ever become common, take the
+                # engagement row `FOR UPDATE` at the top of both this and the link route's _produce.
+                if sibling.order_index != index:
+                    sibling.order_index = index
             _audit(
                 db, "delete_attack_path", subject_type="engagement_diagram",
                 subject_id=attack_path_id, before=before, after=None,

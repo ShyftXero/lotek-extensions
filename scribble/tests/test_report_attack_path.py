@@ -170,8 +170,10 @@ def test_excluded_diagram_does_not_render(session_factory):
 # ── 3. PAT endpoint round-trip ──────────────────────────────────────────────────────────────────────
 
 
-def _engagement_via_pat(client, stub_host, name: str = "E") -> int:
-    client_id = 777
+def _engagement_via_pat(client, stub_host, name: str = "E", client_id: int = 777) -> int:
+    """An engagement the current token can see. ``client_id`` is a parameter, not a constant, because a
+    cross-TENANT test needs two engagements under two DIFFERENT clients — with one shared client id a
+    "foreign engagement" test only ever proves row ownership, never tenancy."""
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {client_id}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": client_id})
     assert resp.status_code == 201, resp.get_json()
@@ -243,10 +245,13 @@ def test_repeated_link_with_same_idempotency_key_creates_ONE_row(client, stub_ho
     assert first.status_code == 201, first.get_json()
     second = client.post(f"{M}/engagements/{eid}/attack-paths", json=payload, headers=headers)
     assert second.status_code == 201, second.get_json()
-    assert second.get_json()["id"] == first.get_json()["id"]
 
+    # `count` FIRST, deliberately. The id-equality assertion below is a stronger property but it is a
+    # PROXY; asserting it first meant the red run died on the proxy and the reporter's actual acceptance
+    # criterion never executed. A guard should fail on the thing it was filed about.
     listing = client.get(f"{M}/engagements/{eid}/attack-paths").get_json()
-    assert listing["count"] == 1
+    assert listing["count"] == 1, listing
+    assert second.get_json()["id"] == first.get_json()["id"]
 
 
 def test_delete_attack_path_drops_the_count_to_zero(client, stub_host, session_factory):
@@ -348,14 +353,23 @@ def test_per_item_routes_carry_the_collection_route_tenancy(client, stub_host):
     ap = client.post(
         f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
     ).get_json()
-    other = _engagement_via_pat(client, stub_host, name="B")
+    # A sibling under the SAME client, and one under a DIFFERENT client. Both arms matter and they prove
+    # different things: the sibling proves `_diagram_of`'s row-ownership check (the engagement gate lets
+    # the caller straight through, because it holds a grant on that client), and the foreign-client one
+    # proves the engagement gate itself. A single shared client id would silently collapse this test to
+    # the first property only, while its name claimed both.
+    sibling = _engagement_via_pat(client, stub_host, name="B")
+    foreign_tenant = _engagement_via_pat(client, stub_host, name="C", client_id=778)
 
-    # Right diagram, WRONG engagement in the path -> 404 on all three verbs.
-    assert client.get(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
-    assert client.patch(
-        f"{M}/engagements/{other}/attack-paths/{ap['id']}", json={"include_in_report": False}
-    ).status_code == 404
-    assert client.delete(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
+    # Right diagram, WRONG engagement in the path -> 404 on all three verbs, both arms.
+    for other in (sibling, foreign_tenant):
+        assert client.get(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
+        assert client.patch(
+            f"{M}/engagements/{other}/attack-paths/{ap['id']}", json={"include_in_report": False}
+        ).status_code == 404
+        assert client.delete(f"{M}/engagements/{other}/attack-paths/{ap['id']}").status_code == 404
+    # …and the row is untouched by any of it.
+    assert client.get(f"{M}/engagements/{eid}/attack-paths").get_json()["count"] == 1
 
     # Engagement outside the actor's grants -> the engagement's own 404, before the diagram is touched.
     stub_host.actor = StubActor(id=2, username="operator", role="operator")
@@ -384,3 +398,85 @@ def test_the_idempotency_seam_is_honoured_across_the_machine_api(client, stub_ho
     # Same key, DIFFERENT request: neither replayed nor re-executed.
     reused = client.post(f"{M}/engagements/{eid}/groups", json={"name": "Other"}, headers=headers)
     assert reused.status_code == 422
+
+
+def test_the_attack_path_trio_is_audited(client, stub_host):
+    """INV-AUDIT-03 (lotek core): every mutating route here records WHO changed the deliverable, with the
+    subject and the before/after values, through the host seam.
+
+    All three verbs are asserted together because the gap review found was an ASYMMETRY, not an absence:
+    update and delete were added with audit rows while the POST that links a diagram in the first place
+    had none (it shipped that way in ext#48), so of the three questions an operator can ask about an
+    attack path in a client's report — who put it there, who unpublished it, who destroyed it — exactly
+    the first had no answer. A per-verb test would have kept passing through that.
+    """
+    eid = _engagement_via_pat(client, stub_host)
+
+    stub_host.audit_calls.clear()
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths",
+        json={"embed_html": SNAPSHOT_HTML, "caption": "before"},
+    ).get_json()
+    assert [a for a, _ in stub_host.audit_calls] == ["ext:scribble:link_attack_path"]
+    _, kw = stub_host.audit_calls[0]
+    assert kw["subject_type"] == "engagement_diagram"
+    assert str(kw["subject_id"]) == ap["id"]
+    assert kw["after"]["caption"] == "before"
+
+    stub_host.audit_calls.clear()
+    client.patch(
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}",
+        json={"caption": "after", "include_in_report": False},
+    )
+    assert [a for a, _ in stub_host.audit_calls] == ["ext:scribble:update_attack_path"]
+    _, kw = stub_host.audit_calls[0]
+    assert str(kw["subject_id"]) == ap["id"]
+    # The TRANSITION, not just the new value — unpublishing a diagram from a report that may already
+    # have been sent is the sensitive direction, and "it is false now" does not say it was ever true.
+    assert kw["before"] == {"caption": "before", "include_in_report": True}
+    assert kw["after"] == {"caption": "after", "include_in_report": False}
+
+    stub_host.audit_calls.clear()
+    client.delete(f"{M}/engagements/{eid}/attack-paths/{ap['id']}")
+    assert [a for a, _ in stub_host.audit_calls] == ["ext:scribble:delete_attack_path"]
+    _, kw = stub_host.audit_calls[0]
+    assert str(kw["subject_id"]) == ap["id"]
+    assert kw["after"] is None
+    # The audit row carries the diagram's METADATA, never its snapshot: `embed_html` can be 10 MiB and
+    # an audit trail is not the place to duplicate a client's evidence (same rule the findings routes
+    # follow for prose).
+    assert "embed_html" not in kw["before"]
+    assert kw["before"]["caption"] == "after"
+
+
+def test_a_non_object_json_body_is_a_400_on_every_patch_route(client, stub_host):
+    """A truthy non-dict body used to reach ``set(data)`` inside the view and 500.
+
+    Found by adversarial review, and it was NOT specific to the route this branch added — the two sibling
+    PATCH routes shared it, which is why the guard lives in ``_json_object_or_400`` next to
+    ``_idempotency_key`` (which already defended itself the same way) rather than being pasted three
+    times. All three are asserted here, because a guard in a shared helper is only worth what its callers
+    actually route through it.
+
+    ``"hello"`` is in the list on purpose: a string IS iterable, so ``set()`` accepted it and the route
+    answered 400 by accident. That accidental pass is how the real 500 stayed invisible.
+    """
+    eid = _engagement_via_pat(client, stub_host)
+    ap = client.post(
+        f"{M}/engagements/{eid}/attack-paths", json={"embed_html": SNAPSHOT_HTML}
+    ).get_json()
+    gid = client.post(f"{M}/engagements/{eid}/groups", json={"name": "S"}).get_json()["id"]
+    fid = client.post(
+        f"{M}/engagements/{eid}/findings", json={"title": "T", "severity": "low"}
+    ).get_json()["finding_id"]
+
+    urls = (
+        f"{M}/engagements/{eid}/attack-paths/{ap['id']}",
+        f"{M}/engagements/{eid}/groups/{gid}",
+        f"{M}/findings/{fid}",
+    )
+    for url in urls:
+        for body in ([1, 2], 123, [{"a": 1}], True, "hello"):
+            resp = client.patch(url, json=body)
+            assert resp.status_code == 400, (url, body, resp.status_code)
+            assert resp.get_json()["error"] == "bad_request"

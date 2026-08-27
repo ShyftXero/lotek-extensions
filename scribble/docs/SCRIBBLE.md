@@ -270,7 +270,8 @@ document — this is the prose version):
 
 - **`GET …/attack-paths` returns `attack_paths`.** The original key was `diagrams`, which matched
   neither the route nor the resource. Both keys are emitted, referencing the same list; **`diagrams` is
-  DEPRECATED and goes away the release after next.** Read `attack_paths`.
+  DEPRECATED and is removed by [#121](https://github.com/ShyftXero/lotek-extensions/issues/121).** Read
+  `attack_paths`.
 - **`GET …/findings` nests.** Findings live in `groups[].findings[]` plus `ungrouped[]`; there is **no**
   flat top-level `findings` key, so `for f in body["findings"]` raises `KeyError`. `count` is board rows
   (children included); `top_level_count` is what the report renders.

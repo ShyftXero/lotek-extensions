@@ -3,15 +3,46 @@
 ``request_body`` stamps the same conventional attribute the host generator reads
 (``app.api_schemas.REQUEST_MODEL_ATTR``), spelled as a literal (an extension must not import a host).
 Declarative only — the handlers keep their own lenient parsing and error contracts.
+
+🔴 **An id field's declared TYPE is part of the published contract, not decoration.** These models are
+what `components.schemas` is generated from, in both lotek's `/api/v1/openapi.json` and scribble's own
+`/scribble/machine/openapi.json`, so a client is written from them. They went stale at the UUIDv7
+migration (#36 / lotek#335) and kept declaring `integer` for eight fields the handlers parse with
+``_opt_uuid`` — a generated client sending ``{"template_id": 1}`` 400s on every call, which is exactly
+the silent-wrong-guess failure #116 was filed about, published with authority. Two rules:
+
+* A **scribble-owned** id (template, group, finding, artifact, assessment type) is ``uuid.UUID``.
+* A **host (core) reference** stays ``int | str`` — ``client_id``, ``core_engagement_id`` and
+  ``lotek_finding_id`` are ``SoftHostId``s that are ints on a legacy/standalone host and UUIDs under
+  lotek v2, and narrowing them to UUID would refuse a legitimate caller.
+
+``tests/test_machine_openapi.py::test_request_model_ids_are_uuid_typed`` enforces exactly that split.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 REQUEST_MODEL_ATTR = "__lotek_request_model__"
+
+# Stamped onto a view that routes its mutation through ``api_pat._with_idempotency``, so the OpenAPI
+# generator can say which operations really honour ``Idempotency-Key`` instead of guessing from the HTTP
+# method. It guessed, and the guess was wrong for four routes — including ``promote-job``, which
+# BULK-CREATES findings and has no idempotency at all. Advertising retry-safety a route does not have is
+# worse than advertising nothing, because a client retries on that promise. Same mechanism as
+# ``host.SCOPE_ATTR``; it lives here rather than in ``api_pat`` so ``openapi.py`` can read it without an
+# import cycle.
+IDEMPOTENT_ATTR = "__scribble_idempotent__"
+
+
+def idempotent_route(fn):
+    """Mark a view as honouring ``Idempotency-Key`` through the host seam. Declarative only — the actual
+    behaviour is ``api_pat._with_idempotency``; this just makes it visible to the document generator."""
+    setattr(fn, IDEMPOTENT_ATTR, True)
+    return fn
 
 
 def request_body(model: type[BaseModel]):
@@ -58,11 +89,11 @@ class AddFindingRequest(BaseModel):
     persisted — a write-scoped PAT cannot store markup that would execute when the report is opened.
     """
 
-    template_id: int | None = Field(None, description="VulnerabilityTemplate id to instantiate.")
+    template_id: uuid.UUID | None = Field(None, description="VulnerabilityTemplate id to instantiate.")
     lotek_finding_id: int | str | None = Field(
         None, description="lotek scan finding id to promote (int or UUID — v2 keys findings on UUIDv7)."
     )
-    group_id: int | None = Field(None, description="Optional FindingGroup id to nest under.")
+    group_id: uuid.UUID | None = Field(None, description="Optional FindingGroup id to nest under.")
     target_host: str | None = Field(None, description="Override target host on the authored finding.")
     target_port: int | None = Field(None, description="Override target port.")
     target_url: str | None = Field(None, description="Override target URL.")
@@ -169,7 +200,7 @@ class MoveFindingRequest(BaseModel):
     request). Moving into a group switches that group to manual ordering.
     """
 
-    group_id: int | None = Field(
+    group_id: uuid.UUID | None = Field(
         ..., description="Destination FindingGroup id, or null for the ungrouped bucket. Required."
     )
     order_index: int | None = Field(
@@ -186,8 +217,10 @@ class BulkMoveFindingsRequest(BaseModel):
     whole request is refused (404) and nothing moves.
     """
 
-    finding_ids: list[int] = Field(..., description="Findings to move, in the order they should land.")
-    group_id: int | None = Field(
+    finding_ids: list[uuid.UUID] = Field(
+        ..., description="Findings to move, in the order they should land."
+    )
+    group_id: uuid.UUID | None = Field(
         ..., description="Destination FindingGroup id, or null for the ungrouped bucket. Required."
     )
     order_index: int | None = Field(0, description="Position of the FIRST moved finding (default 0).")
@@ -199,7 +232,7 @@ class CreateGroupRequest(BaseModel):
     section, appended last on the board."""
 
     name: str = Field(..., description="Section name (required).")
-    assessment_type_id: int | None = Field(
+    assessment_type_id: uuid.UUID | None = Field(
         None, description="Optional library AssessmentType to link; an unknown id is left unset."
     )
     idempotency_key: str | None = Field(None, description="Dedup key (or Idempotency-Key header).")
@@ -225,7 +258,7 @@ class ReorderGroupsRequest(BaseModel):
     order at the end — a partial payload never drops a section.
     """
 
-    order: list[int] = Field(..., description="Group ids in their new top-to-bottom order.")
+    order: list[uuid.UUID] = Field(..., description="Group ids in their new top-to-bottom order.")
     idempotency_key: str | None = Field(None, description="Dedup key (or Idempotency-Key header).")
 
 
@@ -238,7 +271,7 @@ class UploadArtifactRequest(BaseModel):
 
     filename: str = Field(..., description="File name (its extension guides the content type).")
     content_base64: str = Field(..., description="Base64-encoded file bytes (aliases: data_base64, data).")
-    finding_id: int | None = Field(None, description="Attach the artifact to this engagement finding.")
+    finding_id: uuid.UUID | None = Field(None, description="Attach the artifact to this engagement finding.")
     caption: str | None = Field(None, description="Human caption shown in the report.")
     kind: str | None = Field(None, description="'screenshot' | 'text' | 'file' (inferred if omitted).")
     placement: str | None = Field(None, description="'attached' (default) | 'inline'.")
@@ -262,6 +295,28 @@ class UpdateArtifactRequest(BaseModel):
         None, description="Publish (true) or withhold (false) this artifact in the rendered report."
     )
     caption: str | None = Field(None, description="Human caption shown in the report.")
+
+
+class UpdateAttackPathRequest(BaseModel):
+    """JSON body of ``PATCH /scribble/machine/engagements/{engagement_id}/attack-paths/{attack_path_id}``
+    (write scope) — edit a linked attack path in place. Omitted fields are unchanged; an UNKNOWN field is
+    a 400, not a silent no-op.
+
+    ``include_in_report: false`` is the NON-destructive way to keep a wrongly-linked diagram out of a
+    client deliverable — reach for it before ``DELETE``, which also destroys the stored snapshot.
+    """
+
+    include_in_report: bool | None = Field(
+        None,
+        description="Publish (true) or withhold (false) this diagram in the rendered report. Must be a "
+        "real boolean when present — an explicit null is a 400, not 'unchanged'.",
+    )
+    caption: str | None = Field(None, description="Human caption shown under the diagram in the report.")
+    idempotency_key: str | None = Field(
+        None,
+        description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
+        "original response; the same key with a DIFFERENT request is refused 422 (use a new key).",
+    )
 
 
 class LinkAttackPathRequest(BaseModel):

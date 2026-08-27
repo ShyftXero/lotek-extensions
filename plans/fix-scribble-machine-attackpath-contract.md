@@ -102,6 +102,16 @@ branch that is the actual defect — so the harness is no kinder than production
 | `finding_id` alias | 1 failed | 1 passed |
 | an entry removed from `_RESPONSES` | 1 failed | 1 passed |
 | the `/openapi.json` route renamed | 1 passed, 5 errors | 6 passed |
+| `include_in_report` boundary on PATCH | 1 failed | 1 passed |
+| a request-model id retyped back to `integer` | 1 failed | 1 passed |
+| an emitted audit verb dropped from the manifest | 1 failed | 1 passed |
+| a declared audit verb nothing emits (false-promise direction) | 1 failed | 1 passed |
+| retry refusals guessed from the HTTP method again | 1 failed | 1 passed |
+| the non-object-body guard removed | 1 failed | 1 passed |
+| the POST's audit row removed | 1 failed | 1 passed |
+| the report route's media-type override removed | 1 failed | 1 passed |
+| `400` dropped from the documented refusals | 1 failed | 1 passed |
+| **harness fidelity, round 2**: the stub's in-flight `409` branch removed | 1 failed | 1 passed |
 
 Worth recording from the second row: a stub that is KINDER than production would have hidden #114
 completely — the acceptance test passes against the unfixed code as soon as the stub stops modelling the
@@ -109,15 +119,55 @@ completely — the acceptance test passes against the unfixed code as soon as th
 `_diagram_of` ownership check (it never gets that far — the engagement gate refuses first), which is why
 the cross-engagement case has its own dedicated test.
 
+## Review findings and how each was resolved
+
+Three independent reviewers (fresh agents, no authoring context) plus a `/security-review` pass, all on
+the full branch diff, with lotek core's `INVARIANTS.md` cross-checked.
+
+**`/security-review`: no findings at or above the bar.** It verified cross-tenant refusal empirically —
+two principals, disjoint client grants, all six GET/PATCH/DELETE × wrong-engagement / wrong-client
+combinations answered 404 with byte-identical bodies — and confirmed all 16 `_with_idempotency` call
+sites authorize BEFORE the seam, so a replay cannot bypass tenancy.
+
+| # | Finding | Resolution |
+|---|---|---|
+| CRITICAL | Request models declared `integer` ids on a UUID-keyed API (8 fields, stale since #36). A client generated from the document 400s on every call — the exact #116 failure, published with authority. | Retyped to `uuid.UUID`; host `SoftHostId`s (`client_id`, `core_engagement_id`, `lotek_finding_id`) deliberately left `int \| str`. New guard `test_request_model_ids_are_uuid_typed` walks the DOCUMENT, with a positive control that the SoftHostId allowlist cannot be padded. |
+| CRITICAL | Two audit verbs emitted but not registered in `lotek-extension.toml [audit] verbs` — INV-AUDIT-03 (**active**) breach: the rows land but `/admin/audit`'s filter cannot select them. | Registered all three attack-path verbs; added `test_every_emitted_audit_verb_is_registered_in_the_manifest` **and** the reverse (a declared verb nothing emits is a false promise in the dropdown). |
+| CRITICAL | The document promised `Idempotency-Key` on every mutating route; four do not honour it, including `promote-job`, which BULK-CREATES findings. `POST …/artifacts` has divergent semantics that silently keep only the first of two files under one key. | Added `IDEMPOTENT_ATTR` (same mechanism as `SCOPE_ATTR`); `409`/`422` are now attached iff the view routes through the seam, asserted in BOTH directions with a vacuity check. The three divergent routes are called out explicitly in `info.description`. |
+| WARNING | `PATCH {"include_in_report": null}` wrote NULL to a NOT NULL column → 500 on Postgres for a plain bad request. (Found in self-review; confirmed by two reviewers.) | Strict `isinstance(bool)`, matching `scribble_update_group`. Boundary test over `null`/`"yes"`/`1`/`[]` plus an assertion the stored value is untouched. |
+| WARNING | A truthy non-dict body (`[1,2]`, `123`, `true`) reached `set(data)` inside the view → 500. **Two sibling PATCH routes shared the bug.** | One `_json_object_or_400` helper next to `_idempotency_key` (which already defended itself the same way), applied at all three call sites. Test drives all three routes; `"hello"` is included because a string is iterable and answered 400 *by accident*, which is how the real 500 stayed invisible. |
+| WARNING | The document claimed either id space addresses an engagement in a URL. True for 5 of 17 routes; 404 on the rest. | Reworded on the `Engagement` component to name the five that honour it. |
+| WARNING | No `400` and no `409` documented. `409` (in-flight retry) became reachable on this blueprint **for the first time** with the idempotency fix; a client that does not know it retries harder. | Both added, plus `409` explained in `info.description`; `test_refusals_a_client_must_handle_are_documented`. |
+| WARNING | `idempotency_keys` now holds client report prose, in a table with no tenancy key and no sweeper. | Not an exposure (per-principal slot, no reader, authorize-before-seam — verified). Routed as a **retention/lifecycle** gap to lotek#488 along with the root cause. |
+| WARNING | The per-item tenancy test used one `client_id` for both engagements, so it proved row ownership, not tenancy. | `_engagement_via_pat` takes a `client_id`; the test now has BOTH arms — a same-client sibling (proves `_diagram_of`) and a different-client engagement (proves the engagement gate). |
+| NOTE | The `POST` link route emitted no in-band audit row, so of "who added / who unpublished / who destroyed", only the first had no answer. | Added `link_attack_path`; all three verbs asserted in one test, because the gap was an asymmetry a per-verb test would have passed through. |
+| NOTE | View docstrings — including dated internal security history — were published verbatim to any read-scoped token. | `_summary` now publishes the first paragraph only. |
+| NOTE | `finding_id` means the finding's own id on `FindingSummary` and the PARENT finding on `Artifact`. | Cross-referenced in both component descriptions. |
+| NOTE | The report route was declared `application/json` while streaming HTML/docx. | Real media types via `_RESPONSE_MEDIA_TYPES`, pinned by a test. |
+| NOTE | The `order_index` re-pack wrote every sibling unconditionally — deadlock-shaped under concurrent deletes. | Only writes rows whose slot moved, with a `ponytail:` note naming the residual ceiling and the `FOR UPDATE` upgrade path. |
+| NOTE | The conftest stub had no in-flight branch, so nothing exercised the host's `409` — the one place it was still kinder than production. | Added. |
+| NOTE | The drift guard's public-document loop could never fail (the fallback schema is a non-empty dict). | Now rejects the fallback by its description, so the black-box half has teeth if the white-box half is ever refactored away. |
+| NOTE | The `diagrams` deprecation deadline was written three different ways in three files, with nothing able to check any of them. | All three now point at **#121**, the tracking issue that removes the alias and names every site to touch. |
+| — | INV-TENANCY-05: writes gate on `can_view_client` (client-coarse), not `can_operate_on`. Pre-existing and blueprint-wide. | Filed as **#123** rather than silently inherited. Changing it is a 16-route behaviour change needing a mounted test, not this branch's call. |
+
+Two findings were declined, with reasons: the extension build id in `info.version` (core's
+`/api/v1/openapi.json` already publishes an equivalent to the identical audience, so removing it here
+buys nothing), and wrapping `promote-job`/`update_artifact` in the seam (a real behaviour change, out of
+scope — the document now says plainly that they do not honour the key).
+
 ## Remaining
 
-- [ ] reviews + acks + PR
+- [ ] Orchestrator runs the combined suite + `pytest -m invariant`, the merged-diff reviews, the
+      `--ack-*` markers, and opens one PR. **This branch records no `--ack-tests` and opens no PR.**
 
 ## Notes / gotchas
 
-- **`diagrams` → `attack_paths` is a breaking rename.** Both keys are emitted for one release; the
-  old one is documented as deprecated in `scribble/docs/SCRIBBLE.md` and in the PR body (this repo
-  has no `CHANGELOG.md` — releases are auto-tagged, see `plans/chore-release-autonotes.md`).
+- **`diagrams` → `attack_paths` is a breaking rename.** Both keys are emitted; the old one is
+  documented as deprecated in `scribble/docs/SCRIBBLE.md` and in the PR body (this repo has no
+  `CHANGELOG.md` — releases are auto-tagged, see `plans/chore-release-autonotes.md`). The removal is
+  tracked by **#121**, and every site that mentions the deprecation points at that issue rather than
+  restating a relative deadline — a review finding on this branch was that "one release" and "the
+  release after next" had both been written, in three files, with nothing able to check either.
 - **Deliberately NOT done:** a flat top-level `findings` key on `GET …/findings`. The issue offers
   "rename OR document the nesting"; duplicating every finding into a second list doubles the
   response for a large engagement, and the published OpenAPI document now describes the nesting

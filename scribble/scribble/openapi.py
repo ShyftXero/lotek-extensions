@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from scribble.api_schemas import REQUEST_MODEL_ATTR
+from scribble.api_schemas import IDEMPOTENT_ATTR, REQUEST_MODEL_ATTR
 from scribble.host import SCOPE_ATTR
 
 # Flask rule placeholders: `<name>`, `<conv:name>`.
@@ -75,8 +75,12 @@ COMPONENTS: dict[str, Any] = {
             "client_id": _STR_N,
             "core_engagement_id": {
                 **_STR_N,
-                "description": "The host engagement id this one mirrors, if any. Either id addresses "
-                "this engagement in a URL path.",
+                "description": "The host (lotek) engagement id this one mirrors, if any — recorded so a "
+                "caller holding only the id core returned can find this engagement. ⚠️ It is NOT "
+                "interchangeable with `id` in a URL: only `GET/PATCH /engagements/{id}`, "
+                "`GET /engagements/{id}/report`, `POST /engagements/{id}/findings` and "
+                "`POST /engagements/{id}/promote-job/{job_id}` accept either id space. Every other "
+                "engagement-scoped path takes this record's own `id` and answers 404 for the core one.",
             },
             "scope_type": _STR_N,
             "company_name": _STR_N,
@@ -89,7 +93,9 @@ COMPONENTS: dict[str, Any] = {
             "finding_id": {
                 **_UUID,
                 "description": "READ alias for `id`, identical value. Present because the artifact-upload "
-                "route ACCEPTS `finding_id`; without it the obvious round trip raised KeyError (#116).",
+                "route ACCEPTS `finding_id`; without it the obvious round trip raised KeyError (#116). "
+                "⚠️ NOT the same field as `Artifact.finding_id`, which names an artifact's PARENT "
+                "finding.",
             },
             "title": {"type": "string"},
             "severity": _SEVERITY,
@@ -118,7 +124,10 @@ COMPONENTS: dict[str, Any] = {
             "finding_id": {
                 **_UUID_N,
                 "description": "What the artifact is attached to; null = the engagement itself (which "
-                "the report's Evidence appendix publishes).",
+                "the report's Evidence appendix publishes). ⚠️ NOT the same field as "
+                "`FindingSummary.finding_id`: there it aliases the finding's own `id`, here it names the "
+                "PARENT finding. In `FindingDetail` the two are nested and are equal only by "
+                "coincidence.",
             },
             "kind": {"type": "string"},
             "placement": {"type": "string"},
@@ -221,10 +230,12 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
                                             "group_count": {"type": "integer"},
                                             "artifact_count": {"type": "integer"}})],
     }),
+    # NOT JSON — see `_RESPONSE_MEDIA_TYPES`, which overrides the content type for this one operation.
     "scribble_engagement_report": (200, {
         "type": "string",
-        "description": "NOT JSON — the rendered deliverable is streamed as `text/html` (`?format=html`, "
-        "the default) or as a `.docx` attachment (`?format=docx`).",
+        "format": "binary",
+        "description": "The rendered deliverable itself: `text/html` for `?format=html` (the default), "
+        "or a `.docx` attachment for `?format=docx`. Do NOT JSON-decode it.",
     }),
     # templates + vuln map
     "scribble_list_templates": (200, _obj({"count": _COUNT, "items": {"type": "array", "items": _obj({
@@ -303,8 +314,9 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
             "attack_paths": _array("AttackPath"),
             "diagrams": {**_array("AttackPath"),
                          "deprecated": True,
-                         "description": "DEPRECATED alias of `attack_paths`, identical content. Kept for "
-                         "one release for clients written against the original key; read "
+                         "description": "DEPRECATED alias of `attack_paths`, identical content, kept so "
+                         "clients written against the original key did not break in the release that "
+                         "fixed the name. Scheduled for removal (lotek-extensions#121). Read "
                          "`attack_paths`."},
         },
         description="`attack_paths` is the key that matches the route name. `diagrams` was the original "
@@ -318,6 +330,15 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
 }
 
 
+# Operations whose success body is NOT `application/json`. Declaring the report route as JSON would make
+# a generated client JSON-decode an HTML document — the same "wrote the client from the document and it
+# silently did the wrong thing" failure #116 was filed about, just in the other direction.
+_RESPONSE_MEDIA_TYPES: dict[str, list[str]] = {
+    "scribble_engagement_report": ["text/html",
+                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+}
+
+
 def _openapi_path(rule: str) -> tuple[str, list[dict[str, Any]]]:
     params = [
         {"name": m.group("name"), "in": "path", "required": True,
@@ -328,10 +349,26 @@ def _openapi_path(rule: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def _summary(doc: str | None) -> tuple[str, str]:
+    """``(summary, description)`` from a view docstring: first line, then the FIRST PARAGRAPH only.
+
+    Truncated at the first blank line on purpose. These docstrings are internal engineering commentary —
+    several narrate when and how the route was insecure, with dates ("must check both, which is exactly
+    what it failed to do until 2026-08-12") — and this document publishes them to any read-scoped token
+    as a machine-readable artifact. The opening paragraph is the part a CLIENT AUTHOR needs; the rest is
+    written for whoever edits the handler. Core's generator publishes the whole thing, which is a
+    pre-existing disclosure this one declines to duplicate.
+    """
     if not doc:
         return "", ""
     lines = [ln.strip() for ln in doc.strip().splitlines()]
-    return (lines[0] if lines else ""), "\n".join(lines[1:]).strip()
+    summary = lines[0] if lines else ""
+    rest: list[str] = []
+    for line in lines[1:]:
+        if not line and rest:
+            break
+        if line or rest:
+            rest.append(line)
+    return summary, "\n".join(rest).strip()
 
 
 def machine_views(app: Any, blueprint_name: str):
@@ -362,6 +399,7 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
             view.__name__, (200, _obj({}, description="Undocumented — see the drift guard in "
                                       "tests/test_machine_openapi.py.")),
         )
+        media_types = _RESPONSE_MEDIA_TYPES.get(view.__name__, ["application/json"])
 
         model = getattr(view, REQUEST_MODEL_ATTR, None)
         request_body = None
@@ -377,7 +415,11 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
         for method in sorted((rule.methods or set()) - _IMPLICIT_METHODS):
             responses: dict[str, Any] = {
                 str(status): {"description": "OK",
-                              "content": {"application/json": {"schema": schema}}},
+                              "content": {mt: {"schema": schema} for mt in media_types}},
+                "400": {"description": "Malformed body: a field of the wrong type, a string longer than "
+                                       "its column, or an UNKNOWN field (which is refused, never a "
+                                       "silent no-op).",
+                        "content": {"application/json": {"schema": _ref("Error")}}},
                 "401": {"description": "Missing/invalid personal access token",
                         "content": {"application/json": {"schema": _ref("Error")}}},
                 "403": {"description": f"Token lacks required scope '{scope}'",
@@ -389,7 +431,18 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
                                        "authentication to enforce.",
                         "content": {"application/json": {"schema": _ref("Error")}}},
             }
-            if method in ("POST", "PUT", "PATCH", "DELETE"):
+            # The two idempotency refusals are attached only where the route REALLY routes through the
+            # seam. Keying them off the HTTP method instead advertised retry-safety on four routes that
+            # have none — including `promote-job`, which BULK-CREATES findings. A client retries on that
+            # promise, so a false one is worse than silence.
+            if getattr(view, IDEMPOTENT_ATTR, False) and method in ("POST", "PUT", "PATCH", "DELETE"):
+                responses["409"] = {
+                    "description": "A request under this `Idempotency-Key` is STILL IN FLIGHT. Do not "
+                                   "retry harder — the original is running and its slot is never "
+                                   "reclaimed (\"old\" cannot be told from \"slow\"). Wait, or use a "
+                                   "new key.",
+                    "content": {"application/json": {"schema": _ref("Error")}},
+                }
                 responses["422"] = {
                     "description": "This `Idempotency-Key` was already used for a DIFFERENT request. "
                                    "Nothing was created and nothing was replayed; use a new key.",
@@ -421,12 +474,23 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
                 "`<dashboard>/settings/tokens`). `read` scope guards GETs, `write` guards mutations; "
                 "each operation's `x-required-scope` says which. Generated by introspecting the LIVE "
                 "url_map, so it describes exactly this instance.\n\n"
-                "**Retries.** Every mutating route honours an `Idempotency-Key` header (or an "
-                "`idempotency_key` body field): the same key with the same request replays the original "
+                "**Retries.** A mutating route honours `Idempotency-Key` (or an `idempotency_key` body "
+                "field) **iff its operation documents a `409`/`422` response** — check, do not assume. "
+                "Where it is honoured: the same key with the same request replays the original "
                 "response instead of executing again, and the same key with a DIFFERENT request is "
-                "refused `422`. One exception: a retried DELETE answers `404`, because the row is "
-                "authorized before the idempotency seam sees it and by then it is gone — the effect is "
-                "still idempotent.\n\n"
+                "refused `422`, and a retry that arrives while the original is STILL RUNNING is "
+                "answered `409` — wait or use a new key, do not retry harder; the slot is never "
+                "reclaimed, because \"old\" cannot be distinguished from \"slow\". One exception: a "
+                "retried DELETE answers `404`, because the row is authorized before the idempotency "
+                "seam sees it and by then it is gone — the effect is still idempotent.\n\n"
+                "⚠️ **Three routes take an idempotency key and do NOT behave this way.** "
+                "`POST …/promote-job/{job_id}` and `POST …/artifacts/{artifact_id}` ignore the key "
+                "entirely — a retry RE-EXECUTES, and promote-job bulk-creates findings. "
+                "`POST …/artifacts` has its own dedup scoped to `(engagement, key)` rather than to the "
+                "calling principal, with the OPPOSITE resolution for a mismatch: a *different* file "
+                "under a key already used replays the FIRST artifact as `200` instead of refusing "
+                "`422`, so reusing one key for two screenshots silently keeps only the first. Use a "
+                "fresh key per artifact.\n\n"
                 "**Refusals are uniform.** A row that does not exist and a row outside this token's "
                 "grants answer the same `404`, byte for byte. Never read a `404` as proof of "
                 "non-existence.\n\n"

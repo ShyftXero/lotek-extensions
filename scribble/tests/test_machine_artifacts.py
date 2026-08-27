@@ -740,9 +740,12 @@ def test_upload_emits_audit_row(client, stub_host):
     action, kw = stub_host.audit_calls[0]
     assert action == "ext:scribble:upload_artifact"
     assert kw["subject_type"] == "artifact"
-    assert kw["subject_id"] == body["id"]
+    # `subject_id` is the real `uuid.UUID` the audit seam is handed; `body["id"]` came back through JSON
+    # and is its string form. Compared raw these are never equal — the assertion has been dead since the
+    # UUIDv7 migration (#36 / lotek#335), when both sides stopped being ints. Same for `engagement_id`.
+    assert str(kw["subject_id"]) == body["id"]
     assert kw["after"]["include_in_report"] is True
-    assert kw["after"]["engagement_id"] == eid
+    assert str(kw["after"]["engagement_id"]) == str(eid)
 
 
 def test_update_emits_audit_with_transition(client, stub_host):
@@ -762,7 +765,7 @@ def test_update_emits_audit_with_transition(client, stub_host):
     action, kw = stub_host.audit_calls[0]
     assert action == "ext:scribble:update_artifact"
     assert kw["subject_type"] == "artifact"
-    assert kw["subject_id"] == aid
+    assert str(kw["subject_id"]) == aid  # UUID vs its JSON string form — see the note above
     assert kw["before"]["include_in_report"] is True
     assert kw["after"]["include_in_report"] is False
     assert kw["before"]["caption"] == "x"
