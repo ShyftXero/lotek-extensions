@@ -1,0 +1,43 @@
+# Scribble report Theme — Light.
+#
+# REFACTOR, not a redesign: every value in [tokens] below was copied verbatim out of the `:root { }`
+# block of `reporting/render_html.py`'s `_CSS` string (#102). `tests/test_report_theme_files.py`
+# re-parses that same stylesheet and asserts this file never drifts from it — if you touch a colour
+# here, the CSS is now WRONG until it is updated too (or vice versa; either direction should fail that
+# test until both agree). See `report_themes/README.md` for the full schema this file follows.
+
+[identity]
+name = "light"
+label = "Light"
+
+[tokens]
+bg = "#f6f8fa"
+surface = "#ffffff"
+surface-2 = "#eff3f6"
+ink = "#131b24"
+ink-2 = "#3d4b59"
+muted = "#6b7a89"
+line = "#e3e8ed"
+line-2 = "#cbd4dd"
+accent = "#0f7a52"
+accent-ink = "#0a5b3d"
+accent-wash = "#e7f3ed"
+sev-critical = "#b3261e"
+sev-high = "#c2410c"
+sev-medium = "#a16207"
+sev-low = "#1d6fa5"
+sev-info = "#64748b"
+radius = "8px"
+measure = "72ch"
+maxw = "1080px"
+
+# No custom web fonts today — the shipped report stack is the `system-ui` fallback stack already in
+# `_CSS`'s `body { font-family: … }`, and no `.woff2` files are committed alongside this Theme yet.
+# `embed = false` keeps `build_font_face_css` a guaranteed no-op even if faces are added below before
+# their files exist (see `reporting/theme_files.py`'s "Font embedding" docs for why absence must
+# degrade cleanly rather than error).
+[fonts]
+embed = false
+
+# Reserved for #104 (logo/shape assets). Intentionally empty — see `reporting/theme_files.py`.
+[marks]

@@ -1,0 +1,42 @@
+# Scribble report Theme — Dark.
+#
+# REFACTOR, not a redesign: every value in [tokens] below was copied verbatim out of the
+# `:root[data-theme="dark"] { }` block of `reporting/render_html.py`'s `_CSS` string (#102) — the same
+# values the `prefers-color-scheme: dark` media block sets for the `auto` stamp, so this Theme also
+# matches what an unstamped report already looks like on a dark-mode viewer today.
+# `tests/test_report_theme_files.py` re-parses that stylesheet and asserts this file never drifts from
+# it. `radius`/`measure`/`maxw` are NOT overridden by the dark block in `_CSS` — they carry the same
+# value as `light.toml` here because that IS the effective value under the dark stamp (inherited from
+# `:root`), not an oversight. See `report_themes/README.md` for the full schema this file follows.
+
+[identity]
+name = "dark"
+label = "Dark"
+
+[tokens]
+bg = "#0b1016"
+surface = "#131c25"
+surface-2 = "#0e161e"
+ink = "#e7eef5"
+ink-2 = "#b6c4d2"
+muted = "#8698a8"
+line = "#23303d"
+line-2 = "#35485b"
+accent = "#2bb283"
+accent-ink = "#7ee0bc"
+accent-wash = "#0f2a20"
+sev-critical = "#ef5a4f"
+sev-high = "#ef8a44"
+sev-medium = "#d9a63e"
+sev-low = "#56a6da"
+sev-info = "#93a3b4"
+radius = "8px"
+measure = "72ch"
+maxw = "1080px"
+
+# No custom web fonts today — see light.toml's [fonts] comment; the same reasoning applies here.
+[fonts]
+embed = false
+
+# Reserved for #104 (logo/shape assets). Intentionally empty — see `reporting/theme_files.py`.
+[marks]
