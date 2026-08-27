@@ -1,7 +1,7 @@
 """Composing a Theme into the CSS the report actually carries — the integration seam.
 
 The pieces this joins were each built in isolation: :mod:`theme_files` loads a bundled Theme,
-:mod:`tokens` says which values are legal and emits a declaration block, :mod:`marks` vets the logo.
+:mod:`tokens` says which values are legal and emits a declaration block.
 What none of them can decide alone is **where in the cascade the result has to sit**, because that
 depends on the base stylesheet — and in this stylesheet, specificity is load-bearing.
 
@@ -46,7 +46,6 @@ import logging
 from dataclasses import dataclass
 
 from scribble.reporting import theme_files
-from scribble.reporting.marks import ResolvedMark
 from scribble.reporting.themes import ReportTheme
 from scribble.reporting.tokens import render_token_block, validate_tokens
 
@@ -79,11 +78,10 @@ class ThemeAssets:
     """Everything a Theme contributes to one rendered report."""
 
     css: str
-    mark: ResolvedMark | None
 
     @property
     def is_empty(self) -> bool:
-        return not self.css and self.mark is None
+        return not self.css
 
 
 def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
@@ -104,11 +102,11 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
         # INV-EXT-05 requires a denial to be loud. Degrading safely and degrading silently are two
         # different decisions; only the first one is wanted here.
         _log.warning("scribble: report Theme %r failed to load, rendering unthemed: %s", theme.name, exc)
-        return ThemeAssets(css="", mark=None)
+        return ThemeAssets(css="")
     if loaded is None:
         # Not an error: `auto` has no bundled file by design, and an unknown name already fell back to
         # `auto` in `get_theme`. Nothing to say.
-        return ThemeAssets(css="", mark=None)
+        return ThemeAssets(css="")
 
     # theme_files validates on load, but re-validate at the render boundary anyway: this is the same
     # belt-and-braces rule cream learned the hard way, where the write path and the render path
@@ -122,7 +120,7 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
             "boundary; rendering unthemed. This is a grammar inconsistency, not bad data.",
             theme.name,
         )
-        return ThemeAssets(css="", mark=None)
+        return ThemeAssets(css="")
 
     parts: list[str] = []
 
@@ -148,17 +146,13 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
         _log.warning(
             "scribble: report Theme %r failed to compose, rendering unthemed: %s", theme.name, exc
         )
-        return ThemeAssets(css="", mark=None)
+        return ThemeAssets(css="")
 
-    # Marks are NOT wired yet, and this is the honest state rather than an oversight: `reporting.marks`
-    # (#104) is built and tested, but the Theme *schema* carries only a reserved `[marks]` placeholder —
-    # `ThemeFile` has no field to read a logo out of, so there is nothing to resolve. The seam is here,
-    # one line, so that whoever adds the schema field wires it in ONE place:
-    #
-    #     mark = resolve_mark(loaded.mark, provenance="bundled")
-    #
-    # and gets the provenance gate for free. "bundled" is what permits SVG at all; an operator-supplied
-    # override Theme arrives at "override" and is raster-only. That decision lives in marks.resolve_mark,
-    # never here, so the write path and the render path cannot drift apart — which is exactly how cream
-    # shipped a real bug (its API refused SVG while its renderer accepted it).
-    return ThemeAssets(css=_assert_style_safe("".join(parts)), mark=None)
+    # Marks (a Theme's logo) are NOT part of this branch. `reporting/marks.py` was written and tested
+    # here, then cut before merge because nothing calls it: the Theme schema carries no field to read a
+    # logo out of, so it was 419 lines of unreachable production code behind 345 lines of passing tests.
+    # It returns with the schema field that needs it -- see ext#104. Note the cut version already
+    # carried three security fixes made on this branch at bd8d8af (a CSS-escape bypass in the attribute
+    # filter, magic-byte checking on raster payloads, and an allow-list Provenance gate); recover THAT
+    # revision, not the one before it.
+    return ThemeAssets(css=_assert_style_safe("".join(parts)))

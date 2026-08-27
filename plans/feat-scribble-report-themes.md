@@ -1,8 +1,8 @@
 # Plan: feat/scribble-report-themes
 
 - **Branch:** `feat/scribble-report-themes`  (worktree: `.claude/worktrees/scribble-report-themes`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** #119 (opened 2026-08-26)
+- **Status:** 🟡 in review — scope CUT to the Layout/Theme split + bundled loader (see 'Scope cut' below)
 
 ## Purpose
 
@@ -34,9 +34,14 @@ Tier A (the shipping target):
       Reject-and-fall-back wholesale, never partially apply.
 - [ ] Retire the 4 literal colours that bypass the token layer (`#fff` ×3, and the print block's `a`).
 - [ ] Font Tokens: `font-family` is hardcoded in 9 places; route through tokens.
-- [ ] Bundled Themes as `scribble/report_themes/{light,dark}.toml` + sibling `.woff2`, read via
-      `importlib.resources`. **Must be hatch `force-include`d** or they are silently absent from the wheel
-      (same trap as `lotek-extension.toml` — discovery swallows the exception).
+- [x] Bundled Themes as `scribble/report_themes/{light,dark}.toml` + sibling `.woff2`, read via
+      `importlib.resources`. **CORRECTION:** an earlier draft of this plan said these "must be hatch
+      `force-include`d or they are silently absent from the wheel". That is WRONG and
+      `theme_files.py`'s module docstring is the accurate one: `pyproject.toml` already declares
+      `packages = ["scribble"]`, so this directory ships inside the wheel with no `force-include` —
+      verified by building an actual wheel and listing it. The `force-include` trap is real for
+      `lotek-extension.toml`, which sits at the PROJECT ROOT, outside the package dir; these files do
+      not.
 - [ ] Installed-Theme discovery over entry-point group `scribble.report_themes`.
 - [ ] Mark support: a logo hook (the renderer has **zero** `logo` references today).
 - [ ] Per-install default Theme: new `scribble_settings` singleton on cream's `slot`-unique pattern.
@@ -95,3 +100,40 @@ layout/theme references. Worth its own issue.
 
 Open, pending the human: whether the firm-brand Theme package and this map's tickets may live in a
 **public** repo, given the source brand material is marked draft-and-unadopted.
+
+
+## Scope cut (2026-08-26, before merge)
+
+Two independent reviews of the full branch diff found ~840 lines of production code with **no caller**,
+and demonstrated by execution that this directory's documented "add a bundled Theme" procedure silently
+does nothing. Rather than merge a feature whose headline capabilities are each unreachable, the branch
+was cut down to what is actually wired:
+
+**Kept (wired, and what the PR now claims):** `layouts.py`, `themes.py`, `selection.py`, `theme_css.py`,
+`theme_files.py`, `tokens.py`, the bundled `light`/`dark` TOMLs, and their tests — the Layout/Theme
+split plus a real bundled-Theme loader.
+
+**Cut, each to return with the code that calls it:**
+
+| Cut | Returns with |
+|---|---|
+| `reporting/theme_discovery.py` + tests (entry-point Theme discovery) | the ticket that makes `get_theme` consult it |
+| `reporting/marks.py` + tests (logo vetting, Provenance-gated SVG) | ext#104 — the Theme schema field that carries a logo |
+| `ScribbleSettings`, `Engagement.report_theme`, `report_theme_snapshot`, migration `b8d947be11b3` | ext#105/#106 — the UI that reads and writes them |
+
+Two things to carry forward rather than rediscover:
+
+1. **`marks.py` was cut AFTER three security fixes landed on it** (commit `bd8d8af`): a CSS-escape
+   bypass in the attribute filter (`\75 rl(` reconstitutes as a real `url()` token), magic-byte
+   verification on raster payloads (an SVG relabelled `image/png` was accepted as raster, routing around
+   the Provenance rule entirely), and an allow-list Provenance gate (the deny-list defaulted an unknown
+   provenance to PERMITTING SVG, behind an `assert` stripped under `python -O`). **Recover that
+   revision, not the one before it.**
+2. **`ScribbleSettings` may not be needed at all.** The `feat/extension-settings-ui` work concluded
+   that a per-install default belongs in the host's existing `settings` table via one `[[settings]]`
+   manifest entry — no new table, no migration. Settle that before re-adding this one.
+
+Also fixed here: the Layout switcher wrote only its own axis, so changing the Layout on a bookmarked
+`?template=dark` URL silently discarded the Theme (`?layout=…` with no theme resolves to `auto`) —
+defeating the guarantee `selection.py` exists to provide. Its guard test asserted the presence of a
+literal source string and passed either way; it now pins both axes and the absence of the broken form.

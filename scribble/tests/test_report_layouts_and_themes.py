@@ -230,11 +230,28 @@ def test_active_layout_and_theme_are_preselected(session_factory):
     assert 'value="auto" selected' not in html
 
 
-def test_switcher_js_drops_the_legacy_parameter(session_factory):
-    """Leaving a stale ?template= alongside a freshly written ?layout= would leave the URL describing
-    two different selections."""
+def test_switcher_js_writes_BOTH_axes_before_dropping_the_legacy_parameter(session_factory):
+    """A switcher must carry the other axis forward, or it silently discards it.
+
+    The legacy ``?template=`` encodes a Layout AND a Theme together, and the JS deletes it (leaving a
+    stale one beside a fresh explicit choice would leave the URL describing two selections). So a
+    switcher that wrote only its OWN axis dropped the other: arriving at ``?template=dark`` and
+    changing the Layout produced ``?layout=compliance`` with no theme, resolving to ``auto`` — the
+    exact bookmarked-URL guarantee ``reporting/selection.py`` promises, broken on the first click.
+
+    Honest about what this asserts: it reads the emitted JS, so it pins the SHAPE of the fix, not its
+    runtime behaviour. It is meaningful only in combination with
+    ``test_active_layout_and_theme_are_preselected`` (immediately above), which proves the premise the
+    fix rests on — both <select>s carry the RESOLVED selection, including one translated out of a
+    legacy ``template=``, so reading the other element's value is correct rather than a guess. The
+    end-to-end behaviour belongs to the browser suite.
+    """
     html = _render(session_factory)
+    assert 'u.searchParams.set("layout", layout.value)' in html
+    assert 'u.searchParams.set("theme", theme.value)' in html
     assert 'u.searchParams.delete("template")' in html
+    # the broken single-axis form must be gone, not merely joined by the new one
+    assert "u.searchParams.set(param, el.value)" not in html
 
 
 # --- richer finding cards ----------------------------------------------------------------------------

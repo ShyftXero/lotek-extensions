@@ -85,6 +85,29 @@ skipped, never partially emitted.
 2. Set `[identity].name` to `<name>` exactly, and a human-readable `[identity].label`.
 3. Fill in `[tokens]` — every key must be one of `reporting.tokens.ALLOWED_TOKENS` and pass that
    token's grammar, or `load_theme_file` raises `ThemeFileError` for the whole file.
-4. No `pyproject.toml` change is needed — this directory already ships inside the wheel automatically
-   (see `theme_files.py`'s module docstring for how that was verified). `list_theme_files()` picks up
-   any `<name>.toml` present here without a code change.
+4. **Add a matching entry to `reporting/themes.py`'s `_THEMES` registry.** This step is REQUIRED and
+   is easy to miss, because every earlier step appears to succeed without it: `list_theme_files()`
+   sees the new file and `load_theme_file()` parses it, but `themes.get_theme("<name>")` consults the
+   hardcoded registry, does not find it, and **silently falls back to `auto`** — so the Theme never
+   appears in the switcher and the report renders with no override at all. Nothing raises and nothing
+   is logged. (`list_theme_files()` has no production caller today; it exists for the tests and for
+   whoever replaces the registry with real discovery.)
+5. No `pyproject.toml` change is needed — this directory already ships inside the wheel automatically
+   (see `theme_files.py`'s module docstring for how that was verified).
+
+### Why the registry is hardcoded, and what it costs
+
+Reading the bundled Themes out of this directory automatically is the obvious improvement, and it is
+deliberately NOT done here. Making a new Theme reachable immediately makes an **operator-authored**
+Theme reachable, and this module's cascade is not yet ready for one: the screen override is emitted at
+`:root:root` (0-2-0, later in the sheet), which beats the dark palette as well as the light one, and
+`validate_tokens` explicitly permits a PARTIAL token set. So a brand Theme that sets only, say,
+`accent-ink` — a colour chosen against white — would paint it over the dark palette on a dark-mode
+screen. That is the same defect class as the print bug `@media print` exists to prevent, reintroduced
+on the other medium.
+
+Fixing that needs a decision this branch does not make: either scope the screen override away from
+dark (`:root:root:not([data-theme="dark"])`) and add a `[dark_tokens]` opt-in mirroring
+`[print_tokens]`, or require a colour token set to be all-or-nothing. Until then the registry stays
+closed, the bundled `light`/`dark` Themes are the only reachable ones, and the risk stays theoretical.
+Installed/discovered Themes and operator overrides land with that decision — see ext#113.

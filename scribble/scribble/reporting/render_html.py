@@ -2236,21 +2236,32 @@ _JS = """
   "use strict";
   // Switchers reload with the chosen parameter so the SERVER re-renders — a Layout change is a
   // different document, not a restyle, so it cannot be done client-side.
-  // Layout and Theme are separate axes, so each switcher sets only its own parameter. Both DELETE the
-  // legacy single-axis `template` — it is still honoured on arrival for bookmarked URLs, but leaving it
-  // in place while writing an explicit choice would leave the URL describing two different selections.
-  function bindSelector(id, param) {
+  // Layout and Theme are separate axes, but a switcher must write BOTH of them, not just its own.
+  // The legacy single-axis `template` carries a Layout AND a Theme together, and it is deleted here
+  // because leaving it beside an explicit choice would leave the URL describing two selections. So a
+  // switcher that wrote only its own axis silently DISCARDED the other one: arriving at
+  // `?template=dark` and changing the Layout produced `?layout=compliance` with no theme, which
+  // resolves to `auto` — the dark selection vanished on the first click, defeating exactly the
+  // bookmarked-URL guarantee `reporting/selection.py` exists to provide.
+  //
+  // Both <select>s are server-rendered with the RESOLVED selection already preselected (including the
+  // one translated out of a legacy `template=`), so reading the other element's current value is
+  // correct, not a guess.
+  function bindSelector(id) {
     var el = document.getElementById(id);
     if (!el) return;
     el.addEventListener("change", function () {
       var u = new URL(window.location.href);
-      u.searchParams.set(param, el.value);
+      var layout = document.getElementById("layout-select");
+      var theme = document.getElementById("theme-select");
+      if (layout) u.searchParams.set("layout", layout.value);
+      if (theme) u.searchParams.set("theme", theme.value);
       u.searchParams.delete("template");
       window.location.assign(u.toString());
     });
   }
-  bindSelector("layout-select", "layout");
-  bindSelector("theme-select", "theme");
+  bindSelector("layout-select");
+  bindSelector("theme-select");
   var sections = Array.prototype.slice.call(document.querySelectorAll("section.sec"));
   sections.forEach(function (sec) {
     var h = sec.querySelector(".sec-h");
