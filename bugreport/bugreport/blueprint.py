@@ -9,6 +9,7 @@ A report the caller may not see is **404, never 403** (INV-TENANCY-01, no existe
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
@@ -24,8 +25,18 @@ from bugreport.deps import (
     is_standalone,
 )
 from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
-from bugreport.service import Denied, admin_act, create, delete_own, load_visible, update_own
+from bugreport.service import (
+    Denied,
+    Invalid,
+    admin_act,
+    create,
+    delete_own,
+    load_visible,
+    update_own,
+)
 from bugreport.service import visible_reports as _visible_reports
+
+_log = logging.getLogger(__name__)
 
 bp = Blueprint("bugreport", __name__, template_folder="templates")
 
@@ -91,8 +102,13 @@ def file_report():
             )
         except Denied as exc:
             abort(403, str(exc))
-        except ValueError as exc:
+        except Invalid as exc:
             abort(400, str(exc))
+        except ValueError:
+            # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
+            # internals, so it is logged and never rendered (CodeQL: information exposure).
+            _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
+            abort(400, "invalid request")
     return redirect(url_for("bugreport.index"))
 
 
@@ -113,8 +129,13 @@ def update(report_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
-        except ValueError as exc:
+        except Invalid as exc:
             abort(400, str(exc))
+        except ValueError:
+            # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
+            # internals, so it is logged and never rendered (CodeQL: information exposure).
+            _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
+            abort(400, "invalid request")
     return redirect(url_for("bugreport.index"))
 
 
@@ -148,6 +169,11 @@ def respond(report_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
-        except ValueError as exc:
+        except Invalid as exc:
             abort(400, str(exc))
+        except ValueError:
+            # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
+            # internals, so it is logged and never rendered (CodeQL: information exposure).
+            _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
+            abort(400, "invalid request")
     return redirect(url_for("bugreport.index"))

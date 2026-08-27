@@ -13,6 +13,7 @@ implementation, so it cannot drift between the two surfaces. A report the token 
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from flask import Blueprint, jsonify, request
@@ -22,6 +23,7 @@ from bugreport.api_schemas import CreateReportRequest, UpdateReportRequest, requ
 from bugreport.deps import get_config, host_audit
 from bugreport.service import (
     Denied,
+    Invalid,
     admin_act,
     create,
     delete_own,
@@ -32,6 +34,8 @@ from bugreport.service import (
 )
 
 machine_bp = Blueprint("bugreport_machine", __name__)
+_log = logging.getLogger(__name__)
+
 machine_bp.before_request(host.authenticate)
 
 
@@ -55,8 +59,18 @@ def _denied(exc: Exception):
     return jsonify({"error": "forbidden", "detail": str(exc)}), 403
 
 
-def _bad(exc: Exception):
+def _bad(exc: Invalid):
+    """400 quoting the message. Only ever called with ``Invalid``, whose messages this
+    extension writes itself and are safe to show a caller."""
     return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+
+
+def _bad_opaque():
+    """400 for a ``ValueError`` this extension did NOT raise — a uuid/int parse, SQLAlchemy, the JSON
+    decoder. Its message describes internals, so it is logged and never echoed (CodeQL: information
+    exposure through an exception)."""
+    _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
+    return jsonify({"error": "bad_request", "detail": "invalid request"}), 400
 
 
 def _not_found():
@@ -95,8 +109,10 @@ def create_report():
             )
         except Denied as exc:
             return _denied(exc)
-        except ValueError as exc:
+        except Invalid as exc:
             return _bad(exc)
+        except ValueError:
+            return _bad_opaque()
         return jsonify(report=to_dict(report)), 201
 
 
@@ -148,8 +164,10 @@ def update_report(report_id: uuid.UUID):
                 )
         except Denied as exc:
             return _denied(exc)
-        except ValueError as exc:
+        except Invalid as exc:
             return _bad(exc)
+        except ValueError:
+            return _bad_opaque()
         return jsonify(report=to_dict(report))
 
 

@@ -36,6 +36,16 @@ class Denied(PermissionError):
     """The caller is authenticated but not permitted (admin-only verb, or not the owner on a write)."""
 
 
+class Invalid(ValueError):
+    """Input this module rejected, carrying a message that is SAFE to show the caller.
+
+    A distinct type, rather than a bare ``ValueError``, because both surfaces echo the message into a
+    response body. ``except ValueError`` is a wide net: `uuid.UUID()`, `int()`, SQLAlchemy and the JSON
+    decoder all raise it, and those messages describe internals, not the caller's mistake. CodeQL
+    flagged exactly that (information exposure through an exception, api_pat.py:55/59). Only messages
+    raised deliberately HERE are quotable; anything else gets a generic 400."""
+
+
 def _owns(report: Report, actor_id: uuid.UUID | None, standalone: bool = False) -> bool:
     # `actor_id is None` short-circuits BEFORE the comparison: an anonymous MOUNTED caller must never match
     # a row whose reporter_id is also NULL. Standalone is the single-local-user case and is the ONLY thing
@@ -78,7 +88,7 @@ def _text(value: object, field: str) -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be text")
+        raise Invalid(f"{field} must be text")
     return value.strip()
 
 
@@ -86,11 +96,11 @@ def _clean(title: object, body: object) -> tuple[str, str]:
     title = _text(title, "title")
     body = _text(body, "body")
     if not title:
-        raise ValueError("title is required")
+        raise Invalid("title is required")
     if len(title) > MAX_TITLE:
-        raise ValueError(f"title is longer than {MAX_TITLE} characters")
+        raise Invalid(f"title is longer than {MAX_TITLE} characters")
     if len(body) > MAX_BODY:
-        raise ValueError(f"body is longer than {MAX_BODY} characters")
+        raise Invalid(f"body is longer than {MAX_BODY} characters")
     return title, body
 
 
@@ -168,7 +178,7 @@ def admin_act(
     if note is not None:
         note = _text(note, "note")
         if len(note) > MAX_BODY:
-            raise ValueError(f"note is longer than {MAX_BODY} characters")
+            raise Invalid(f"note is longer than {MAX_BODY} characters")
 
     before = {"status": report.status.value, "admin_note": (report.admin_note or "")[:_AUDIT_NOTE_CHARS]}
     if status is not None:

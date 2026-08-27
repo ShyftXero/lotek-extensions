@@ -184,3 +184,35 @@ def test_a_partial_mount_can_only_leave_the_fail_CLOSED_surface_live(tmp_path, m
     assert seen[0] == "bugreport_machine", f"the fail-OPEN browser blueprint went live first: {seen}"
     # The survivor refuses rather than serving an unauthenticated, unscoped surface.
     assert app.test_client().get(URL).status_code == 503
+
+
+def test_an_unexpected_ValueError_is_a_400_that_leaks_NOTHING(pat_client, monkeypatch):
+    """CodeQL: information exposure through an exception (api_pat.py:55/59).
+
+    Both surfaces echo `str(exc)` into the response, which is fine for `service.Invalid` — this
+    extension writes those messages. It was NOT fine for a bare `except ValueError`: `uuid.UUID()`,
+    `int()`, SQLAlchemy and the JSON decoder all raise `ValueError`, and those messages describe
+    internals. The catch is now split, and this pins the opaque half.
+
+    Neutralise it by widening `except Invalid` back to `except ValueError` in `api_pat._create`, or by
+    making `_bad_opaque` quote the exception, and this test goes red.
+    """
+    import bugreport.api_pat as api_pat
+
+    def _boom(*a, **kw):
+        raise ValueError("psycopg: relation 'bugreport_reports' does not exist at 10.0.0.7:5432")
+
+    monkeypatch.setattr(api_pat, "create", _boom)
+    resp = pat_client.post(URL, json={"title": "trigger", "body": "x"})
+    assert resp.status_code == 400
+    detail = resp.get_json()["detail"]
+    assert detail == "invalid request"
+    for leak in ("psycopg", "relation", "10.0.0.7", "5432", "bugreport_reports"):
+        assert leak not in detail
+
+
+def test_a_deliberate_Invalid_still_explains_itself(pat_client):
+    """The other half: narrowing the catch must not turn real validation into a useless 400."""
+    resp = pat_client.post(URL, json={"title": "", "body": "x"})
+    assert resp.status_code == 400
+    assert "title is required" in resp.get_json()["detail"]
