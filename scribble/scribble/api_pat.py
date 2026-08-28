@@ -488,7 +488,13 @@ def _audit(db, verb: str, *, subject_type: str, subject_id=None, before=None, af
         db,
         f"ext:scribble:{verb}",
         subject_type=subject_type,
-        subject_id=subject_id,
+        # The host's audit `subject_id` is a string column, and callers pass a mix of shapes — since the
+        # UUIDv7 PK cutover (lotek#335 / object-store refactor #130) these are `uuid.UUID` objects, while
+        # a route's JSON response serializes the same id as a STRING. Coerce once here so every scribble
+        # audit row records the id in the one canonical shape a reader (and the id in the API response)
+        # actually matches — otherwise `subject_id` is a UUID that never equals the string an auditor
+        # correlates it against. (Fixed the two `test_machine_artifacts` audit assertions.)
+        subject_id=None if subject_id is None else str(subject_id),
         before=before,
         after=after,
     )
