@@ -25,6 +25,7 @@ from pathlib import Path
 
 from flask import Response, abort
 
+from scribble.artifacts_storage import OBJECT_REF_PREFIX, read_object_bytes
 from scribble.authz import authorize_engagement_view
 from scribble.deps import get_config, open_session
 from scribble.models import Engagement
@@ -50,6 +51,8 @@ def _make_artifact_bytes(artifact_root: Path) -> Callable[[str], bytes | None]:
     def _read(storage_path: str) -> bytes | None:
         if not storage_path:
             return None
+        if storage_path.startswith(OBJECT_REF_PREFIX):
+            return read_object_bytes(storage_path, _MAX_ARTIFACT_BYTES)
         candidate = (root / storage_path).resolve()
         try:
             candidate.relative_to(root)

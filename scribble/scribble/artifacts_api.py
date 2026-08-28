@@ -47,15 +47,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import (
+    MAX_OBJECT_BYTES,
     SAFE_NAME_MAX,
     delete_file,
     guess_content_type,
+    object_id_of,
+    persist_bytes,
+    read_object_bytes,
     resolve_path,
-    save_bytes,
 )
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, get_config, open_session
@@ -298,7 +302,24 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         else:
             placement = ArtifactPlacement.attached
 
-        storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
+        # The SAME persist call the machine route makes — that is the point of it. This surface used
+        # to write to disk directly, so which backend held a piece of evidence depended on which route
+        # a human happened to use, and every reader downstream had to cope with both answers.
+        #
+        # `core_engagement_id` is read in its own short session so the S3 put holds no DB connection
+        # and cannot read a detached attribute.
+        with open_session() as db:
+            engagement_row = db.get(Engagement, engagement_id)
+            core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
+        try:
+            storage_path, sha256, byte_size = persist_bytes(
+                cfg, engagement_id=engagement_id, core_engagement_id=core_engagement_id,
+                filename=filename, data=data, content_type=content_type)
+        except PermissionError:
+            # The host refused the put: this actor may VIEW the engagement (checked above) without
+            # holding an operator capability on it in core. An honest 403 — never a disk write, which
+            # would turn a refused upload into a successful one, and never a 500.
+            return jsonify(error="not an operator on this engagement in the host"), 403
 
         with open_session() as db:
             artifact = Artifact(
@@ -338,6 +359,27 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             storage_path = artifact.storage_path
             filename = artifact.filename
             content_type = artifact.content_type
+
+        # A store-backed row has no path to resolve. Without this branch the download route answered
+        # "file missing on disk" for every artifact the upload route had just stored successfully —
+        # evidence you could upload and never retrieve.
+        if object_id_of(storage_path) is not None:
+            # ONE 404 for absent, tombstoned, oversized and not-visible alike. That is deliberate and
+            # matches ``HostObjects.open``, which raises KeyError for "not yours" precisely so the
+            # route cannot become an existence oracle for another engagement's evidence.
+            #
+            # The ceiling sits ABOVE what the upload path can accept (the host's MAX_CONTENT_LENGTH),
+            # so it is not reachable by anything this route stored.
+            # ponytail: buffers the blob; stream it if evidence ever outgrows MAX_CONTENT_LENGTH.
+            data = read_object_bytes(storage_path, MAX_OBJECT_BYTES)
+            if data is None:
+                return jsonify(error="not found"), 404
+            return send_file(
+                io.BytesIO(data),
+                as_attachment=True,
+                download_name=filename,
+                mimetype=content_type or "application/octet-stream",
+            )
 
         try:
             path = resolve_path(cfg, storage_path)

@@ -70,7 +70,14 @@ from scribble.api_schemas import (
     request_body,
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
-from scribble.artifacts_storage import SAFE_NAME_MAX, delete_file, guess_content_type, save_bytes
+from scribble.artifacts_storage import (
+    OBJECT_REF_PREFIX,
+    SAFE_NAME_MAX,
+    delete_file,
+    guess_content_type,
+    persist_bytes,
+    read_object_bytes,
+)
 from scribble.authz import (
     can_view_client_id,
     can_view_engagement,
@@ -520,6 +527,8 @@ def _artifact_bytes_reader(artifact_root: Path) -> Callable[[str], bytes | None]
     def _read(storage_path: str) -> bytes | None:
         if not storage_path:
             return None
+        if storage_path.startswith(OBJECT_REF_PREFIX):
+            return read_object_bytes(storage_path, _MAX_ARTIFACT_BYTES)
         candidate = (root / storage_path).resolve()
         try:
             candidate.relative_to(root)
@@ -1558,7 +1567,21 @@ def scribble_upload_artifact(engagement_id: str):
     else:
         placement = ArtifactPlacement.attached
 
-    storage_path, sha256, byte_size = save_bytes(get_config(), engagement_id, filename, data)
+    # The SAME persist call the cookie route makes. `persist_bytes` alone decides where the bytes go.
+    #
+    # A PermissionError is caught here and answered 403 rather than propagating: letting it out of the
+    # route means a 500, and a token that may read an engagement without holding an operator
+    # capability on it deserves an honest refusal it can tell apart from a crash.
+    try:
+        storage_path, sha256, byte_size = persist_bytes(
+            get_config(), engagement_id=engagement_id,
+            core_engagement_id=getattr(engagement, "core_engagement_id", None),
+            filename=filename, data=data, content_type=content_type)
+    except PermissionError:
+        return jsonify({
+            "error": "forbidden",
+            "detail": "not an operator on this engagement in the host - evidence was not stored",
+        }), 403
     with open_session() as db:
         # Never attach to ANOTHER engagement's finding — the same defensive rule `add_finding` applies to
         # `group_id`. `finding_id` is a caller-supplied id that was written straight through: the upload

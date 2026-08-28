@@ -27,6 +27,10 @@ class ArtifactCtx:
     filename: str
     caption: str
     content_type: str | None
+    # WHERE THE BYTES ARE, not necessarily a path: either a disk path relative to ``artifact_root`` or
+    # an ``obj:<uuid>`` reference into the core object store (``Artifact.storage_path``, carried
+    # through verbatim). The paired ``artifact_bytes`` reader resolves whichever it is, so a renderer
+    # never has to know, and this stays a plain copy of the column rather than a second opinion on it.
     storage_path: str
     # What the row recorded for this file, so a renderer can decide whether to carry its bytes WITHOUT
     # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the

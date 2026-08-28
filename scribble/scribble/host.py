@@ -76,6 +76,17 @@ def actor():
     return hook() if hook is not None else None
 
 
+def objects():
+    """The host's actor-gated object surface (``put``/``open``/``stat``), or None when unmounted or
+    when this deployment has no object store.
+
+    None is a first-class answer: evidence then falls back to local disk, which is where it lived
+    before the store existed. Callers must NOT treat None as an error — an operator running without
+    SeaweedFS is a supported deployment, not a broken one.
+    """
+    return host_hook("objects")
+
+
 def findings():
     """The host's read-only findings namespace (``get_job``/``list_findings``/``get_finding``), or
     None when unmounted. Callers treat None like an empty host (no scan data reachable)."""
