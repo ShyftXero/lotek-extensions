@@ -79,6 +79,7 @@ from scribble.deps import (
     current_actor,
     current_actor_id,
     current_actor_username,
+    host_can_write,
     open_session,
     severity_enum,
 )
@@ -520,6 +521,58 @@ def register(api_bp, bp) -> None:
                 )
                 db.add(finding)
                 db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    # ============================================================================ UI: promote scan job
+
+    @bp.post("/engagements/<uuid:engagement_id>/promote-job", endpoint="promote_job")
+    def promote_job_ui(engagement_id: uuid.UUID):
+        """Human twin of the machine route (`api_pat.scribble_promote_job`): pull a lotek scan job's
+        findings onto THIS board from the browser.
+
+        Before this route, promotion existed ONLY on the PAT/machine surface — a person operating in the
+        browser could not turn a finished scan into a report at all, which is why a UI-only lifecycle had
+        to hand-build findings from templates. Found by driving the app as a human (BusyBody, 2026-08-27).
+
+        Tenancy and CSRF are handled the same way every other human route here handles them, so this body
+        stays as thin as `add_finding`: the blueprint-wide `_gate` has already resolved + authorized
+        `engagement_id` before we run (unknown/forbidden -> 404, no existence leak), the host applies
+        `user_can_view_job` to the session actor inside `get_job`/`list_findings` (unknown/forbidden job
+        -> None -> a no-op, same one-answer-no-leak the machine twin gives), and the host owns CSRF
+        (lotek does NOT exempt `/scribble/*`). Aggregation is `scribble.promote.promote_job`'s concern.
+
+        `job_id` arrives as a FORM field, not a URL segment, because there is no host hook to LIST an
+        engagement's promotable jobs yet, so the operator supplies the id (BusyBody carries it from the
+        queue_job step). A job `<select>` is the follow-on once a host `list_jobs` hook exists.
+        """
+        # Route-level WRITE gate. The blueprint `_gate` only authorizes VIEW, and every other scribble
+        # mutating route (add_finding, create_group, delete_*) currently relies on that plus the UI-only
+        # `scribble_can_write` display flag — so a viewer who can SEE an engagement can POST a mutation
+        # directly. That is a SYSTEMIC scribble gap (noted for a broader fix); a NEW mutating route must
+        # not ship with the weaker posture, so promotion — which pours a whole scan's findings onto the
+        # board — checks write at the route. `host_can_write()` defaults True when no host hook is wired
+        # (standalone), and reads the host's real capability under lotek.
+        if not host_can_write():
+            abort(403)
+        job_id = (request.form.get("job_id") or "").strip()
+        actor = current_actor()
+        promoted_ref = None
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            findings_ns = host.findings()
+            job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
+            if job is not None:
+                from scribble.promote import promote_job  # lazy: promote.py is Track D's file
+                dtos = findings_ns.list_findings(job_id, actor)
+                promote_job(db, engagement=engagement, findings=dtos,
+                            actor_username=current_actor_username())
+                db.commit()
+                promoted_ref = engagement.id  # capture inside the session for the host-side write below
+        if promoted_ref is not None:
+            # The one host-contract write, in its own transaction (mirrors the machine route).
+            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=promoted_ref)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     # =============================================================================== UI: delete finding
