@@ -190,8 +190,11 @@ def test_promote_lotek_finding_respects_job_tenancy(client, stub_host, session_f
     stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto])
 
     def _promote(actor):
+        # A distinct name per engagement: each scribble engagement now maps 1:1 to a CORE engagement,
+        # and core's names are unique per client — three called "E" under one client is a real 409.
+        # This test is about JOB tenancy, so it should not be asserting through a naming clash.
         stub_host.actor = actor
-        eid = _engagement(client, stub_host)
+        eid = _engagement(client, stub_host, name=f"E-{actor.username}")
         return client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": 101})
 
     # opB (id=8) does not own the finding's job -> refused as 404 (no existence leak)

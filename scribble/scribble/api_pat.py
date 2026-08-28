@@ -47,7 +47,6 @@ import binascii
 import fnmatch
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
@@ -71,12 +70,11 @@ from scribble.api_schemas import (
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
 from scribble.artifacts_storage import (
-    OBJECT_REF_PREFIX,
     SAFE_NAME_MAX,
+    artifact_bytes,
     delete_file,
     guess_content_type,
     persist_bytes,
-    read_object_bytes,
 )
 from scribble.authz import (
     can_view_client_id,
@@ -85,7 +83,7 @@ from scribble.authz import (
     visible_engagements,
 )
 from scribble.content import schema
-from scribble.deps import get_config, open_session, severity_enum
+from scribble.deps import open_session, severity_enum
 from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingStatus, OrderMode
 from scribble.models import (
     Artifact,
@@ -519,33 +517,6 @@ def _with_idempotency(
 # ── report rendering helpers (reused by the machine report route) ────────────────────────────────────
 
 
-def _artifact_bytes_reader(artifact_root: Path) -> Callable[[str], bytes | None]:
-    """A ``storage_path -> bytes`` reader confined to ``artifact_root`` — mirrors
-    ``report_html_api._make_artifact_bytes`` (path-escape guard + size ceiling)."""
-    root = artifact_root.resolve()
-
-    def _read(storage_path: str) -> bytes | None:
-        if not storage_path:
-            return None
-        if storage_path.startswith(OBJECT_REF_PREFIX):
-            return read_object_bytes(storage_path, _MAX_ARTIFACT_BYTES)
-        candidate = (root / storage_path).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            return None  # path would escape the artifact root — refuse
-        if not candidate.is_file():
-            return None
-        try:
-            if candidate.stat().st_size > _MAX_ARTIFACT_BYTES:
-                return None
-            return candidate.read_bytes()
-        except OSError:
-            return None
-
-    return _read
-
-
 def _inline_url_factory(engagement: Engagement, make_inline_artifact_url) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves an inline-image node's artifact id to the
     renderer-specific placeholder that bakes in the artifact's storage_path."""
@@ -705,6 +676,45 @@ def scribble_create_engagement():
             # exist to a token holding no grant under them. The detail carries a static next-step hint —
             # see _client_not_found for why appending it unconditionally keeps that property.
             return _client_not_found()
+
+        # THE ANCHOR. `objects.engagement_id` is NOT NULL for every blob (INV-OBJSTORE-01 makes tenancy
+        # a database fact via composite FKs), so a scribble engagement with no core engagement behind it
+        # has nowhere in the bucket to put evidence — and the only alternative was the local filesystem,
+        # which is the split this cutover exists to delete. Obtained at CREATE time so it is never
+        # missing at upload time.
+        #
+        # A caller MAY supply its own, and that path stays open to a plain operator: creating an
+        # engagement is manager-or-admin in the host (establishing tenancy is privileged there and the
+        # seam delegates to core's own rule rather than restating it), but pointing at one you already
+        # operate is not, and refusing that would lock every operator out of filing evidence.
+        if core_engagement_id is not None and not host.can_operate_on(core_engagement_id):
+            # Same refusal shape as an unknown client: never confirm which core engagement ids exist.
+            return _client_not_found()
+
+    # OUTSIDE the mounted branch on purpose. Storage and authorization are separate host capabilities:
+    # a shell can supply an object store without a lotek authorization model (that is exactly what the
+    # testbed does), and evidence still needs its anchor there. Gating this on `host_is_mounted()`
+    # would leave those deployments creating engagements whose uploads could only fail.
+    if core_engagement_id is None:
+        try:
+            core_engagement_id = host.create_engagement(client_id, name)
+        except PermissionError:
+            return (
+                jsonify({
+                    "error": "forbidden",
+                    "detail": "creating an engagement requires manager or admin in the host; "
+                              "pass core_engagement_id of an engagement you already operate",
+                }),
+                403,
+            )
+        except ValueError:
+            return (
+                jsonify({
+                    "error": "conflict",
+                    "detail": "an engagement with this name already exists for this client",
+                }),
+                409,
+            )
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
@@ -1331,8 +1341,7 @@ def scribble_engagement_report(engagement_id: str):
     if fmt not in ("html", "docx"):
         return jsonify({"error": "bad_request", "detail": "format must be html or docx"}), 400
 
-    cfg = get_config()
-    reader = _artifact_bytes_reader(cfg.artifact_root)
+    reader = artifact_bytes
     with open_session() as db:
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
@@ -1574,7 +1583,6 @@ def scribble_upload_artifact(engagement_id: str):
     # capability on it deserves an honest refusal it can tell apart from a crash.
     try:
         storage_path, sha256, byte_size = persist_bytes(
-            get_config(), engagement_id=engagement_id,
             core_engagement_id=getattr(engagement, "core_engagement_id", None),
             filename=filename, data=data, content_type=content_type)
     except PermissionError:
@@ -2265,7 +2273,6 @@ def scribble_delete_finding(finding_id: int):
     runs — the files went with the original request.
     """
     actor = host.actor()
-    cfg = get_config()
 
     with open_session() as db:
         finding = _visible_finding(db, finding_id, actor)
@@ -2303,7 +2310,7 @@ def scribble_delete_finding(finding_id: int):
     body, status = _with_idempotency(_idempotency_key(request.get_json(silent=True) or {}), _produce)
     if status == 200:
         for storage_path in removed_paths:
-            delete_file(cfg, storage_path)
+            delete_file(storage_path)
     return jsonify(body), status
 
 

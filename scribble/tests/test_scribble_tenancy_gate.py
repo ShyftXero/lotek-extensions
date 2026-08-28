@@ -46,9 +46,9 @@ import uuid
 from flask import url_for
 
 import scribble.models as fm
-from scribble.artifacts_storage import save_bytes
 from scribble.authz import _CHILD_RESOLVERS, _DIRECT_KEYS
 from scribble.enums import ChecklistKind
+from scribble.testing import store_evidence
 from tests.conftest import StubUser, _StubRole
 
 UI = "/scribble"
@@ -153,8 +153,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
         db.add(group)
         db.commit()
 
-        cfg = app.extensions["scribble"]
-        storage_path, sha256, size = save_bytes(cfg, eng.id, "evidence.txt", b"evidence")
+        storage_path, sha256, size = store_evidence(app, "evidence.txt", b"evidence")
         artifact = fm.Artifact(
             engagement_id=eng.id,
             filename="evidence.txt",
@@ -380,8 +379,7 @@ def test_groups_reorder_denied_then_allowed(client, stub_host, session_factory):
 
 def test_artifact_raw_denied_then_allowed(client, stub_host, session_factory, app):
     eid = _make_engagement(session_factory, client_id=ACME)
-    cfg = app.extensions["scribble"]
-    storage_path, sha256, size = save_bytes(cfg, eid, "evidence.png", b"pngbytes")
+    storage_path, sha256, size = store_evidence(app, "evidence.png", b"pngbytes")
     with session_factory() as db:
         artifact = fm.Artifact(
             engagement_id=eid,
@@ -515,8 +513,7 @@ def test_standalone_board_and_artifact_raw_unaffected(client, session_factory, a
     eid = _make_engagement(session_factory, client_id=ACME)
     assert client.get(f"{UI}/engagements/{eid}").status_code == 200
 
-    cfg = app.extensions["scribble"]
-    storage_path, sha256, size = save_bytes(cfg, eid, "e.txt", b"y")
+    storage_path, sha256, size = store_evidence(app, "e.txt", b"y")
     with session_factory() as db:
         artifact = fm.Artifact(
             engagement_id=eid, filename="e.txt", content_type="text/plain",

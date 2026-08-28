@@ -15,10 +15,7 @@ import hashlib
 import io
 import mimetypes
 import uuid
-from pathlib import Path
 from typing import Any
-
-from werkzeug.utils import secure_filename
 
 # A short allowlist of magic-byte signatures used to sniff content-type from bytes rather than trust a
 # (possibly attacker-supplied) filename extension. Falls back to extension-based guessing, then a
@@ -51,40 +48,6 @@ _SAFE_NAME_MAX = SAFE_NAME_MAX  # internal alias kept for the docstring/comments
 _EXT_MAX = 16
 
 
-def _bounded_name(safe_name: str) -> str:
-    """Truncate a post-``secure_filename`` basename to what the filesystem will actually accept, keeping a
-    short trailing extension so the stored file still looks like a ``.png``.
-
-    ``secure_filename`` NFKD-normalizes, and normalization can EXPAND: "½" becomes "1⁄2" -> "12", so a
-    204-character unicode filename comes out 404 characters long. Bounding the CALLER's characters at the API
-    boundary therefore cannot close this — 200 "½" plus ".png" passes a 222-character cap and still overran
-    ``NAME_MAX``, and ``target.write_bytes`` raised ``OSError: [Errno 36] File name too long`` -> a 500 with
-    no artifact stored. Measured, reproduced, and fixed HERE rather than at the boundary because this is the
-    layer that knows the final name: the same expansion reached this function from the cookie upload route
-    too, which no API-side cap covers at all. The API's own 222 cap stays, as the fast, honest 400 for a
-    caller that sends an absurd name.
-    """
-    if len(safe_name) <= _SAFE_NAME_MAX:
-        return safe_name
-    stem, dot, ext = safe_name.rpartition(".")
-    if not dot or not ext or len(ext) > _EXT_MAX:
-        return safe_name[:_SAFE_NAME_MAX]
-    keep = _SAFE_NAME_MAX - len(ext) - 1
-    return f"{stem[:keep]}.{ext}" if keep > 0 else safe_name[:_SAFE_NAME_MAX]
-
-
-def safe_join(root: Path, rel: str) -> Path:
-    """Resolve ``rel`` under ``root``, raising ``ValueError`` if it would escape (``..`` traversal,
-    absolute-path override, symlink games, etc.). Mirrors Lotek's ``files_api.safe_join``."""
-    root = Path(root).resolve()
-    target = (root / rel).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"unsafe storage path: {rel!r}") from exc
-    return target
-
-
 def _sniff_magic(data: bytes) -> str | None:
     for sig, ctype in _MAGIC_SIGNATURES:
         if data.startswith(sig):
@@ -103,35 +66,7 @@ def guess_content_type(filename: str, data: bytes | None = None) -> str:
     return guessed or "application/octet-stream"
 
 
-def save_bytes(cfg: Any, engagement_id: int, filename: str, data: bytes) -> tuple[str, str, int]:
-    """Write ``data`` under ``cfg.artifact_root/<engagement_id>/`` with a collision-proof name.
-
-    Returns ``(storage_path, sha256, byte_size)`` where ``storage_path`` is relative to
-    ``cfg.artifact_root`` — that relative path is what the ``Artifact`` row stores.
-    """
-    root = Path(cfg.artifact_root)
-    root.mkdir(parents=True, exist_ok=True)
-
-    # Bounded AFTER secure_filename, because that is the step that can make the name LONGER (see
-    # ``_bounded_name``) — an unbounded value here is ENAMETOOLONG, i.e. a 500 on a legitimate upload.
-    safe_name = _bounded_name(secure_filename(filename) or "artifact")
-    unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-    storage_path = f"{int(engagement_id)}/{unique_name}"
-
-    target = safe_join(root, storage_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
-
-    sha256 = hashlib.sha256(data).hexdigest()
-    return storage_path, sha256, len(data)
-
-
-def resolve_path(cfg: Any, storage_path: str) -> Path:
-    """Resolve a stored ``storage_path`` back to an on-disk ``Path``, confined to ``artifact_root``."""
-    return safe_join(Path(cfg.artifact_root), storage_path)
-
-
-def delete_file(cfg: Any, storage_path: str) -> None:
+def delete_file(storage_path: str) -> None:
     """Best-effort delete of the bytes behind ``storage_path`` — a local file, OR an ``obj:`` reference
     into the core object store.
 
@@ -148,23 +83,16 @@ def delete_file(cfg: Any, storage_path: str) -> None:
     the caller can always clean up the DB row. A refused store delete therefore leaks the blob rather
     than 500-ing after the rows are already gone; core's GC is the backstop for that, not this.
     """
-    object_id = object_id_of(storage_path)
-    if object_id is not None:
-        from . import host as _host
+    from . import host as _host
 
-        surface = _host.objects()
-        if surface is not None:
-            try:
-                surface.delete(_acting_principal(), object_id)
-            except (PermissionError, RuntimeError, OSError, ValueError):
-                pass
-        return
+    object_id = object_id_of(storage_path)
+    surface = _host.objects()
+    if object_id is None or surface is None:
+        return  # a pre-cutover row, or no host: nothing this can reclaim
     try:
-        target = resolve_path(cfg, storage_path)
-    except ValueError:
-        return
-    if target.is_file():
-        target.unlink()
+        surface.delete(_acting_principal(), object_id)
+    except (PermissionError, RuntimeError, OSError, ValueError):
+        pass
 
 
 def _acting_principal():
@@ -185,9 +113,7 @@ def _acting_principal():
 
 
 def persist_bytes(
-    cfg: Any,
     *,
-    engagement_id: Any,
     core_engagement_id: Any,
     filename: str,
     data: bytes,
@@ -195,27 +121,35 @@ def persist_bytes(
 ) -> tuple[str, str, int]:
     """THE way scribble persists an evidence file. Returns ``(reference, sha256, byte_size)``.
 
-    One function, so no upload route picks a backend and no two of them can pick differently. The
-    reference is opaque to the caller: :func:`object_id_of` is the only thing that takes it apart, and
-    the readers accept either kind.
+    Always the object store. There is NO local-disk arm, and adding one back is the change to refuse:
+    the split it created — some evidence in the bucket, some on whichever host served the upload —
+    produced bugs that nothing went red for (an evidence gallery that rendered empty), and it made
+    "where is this file" a question with two answers.
 
-    Bytes go to the CORE object store whenever the store can hold them, which needs two things — a
-    mounted host exposing an object surface, and a ``core_engagement_id``. The second is not
-    bookkeeping: core files every blob under a core engagement, and INV-OBJSTORE-01 makes that a
-    DATABASE fact via composite FKs, so an unmapped scribble engagement has nowhere in the bucket to
-    put one.
+    Two things are required and both raise rather than degrade:
 
-    Local disk is therefore what is left when the store STRUCTURALLY cannot hold the bytes — standalone
-    scribble (no host at all), and an engagement with no core mapping. It is **not** a fallback for a
-    store that is merely failing: a ``PermissionError`` from a refused put, or any other error,
-    propagates. Writing a refused upload to disk would defeat the refusal, and writing to disk because
-    SeaweedFS is down would scatter evidence across a filesystem the operator believes is out of use.
+    * a host object surface. Standalone Scribble is a testbed, not a deployment; its shell supplies a
+      mock host (``scribble.testing.wire_mock_host``) so the code path here stays singular.
+    * a ``core_engagement_id``. Core files every blob under a core engagement — INV-OBJSTORE-01 makes
+      that a database fact via composite FKs — so an unanchored engagement has nowhere in the bucket
+      to go. Scribble now obtains one at engagement-create time via ``host.create_engagement``.
+
+    A ``PermissionError`` from the host propagates untouched. Falling back to disk on a refusal would
+    mean the store enforced it and the fallback defeated it.
     """
     from . import host as _host
 
     surface = _host.objects()
-    if surface is None or not core_engagement_id:
-        return save_bytes(cfg, engagement_id, filename, data)
+    if surface is None:
+        raise RuntimeError(
+            "no object store: scribble persists evidence only to the host's object store. A "
+            "standalone or demo shell must wire one — see scribble.testing.wire_mock_host()"
+        )
+    if not core_engagement_id:
+        raise RuntimeError(
+            "this engagement has no core_engagement_id, so its evidence has no tenancy anchor in the "
+            "object store — engagements created since the object-store cutover get one automatically"
+        )
 
     guessed = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     ref = surface.put(
@@ -259,6 +193,23 @@ def object_id_of(ref: str) -> uuid.UUID | None:
         return uuid.UUID(ref[len(OBJECT_REF_PREFIX):])
     except (TypeError, ValueError):
         return None
+
+
+def artifact_bytes(storage_path: str) -> bytes | None:
+    """THE ``storage_path -> bytes`` reader every renderer and download path uses.
+
+    Three modules used to define this closure, near-identically, each taking an ``artifact_root`` and
+    carrying its own path-escape guard and its own size ceiling (``report_html_api`` had none). That
+    duplication is what let the object-store cutover half-land: the builders were switched to emit
+    ``obj:`` references and only ONE of the three readers was taught to resolve them, so two renderers
+    asked the filesystem for a path spelled ``obj:<uuid>`` and dropped every image without a word.
+
+    With evidence in the object store there is no root to confine, no traversal to guard and no file
+    to stat — so the three collapse into this, and there is no longer a set of readers that can
+    disagree. A reference this cannot resolve (a pre-cutover disk path) reads as ABSENT, which renders
+    as a missing-evidence chip rather than a crash.
+    """
+    return read_object_bytes(storage_path, MAX_OBJECT_BYTES)
 
 
 def read_object_bytes(ref: str, max_bytes: int) -> bytes | None:
