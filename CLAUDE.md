@@ -37,8 +37,12 @@ git config --worktree author.name  "Eli McRae"          # + author.email
 git config --worktree committer.name "lotek-agent[bot]"  # + committer.email
 ```
 
-PRs are opened with the bot's token so the human is a genuine non-author reviewer (GitHub forbids a PR
-author approving their own PR).
+PRs are opened with the bot's token so a PR is attributed to the agent that wrote it, not the human who
+directed it. **Until 2026-08-27 this was also load-bearing for approvals**: `main` required 1 approving
+review and GitHub forbids a PR author approving their own PR, so bot authorship was the only thing that
+let Eli approve an agent's work. Approvals on `main` are now **`0`** on this repo and on core, so nothing
+breaks if a PR is opened under human auth — keep doing it as the bot anyway, because it is what makes
+turning the requirement back on a one-field change. See ShyftXero/lotek#500.
 
 ## Per-branch plan — `plans/<branch-slug>.md`
 
@@ -99,8 +103,10 @@ must be re-acked. A branch whose every changed path is `.md` is exempt from `--a
 review/adversarial). Override any single gate with `RAILS_OVERRIDE=1 <cmd>` (logged to
 `<git-dir>/claude-rails-audit.jsonl`, same as every deny/fail-open/warn).
 
-**`push-identity` — PORTED (2026-08-22).** A `git push` to GitHub must authenticate as the bot, never as
-the human (else the human is the "last pusher" and `require_last_push_approval` bars their approval). The
+**`push-identity` — PORTED (2026-08-22).** A `git push` to GitHub should authenticate as the bot, never as
+the human. Under the old regime this was a hard blocker — the human became the "last pusher" and
+`require_last_push_approval` barred their approval — but that flag and the approval requirement are both
+off since 2026-08-27, so a human-authenticated push now only misattributes the push. The
 gate denies a plain SSH push and points at `scripts/agent-push.sh` (now also present here); it recognises a
 transparent bot-auth AGENT WORKTREE (`_bot_auth_active`: lotek's `install-bot-push-auth.sh` wires an
 `includeIf` bot-auth include scoped to `…/lotek*/.git/worktrees/`, which covers this repo's worktrees too)

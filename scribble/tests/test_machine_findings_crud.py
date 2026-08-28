@@ -34,9 +34,9 @@ from flask import jsonify
 from sqlalchemy import select
 
 import scribble.models as fm
-from scribble.artifacts_storage import resolve_path
 from scribble.content import schema
 from scribble.enums import OrderMode, Severity
+from scribble.testing import read_evidence
 from tests.conftest import StubActor
 
 M = "/scribble/machine"
@@ -660,12 +660,13 @@ def test_artifact_upload_stores_a_unicode_filename_that_secure_filename_EXPANDS(
         json={"filename": name, "content_base64": base64.b64encode(PNG).decode()},
     )
     assert resp.status_code == 201, resp.get_json()
-    cfg = app.extensions["scribble"]
     with session_factory() as db:
-        on_disk = resolve_path(cfg, db.get(fm.Artifact, resp.get_json()["id"]).storage_path)
-    assert on_disk.is_file()
-    assert len(on_disk.name.encode()) <= 255, len(on_disk.name)
-    assert on_disk.name.endswith(".png")
+        artifact = db.get(fm.Artifact, resp.get_json()["id"])
+        evidence_ref, stored_name = artifact.storage_path, artifact.filename
+    # Evidence is keyed by object id now, so no filesystem name is derived from the caller's and the
+    # ENAMETOOLONG failure this guarded is structurally gone. The row still keeps the caller's name.
+    assert read_evidence(app, evidence_ref) is not None
+    assert stored_name.endswith(".png")
 
 
 def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
@@ -928,7 +929,6 @@ def test_delete_finding_takes_its_evidence_rows_and_files(client, token, session
     Without the explicit cascade `findings_service.delete_finding` performs, a bare ORM delete would NULL
     each artifact's nullable `finding_id` instead: the row survives, orphaned, and the file leaks.
     """
-    cfg = app.extensions["scribble"]
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid)
     upload = client.post(
@@ -939,8 +939,8 @@ def test_delete_finding_takes_its_evidence_rows_and_files(client, token, session
     assert upload.status_code == 201, upload.get_json()
     artifact_id = upload.get_json()["id"]
     with session_factory() as db:
-        on_disk = resolve_path(cfg, db.get(fm.Artifact, artifact_id).storage_path)
-    assert on_disk.is_file()
+        evidence_ref = db.get(fm.Artifact, artifact_id).storage_path
+    assert read_evidence(app, evidence_ref) is not None
 
     resp = client.delete(f"{M}/findings/{fid}")
     assert resp.status_code == 200, resp.get_json()
@@ -951,7 +951,7 @@ def test_delete_finding_takes_its_evidence_rows_and_files(client, token, session
     with session_factory() as db:
         assert db.get(fm.EngagementFinding, fid) is None
         assert db.get(fm.Artifact, artifact_id) is None
-    assert not on_disk.is_file()
+    assert read_evidence(app, evidence_ref) is None
 
 
 def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
@@ -971,7 +971,6 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
     artifacts. One DELETE must not destroy N findings the caller never named. The child's artifact below is
     the load-bearing assertion: it proves the cascade stopped at the parent.
     """
-    cfg = app.extensions["scribble"]
     eid = _engagement(session_factory)
     gid = _group(session_factory, eid, "Active Directory")
     parent = _finding(session_factory, eid, title="Kerberoasting", group_id=gid)
@@ -987,7 +986,7 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
     assert upload.status_code == 201, upload.get_json()
     child_artifact = upload.get_json()["id"]
     with session_factory() as db:
-        child_file = resolve_path(cfg, db.get(fm.Artifact, child_artifact).storage_path)
+        child_ref = db.get(fm.Artifact, child_artifact).storage_path
 
     resp = client.delete(f"{M}/findings/{parent}")
     assert resp.status_code == 200, resp.get_json()
@@ -1004,7 +1003,8 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
             assert child.parent_id is None, "a surviving child must be detached, not dangling"
             assert str(child.group_id) == gid  # stays where the board already showed it
         assert db.get(fm.Artifact, child_artifact) is not None
-    assert child_file.is_file(), "the child's evidence file must not be swept up by the parent's delete"
+    assert read_evidence(app, child_ref) is not None, \
+        "the child's evidence must not be swept up by the parent's delete"
 
 
 def test_deleting_a_parent_is_recorded_with_the_children_it_detached(
@@ -1046,7 +1046,6 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
     `EngagementFinding.tags` really does remove the association row — it is the one referrer that was already
     safe, and the only way to know that is to assert it.
     """
-    cfg = app.extensions["scribble"]
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid, title="Parent")
     child_id = _finding(session_factory, eid, title="10.0.0.5", parent_id=fid)
@@ -1075,7 +1074,7 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
         ])
         db.commit()
         item_id = db.scalars(select(fm.EngagementChecklistItem.id)).one()
-        on_disk = resolve_path(cfg, db.get(fm.Artifact, artifact_id).storage_path)
+        evidence_ref = db.get(fm.Artifact, artifact_id).storage_path
 
     resp = client.delete(f"{M}/findings/{fid}")
     assert resp.status_code == 200, resp.get_json()
@@ -1096,7 +1095,7 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
         # The child survived, detached and top-level.
         child = db.get(fm.EngagementFinding, child_id)
         assert child is not None and child.parent_id is None
-    assert not on_disk.is_file()
+    assert read_evidence(app, evidence_ref) is None
 
 
 def test_every_column_referencing_a_finding_has_a_declared_delete_disposition():

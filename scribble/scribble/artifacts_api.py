@@ -47,18 +47,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import (
     SAFE_NAME_MAX,
+    artifact_bytes,
     delete_file,
     guess_content_type,
-    resolve_path,
-    save_bytes,
+    persist_bytes,
 )
 from scribble.authz import can_view_engagement
-from scribble.deps import current_actor, current_actor_username, get_config, open_session
+from scribble.deps import current_actor, current_actor_username, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.models import Artifact, Engagement, EngagementFinding
 
@@ -157,7 +158,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.post("/artifacts")
     def create_artifact():
-        cfg = get_config()
         caption: str | None
         kind_raw: str | None
         placement_raw: str | None
@@ -298,7 +298,24 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         else:
             placement = ArtifactPlacement.attached
 
-        storage_path, sha256, byte_size = save_bytes(cfg, engagement_id, filename, data)
+        # The SAME persist call the machine route makes — that is the point of it. This surface used
+        # to write to disk directly, so which backend held a piece of evidence depended on which route
+        # a human happened to use, and every reader downstream had to cope with both answers.
+        #
+        # `core_engagement_id` is read in its own short session so the S3 put holds no DB connection
+        # and cannot read a detached attribute.
+        with open_session() as db:
+            engagement_row = db.get(Engagement, engagement_id)
+            core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
+        try:
+            storage_path, sha256, byte_size = persist_bytes(
+                core_engagement_id=core_engagement_id, filename=filename, data=data,
+                content_type=content_type)
+        except PermissionError:
+            # The host refused the put: this actor may VIEW the engagement (checked above) without
+            # holding an operator capability on it in core. An honest 403 — never a disk write, which
+            # would turn a refused upload into a successful one, and never a 500.
+            return jsonify(error="not an operator on this engagement in the host"), 403
 
         with open_session() as db:
             artifact = Artifact(
@@ -330,7 +347,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.get("/artifacts/<uuid:artifact_id>/raw")
     def artifact_raw(artifact_id: int):
-        cfg = get_config()
         with open_session() as db:
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
@@ -339,18 +355,19 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             filename = artifact.filename
             content_type = artifact.content_type
 
-        try:
-            path = resolve_path(cfg, storage_path)
-        except ValueError:
-            return jsonify(error="invalid storage path"), 400
-        if not path.is_file():
-            return jsonify(error="file missing on disk"), 404
+        # ONE 404 for absent, tombstoned, oversized and not-visible alike. Deliberate, and matching
+        # ``HostObjects.open``, which raises KeyError for "not yours" precisely so this route cannot
+        # become an existence oracle for another engagement's evidence.
+        # ponytail: buffers the blob; stream it if evidence ever outgrows MAX_CONTENT_LENGTH.
+        data = artifact_bytes(storage_path)
+        if data is None:
+            return jsonify(error="not found"), 404
 
         # Untrusted-file handling (mirrors Lotek): always a forced attachment download, never inline —
         # evidence artifacts may be attacker-influenced (e.g. a scraped page) and must never render in
         # the app's own origin.
         return send_file(
-            path,
+            io.BytesIO(data),
             as_attachment=True,
             download_name=filename,
             mimetype=content_type or "application/octet-stream",
@@ -378,7 +395,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.post("/artifacts/<uuid:artifact_id>/delete")
     def delete_artifact(artifact_id: int):
-        cfg = get_config()
         with open_session() as db:
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
@@ -386,7 +402,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             storage_path = artifact.storage_path
             db.delete(artifact)
             db.commit()
-        delete_file(cfg, storage_path)
+        delete_file(storage_path)
         return jsonify(ok=True)
 
     @api_bp.get("/engagements/<uuid:engagement_id>/artifacts")

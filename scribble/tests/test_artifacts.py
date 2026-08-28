@@ -20,18 +20,13 @@ import scribble
 from scribble.api import api_bp
 from scribble.artifacts_api import artifact_url
 from scribble.artifacts_api import register as register_artifacts
-from scribble.artifacts_storage import (
-    SAFE_NAME_MAX,
-    guess_content_type,
-    resolve_path,
-    safe_join,
-    save_bytes,
-)
+from scribble.artifacts_storage import SAFE_NAME_MAX, artifact_bytes, guess_content_type
 from scribble.blueprint import bp
 from scribble.enums import ArtifactPlacement, Severity
 from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
 from scribble.seed import seed_defaults
+from scribble.testing import read_evidence
 
 _MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
@@ -110,49 +105,19 @@ def test_health_still_works_after_artifacts_registered(client):
 # --------------------------------------------------------------------------- storage helpers
 
 
-def test_save_bytes_writes_file_and_returns_metadata(cfg):
-    storage_path, sha256, byte_size = save_bytes(cfg, 1, "shot.png", PNG_BYTES)
-    assert byte_size == len(PNG_BYTES)
-    assert len(sha256) == 64
-    resolved = resolve_path(cfg, storage_path)
-    assert resolved.is_file()
-    assert resolved.read_bytes() == PNG_BYTES
-    # storage_path is relative and namespaced under the engagement id.
-    assert storage_path.startswith("1/")
+def test_a_reference_can_never_address_the_filesystem(app):
+    """What the ``safe_join``/``resolve_path`` traversal tests used to prove, restated.
 
-
-def test_save_bytes_bounds_name_after_secure_filename(cfg):
-    """#55 residual 1: ``secure_filename`` NFKD-normalizes and can EXPAND, not just shrink, the
-    caller's filename (``len(secure_filename('½' * 222)) == 444``, measured against the installed
-    werkzeug). An unbounded ``safe_name`` built from that would overrun ``NAME_MAX`` (255) once
-    ``save_bytes`` prefixes ``"<uuid4hex>_"`` and raise ``OSError: [Errno 36] File name too long`` --
-    a 500 on what looks, at the API boundary, like a reasonably-sized name. Pins that ``save_bytes``
-    truncates the SECURED name (not the caller's raw one) so the write always succeeds."""
-    name = "½" * 222 + ".png"
-    storage_path, _sha256, _size = save_bytes(cfg, 1, name, PNG_BYTES)
-    resolved = resolve_path(cfg, storage_path)
-    assert resolved.is_file()
-    assert resolved.read_bytes() == PNG_BYTES
-    basename = storage_path.rsplit("/", 1)[-1]
-    assert len(basename.encode()) <= 255
-    assert basename.endswith(".png")
-
-
-def test_safe_join_rejects_traversal(cfg, tmp_path):
-    root = cfg.artifact_root
-    root.mkdir(parents=True, exist_ok=True)
-    with pytest.raises(ValueError):
-        safe_join(root, "../../etc/passwd")
-    with pytest.raises(ValueError):
-        safe_join(root, "1/../../../secrets.txt")
-    # A sibling path that merely starts with the root's name but escapes must also be rejected.
-    with pytest.raises(ValueError):
-        safe_join(root, "../" + root.name + "-evil/x")
-
-
-def test_resolve_path_rejects_traversal(cfg):
-    with pytest.raises(ValueError):
-        resolve_path(cfg, "../../../etc/passwd")
+    Those guarded a real hazard: a stored ``storage_path`` was joined onto a filesystem root, so a
+    crafted value could escape it. Evidence is addressed by object id now, and `artifact_bytes` parses
+    a reference rather than joining a path — a traversal string is simply not a reference, so it reads
+    as absent. Deleting the old tests with nothing in their place would have quietly dropped a
+    security property from the suite even though the code got safer.
+    """
+    with app.app_context():
+        for hostile in ("../../etc/passwd", "1/../../../secrets.txt", "/etc/shadow",
+                        "obj:../../etc/passwd", "obj:", ""):
+            assert artifact_bytes(hostile) is None, hostile
 
 
 def test_guess_content_type_sniffs_magic_bytes_over_extension():
@@ -165,7 +130,7 @@ def test_guess_content_type_sniffs_magic_bytes_over_extension():
 # --------------------------------------------------------------------------- upload API
 
 
-def test_upload_multipart_creates_row_and_file(client, session_factory, cfg):
+def test_upload_multipart_creates_row_and_stores_the_bytes(client, session_factory, app):
     with session_factory() as db:
         eng = _make_engagement(db)
         finding = _make_finding(db, eng)
@@ -195,9 +160,7 @@ def test_upload_multipart_creates_row_and_file(client, session_factory, cfg):
         assert artifact.caption == "login screenshot"
         assert artifact.content_type == "image/png"
         assert artifact.include_in_report is True
-        path = resolve_path(cfg, artifact.storage_path)
-        assert path.is_file()
-        assert path.read_bytes() == PNG_BYTES
+        assert read_evidence(app, artifact.storage_path) == PNG_BYTES
 
 
 def test_create_artifact_drops_foreign_finding_id(client, session_factory):
@@ -723,7 +686,7 @@ def test_reorder_requires_order_list(client, session_factory):
 # --------------------------------------------------------------------------- delete
 
 
-def test_delete_removes_row_and_file(client, session_factory, cfg):
+def test_delete_removes_the_row_and_the_stored_bytes(client, session_factory, app):
     with session_factory() as db:
         eng = _make_engagement(db)
         engagement_id = eng.id
@@ -737,8 +700,7 @@ def test_delete_removes_row_and_file(client, session_factory, cfg):
 
     with session_factory() as db:
         storage_path = db.get(Artifact, artifact_id).storage_path
-        on_disk = resolve_path(cfg, storage_path)
-        assert on_disk.is_file()
+    assert read_evidence(app, storage_path) == PNG_BYTES
 
     resp = client.post(f"/scribble/api/artifacts/{artifact_id}/delete")
     assert resp.status_code == 200
@@ -746,7 +708,9 @@ def test_delete_removes_row_and_file(client, session_factory, cfg):
 
     with session_factory() as db:
         assert db.get(Artifact, artifact_id) is None
-    assert not on_disk.exists()
+    # The blob is tombstoned too — a row deleted with its bytes left behind is the orphan this
+    # cutover's delete funnel exists to prevent.
+    assert read_evidence(app, storage_path) is None
 
 
 def test_delete_missing_artifact_404(client):

@@ -67,6 +67,14 @@
     <p class="muted">No active templates in the library yet — add some from the Vuln Library.</p>
     {% endif %}
   </div>
+  <div class="scribble-board-toolbar-section">
+    <h3>Promote a scan job</h3>
+    <form method="post" action="{{ url_for('scribble.promote_job', engagement_id=engagement.id) }}"
+          class="scribble-inline-form">
+      <input type="text" name="job_id" placeholder="Scan job id" required />
+      <button class="btn btn-primary" type="submit">Promote job</button>
+    </form>
+  </div>
 </div>
 {% endif %}
 
