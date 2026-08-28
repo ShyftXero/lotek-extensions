@@ -1,9 +1,12 @@
 # Plan: feat/extension-settings-ui
 
 - **Branch:** `feat/extension-settings-ui`  (worktree: `.claude/worktrees/ext-settings-ui`, off `main`)
-- **PR:** none — this branch is **stacked** for an integration run (the orchestrator merges it with
-  its siblings, runs one suite, and opens a single PR per repo).
-- **Status:** 🟢 ready to merge (pending the integration suite)
+- **PR:** [ShyftXero/lotek-extensions#136](https://github.com/ShyftXero/lotek-extensions/pull/136)
+- **Status:** 🟢 ready for review — merged up to `origin/main`, vector's suite green on this tip
+
+> **The "stacked integration handoff" recorded below never happened.** No orchestrator run occurred and
+> `main` moved **49 commits** underneath this branch. Re-measured on 2026-08-28 against current `main`
+> — see "Catch-up merge" at the bottom.
 - **Issues:** ShyftXero/lotek-extensions#111 · cross-post ShyftXero/lotek#485
 - **Paired branch:** `feat/extension-settings-ui` in `ShyftXero/lotek` (the host half)
 
@@ -82,3 +85,29 @@ What vector gets:
 - **Deliberately NOT built:** a colour-scheme/theme preference (vector's CSS is a single hardcoded
   dark palette — theming it is its own change, not a settings-plumbing change), per-user settings for
   the other three extensions, and any user preference on the host side.
+
+
+## Catch-up merge (2026-08-28)
+
+`origin/main` merged in with **no conflicts** — the 49 intervening commits are scribble report
+themes/layouts, the exploiteer slice, and the bugreport extension; none of them touch `vector/`.
+
+**The pair was proven MOUNTED, not stubbed.** A wheel was built from this branch's `vector/` and
+installed into a lotek worktree carrying the paired host branch. Observed there, in a real Flask app:
+
+1. the host parsed this manifest's `[[settings]]` out of the **wheel-shipped** `lotek-extension.toml`
+   (`FieldSpec(key='deliverable_footer', type='str', max=4096.0, secret=False)`) — the force-include
+   survived the build;
+2. `/settings/extensions` rendered vector's ⚙ cog linking to `/settings/extensions/vector/config`;
+3. an admin saved `deliverable_footer`; an operator and a viewer were refused GET **and** POST (403,
+   with a valid CSRF token, and nothing written);
+4. **the mounted extension read it back** — `POST /vector/api/export.html` returned a deliverable
+   carrying the footer, HTML-escaped, via `deps.host_setting` → `extras["extension_setting"]`;
+5. vector's own user-scope cog (`/vector/settings`) rendered separately, and `hide_builtin_diagrams`
+   appears **only** there — the two scopes did not collapse into one surface.
+
+`vector`: **74 passed** (`uv run --extra dev pytest -q`), ruff + pyrefly clean.
+
+**Still owed, and it belongs to the release, not to this branch:** lotek's `[tool.uv.sources]` pins
+`vector` to a tag that predates this declaration, so the host-side mounted test skips until this
+branch releases and lotek re-pins.
