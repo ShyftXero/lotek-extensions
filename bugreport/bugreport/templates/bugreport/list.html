@@ -1,0 +1,167 @@
+{% extends bugreport_base %}
+{% block title %}Bug reports{% endblock %}
+{% block appbar_title %}Bug reports{% endblock %}
+
+{#- One hidden CSRF field, used by every form on the page. `csrf_token` is a Jinja global installed by
+    flask-wtf's CSRFProtect in the HOST; standalone there is none, hence the `is defined` guard. -#}
+{% macro csrf() %}{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}{% endmacro %}
+
+{% macro status_pill(s) %}<span class="br-pill br-{{ s }}">{{ s }}</span>{% endmacro %}
+
+{% block head_extra %}
+<style>
+  .br-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
+  .br-wrap h1{font-size:20px;margin:0 0 4px}
+  .br-wrap h2{font-size:15px;margin:26px 0 8px}
+  .br-muted{color:#7f93a3;font-size:13px}
+  .br-card{border:1px solid #1c2a35;border-radius:6px;padding:12px 14px;margin:0 0 10px;background:#0e151c}
+  .br-card.br-acted{border-left:3px solid #3ad29a}
+  .br-card pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:13px;color:#c6d4de}
+  .br-pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;text-transform:uppercase;
+           letter-spacing:.06em;border:1px solid #24333f;color:#9fb2c0}
+  .br-acknowledged{color:#e8c46a;border-color:#5a4a1e}
+  .br-resolved{color:#3ad29a;border-color:#1e5a42}
+  .br-deleted{color:#e8776a;border-color:#5a2420}
+  .br-note{margin:8px 0 0;padding:8px 10px;border-radius:4px;background:#101d17;color:#bfe5d4;font-size:13px}
+  .br-wrap input[type=text],.br-wrap textarea,.br-wrap select{
+    width:100%;box-sizing:border-box;background:#0a1219;color:#dfe9f0;border:1px solid #24333f;
+    border-radius:4px;padding:7px 9px;font:inherit;font-size:13px;margin:0 0 8px}
+  .br-wrap button{background:#16323f;color:#bfe9f0;border:1px solid #24505f;border-radius:4px;
+    padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}
+  .br-wrap summary{cursor:pointer;color:#37c9d6;font-size:12px;margin-top:8px}
+  .br-row{display:flex;gap:8px;align-items:flex-start}
+  .br-row>*{margin-bottom:0}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="br-wrap">
+  <h1>Bug reports</h1>
+  <p class="br-muted">
+    Text-only capture. Nothing here is filed anywhere else — it lands in this list, an admin responds,
+    and you see what they did.
+    {% if standalone %} (standalone: no host identity, so every report is yours){% endif %}
+  </p>
+
+  {% if bugreport_can_write %}
+  <h2>File a report</h2>
+  <form method="post" action="{{ url_for('bugreport.file_report') }}">
+    {{ csrf() }}
+    <input type="text" name="title" placeholder="What is broken, in one line" required
+           maxlength="{{ bugreport_max_title }}">
+    <textarea name="body" rows="5" maxlength="{{ bugreport_max_body }}"
+              placeholder="What you did, what happened, what you expected."></textarea>
+    <button type="submit">File it</button>
+  </form>
+  {% else %}
+  <p class="br-muted">Your account is read-only, so you cannot file a report.</p>
+  {% endif %}
+
+  <h2>Your reports</h2>
+  {% for r in mine %}
+    <div class="br-card{% if r.status.value != 'open' %} br-acted{% endif %}" data-report-id="{{ r.id }}">
+      <div>{{ status_pill(r.status.value) }} <strong>{{ r.title }}</strong>
+        <span class="br-muted">— {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span></div>
+      {% if r.body %}<pre>{{ r.body }}</pre>{% endif %}
+      {% if r.status.value != 'open' or r.admin_note %}
+        {#- The feedback loop #112 asks for: what an admin did to YOUR report, and what they said. -#}
+        <p class="br-note" data-testid="admin-feedback">
+          An admin marked this <strong>{{ r.status.value }}</strong>.
+          {% if r.admin_note %} “{{ r.admin_note }}”{% endif %}
+        </p>
+      {% endif %}
+      {% if bugreport_can_write %}
+      <details>
+        <summary>Edit / delete</summary>
+        {% if r.status.value != 'deleted' %}
+        <form method="post" action="{{ url_for('bugreport.update', report_id=r.id) }}"
+              style="margin-top:8px">
+          {{ csrf() }}
+          <input type="text" name="title" value="{{ r.title }}" required
+                 maxlength="{{ bugreport_max_title }}">
+          <textarea name="body" rows="4" maxlength="{{ bugreport_max_body }}">{{ r.body }}</textarea>
+          <button type="submit">Save</button>
+        </form>
+        {% endif %}
+        <div class="br-files" style="margin-top:10px">
+          <strong>Files ({{ r.attachments | length }})</strong>
+          {% for a in r.attachments %}
+            <div style="margin:4px 0">
+              <a href="{{ url_for('bugreport.download_attachment', attachment_id=a.id) }}">{{ a.filename }}</a>
+              <span class="br-muted">{{ a.size }} bytes · {{ a.content_type }}</span>
+              {% if a.share_token %}
+                {# The share URL is a bearer capability: anyone holding it can fetch this one file
+                   without logging in. Shown only to someone already cleared to see the attachment. #}
+                <div class="br-muted">
+                  Public link:
+                  <code>{{ url_for('bugreport.shared_attachment', token=a.share_token, _external=True) }}</code>
+                </div>
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.unshare', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">Stop sharing</button>
+                </form>
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">New link (revokes the old one)</button>
+                </form>
+              {% else %}
+                <form method="post" style="display:inline"
+                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}">
+                  {{ csrf() }}<button type="submit">Create public link</button>
+                </form>
+              {% endif %}
+              <form method="post" style="display:inline"
+                    action="{{ url_for('bugreport.remove_attachment', attachment_id=a.id) }}">
+                {{ csrf() }}<button type="submit">Delete file</button>
+              </form>
+            </div>
+          {% else %}
+            <div class="br-muted">No files attached.</div>
+          {% endfor %}
+          <form method="post" enctype="multipart/form-data" style="margin-top:6px"
+                action="{{ url_for('bugreport.upload_attachment', report_id=r.id) }}">
+            {{ csrf() }}<input type="file" name="file" required><button type="submit">Attach</button>
+          </form>
+        </div>
+        <form method="post" action="{{ url_for('bugreport.delete', report_id=r.id) }}"
+              style="margin-top:6px">
+          {{ csrf() }}<button type="submit">Delete this report</button>
+        </form>
+      </details>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="br-muted">You have not filed any reports.</p>
+  {% endfor %}
+
+  {% if bugreport_is_admin and not standalone %}
+  <h2>All reports (admin)</h2>
+  {% for r in every %}
+    <div class="br-card" data-admin-report-id="{{ r.id }}">
+      <div>{{ status_pill(r.status.value) }} <strong>{{ r.title }}</strong>
+        <span class="br-muted">— {{ r.reporter_name or 'unknown' }},
+          {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span></div>
+      {% if r.body %}<pre>{{ r.body }}</pre>{% endif %}
+      {% if bugreport_can_write %}
+      <form method="post" action="{{ url_for('bugreport.respond', report_id=r.id) }}"
+            style="margin-top:10px">
+        {{ csrf() }}
+        <div class="br-row">
+          <select name="status" aria-label="Status" style="max-width:180px">
+            {% for s in bugreport_statuses %}
+              <option value="{{ s }}"{% if s == r.status.value %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <input type="text" name="note" value="{{ r.admin_note or '' }}"
+                 placeholder="What you did, for the reporter to read">
+          <button type="submit">Respond</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="br-muted">Nobody has filed a report.</p>
+  {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}

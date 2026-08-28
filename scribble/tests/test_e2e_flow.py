@@ -30,7 +30,7 @@ import docx
 import pytest
 from docx.oxml.ns import qn
 
-from scribble.artifacts_storage import resolve_path
+from scribble.artifacts_storage import artifact_bytes
 from scribble.content import schema
 from scribble.enums import Severity
 from scribble.models import (
@@ -108,7 +108,7 @@ def cfg(app):
 
 
 @pytest.fixture
-def flow(client, session_factory, cfg):
+def flow(client, session_factory, cfg, app):
     """Drive the entire scenario through the real HTTP API and hand back the ids + a reader for the
     artifact bytes it uploaded, so every test below asserts against the SAME arranged state rather
     than re-deriving it (and risking the test and the fixture drifting apart)."""
@@ -275,11 +275,10 @@ def flow(client, session_factory, cfg):
         assert db.get(EngagementFinding, high_id).include_in_report is False
 
     def _artifact_bytes(storage_path: str) -> bytes | None:
-        try:
-            path = resolve_path(cfg, storage_path)
-        except ValueError:
-            return None
-        return path.read_bytes() if path.is_file() else None
+        # The real reader — there is only one now, and a test that reimplemented it would stop
+        # exercising the thing production uses.
+        with app.app_context():
+            return artifact_bytes(storage_path)
 
     return {
         "eng_id": eng_id,

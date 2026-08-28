@@ -46,9 +46,9 @@ import uuid
 from flask import url_for
 
 import scribble.models as fm
-from scribble.artifacts_storage import save_bytes
 from scribble.authz import _CHILD_RESOLVERS, _DIRECT_KEYS
 from scribble.enums import ChecklistKind
+from scribble.testing import store_evidence
 from tests.conftest import StubUser, _StubRole
 
 UI = "/scribble"
@@ -153,8 +153,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
         db.add(group)
         db.commit()
 
-        cfg = app.extensions["scribble"]
-        storage_path, sha256, size = save_bytes(cfg, eng.id, "evidence.txt", b"evidence")
+        storage_path, sha256, size = store_evidence(app, "evidence.txt", b"evidence")
         artifact = fm.Artifact(
             engagement_id=eng.id,
             filename="evidence.txt",
@@ -284,6 +283,50 @@ def test_every_scoped_route_allows_a_member(app, stub_host, session_factory):
     assert server_errors == [], f"authorized member hit a server error (not a gate failure): {server_errors}"
 
 
+# ── 4. the WRITE axis: a viewer who may SEE an engagement still may not MUTATE it ────────────────────
+
+
+def test_every_scoped_route_write_blocks_a_writeless_viewer(app, stub_host, session_factory):
+    """A caller who may VIEW an engagement but has no write capability must not be able to MUTATE it.
+
+    Until the `_gate` write check, every mutating scribble route on a scoped URL relied only on the VIEW
+    gate plus the UI-only `scribble_can_write` flag (which hides buttons, not POSTs) — so a viewer, or a
+    global operator holding a read-only membership, could mutate a report board by posting the form's
+    URL. This asserts the whole class at once: for a can-view / cannot-write caller, every non-GET method
+    on a scoped route is 403, while GET stays allowed (viewing is unaffected).
+
+    Removing the `_gate` write check turns the mutating 403s into 2xx/3xx/business-4xx -> RED.
+    """
+    stub_host.current_user = StubUser(id=71, username="viewer-member", role=_StubRole("viewer"))
+    stub_host.viewable_client_ids = {ACME}  # may VIEW ACME's engagements...
+    stub_host.can_write_value = False        # ...but has no write capability
+
+    not_write_blocked = []
+    view_wrongly_blocked = []
+    for rule in _scribble_rules(app):
+        if rule.endpoint in _NON_SCOPED_ENDPOINTS or rule.endpoint in _UNTESTABLE_VIA_HTTP:
+            continue
+        if not (set(rule.arguments) & _RECOGNIZED_KEYS):
+            continue
+        ids = _make_tree(session_factory, app, ACME)
+        url = _build_url(app, rule, ids)
+        client = app.test_client()
+        for method in _http_methods(rule):
+            resp = client.open(url, method=method, json={})
+            if method in ("GET", "HEAD", "OPTIONS"):
+                if resp.status_code == 403:
+                    view_wrongly_blocked.append((rule.endpoint, method, url))
+            elif resp.status_code != 403:
+                not_write_blocked.append((rule.endpoint, method, url, resp.status_code))
+
+    assert not_write_blocked == [], (
+        f"a writeless viewer was NOT blocked (403) on mutating routes: {not_write_blocked}"
+    )
+    assert view_wrongly_blocked == [], (
+        f"the write gate wrongly blocked a VIEW (GET) for a viewer: {view_wrongly_blocked}"
+    )
+
+
 # ── explicit per-class DENY/ALLOW tests (the named routes from the audit) ───────────────────────────
 
 
@@ -380,8 +423,7 @@ def test_groups_reorder_denied_then_allowed(client, stub_host, session_factory):
 
 def test_artifact_raw_denied_then_allowed(client, stub_host, session_factory, app):
     eid = _make_engagement(session_factory, client_id=ACME)
-    cfg = app.extensions["scribble"]
-    storage_path, sha256, size = save_bytes(cfg, eid, "evidence.png", b"pngbytes")
+    storage_path, sha256, size = store_evidence(app, "evidence.png", b"pngbytes")
     with session_factory() as db:
         artifact = fm.Artifact(
             engagement_id=eid,
@@ -515,8 +557,7 @@ def test_standalone_board_and_artifact_raw_unaffected(client, session_factory, a
     eid = _make_engagement(session_factory, client_id=ACME)
     assert client.get(f"{UI}/engagements/{eid}").status_code == 200
 
-    cfg = app.extensions["scribble"]
-    storage_path, sha256, size = save_bytes(cfg, eid, "e.txt", b"y")
+    storage_path, sha256, size = store_evidence(app, "e.txt", b"y")
     with session_factory() as db:
         artifact = fm.Artifact(
             engagement_id=eid, filename="e.txt", content_type="text/plain",
