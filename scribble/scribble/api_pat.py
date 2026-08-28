@@ -45,11 +45,12 @@ from __future__ import annotations
 import base64
 import binascii
 import fnmatch
+import json
 import uuid
 from collections.abc import Callable
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, current_app, jsonify, request
 from sqlalchemy import select
 
 from scribble import findings_service, host
@@ -64,8 +65,10 @@ from scribble.api_schemas import (
     PatchFindingRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
+    UpdateAttackPathRequest,
     UpdateGroupRequest,
     UploadArtifactRequest,
+    idempotent_route,
     request_body,
 )
 from scribble.artifacts_api import _as_uuid, artifact_url
@@ -508,6 +511,44 @@ def _idempotency_key(data: Any) -> str | None:
     return (header_key or body_key) or None
 
 
+def _json_safe(body: dict) -> dict:
+    """``body`` rendered through the app's JSON provider and back — the exact dict ``jsonify`` would put
+    on the wire, but built only from JSON-native types.
+
+    🔴 This is not cosmetic; it is the fix for #114 and it applies to EVERY route on this blueprint.
+    The host's idempotency store memoizes a response only if ``json.dumps(body)`` succeeds
+    (``app/idempotency.py::_storable``) and otherwise **releases the claim so a retry re-executes**.
+    Since the UUIDv7 migration (#36 / lotek#335) every body here carries raw ``uuid.UUID`` values,
+    ``json.dumps`` raises ``TypeError`` on those, and so ``Idempotency-Key`` silently became a no-op on
+    the whole machine API — a retried ``POST …/attack-paths`` minted a second row and doubled the
+    diagram in the deliverable. It went unnoticed because core's own ``/api/v1`` call sites hand the
+    seam pre-``str()``-ed ids by hand, and because this package's test stub published no ``idempotent``
+    extra at all (so the seam was never exercised here).
+
+    Normalising through ``current_app.json`` rather than ``default=str`` is deliberate: it is the SAME
+    provider ``jsonify`` uses, so a first response and its replay are byte-identical. ``default=str``
+    would render a ``datetime`` as ``2026-01-31 12:00:00+00:00`` where ``jsonify`` emits an HTTP date —
+    a replay that quietly differs from the original is its own bug.
+    """
+    return json.loads(current_app.json.dumps(body))
+
+
+def _json_object_or_400(data: Any):
+    """``(body, None)`` when the request body is a JSON OBJECT, else ``(None, 400)``.
+
+    ``request.get_json(silent=True) or {}`` returns whatever JSON arrived, and every PATCH here then does
+    ``set(data) - {...allowed...}`` to reject unknown fields. Handed a non-dict that is truthy — ``[1,2]``,
+    ``123``, ``true`` — ``set()`` raises ``TypeError`` INSIDE the view and the caller gets a 500 for a
+    plainly malformed request. (``"hello"`` happened to answer 400 by accident, because a string IS
+    iterable, which is exactly how this stayed invisible.) ``_idempotency_key`` already guards itself with
+    ``isinstance(data, dict)`` for the same reason; this hoists that rule to the body as a whole so the
+    three PATCH routes share ONE implementation of it rather than three.
+    """
+    if isinstance(data, dict):
+        return data, None
+    return None, _bad_request("body must be a JSON object")
+
+
 def _with_idempotency(
     key: str | None, produce: Callable[[], tuple[dict, int]]
 ) -> tuple[dict, int]:
@@ -517,7 +558,12 @@ def _with_idempotency(
     hook = host.host_hook("idempotent")
     if hook is None or not key:
         return produce()
-    return hook(host.actor(), key, produce)
+
+    def _storable_produce() -> tuple[dict, int]:
+        body, status = produce()
+        return _json_safe(body), status
+
+    return hook(host.actor(), key, _storable_produce)
 
 
 # ── report rendering helpers (reused by the machine report route) ────────────────────────────────────
@@ -621,6 +667,7 @@ def _author_content_json(data: dict) -> dict:
 @machine_bp.post("/engagements")
 @host.require_scope("write")
 @request_body(CreateEngagementRequest)
+@idempotent_route
 def scribble_create_engagement():
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -814,6 +861,7 @@ def scribble_get_template(template_id: int):
 @machine_bp.post("/templates")
 @host.require_scope("write")
 @request_body(CreateTemplateRequest)
+@idempotent_route
 def scribble_create_template():
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -902,6 +950,7 @@ def scribble_create_template():
 @machine_bp.post("/engagements/<uuid:engagement_id>/findings")
 @host.require_scope("write")
 @request_body(AddFindingRequest)
+@idempotent_route
 def scribble_add_finding(engagement_id: str):
     actor = host.actor()
     actor_username = actor.username if actor else None
@@ -1117,6 +1166,7 @@ def scribble_add_finding(engagement_id: str):
 
 @machine_bp.post("/vuln-map")
 @host.require_scope("write")
+@idempotent_route
 def scribble_create_vuln_map():
     data = request.get_json(silent=True) or {}
     template_id, err = _opt_uuid(data, "template_id")
@@ -1867,6 +1917,11 @@ def _finding_summary(finding: EngagementFinding) -> dict:
     """The board-shaped view of a finding: enough to LIST, order and address it, without its prose."""
     return {
         "id": finding.id,
+        # READ alias for ``id``, closing a write/read asymmetry that broke real client code (#116): the
+        # artifact-upload route ACCEPTS ``finding_id``, so a driver that read a finding back and passed
+        # ``f["finding_id"]`` straight to an upload hit a KeyError. Same value, always — ``id`` stays the
+        # canonical field and is not going away.
+        "finding_id": finding.id,
         "title": finding.title,
         "severity": _enum_value(finding.severity),
         "confidence": _enum_value(finding.confidence),
@@ -2011,6 +2066,9 @@ def _parse_finding_patch(data: dict):
     failure. ``group_id``/``order_index`` get a pointed message because they are the two fields a caller
     most plausibly expects to work here; they belong to ``move``, which owns re-ordering semantics.
     """
+    data, bad_body = _json_object_or_400(data)
+    if bad_body is not None:
+        return None, None, bad_body
     unknown = set(data) - _PATCH_ALLOWED
     for moved in ("group_id", "order_index"):
         if moved in unknown:
@@ -2201,6 +2259,7 @@ def scribble_get_finding(finding_id: int):
 @machine_bp.patch("/findings/<uuid:finding_id>")
 @host.require_scope("write")
 @request_body(PatchFindingRequest)
+@idempotent_route
 def scribble_update_finding(finding_id: int):
     """Partially update a finding — the machine counterpart of the cookie finding-detail form plus the
     per-block autosave route, in one call.
@@ -2262,6 +2321,7 @@ def scribble_update_finding(finding_id: int):
 
 @machine_bp.delete("/findings/<uuid:finding_id>")
 @host.require_scope("write")
+@idempotent_route
 def scribble_delete_finding(finding_id: int):
     """Delete a finding and its evidence — ``findings_service.delete_finding``, the same cascade the
     cookie board performs (artifact ROWS go with it; a group delete only detaches, a finding delete does
@@ -2365,6 +2425,7 @@ def _parse_move_target(data: dict, engagement_id: int, db):
 @machine_bp.post("/findings/<uuid:finding_id>/move")
 @host.require_scope("write")
 @request_body(MoveFindingRequest)
+@idempotent_route
 def scribble_move_finding(finding_id: int):
     """Set a finding's group and its position — ``{"group_id": <id|null>, "order_index": <int>}``.
 
@@ -2421,6 +2482,7 @@ def scribble_move_finding(finding_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/findings/move")
 @host.require_scope("write")
 @request_body(BulkMoveFindingsRequest)
+@idempotent_route
 def scribble_move_findings(engagement_id: int):
     """Move SEVERAL findings into one group in a single call —
     ``{"finding_ids": [...], "group_id": <id|null>, "order_index": <int>}``.
@@ -2515,6 +2577,7 @@ def scribble_move_findings(engagement_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/groups")
 @host.require_scope("write")
 @request_body(CreateGroupRequest)
+@idempotent_route
 def scribble_create_group(engagement_id: int):
     """Create a report section (``FindingGroup``) at the end of the board.
 
@@ -2570,6 +2633,7 @@ def scribble_create_group(engagement_id: int):
 @machine_bp.patch("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
 @request_body(UpdateGroupRequest)
+@idempotent_route
 def scribble_update_group(engagement_id: int, group_id: int):
     """Rename a section, toggle whether it renders, or set its ordering mode.
 
@@ -2584,7 +2648,9 @@ def scribble_update_group(engagement_id: int, group_id: int):
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
-    data = request.get_json(silent=True) or {}
+    data, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
     unknown = set(data) - {"name", "order_mode", "include_in_report", "idempotency_key"}
     if unknown:
         return _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
@@ -2636,6 +2702,7 @@ def scribble_update_group(engagement_id: int, group_id: int):
 
 @machine_bp.delete("/engagements/<uuid:engagement_id>/groups/<uuid:group_id>")
 @host.require_scope("write")
+@idempotent_route
 def scribble_delete_group(engagement_id: int, group_id: int):
     """Delete a report section. Its findings are DETACHED (``group_id`` -> NULL), not deleted — removing a
     section must never silently destroy authored findings. See ``findings_service.delete_group``."""
@@ -2670,6 +2737,7 @@ def scribble_delete_group(engagement_id: int, group_id: int):
 @machine_bp.post("/engagements/<uuid:engagement_id>/groups/reorder")
 @host.require_scope("write")
 @request_body(ReorderGroupsRequest)
+@idempotent_route
 def scribble_reorder_groups(engagement_id: int):
     """Set the section order for an engagement — ``{"order": [group_id, ...]}``.
 
@@ -2714,6 +2782,22 @@ def scribble_reorder_groups(engagement_id: int):
 # ── attack-path diagrams (ext#48) ───────────────────────────────────────────────────────────────────
 
 
+def _attack_path_not_found():
+    """Missing diagram, or one belonging to a DIFFERENT engagement — one refusal for both, so the per-item
+    routes cannot be used to enumerate diagram ids across engagements (same rule as ``_group_not_found``)."""
+    return jsonify({"error": "not_found", "detail": "attack path not found on this engagement"}), 404
+
+
+def _diagram_of(db, engagement_id, attack_path_id) -> EngagementDiagram | None:
+    """A linked diagram BY ID, but only if it belongs to ``engagement_id`` — else None. The diagram-shaped
+    twin of ``_group_of``: the per-item routes address a diagram THROUGH its engagement, so the engagement
+    the caller was authorized for is the one whose rows it can reach."""
+    diagram = db.get(EngagementDiagram, attack_path_id)
+    if diagram is None or diagram.engagement_id != engagement_id:
+        return None
+    return diagram
+
+
 def _diagram_dict(d: EngagementDiagram) -> dict:
     return {
         "id": d.id,
@@ -2732,6 +2816,7 @@ def _diagram_dict(d: EngagementDiagram) -> dict:
 @machine_bp.post("/engagements/<uuid:engagement_id>/attack-paths")
 @host.require_scope("write")
 @request_body(LinkAttackPathRequest)
+@idempotent_route
 def scribble_link_attack_path(engagement_id):
     """Link a vector attack-path diagram into this engagement's report (ext#48).
 
@@ -2795,8 +2880,18 @@ def scribble_link_attack_path(engagement_id):
                 include_in_report=publish if publish is not None else True,
             )
             wdb.add(diagram)
+            wdb.flush()  # populate diagram.id before the audit row references it
+            body = _diagram_dict(diagram)
+            # The POST was the ONE route in this trio with no in-band audit row (it shipped that way in
+            # ext#48, covered only by core's generic `extension.machine_write` backstop). With update and
+            # delete now emitting semantic verbs, "who put this diagram in the deliverable" would have
+            # been the only one of the three questions the audit reader could not answer.
+            _audit(
+                wdb, "link_attack_path", subject_type="engagement_diagram", subject_id=diagram.id,
+                after={**body, "engagement_id": engagement_id},
+            )
             wdb.commit()
-            return _diagram_dict(diagram), 201
+            return body, 201
 
     body, status = _with_idempotency(idempotency_key, _produce)
     return jsonify(body), status
@@ -2814,7 +2909,182 @@ def scribble_list_attack_paths(engagement_id):
             return _engagement_not_found()
         rows = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
         out = [_diagram_dict(d) for d in rows]
-    return jsonify({"diagrams": out, "count": len(out)})
+    # ``attack_paths`` is the key that matches the ROUTE; ``diagrams`` is the original one, kept as a
+    # duplicate alias so a client written against it does not break in the same release that fixes the
+    # name (#116). A client that guessed ``attack_paths`` — the obvious guess, and the one a report driver
+    # actually made — got a KeyError and reported "no attack paths" for data that was there. Both keys
+    # reference the same list objects, so the duplication costs one pointer per row, not a second
+    # serialization.
+    #
+    # 🔴 DEPRECATED — ``diagrams`` is removed by #121, which is the tracking issue for exactly that and
+    # names every site to touch. A relative deadline ("one release") in a comment is a promise nothing
+    # enforces; an open issue is a hand that can act. Do not restate a date here — point at #121.
+    return jsonify({"attack_paths": out, "diagrams": out, "count": len(out)})
+
+
+@machine_bp.get("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")
+@host.require_scope("read")
+def scribble_get_attack_path(engagement_id, attack_path_id):
+    """One linked attack path, INCLUDING its stored ``embed_html`` snapshot.
+
+    The listing omits the snapshot (it is up to 10 MiB per row); this route is where a caller reads it
+    back — to diff what was uploaded against what vector currently exports, or to confirm a retry stored
+    what it meant to. The diagram is addressed THROUGH its engagement, so tenancy is the engagement's.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        diagram = _diagram_of(db, engagement_id, attack_path_id)
+        if diagram is None:
+            return _attack_path_not_found()
+        return jsonify({**_diagram_dict(diagram), "embed_html": diagram.embed_html})
+
+
+@machine_bp.patch("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")
+@host.require_scope("write")
+@request_body(UpdateAttackPathRequest)
+@idempotent_route
+def scribble_update_attack_path(engagement_id, attack_path_id):
+    """Edit a linked attack path in place: ``include_in_report`` and/or ``caption``.
+
+    ``include_in_report: false`` is the NON-destructive way to keep a wrongly-linked diagram out of the
+    deliverable — the same convention artifacts, findings and groups already use — and is what a caller
+    should reach for before ``DELETE`` when the snapshot may still be wanted.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if _diagram_of(db, engagement_id, attack_path_id) is None:
+            return _attack_path_not_found()
+
+    data, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
+    unknown = set(data) - {"caption", "include_in_report", "idempotency_key"}
+    if unknown:
+        return _bad_request(f"unknown field(s): {', '.join(sorted(unknown))}")
+    updates: dict[str, Any] = {}
+    if "caption" in data:
+        caption, err = _opt_str(data, "caption")
+        if err:
+            return err
+        if (err := _too_long("caption", caption or "", cap=_DIAGRAM_CAPTION_MAX_LEN)) is not None:
+            return err
+        updates["caption"] = caption
+    if "include_in_report" in data:
+        # Strict `isinstance(bool)`, matching ``scribble_update_group`` rather than
+        # ``_include_in_report_or_400`` (which exists for the MULTIPART artifact surface, where a flag can
+        # only arrive as text). That helper maps an explicit ``null``/``""`` to None meaning "not
+        # specified", which is right for a CREATE and wrong here: on a PATCH the key IS present, so None
+        # would be written to a NOT NULL column and a caller's `{"include_in_report": null}` would come
+        # back a 500 instead of the 400 it is.
+        if not isinstance(data["include_in_report"], bool):
+            return _bad_request("include_in_report must be true or false")
+        updates["include_in_report"] = data["include_in_report"]
+    if not updates:
+        return _bad_request("no updatable fields supplied")
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            diagram = _diagram_of(db, engagement_id, attack_path_id)
+            if diagram is None:
+                return {"error": "not_found", "detail": "attack path not found on this engagement"}, 404
+            before = {field: getattr(diagram, field) for field in updates}
+            for field, value in updates.items():
+                setattr(diagram, field, value)
+            body = _diagram_dict(diagram)
+            _audit(
+                db, "update_attack_path", subject_type="engagement_diagram", subject_id=diagram.id,
+                before=before, after={field: body[field] for field in updates},
+            )
+            db.commit()
+            return body, 200
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+@machine_bp.delete("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")
+@host.require_scope("write")
+@idempotent_route
+def scribble_delete_attack_path(engagement_id, attack_path_id):
+    """Unlink an attack path from the report and delete its stored snapshot.
+
+    This is the undo the collection lacked (#114): before it, a duplicated link could be removed only
+    through the dashboard UI, and a report driver that retried a POST had no way back at all. Deleting
+    the row destroys only Scribble's SNAPSHOT — the source diagram lives in vector and is untouched, so
+    a delete is recoverable by re-linking. Surviving rows are RE-PACKED to a contiguous ``order_index``,
+    because ``order_index`` is a slot in the rendered list (the same rule the board's move routes
+    follow) and leaving a hole makes the next link's ``len(siblings)`` collide with an existing slot.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if _diagram_of(db, engagement_id, attack_path_id) is None:
+            return _attack_path_not_found()
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as db:
+            diagram = _diagram_of(db, engagement_id, attack_path_id)
+            if diagram is None:
+                return {"error": "not_found", "detail": "attack path not found on this engagement"}, 404
+            before = _diagram_dict(diagram)
+            engagement = diagram.engagement
+            db.delete(diagram)
+            db.flush()
+            for index, sibling in enumerate(
+                sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
+            ):
+                # Only WRITE a row whose slot actually moved. Rewriting every sibling unconditionally
+                # takes a row lock on all of them, and two concurrent deletes on one engagement (each
+                # skipping a different victim) then take those locks in different orders — the textbook
+                # deadlock shape. ponytail: this narrows the lock set, it does not serialize the two
+                # deletes; if concurrent deletes on ONE engagement ever become common, take the
+                # engagement row `FOR UPDATE` at the top of both this and the link route's _produce.
+                if sibling.order_index != index:
+                    sibling.order_index = index
+            _audit(
+                db, "delete_attack_path", subject_type="engagement_diagram",
+                subject_id=attack_path_id, before=before, after=None,
+            )
+            db.commit()
+            return {"deleted": True, "attack_path_id": attack_path_id,
+                    "engagement_id": engagement_id}, 200
+
+    body, status = _with_idempotency(
+        _idempotency_key(request.get_json(silent=True) or {}), _produce
+    )
+    return jsonify(body), status
+
+
+# ── the published contract ───────────────────────────────────────────────────────────────────────────
+
+
+@machine_bp.get("/openapi.json")
+@host.require_scope("read")
+def scribble_machine_openapi():
+    """The OpenAPI 3.1 document for this machine API — response shapes included.
+
+    lotek core's ``GET /api/v1/openapi.json`` already lists these routes (it keys off the same
+    ``require_scope`` stamp) but documents no response bodies, which is the half a client has to guess —
+    and guessing it wrong is silent (#116: a driver looked for ``attack_paths``, the payload said
+    ``diagrams``, and it reported an uploaded attack path as missing). This one is generated from the
+    live ``url_map`` plus the declared response schemas in ``scribble/openapi.py``.
+
+    ``read`` scope, like every other GET here: the document describes an instance's enabled surface, and
+    it is the natural first call of a client that already holds a token.
+    """
+    from scribble import _version, openapi
+
+    return jsonify(openapi.build_spec(
+        current_app, machine_bp.name, version=getattr(_version, "__version__", "0")
+    ))
 
 
 # ── wiring hook ──────────────────────────────────────────────────────────────────────────────────────

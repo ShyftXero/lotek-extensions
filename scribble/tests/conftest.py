@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from flask import Flask
+from flask import Flask, has_request_context, jsonify, request
 from sqlalchemy import create_engine, event
 
 import scribble
@@ -283,6 +285,81 @@ class StubHost:
         return client_id in self.viewable_client_ids
 
 
+def _make_stub_idempotent():
+    """A faithful in-memory port of lotek's `app/idempotency.py::make_idempotent`, for `extras['idempotent']`.
+
+    This stub did NOT exist until #114, and its absence is why the extension suite could not catch that
+    bug: with no `idempotent` extra, `api_pat._with_idempotency` fails open and calls `produce()`
+    directly, so every "honours Idempotency-Key" claim in this suite was vacuous while the MOUNTED
+    behaviour silently duplicated rows. A stub proves logic, never the mount — but a stub that is KINDER
+    than production proves nothing at all, so the branch that actually broke is reproduced exactly:
+
+      * a non-2xx, or a body `json.dumps` cannot serialize, RELEASES the claim so a retry re-executes.
+        A raw `uuid.UUID` in the body is exactly such a body (that was the bug).
+      * same key + same request fingerprint -> the STORED response is replayed.
+      * same key + a DIFFERENT request -> 422, nothing created, nothing replayed.
+    """
+    store: dict[tuple[Any, str], dict[str, Any]] = {}
+
+    def _fingerprint() -> str:
+        endpoint = path_args = ""
+        payload = b""
+        if has_request_context():
+            endpoint = request.endpoint or ""
+            path_args = repr(sorted((request.view_args or {}).items(), key=lambda kv: kv[0]))
+            payload = (request.get_data() or b"")[:65536]
+        return hashlib.sha256(
+            f"{endpoint}\x1f{path_args}\x1f{hashlib.sha256(payload).hexdigest()}".encode()
+        ).hexdigest()
+
+    def idempotent(principal, key, produce):
+        # The real host scopes the slot to the principal's UUID and treats an unresolvable one as
+        # "not idempotent". `StubActor.id` is a plain int here, so the slot is scoped to whatever the
+        # principal's `.id` is — same SCOPING property, without demanding the fixtures mint UUID actors.
+        principal_id = getattr(principal, "id", principal)
+        if not key or principal_id is None:
+            return produce()
+        slot = (principal_id, str(key)[:255])
+        fingerprint = _fingerprint()
+        claimed = store.get(slot)
+        if claimed is not None:
+            if claimed["fingerprint"] != fingerprint:
+                return {
+                    "error": "unprocessable_entity",
+                    "detail": "this Idempotency-Key was already used for a different request; "
+                              "use a new key for a new operation",
+                }, 422
+            if claimed["status"] is None:
+                # Claimed but not yet answered: the original is STILL RUNNING. The host answers 409 and
+                # never reclaims the slot ("old" cannot be told from "slow", and slow is exactly when
+                # clients retry). Without this branch the stub fell through to `({}, None)` — a status of
+                # None, which `jsonify(...), None` would hard-error on — so it was BOTH kinder than
+                # production and incapable of exercising the one refusal a fast-retrying agent actually
+                # meets. Found by adversarial review, in the one stub branch that was still generous.
+                return {
+                    "error": "conflict",
+                    "detail": "a request with this Idempotency-Key is still in progress",
+                }, 409
+            return claimed["body"] or {}, claimed["status"]
+        store[slot] = {"fingerprint": fingerprint, "body": None, "status": None}
+        try:
+            body, status = produce()
+        except Exception:
+            del store[slot]  # the op failed — release the claim, don't poison the key
+            raise
+        try:
+            storable = len(json.dumps(body)) <= 65536
+        except (TypeError, ValueError):
+            storable = False
+        if 200 <= status < 300 and storable:
+            store[slot].update(body=body, status=status)
+        else:
+            del store[slot]
+        return body, status
+
+    return idempotent
+
+
 def _wire_stub_host(cfg, stub: StubHost) -> None:
     """Fill `cfg.extras` the same way `app/extensions.py::_inject_host` does, with `stub`'s fakes."""
 
@@ -324,6 +401,42 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     # to mirror the bundle and is one key short.
     cfg.extras["can_operate_on"] = lambda _engagement_id: stub.can_operate_value
     cfg.extras["audit"] = stub.audit
+    cfg.extras["idempotent"] = _make_stub_idempotent()
+
+
+def install_scope_enforcing_gate(app, stub_host) -> None:
+    """Replace `_wire_stub_host`'s NO-OP ``require_pat_scope`` with one that REALLY checks the actor's scopes.
+
+    Scope RBAC is the host's concern, but WHICH scope each route declares is scribble's — and that is only
+    provable if a read-only token is actually refused by a write route. Under the no-op stub every machine
+    route looks correctly gated even with its ``@host.require_scope`` decorator missing or naming the wrong
+    scope: the same "harness kinder than production" hole that made #114's idempotency bug invisible here.
+
+    Mirrors the host (`app/api_v1.py::require_scope`): the token must carry the scope. The host's second
+    clause — a ``write`` scope cannot out-rank a viewer-role OWNER — is deliberately not reproduced; it is
+    the host's own rule over its own user table, and no scribble route can influence it.
+
+    Lives in conftest because three modules need it (`test_machine_authoring`,
+    `test_machine_findings_crud`, `test_scribble_machine_tenancy`). It was copied into the first two with a
+    note saying a shared fixture would couple them; a third copy is where copies start to disagree, and
+    this is a fixture of the HARNESS, not of any one module's route set.
+    """
+    cfg = app.extensions["scribble"]
+
+    def require_pat_scope(scope: str):
+        def decorator(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                actor = stub_host.actor
+                if actor is None or scope not in actor.scopes:
+                    return jsonify({"error": "forbidden", "detail": f"scope {scope} required"}), 403
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    cfg.extras["require_pat_scope"] = require_pat_scope
 
 
 @pytest.fixture

@@ -26,18 +26,16 @@ route-classification guard is; this module holds the per-route behaviour.
 from __future__ import annotations
 
 import base64
-import functools
 import uuid
 
 import pytest
-from flask import jsonify
 from sqlalchemy import select
 
 import scribble.models as fm
 from scribble.content import schema
 from scribble.enums import OrderMode, Severity
 from scribble.testing import read_evidence
-from tests.conftest import StubActor
+from tests.conftest import StubActor, install_scope_enforcing_gate
 
 M = "/scribble/machine"
 
@@ -106,33 +104,6 @@ def _finding(
         db.add(finding)
         db.commit()
         return str(finding.id)
-
-
-def _install_scope_enforcing_gate(app, stub_host) -> None:
-    """Replace the conftest's NO-OP `require_pat_scope` with one that REALLY checks the actor's scopes.
-
-    Scope RBAC is the host's concern, but WHICH scope each route declares is scribble's — and that is only
-    provable if a read token is actually refused by a write route. Under the no-op stub every route looks
-    correctly gated even with its decorator missing or naming the wrong scope. (Same helper as
-    `tests/test_machine_authoring.py`; duplicated rather than shared because these two modules test
-    different route sets and a shared fixture would couple them.)
-    """
-    cfg = app.extensions["scribble"]
-
-    def require_pat_scope(scope: str):
-        def decorator(fn):
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
-                actor = stub_host.actor
-                if actor is None or scope not in actor.scopes:
-                    return jsonify({"error": "forbidden", "detail": f"scope {scope} required"}), 403
-                return fn(*args, **kwargs)
-
-            return wrapper
-
-        return decorator
-
-    cfg.extras["require_pat_scope"] = require_pat_scope
 
 
 def _install_audit_recorder(app) -> list[tuple]:
@@ -1640,7 +1611,7 @@ def test_read_token_cannot_reach_any_new_write_route(app, client, stub_host, ses
     """Every new mutating route must declare `write` scope. Proven against a REAL scope-checking gate:
     under the conftest's no-op `require_pat_scope` a route with a missing or wrongly-named decorator looks
     perfectly gated."""
-    _install_scope_enforcing_gate(app, stub_host)
+    install_scope_enforcing_gate(app, stub_host)
     stub_host.actor = StubActor(id=22, username="ro", role="operator", scopes=frozenset({"read"}))
     stub_host.viewable_client_ids = {ACME}
     eid = _engagement(session_factory)
@@ -1662,7 +1633,7 @@ def test_read_token_cannot_reach_any_new_write_route(app, client, stub_host, ses
 
 def test_a_write_token_reaches_the_same_routes(app, client, stub_host, session_factory):
     """Positive control for the scope sweep: the same URLs, with a write token, must not be 403."""
-    _install_scope_enforcing_gate(app, stub_host)
+    install_scope_enforcing_gate(app, stub_host)
     stub_host.actor = StubActor(id=23, username="rw", role="operator",
                                scopes=frozenset({"read", "write"}))
     stub_host.viewable_client_ids = {ACME}

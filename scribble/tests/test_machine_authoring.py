@@ -20,15 +20,12 @@ scribble's OWN proofs against the ``stub_host`` fixture (see ``tests/conftest.py
 
 from __future__ import annotations
 
-import functools
 import uuid
-
-from flask import jsonify
 
 import scribble.models as fm
 from scribble.content import schema
 from scribble.enums import Severity
-from tests.conftest import StubActor
+from tests.conftest import StubActor, install_scope_enforcing_gate
 
 _MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
@@ -65,29 +62,6 @@ def _finding_with_body(session_factory, engagement_id: int, title: str = "SMB si
 
 def _node_types(doc) -> set[str]:
     return {n.get("type") for n in schema.iter_nodes(doc)}
-
-
-def _install_scope_enforcing_gate(app, stub_host) -> None:
-    """Replace the conftest's NO-OP ``require_pat_scope`` with one that REALLY checks the PAT actor's
-    scopes. Scope RBAC is the host's concern, but *which scope each route declares* is scribble's — and
-    that is only provable if a read token is actually refused by a write route (a no-op stub makes every
-    route look correctly gated even if its decorator were missing or named the wrong scope)."""
-    cfg = app.extensions["scribble"]
-
-    def require_pat_scope(scope: str):
-        def decorator(fn):
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
-                actor = stub_host.actor
-                if actor is None or scope not in actor.scopes:
-                    return jsonify({"error": "forbidden", "detail": f"scope {scope} required"}), 403
-                return fn(*args, **kwargs)
-
-            return wrapper
-
-        return decorator
-
-    cfg.extras["require_pat_scope"] = require_pat_scope
 
 
 # ── author a finding: plain-text prose branch ────────────────────────────────────────────────────────
@@ -343,7 +317,7 @@ def test_report_of_foreign_engagement_is_404(client, stub_host, session_factory)
 
 
 def test_require_scope_read_token_cannot_write(app, client, stub_host):
-    _install_scope_enforcing_gate(app, stub_host)
+    install_scope_enforcing_gate(app, stub_host)
     stub_host.actor = StubActor(id=5, username="ro", role="operator", scopes=frozenset({"read"}))
 
     # a read route is reachable with a read token …
@@ -354,7 +328,7 @@ def test_require_scope_read_token_cannot_write(app, client, stub_host):
 
 
 def test_require_scope_write_token_can_write(app, client, stub_host):
-    _install_scope_enforcing_gate(app, stub_host)
+    install_scope_enforcing_gate(app, stub_host)
     stub_host.actor = StubActor(id=6, username="rw", role="operator", scopes=frozenset({"read", "write"}))
     assert client.post(f"{M}/templates", json={"name": "ok"}).status_code == 201
 
