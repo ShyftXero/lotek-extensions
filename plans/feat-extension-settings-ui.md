@@ -111,3 +111,33 @@ installed into a lotek worktree carrying the paired host branch. Observed there,
 **Still owed, and it belongs to the release, not to this branch:** lotek's `[tool.uv.sources]` pins
 `vector` to a tag that predates this declaration, so the host-side mounted test skips until this
 branch releases and lotek re-pins.
+
+
+## Catch-up review (2026-08-28)
+
+A hostile review of the merged diff found **no BLOCK**. Both security theses held under attack —
+`hide_builtin_diagrams` never reaches an access predicate (`visible_diagrams_stmt` is byte-unchanged
+and the filter is a post-query `continue` on `d.builtin`), and the deliverable footer is autoescaped
+into a text node with no second sink. Tenancy on the new routes, CSRF-when-mounted, `host_setting`
+fail-safety and the `create_tables` schema path were all checked and clean.
+
+Four findings fixed, each with a red-then-green guard in `vector/tests/test_settings.py`:
+
+| Finding | Fix | Guard that goes red without it |
+|---|---|---|
+| `render_deliverable` did `(footer or "").strip()`, so a non-`str` from the generic host seam raised `AttributeError` and **500'd the client deliverable** — breaking the exact promise `host_setting` makes | coerce + bound: `str(footer or "").strip()[:200]`, and `footer` is now typed `Any` because that is what the seam actually promises | `..._a_non_string_host_setting_cannot_break_the_export_it_decorates` |
+| the fixed footer overlaid the viewer (`html,body{height:100%}`) in a client-facing export | reserve the strip with `body:has(...)＋padding-bottom` instead of overlaying | `..._the_footer_is_length_bounded_and_does_not_overlay_the_viewer` |
+| a **viewer** was shown a live Save whose only outcome is the host's 403 page | gate it on `vector_can_write` — the flag every other write control in Vector already respects | `..._a_read_only_viewer_is_not_offered_a_save_button_that_only_403s` |
+| the first save was select-then-insert against a UNIQUE `owner_id`: a double-clicked Save (or two gevent workers) had the loser **500** on the constraint | `_save_prefs` retries once against the row the winner wrote | `..._a_double_clicked_save_does_not_500_on_the_unique_constraint` |
+
+The last guard is worth a note: **the first version of it passed against the broken code.** Inserting
+a row underneath the request does not reproduce the race, because the request's own read then finds it
+and simply updates. The race's observable condition is a request whose existence check said "no row"
+while a row exists by the time it writes, so the test forces that stale first read. A passing test is
+a hypothesis until you watch it fail.
+
+Two test NITs also fixed: an `assert ... or True` that was unconditionally green, and two assertions
+grading on HTML **byte-length** (which passes for any shorter page) rather than on the builtin
+diagram's name.
+
+`vector`: **78 passed**, ruff + pyrefly clean.

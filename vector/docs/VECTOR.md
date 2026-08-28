@@ -190,8 +190,11 @@ changing it changes nothing for anyone else. The form carries **no owner field**
 `current_actor_id()` alone, so there is nothing for a caller to point at someone else's preferences.
 
 Two mounted-only consequences: a **viewer cannot save** one, because lotek's app-wide role gate
-refuses every mutating request from a read-only role before Vector's view runs (the page renders, the
-save is refused — a host policy, and it fails in the safe direction); and a request with **no host
+refuses every mutating request from a read-only role before Vector's view runs — a host policy that
+fails in the safe direction. The page still renders (a preference is worth reading even when you
+cannot change it), but the Save button is **not offered**: `vector_can_write` gates it, the same flag
+every other write control in Vector already respects. Shipping a live button whose only outcome is the
+host's 403 page is a UX defect, not a posture. The second consequence: a request with **no host
 actor** gets a 404 rather than a null-owner row that would silently apply to everybody.
 
 🔴 **A preference is never an authorization input.** `blueprint.visible_diagrams_stmt()` is the IDOR

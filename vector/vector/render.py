@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, select_autoescape
 from markupsafe import Markup
@@ -52,8 +53,12 @@ def _env_and_template():
     return env, env.from_string(_read(_TEMPLATE))
 
 
-def render_deliverable(model, *, title: str | None = None, footer: str = "") -> str:
+def render_deliverable(model, *, title: str | None = None, footer: Any = "") -> str:
     """Return a complete, self-contained HTML document for ``model`` (any dict; normalized here).
+
+    ``footer`` is typed ``Any``, not ``str``, because that is the truth: it arrives from the host's
+    generic ``extras["extension_setting"]`` seam, which promises nothing about the type. Coerced and
+    bounded here rather than trusted — see the call below.
 
     ``footer`` is the host-held ADMIN setting ``deliverable_footer`` (lotek#485) — a per-install line
     stamped under the diagram. Passed IN rather than resolved here so this stays a pure function with
@@ -71,5 +76,11 @@ def render_deliverable(model, *, title: str | None = None, footer: str = "") -> 
         css=Markup(css),
         js=Markup(js),
         model_json=Markup(json_for_script(doc)),
-        footer=(footer or "").strip(),  # autoescaped
+        # str() is not decoration: `host_setting` promises that a settings lookup never breaks the
+        # export it decorates, but that promise died here — `extras["extension_setting"]` is a
+        # GENERIC host seam, and a host returning a dict/int (a JSON-typed setting, a host that
+        # namespaces differently) made `.strip()` raise AttributeError and 500 the client
+        # deliverable, not the settings page. Truncated for the same reason: the bound belongs on
+        # both sides of a seam the host owns.
+        footer=str(footer or "").strip()[:200],  # autoescaped
     )

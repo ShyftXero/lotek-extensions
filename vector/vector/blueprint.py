@@ -16,6 +16,7 @@ import uuid
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 from markupsafe import Markup
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 
 from vector._version import __version__
 from vector.deps import (
@@ -96,6 +97,32 @@ def _prefs(db) -> UserPref | None:
     return db.scalars(select(UserPref).where(UserPref.owner_id == uid)).first()
 
 
+def _save_prefs(db, uid, hide: bool) -> None:
+    """Upsert MY preference row. `owner_id` is UNIQUE, and select-then-insert is a check-then-act:
+    two concurrent saves (a double-clicked Save, or two gevent workers in prod) both see `None` and
+    both insert, so the loser hits the constraint. The constraint is doing its job — the bug was that
+    nothing caught it, turning a double-click into a 500. Retry once against the row the winner
+    wrote."""
+    row = _prefs(db)
+    if row is not None:
+        row.hide_builtin_diagrams = hide
+        db.commit()
+        return
+    db.add(UserPref(owner_id=uid))
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        row = _prefs(db)
+        if row is None:  # not the unique constraint we expected — don't swallow it
+            raise
+    else:
+        row = _prefs(db)
+    if row is not None:
+        row.hide_builtin_diagrams = hide
+    db.commit()
+
+
 @bp.get("/settings")
 def user_settings():
     """Vector's own ⚙ page — MY preferences, nobody else's.
@@ -125,12 +152,7 @@ def user_settings_save():
     hide = str(request.form.get("hide_builtin_diagrams") or "").strip().lower() in ("1", "true", "on")
     cfg = get_config()
     with cfg.session_factory() as db:
-        row = _prefs(db)
-        if row is None:
-            row = UserPref(owner_id=uid)
-            db.add(row)
-        row.hide_builtin_diagrams = hide
-        db.commit()
+        _save_prefs(db, uid, hide)
     return redirect(url_for("vector.user_settings", saved="1"))
 
 

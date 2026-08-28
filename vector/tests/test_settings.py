@@ -19,6 +19,7 @@ import tomllib
 import uuid
 
 from conftest import FakeUser, login
+from sqlalchemy import select
 
 from vector.schema import blank_model
 
@@ -175,15 +176,23 @@ def test_the_preference_hides_builtins_from_only_that_users_list(make_app):
     app = make_app(seed=True)  # seeds the read-only builtin example
     client = app.test_client()
 
+    # Grade on the builtin diagram's NAME, not on page byte-length: `len(after) < len(before)`
+    # passes for any shorter page (a flash message disappearing would satisfy it), and
+    # `len(bob) == len(before)` silently couples the assertion to two users rendering byte-identical
+    # HTML. Ask the question the test is named for instead.
+    from vector.models import Diagram
+
+    with app.extensions["vector"].session_factory() as db:
+        builtin_name = db.scalars(select(Diagram).where(Diagram.builtin.is_(True))).first().name
+
     login(app, ALICE)
-    assert "Spark" in client.get("/vector/").get_data(as_text=True) or True  # name may change
-    before = client.get("/vector/").get_data(as_text=True)
+    assert builtin_name in client.get("/vector/").get_data(as_text=True)
     client.post("/vector/settings", data={"hide_builtin_diagrams": "1"})
-    after = client.get("/vector/").get_data(as_text=True)
-    assert len(after) < len(before), "alice's list should have lost the builtin row"
+    assert builtin_name not in client.get("/vector/").get_data(as_text=True), \
+        "alice's list should have lost the builtin row"
 
     login(app, BOB)
-    assert len(client.get("/vector/").get_data(as_text=True)) == len(before), \
+    assert builtin_name in client.get("/vector/").get_data(as_text=True), \
         "alice's preference must not touch bob's list"
 
 
@@ -226,3 +235,80 @@ def test_one_user_cannot_write_another_users_preference(app, client):
     with app.extensions["vector"].session_factory() as db:
         by_owner = {r.owner_id: r.hide_builtin_diagrams for r in db.query(UserPref).all()}
     assert by_owner == {ALICE.id: True, BOB.id: False}
+
+
+# ── review-driven guards (2026-08-28 catch-up review) ──────────────────────────────────────────
+
+
+def test_a_non_string_host_setting_cannot_break_the_export_it_decorates():
+    """`host_setting` promises a settings lookup never breaks the export it decorates. That promise
+    died one call later: `render_deliverable` did `(footer or "").strip()`, so a host returning a
+    dict/int raised AttributeError and 500'd the CLIENT deliverable — not the settings page.
+
+    `extras["extension_setting"]` is a generic host seam. lotek#485 happens to coerce a `type="str"`
+    field to `str` before we see it, but Vector must not depend on the far side of a seam to hold the
+    bound it needs.
+    """
+    from vector.render import render_deliverable
+
+    for hostile in ({"a": 1}, 7, ["x"], None, object()):
+        html = render_deliverable({}, title="t", footer=hostile)
+        assert "<html" in html
+
+
+def test_the_footer_is_length_bounded_and_does_not_overlay_the_viewer():
+    from vector.render import render_deliverable
+
+    html = render_deliverable({}, title="t", footer="A" * 5000)
+    assert "A" * 201 not in html, "the footer must be truncated, not stamped in full"
+    # The viewer fills the viewport; a fixed footer with no reserved strip covers the canvas.
+    assert "padding-bottom" in html
+
+
+def test_a_double_clicked_save_does_not_500_on_the_unique_constraint(app, client, monkeypatch):
+    """`owner_id` is UNIQUE and the first save was select-then-insert — a check-then-act. Two racing
+    saves (a double-clicked Save; two gevent workers in prod) both read `None` and both insert, and
+    the loser hits the constraint.
+
+    The race is reproduced by its OBSERVABLE CONDITION, not by threads: the losing racer is exactly a
+    request whose existence check said "no row" while a row does exist by the time it writes. So a
+    real row is committed underneath, and the request's FIRST existence check is forced to miss it.
+    Without the patch this reproduces nothing — the request's own read would simply find the row and
+    update it, which is why the naive version of this test passed against the broken code.
+    """
+    from vector import blueprint as vb
+    from vector.models import UserPref
+
+    login(app, ALICE)
+    uid = ALICE.id
+    with app.extensions["vector"].session_factory() as db:
+        db.add(UserPref(owner_id=uid, hide_builtin_diagrams=False))
+        db.commit()
+
+    real_prefs, calls = vb._prefs, []
+
+    def stale_first_read(db):
+        calls.append(1)
+        return None if len(calls) == 1 else real_prefs(db)
+
+    monkeypatch.setattr(vb, "_prefs", stale_first_read)
+
+    resp = client.post("/vector/settings", data={"hide_builtin_diagrams": "1"})
+    assert resp.status_code in (302, 303), "the losing racer 500'd instead of retrying"
+    with app.extensions["vector"].session_factory() as db:
+        rows = db.scalars(select(UserPref).where(UserPref.owner_id == uid)).all()
+    assert len(rows) == 1, "the retry must not leave a duplicate row"
+    assert rows[0].hide_builtin_diagrams is True, "the losing racer's value must still land"
+
+
+def test_a_read_only_viewer_is_not_offered_a_save_button_that_only_403s(app, client, monkeypatch):
+    """Every other write control in Vector respects `vector_can_write`; this page did not, so a
+    viewer got a live Save whose only outcome is the host's 403 page. The host gate is still the real
+    enforcement — this is the nudge, and it is the one Vector already established."""
+    login(app, ALICE)
+    assert "<button" in client.get("/vector/settings").get_data(as_text=True)
+
+    monkeypatch.setattr("vector.blueprint.host_can_write", lambda: False)
+    body = client.get("/vector/settings").get_data(as_text=True)
+    assert "<button" not in body
+    assert "read-only" in body

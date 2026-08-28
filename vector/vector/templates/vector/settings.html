@@ -34,7 +34,16 @@
           diagram list; it stays available to everyone else.</div>
       </div>
     </div>
+    {# vector_can_write is the host's read-only (viewer) signal, and every other write control in
+       Vector already respects it (list.html, editor.html) — this page was the one that did not, so a
+       viewer got a live Save whose only possible outcome is the host's 403 page. The host gate is
+       still the real enforcement; this is the nudge. #}
+    {% if vector_can_write %}
     <div style="padding:16px 0 0"><button class="vec-btn primary" type="submit">Save</button></div>
+    {% else %}
+    <p class="hint" data-readonly-note style="padding:16px 0 0">Your account is read-only, so these
+      cannot be changed.</p>
+    {% endif %}
   </form>
 </div>
 {% endblock %}
