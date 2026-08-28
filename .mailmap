@@ -1,0 +1,18 @@
+# Canonical author identities.
+#
+# `git log`, `git shortlog`, `git blame` and `git log --author=` resolve names and
+# emails through this file, so a commit made under a stale identity is reported
+# under the canonical one WITHOUT rewriting the commit object.
+#
+# emcrae@synoptek.com: a stale work address that agent worktrees on the primary
+# dev box wrote into their per-worktree `author.email` (61 commits here, 170 in
+# lotek core). The worktree configs are fixed; this maps the commits already
+# written. GitHub resolves attribution by email at render time and does NOT read
+# this file — the web UI is corrected separately, by moving the address between
+# accounts. See ShyftXero/lotek#498.
+Eli McRae <shyft@shyft.us> <emcrae@synoptek.com>
+
+# Forensics note: once this mapping exists, `git log --author=emcrae@synoptek.com`
+# matches NOTHING, because --author is applied to the mapped identity. To search the
+# raw, as-written author field again, pass --no-use-mailmap. The commit objects are
+# unchanged and still carry the original address; only the reporting is canonical.

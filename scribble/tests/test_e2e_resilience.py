@@ -43,6 +43,7 @@ from scribble.enums import Severity
 from scribble.models import Artifact, EngagementFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
+from scribble.testing import wire_mock_host
 
 try:
     from playwright.sync_api import sync_playwright
@@ -94,6 +95,9 @@ def live_app(tmp_path_factory):
     cfg = scribble.register(
         flask_app, engine, instance_path=str(tmp), base_template="scribble/base.html"
     )
+    # The demo shell supplies a mock host: scribble persists evidence only to an object store,
+    # and this fixture boots a REAL server, so without one every upload in this module fails.
+    wire_mock_host(cfg)
 
     with cfg.session_factory() as session:
         seed_defaults(session)

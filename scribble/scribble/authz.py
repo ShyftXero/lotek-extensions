@@ -65,7 +65,7 @@ from __future__ import annotations
 from flask import abort, request
 from sqlalchemy import false, or_
 
-from scribble.deps import current_actor, get_config, open_session
+from scribble.deps import current_actor, get_config, host_can_write, open_session
 from scribble.models import (
     Artifact,
     Engagement,
@@ -313,6 +313,10 @@ def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
     return False, None
 
 
+#: Non-mutating HTTP methods — the WRITE gate below applies to everything else.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
 def _gate() -> None:
     view_args = request.view_args or {}
     if not (view_args.keys() & _RECOGNIZED_VIEW_ARG_NAMES):
@@ -324,6 +328,24 @@ def _gate() -> None:
         if engagement is None:
             abort(404)  # a recognized id that doesn't resolve — no existence oracle either
         authorize_engagement_view(engagement)
+    # WRITE axis. The view check above only proves the caller may SEE this engagement. Until now EVERY
+    # mutating scribble route on a scoped URL — `add_finding`, `create_group`, the `delete_*` routes,
+    # `promote_job`, the `api_bp` reorder/move endpoints — relied on that view check plus the UI-only
+    # `scribble_can_write` display flag, which hides buttons but does not stop a direct POST. So a caller
+    # who could view an engagement (a viewer, or a global operator holding a read-only membership) could
+    # mutate its report board by posting the form's URL. This closes that class in ONE place: a mutating
+    # request additionally requires write capability, the cookie analogue of the machine surface's
+    # `require_pat_scope("write")`. 403, not 404: the caller demonstrably can view the row, so its
+    # existence is not a secret to protect here.
+    #
+    # LIMIT (honest): `host_can_write()` is the GLOBAL write flag the host injects; scribble has no
+    # per-engagement operate hook (the host gives it `can_view_client` + `can_write`, not
+    # `can_operate_on`), so this cannot distinguish a global operator's operator- vs observer-membership
+    # on THIS engagement the way lotek core's `is_operator_on` does. It shuts the viewer-writes hole; a
+    # global operator with only an observer membership here is still (narrowly) able to write until a
+    # host `can_operate_on` hook exists for scribble. Tracked as a follow-on.
+    if request.method not in _SAFE_METHODS and not host_can_write():
+        abort(403)
 
 
 def register_gate(api_bp, bp) -> None:

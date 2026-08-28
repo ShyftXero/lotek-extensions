@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 from flask import Response, abort, request, url_for
 
+from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
-from scribble.deps import get_config, open_session
+from scribble.deps import open_session
 from scribble.models import Engagement
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
@@ -29,28 +29,6 @@ from scribble.reporting.render_html import export_zip, make_inline_artifact_url,
 # CRIT-4's tenancy predicate now lives in ``scribble/authz.py`` (it's also the primitive the
 # blueprint-wide ``before_request`` gate uses — see that module's docstring for the full history).
 # ``report_docx_api.py`` imports it from there directly, not from this module.
-
-
-def _make_artifact_bytes(artifact_root: Path) -> Callable[[str], bytes | None]:
-    """A ``storage_path -> bytes`` reader confined to ``artifact_root`` (safe_join-style guard)."""
-    root = artifact_root.resolve()
-
-    def _read(storage_path: str) -> bytes | None:
-        if not storage_path:
-            return None
-        candidate = (root / storage_path).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            return None  # path would escape the artifact root — refuse
-        if not candidate.is_file():
-            return None
-        try:
-            return candidate.read_bytes()
-        except OSError:
-            return None
-
-    return _read
 
 
 def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
@@ -82,7 +60,6 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements/<uuid:engagement_id>/report")
     def engagement_report(engagement_id: int):
-        cfg = get_config()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
@@ -92,7 +69,7 @@ def register(api_bp, bp) -> None:
             html_doc = render_report_html(
                 ctx,
                 inline_assets=True,
-                artifact_bytes=_make_artifact_bytes(cfg.artifact_root),
+                artifact_bytes=artifact_bytes,
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
                 layout=request.args.get("layout"),
@@ -103,7 +80,6 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements/<uuid:engagement_id>/report/export")
     def engagement_report_export(engagement_id: int):
-        cfg = get_config()
         fmt = (request.args.get("format") or "html").strip().lower()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
@@ -111,7 +87,6 @@ def register(api_bp, bp) -> None:
                 abort(404)
             authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
-            artifact_bytes = _make_artifact_bytes(cfg.artifact_root)
             slug = _slugify(engagement.name)
 
             if fmt == "zip":

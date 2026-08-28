@@ -79,7 +79,6 @@ from scribble.deps import (
     current_actor,
     current_actor_id,
     current_actor_username,
-    get_config,
     host_can_write,
     open_session,
     severity_enum,
@@ -294,9 +293,38 @@ def register(api_bp, bp) -> None:
                         400,
                     )
 
+                # THE ANCHOR — see api_pat's create for the full reasoning. Obtained at CREATE time
+                # so an upload never finds it missing. Creating one is manager-or-admin in the host,
+                # so an operator using the browser gets a plain, actionable refusal rather than a
+                # working engagement whose evidence has nowhere to go.
+                # Not gated on `host_is_mounted()`: storage and authorization are separate host
+                # capabilities, and evidence needs its anchor wherever an object store exists.
+                try:
+                    core_engagement_id = host.create_engagement(client_id, name)
+                except PermissionError:
+                    return (
+                        render_template(
+                            "scribble/engagement_new.html",
+                            clients=_viewable_clients(db),
+                            error="Creating an engagement requires manager or admin. Ask one to "
+                                  "create it, or create it in lotek first.",
+                        ),
+                        403,
+                    )
+                except ValueError:
+                    return (
+                        render_template(
+                            "scribble/engagement_new.html",
+                            clients=_viewable_clients(db),
+                            error="An engagement with this name already exists for this client.",
+                        ),
+                        409,
+                    )
+
                 engagement = Engagement(
                     name=name,
                     client_id=client_id,
+                    core_engagement_id=core_engagement_id,
                     scope_type=(request.form.get("scope_type") or "external").strip() or "external",
                     company_name=(request.form.get("company_name") or "").strip() or None,
                     start_date=_parse_date(request.form.get("start_date")),
@@ -362,7 +390,6 @@ def register(api_bp, bp) -> None:
 
     @bp.post("/engagements/<uuid:engagement_id>/delete", endpoint="engagement_delete")
     def engagement_delete(engagement_id: int):
-        cfg = get_config()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
@@ -383,7 +410,7 @@ def register(api_bp, bp) -> None:
             db.delete(engagement)  # cascades to groups/findings/artifacts/variable_values (delete-orphan)
             db.commit()
         for storage_path in storage_paths:
-            delete_file(cfg, storage_path)
+            delete_file(storage_path)
         return redirect(url_for("scribble.engagements"))
 
     # =============================================================================== UI: board (detail)
@@ -554,7 +581,6 @@ def register(api_bp, bp) -> None:
         "/engagements/<uuid:engagement_id>/findings/<uuid:finding_id>/delete", endpoint="delete_finding"
     )
     def delete_finding(engagement_id: int, finding_id: int):
-        cfg = get_config()
         with open_session() as db:
             finding = db.get(EngagementFinding, finding_id)
             if finding is None or finding.engagement_id != engagement_id:
@@ -567,7 +593,7 @@ def register(api_bp, bp) -> None:
             storage_paths = findings_service.delete_finding(db, finding).storage_paths
             db.commit()
         for storage_path in storage_paths:
-            delete_file(cfg, storage_path)
+            delete_file(storage_path)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     # =============================================================================== UI: finding detail

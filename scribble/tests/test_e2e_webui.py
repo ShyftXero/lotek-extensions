@@ -23,12 +23,12 @@ from sqlalchemy import create_engine
 from werkzeug.serving import make_server
 
 import scribble
-from scribble.artifacts_storage import save_bytes
 from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, OrderMode, Severity
 from scribble.models import Artifact, EngagementFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
+from scribble.testing import store_evidence, wire_mock_host
 
 try:
     from playwright.sync_api import sync_playwright
@@ -79,6 +79,11 @@ def live_app(tmp_path_factory):
     cfg = scribble.register(
         flask_app, engine, instance_path=str(tmp), base_template="scribble/base.html"
     )
+    # THE demo shell, and the reason `scribble.testing` is shipped rather than test-only: standalone
+    # Scribble persists evidence to the host's object store like every other configuration, so the
+    # thing that boots it supplies a mock host. Keeping a disk fallback "just for standalone" is what
+    # put evidence in two places to begin with.
+    wire_mock_host(cfg)
 
     with cfg.session_factory() as session:
         seed_defaults(session)
@@ -116,7 +121,7 @@ def live_app(tmp_path_factory):
         # Attach a real artifact to the Low finding so the finding page's evidence gallery has an
         # actual row to render (not just the empty "No evidence attached yet." shell) -- lets the
         # finding-page test assert the gallery, not merely that the page loaded.
-        storage_path, _sha, _size = save_bytes(cfg, engagement.id, _GALLERY_FILENAME, _PNG_BYTES)
+        storage_path, _sha, _size = store_evidence(flask_app, _GALLERY_FILENAME, _PNG_BYTES)
         session.add(
             Artifact(
                 engagement=engagement,
