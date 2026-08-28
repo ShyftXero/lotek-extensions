@@ -87,6 +87,36 @@ def objects():
     return host_hook("objects")
 
 
+def create_engagement(client_id, name):
+    """Create the CORE engagement an evidence blob is anchored to, and return its id.
+
+    ``objects.engagement_id`` is NOT NULL for every blob (INV-OBJSTORE-01 makes tenancy a database
+    fact via composite FKs), so a scribble engagement with no core engagement behind it has nowhere in
+    the bucket to put a file. That is why this exists: not bookkeeping, the anchor.
+
+    MANAGER-OR-ADMIN only in the host — establishing engagement tenancy is privileged there, and the
+    seam delegates to the very same code core's own API uses rather than restating the rule. Raises
+    ``PermissionError`` when refused and ``ValueError`` when the name is taken for that client;
+    neither is a lotek type, so nothing here imports one.
+
+    None when unmounted — but note that persisting evidence then fails outright: standalone Scribble
+    is a testbed and its shell must supply a mock host (``scribble.testing.wire_mock_host``).
+    """
+    hook = host_hook("create_engagement")
+    return hook(client_id, name) if hook is not None else None
+
+
+def can_operate_on(engagement_id) -> bool:
+    """Does the current principal hold an operator capability on this CORE engagement?
+
+    The check for a caller that supplies its OWN ``core_engagement_id`` instead of having one created:
+    creating an engagement is manager-only, but pointing at one you already operate is not, and
+    refusing that would lock every plain operator out of filing evidence.
+    """
+    hook = host_hook("can_operate_on")
+    return bool(hook(engagement_id)) if hook is not None else False
+
+
 def findings():
     """The host's read-only findings namespace (``get_job``/``list_findings``/``get_finding``), or
     None when unmounted. Callers treat None like an empty host (no scan data reachable)."""

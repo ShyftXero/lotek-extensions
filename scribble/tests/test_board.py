@@ -27,7 +27,6 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from scribble.artifacts_storage import resolve_path
 from scribble.blueprint import _inject_base
 from scribble.content import schema
 from scribble.enums import Confidence, FindingStatus, OrderMode, Severity
@@ -41,6 +40,7 @@ from scribble.models import (
     VulnerabilityTemplate,
 )
 from scribble.reporting import build_report_context
+from scribble.testing import read_evidence
 
 _MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
@@ -805,7 +805,6 @@ def test_board_order_matches_report_context_order_end_to_end(client, session_fac
 
 
 def test_delete_finding_removes_finding_and_its_artifacts(client, session_factory, app):
-    cfg = app.extensions["scribble"]
     with session_factory() as db:
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
@@ -832,8 +831,8 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
 
     with session_factory() as db:
         artifact = db.get(Artifact, artifact_id)
-        on_disk = resolve_path(cfg, artifact.storage_path)
-    assert on_disk.is_file()
+        evidence_ref = artifact.storage_path
+    assert read_evidence(app, evidence_ref) is not None
 
     resp = client.post(f"{UI}/engagements/{eng_id}/findings/{finding_id}/delete")
     assert resp.status_code == 302
@@ -842,7 +841,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
     with session_factory() as db:
         assert db.get(EngagementFinding, finding_id) is None
         assert db.get(Artifact, artifact_id) is None
-    assert not on_disk.is_file()
+    assert read_evidence(app, evidence_ref) is None
 
 
 def test_delete_finding_detaches_its_nested_children(client, session_factory):

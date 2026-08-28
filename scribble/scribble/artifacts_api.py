@@ -52,17 +52,14 @@ import io
 from flask import jsonify, request, send_file, url_for
 
 from scribble.artifacts_storage import (
-    MAX_OBJECT_BYTES,
     SAFE_NAME_MAX,
+    artifact_bytes,
     delete_file,
     guess_content_type,
-    object_id_of,
     persist_bytes,
-    read_object_bytes,
-    resolve_path,
 )
 from scribble.authz import can_view_engagement
-from scribble.deps import current_actor, current_actor_username, get_config, open_session
+from scribble.deps import current_actor, current_actor_username, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.models import Artifact, Engagement, EngagementFinding
 
@@ -161,7 +158,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.post("/artifacts")
     def create_artifact():
-        cfg = get_config()
         caption: str | None
         kind_raw: str | None
         placement_raw: str | None
@@ -313,8 +309,8 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
         try:
             storage_path, sha256, byte_size = persist_bytes(
-                cfg, engagement_id=engagement_id, core_engagement_id=core_engagement_id,
-                filename=filename, data=data, content_type=content_type)
+                core_engagement_id=core_engagement_id, filename=filename, data=data,
+                content_type=content_type)
         except PermissionError:
             # The host refused the put: this actor may VIEW the engagement (checked above) without
             # holding an operator capability on it in core. An honest 403 — never a disk write, which
@@ -351,7 +347,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.get("/artifacts/<uuid:artifact_id>/raw")
     def artifact_raw(artifact_id: int):
-        cfg = get_config()
         with open_session() as db:
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
@@ -360,39 +355,19 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             filename = artifact.filename
             content_type = artifact.content_type
 
-        # A store-backed row has no path to resolve. Without this branch the download route answered
-        # "file missing on disk" for every artifact the upload route had just stored successfully —
-        # evidence you could upload and never retrieve.
-        if object_id_of(storage_path) is not None:
-            # ONE 404 for absent, tombstoned, oversized and not-visible alike. That is deliberate and
-            # matches ``HostObjects.open``, which raises KeyError for "not yours" precisely so the
-            # route cannot become an existence oracle for another engagement's evidence.
-            #
-            # The ceiling sits ABOVE what the upload path can accept (the host's MAX_CONTENT_LENGTH),
-            # so it is not reachable by anything this route stored.
-            # ponytail: buffers the blob; stream it if evidence ever outgrows MAX_CONTENT_LENGTH.
-            data = read_object_bytes(storage_path, MAX_OBJECT_BYTES)
-            if data is None:
-                return jsonify(error="not found"), 404
-            return send_file(
-                io.BytesIO(data),
-                as_attachment=True,
-                download_name=filename,
-                mimetype=content_type or "application/octet-stream",
-            )
-
-        try:
-            path = resolve_path(cfg, storage_path)
-        except ValueError:
-            return jsonify(error="invalid storage path"), 400
-        if not path.is_file():
-            return jsonify(error="file missing on disk"), 404
+        # ONE 404 for absent, tombstoned, oversized and not-visible alike. Deliberate, and matching
+        # ``HostObjects.open``, which raises KeyError for "not yours" precisely so this route cannot
+        # become an existence oracle for another engagement's evidence.
+        # ponytail: buffers the blob; stream it if evidence ever outgrows MAX_CONTENT_LENGTH.
+        data = artifact_bytes(storage_path)
+        if data is None:
+            return jsonify(error="not found"), 404
 
         # Untrusted-file handling (mirrors Lotek): always a forced attachment download, never inline —
         # evidence artifacts may be attacker-influenced (e.g. a scraped page) and must never render in
         # the app's own origin.
         return send_file(
-            path,
+            io.BytesIO(data),
             as_attachment=True,
             download_name=filename,
             mimetype=content_type or "application/octet-stream",
@@ -420,7 +395,6 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
 
     @api_bp.post("/artifacts/<uuid:artifact_id>/delete")
     def delete_artifact(artifact_id: int):
-        cfg = get_config()
         with open_session() as db:
             artifact = db.get(Artifact, artifact_id)
             if artifact is None:
@@ -428,7 +402,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
             storage_path = artifact.storage_path
             db.delete(artifact)
             db.commit()
-        delete_file(cfg, storage_path)
+        delete_file(storage_path)
         return jsonify(ok=True)
 
     @api_bp.get("/engagements/<uuid:engagement_id>/artifacts")

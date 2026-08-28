@@ -21,13 +21,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 from flask import Response, abort
 
-from scribble.artifacts_storage import OBJECT_REF_PREFIX, read_object_bytes
+from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
-from scribble.deps import get_config, open_session
+from scribble.deps import open_session
 from scribble.models import Engagement
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
@@ -39,35 +38,6 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 # artifact). 25 MiB is generous for a screenshot; ``reporting/render_docx.py`` /
 # ``content/render_docx.py`` apply the same ceiling to any bytes they do receive.
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
-
-
-def _make_artifact_bytes(artifact_root: Path) -> Callable[[str], bytes | None]:
-    """A ``storage_path -> bytes`` reader confined to ``artifact_root`` (safe_join-style guard) —
-    mirrors ``report_html_api._make_artifact_bytes``; kept local since WS8 doesn't share files with
-    WS7 and WS5's storage helpers aren't a frozen contract yet. Files over ``_MAX_ARTIFACT_BYTES`` are
-    refused (returns ``None``) without being read into memory."""
-    root = artifact_root.resolve()
-
-    def _read(storage_path: str) -> bytes | None:
-        if not storage_path:
-            return None
-        if storage_path.startswith(OBJECT_REF_PREFIX):
-            return read_object_bytes(storage_path, _MAX_ARTIFACT_BYTES)
-        candidate = (root / storage_path).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            return None  # path would escape the artifact root — refuse
-        if not candidate.is_file():
-            return None
-        try:
-            if candidate.stat().st_size > _MAX_ARTIFACT_BYTES:
-                return None  # oversized — don't read a huge blob into memory
-            return candidate.read_bytes()
-        except OSError:
-            return None
-
-    return _read
 
 
 def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
@@ -103,14 +73,12 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements/<uuid:engagement_id>/report.docx")
     def engagement_report_docx(engagement_id: int):
-        cfg = get_config()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
-            artifact_bytes = _make_artifact_bytes(cfg.artifact_root)
             payload = render_report_docx(ctx, artifact_bytes=artifact_bytes)
             slug = _slugify(engagement.name)
 

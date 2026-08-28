@@ -11,6 +11,7 @@ from flask import Flask
 from sqlalchemy import create_engine, event
 
 import scribble
+from scribble import models as _scribble_models
 from scribble.seed import seed_defaults
 
 
@@ -32,6 +33,49 @@ def app(tmp_path):
         seed_defaults(session)
         session.commit()
     return app
+
+
+def _stamp_core_engagement_id(_mapper, _connection, target):
+    """Give every engagement a fixture builds directly the anchor a real one always has.
+
+    This makes the harness match production rather than being kinder than it. Every engagement a
+    deployment creates goes through a create path that obtains a CORE engagement first — evidence has
+    to be filed under one (`objects.engagement_id` is NOT NULL; INV-OBJSTORE-01) — so a row without an
+    anchor is not a state the product produces. Around thirty fixtures construct `Engagement(...)`
+    straight, bypassing that path, and each would otherwise carry a shape prod never has.
+
+    Registered at IMPORT time, not from a fixture. It was a function-scoped autouse fixture first, and
+    that is too late for the module-scoped `live_app` fixtures in the Playwright suites: higher-scoped
+    fixtures are built FIRST, so their demo engagements were inserted before the listener existed and
+    every upload in those modules then failed with no anchor.
+
+    The unanchored case is NOT thereby untested: `test_artifact_object_store` drives it directly and
+    asserts persisting raises rather than quietly finding somewhere else to put the bytes.
+    """
+    if getattr(target, "core_engagement_id", None) is None:
+        target.core_engagement_id = uuid.uuid7()
+
+
+event.listen(_scribble_models.Engagement, "before_insert", _stamp_core_engagement_id)
+
+
+@pytest.fixture(autouse=True)
+def _every_app_gets_a_host_object_store(request):
+    """Scribble persists evidence ONLY to the host's object store, so every app under test has one.
+
+    Standalone Scribble is a testbed, not a deployment: keeping a local-disk fallback "for standalone"
+    would put back the split this cutover deleted (some evidence in the bucket, some on whichever host
+    served the upload -- a difference that produced bugs nothing went red for). So the shell that boots
+    it supplies a mock host instead, and there is one code path everywhere.
+
+    Autouse and additive: several modules override the `app` fixture with their own, and each of them
+    would otherwise need to remember this. `wire_mock_host` only defaults `host`/`pat_actor`, so a
+    richer stub host layered on top keeps its own authorization hooks.
+    """
+    if "app" not in request.fixturenames:
+        return
+    from scribble.testing import wire_mock_host
+    wire_mock_host(request.getfixturevalue("app").extensions["scribble"])
 
 
 @pytest.fixture
@@ -192,6 +236,9 @@ class StubHost:
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
+        # Operator capability on a CORE engagement -- what a caller supplying its own
+        # `core_engagement_id` is checked against. Flip it to drive the refusal.
+        self.can_operate_value = True
         # Clients this NON-ADMIN actor may read. Mirrors the host's real rule
         # (`app/access.py::user_can_view_client`): admin reads any client, a non-admin reads a client it
         # owns a job under, and a NULL client_id is admin-only. Held as a set here because the stub has
@@ -272,6 +319,10 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
     cfg.extras["can_view_client"] = stub.can_view_client
+    # `_inject_host` provides this and the stub did not, so any code path that consults it saw a
+    # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims
+    # to mirror the bundle and is one key short.
+    cfg.extras["can_operate_on"] = lambda _engagement_id: stub.can_operate_value
     cfg.extras["audit"] = stub.audit
 
 
