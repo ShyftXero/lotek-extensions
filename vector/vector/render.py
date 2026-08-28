@@ -76,11 +76,11 @@ def render_deliverable(model, *, title: str | None = None, footer: Any = "") -> 
         css=Markup(css),
         js=Markup(js),
         model_json=Markup(json_for_script(doc)),
-        # str() is not decoration: `host_setting` promises that a settings lookup never breaks the
-        # export it decorates, but that promise died here — `extras["extension_setting"]` is a
-        # GENERIC host seam, and a host returning a dict/int (a JSON-typed setting, a host that
-        # namespaces differently) made `.strip()` raise AttributeError and 500 the client
-        # deliverable, not the settings page. Truncated for the same reason: the bound belongs on
-        # both sides of a seam the host owns.
-        footer=str(footer or "").strip()[:200],  # autoescaped
+        # `host_setting` promises a settings lookup never breaks the export it decorates, and
+        # `extras["extension_setting"]` is a GENERIC host seam. isinstance, not str(): `.strip()` on
+        # a dict raised AttributeError and 500'd the CLIENT deliverable, but `str()` is no fix — it
+        # calls back into the far side, so a value whose __str__ raises (or returns a non-str) does
+        # the same thing, and a bytes/dict that survives gets STAMPED into a client document as
+        # `b'CONFIDENTIAL'` / `{'a': 1}`. Anything that is not a string is not a footer.
+        footer=(footer.strip()[:200] if isinstance(footer, str) else ""),  # autoescaped
     )

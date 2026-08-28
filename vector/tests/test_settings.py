@@ -188,7 +188,11 @@ def test_the_preference_hides_builtins_from_only_that_users_list(make_app):
     login(app, ALICE)
     assert builtin_name in client.get("/vector/").get_data(as_text=True)
     client.post("/vector/settings", data={"hide_builtin_diagrams": "1"})
-    assert builtin_name not in client.get("/vector/").get_data(as_text=True), \
+    # Assert the page RENDERED as well: "the name is absent" is also true of a 500 or a redirect,
+    # which is the same shape as the byte-length assertion this replaced.
+    after = client.get("/vector/")
+    assert after.status_code == 200
+    assert builtin_name not in after.get_data(as_text=True), \
         "alice's list should have lost the builtin row"
 
     login(app, BOB)
@@ -251,18 +255,28 @@ def test_a_non_string_host_setting_cannot_break_the_export_it_decorates():
     """
     from vector.render import render_deliverable
 
-    for hostile in ({"a": 1}, 7, ["x"], None, object()):
+    class Boom:
+        def __str__(self):  # a host value whose str() ITSELF reaches back into the far side
+            raise RuntimeError("boom from the host setting")
+
+    for hostile in ({"a": 1}, 7, ["x"], None, object(), Boom(), b"CONFIDENTIAL"):
         html = render_deliverable({}, title="t", footer=hostile)
         assert "<html" in html
+        # ...and a non-string is DROPPED, never stamped into a client document. `str()` would have
+        # rendered b'CONFIDENTIAL' and {'a': 1} verbatim into the deliverable.
+        assert "CONFIDENTIAL" not in html and "a&#39;: 1" not in html
 
 
-def test_the_footer_is_length_bounded_and_does_not_overlay_the_viewer():
+def test_the_footer_is_length_bounded_and_reserves_a_strip_rather_than_overlaying():
     from vector.render import render_deliverable
 
     html = render_deliverable({}, title="t", footer="A" * 5000)
     assert "A" * 201 not in html, "the footer must be truncated, not stamped in full"
-    # The viewer fills the viewport; a fixed footer with no reserved strip covers the canvas.
+    # Linkage, not layout: without a browser this can only prove the strip rule is EMITTED. It is
+    # named accordingly. It discriminates — "padding-bottom" appears nowhere in the viewer's own CSS.
     assert "padding-bottom" in html
+    # ...and is NOT emitted when there is no footer, which is what replaces the `:has()` selector.
+    assert "padding-bottom" not in render_deliverable({}, title="t", footer="")
 
 
 def test_a_double_clicked_save_does_not_500_on_the_unique_constraint(app, client, monkeypatch):
@@ -287,9 +301,9 @@ def test_a_double_clicked_save_does_not_500_on_the_unique_constraint(app, client
 
     real_prefs, calls = vb._prefs, []
 
-    def stale_first_read(db):
+    def stale_first_read(db, uid=None):
         calls.append(1)
-        return None if len(calls) == 1 else real_prefs(db)
+        return None if len(calls) == 1 else real_prefs(db, uid)
 
     monkeypatch.setattr(vb, "_prefs", stale_first_read)
 

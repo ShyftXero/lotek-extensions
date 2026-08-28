@@ -89,9 +89,18 @@ def _counts(model_json: str) -> tuple[int, int]:
 # and is deliberately untouched: a preference filters what is ALREADY visible to you.
 
 
-def _prefs(db) -> UserPref | None:
-    """The current host user's preference row, or None (anonymous / standalone / never saved)."""
-    uid = current_actor_id()
+def _prefs(db, uid=None) -> UserPref | None:
+    """The preference row for ``uid``, or None (anonymous / standalone / never saved).
+
+    ``uid`` defaults to `current_actor_id()` for read-only callers, but a WRITER must pass the id it
+    already resolved. Identity is a derived-state predicate and it gets ONE evaluation per request:
+    re-deriving it here mid-write means a write could read one identity and insert under another, and
+    `deps._actor()` deliberately swallows a throwing host hook and returns None — so a flapping hook
+    would make this answer None for a user who *does* have a row, turning a save into a collision
+    the caller then re-raises as a 500.
+    """
+    if uid is None:
+        uid = current_actor_id()
     if uid is None:
         return None
     return db.scalars(select(UserPref).where(UserPref.owner_id == uid)).first()
@@ -103,20 +112,26 @@ def _save_prefs(db, uid, hide: bool) -> None:
     both insert, so the loser hits the constraint. The constraint is doing its job — the bug was that
     nothing caught it, turning a double-click into a 500. Retry once against the row the winner
     wrote."""
-    row = _prefs(db)
+    row = _prefs(db, uid)
     if row is None:
-        row = UserPref(owner_id=uid)
+        row = UserPref(owner_id=uid, hide_builtin_diagrams=hide)
         db.add(row)
         try:
             db.flush()
         except IntegrityError:
+            # A concurrent save won the race to this user's UNIQUE owner_id. NOTE the precondition
+            # this rests on: the caller opens a session of its own, so the ONLY pending object here
+            # is the UserPref above and `owner_id` is its only violable constraint. Widen this to a
+            # SAVEPOINT before ever calling _save_prefs with a session that carries other work — as
+            # written it would roll that work back too, and would read an unrelated IntegrityError
+            # as this collision.
             db.rollback()
-            row = _prefs(db)
-            if row is None:  # not the collision we expected — don't swallow a real error
+            row = _prefs(db, uid)
+            if row is None:  # nobody else's row is there either — this was not the collision
                 raise
-    # ONE assignment, on every path. An earlier version re-queried after the flush and guarded the
-    # assignment with `if row is not None`, which had a branch that committed the row WITHOUT the
-    # user's choice — a save that reports success and changes nothing.
+    # ONE assignment, on every path. An earlier version re-queried after the flush and guarded this
+    # with `if row is not None`, which had a branch that committed the row WITHOUT the user's choice
+    # — a save that reports success and changes nothing.
     row.hide_builtin_diagrams = hide
     db.commit()
 
@@ -147,6 +162,11 @@ def user_settings_save():
     uid = current_actor_id()
     if uid is None:
         abort(404)
+    if not host_can_write():
+        # Every other write in Vector checks this (api._require_write, the new_diagram GET). The
+        # host's role gate is the real enforcement and refuses a viewer app-wide before we run; this
+        # is the same nudge repeated in the one place that had skipped it.
+        abort(403)
     hide = str(request.form.get("hide_builtin_diagrams") or "").strip().lower() in ("1", "true", "on")
     cfg = get_config()
     with cfg.session_factory() as db:
