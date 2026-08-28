@@ -104,22 +104,20 @@ def _save_prefs(db, uid, hide: bool) -> None:
     nothing caught it, turning a double-click into a 500. Retry once against the row the winner
     wrote."""
     row = _prefs(db)
-    if row is not None:
-        row.hide_builtin_diagrams = hide
-        db.commit()
-        return
-    db.add(UserPref(owner_id=uid))
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        row = _prefs(db)
-        if row is None:  # not the unique constraint we expected — don't swallow it
-            raise
-    else:
-        row = _prefs(db)
-    if row is not None:
-        row.hide_builtin_diagrams = hide
+    if row is None:
+        row = UserPref(owner_id=uid)
+        db.add(row)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            row = _prefs(db)
+            if row is None:  # not the collision we expected — don't swallow a real error
+                raise
+    # ONE assignment, on every path. An earlier version re-queried after the flush and guarded the
+    # assignment with `if row is not None`, which had a branch that committed the row WITHOUT the
+    # user's choice — a save that reports success and changes nothing.
+    row.hide_builtin_diagrams = hide
     db.commit()
 
 
