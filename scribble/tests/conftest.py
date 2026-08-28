@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from flask import Flask, has_request_context, request
+from flask import Flask, has_request_context, jsonify, request
 from sqlalchemy import create_engine, event
 
 import scribble
@@ -402,6 +402,41 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["can_operate_on"] = lambda _engagement_id: stub.can_operate_value
     cfg.extras["audit"] = stub.audit
     cfg.extras["idempotent"] = _make_stub_idempotent()
+
+
+def install_scope_enforcing_gate(app, stub_host) -> None:
+    """Replace `_wire_stub_host`'s NO-OP ``require_pat_scope`` with one that REALLY checks the actor's scopes.
+
+    Scope RBAC is the host's concern, but WHICH scope each route declares is scribble's — and that is only
+    provable if a read-only token is actually refused by a write route. Under the no-op stub every machine
+    route looks correctly gated even with its ``@host.require_scope`` decorator missing or naming the wrong
+    scope: the same "harness kinder than production" hole that made #114's idempotency bug invisible here.
+
+    Mirrors the host (`app/api_v1.py::require_scope`): the token must carry the scope. The host's second
+    clause — a ``write`` scope cannot out-rank a viewer-role OWNER — is deliberately not reproduced; it is
+    the host's own rule over its own user table, and no scribble route can influence it.
+
+    Lives in conftest because three modules need it (`test_machine_authoring`,
+    `test_machine_findings_crud`, `test_scribble_machine_tenancy`). It was copied into the first two with a
+    note saying a shared fixture would couple them; a third copy is where copies start to disagree, and
+    this is a fixture of the HARNESS, not of any one module's route set.
+    """
+    cfg = app.extensions["scribble"]
+
+    def require_pat_scope(scope: str):
+        def decorator(fn):
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                actor = stub_host.actor
+                if actor is None or scope not in actor.scopes:
+                    return jsonify({"error": "forbidden", "detail": f"scope {scope} required"}), 403
+                return fn(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    cfg.extras["require_pat_scope"] = require_pat_scope
 
 
 @pytest.fixture

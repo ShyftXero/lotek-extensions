@@ -1,8 +1,8 @@
 # Plan: fix/scribble-machine-attackpath-contract
 
-- **Branch:** `fix/scribble-machine-attackpath-contract`  (worktree: `.claude/worktrees/machine-api-contract`, off `origin/main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Branch:** `fix/scribble-machine-attackpath-contract`  (worktrees: `.claude/worktrees/machine-api-contract`, then `.claude/worktrees/ext133` for the catch-up merge)
+- **PR:** #133 (opened draft 2026-08-28 by a board sweep; brought current + marked ready the same day)
+- **Status:** 🟢 ready for review — PR #133, merged up to `origin/main` 2026-08-28
 
 ## Purpose
 
@@ -155,10 +155,84 @@ Two findings were declined, with reasons: the extension build id in `info.versio
 buys nothing), and wrapping `promote-job`/`update_artifact` in the seam (a real behaviour change, out of
 scope — the document now says plainly that they do not honour the key).
 
+## Catch-up merge to `origin/main` (2026-08-28)
+
+The branch was cut from `a35eff7` and sat 49 commits behind. `git merge origin/main` was **textually
+clean**, which is the dangerous outcome, not the reassuring one — so the two changes most likely to break
+it semantically were checked by hand:
+
+- **#125/#130 (`4620ee6`), the evidence-path rework.** `save_bytes`, `resolve_path` and `safe_join` were
+  deleted and three readers collapsed into one `artifact_bytes`. Every surviving mention of the three
+  deleted names on the merged tree is in a COMMENT or docstring — there is no live caller left
+  (`grep -rn 'save_bytes|resolve_path|safe_join'` over `scribble/`), and `api_pat.py` imports `main`'s
+  `artifact_bytes`. Nothing to port.
+- **#131 (`a499b6a`), the write-axis gate.** It touched `scribble/authz.py` and
+  `tests/test_scribble_tenancy_gate.py` only. `_gate` is a `before_request` on `bp` + `api_bp` and is
+  **deliberately not attached to `machine_bp`** (it resolves `current_actor()`, which is None on a PAT
+  request, so it would 404 every machine route). The machine surface's write axis is
+  `@host.require_scope("write")` per route — which the two new attack-path mutators already carried, so
+  they did not land ungated.
+
+What #131 DID contribute that this surface lacked is the *systemic* half: a sweep that covers a new
+mutator the day it is added. `tests/test_scribble_machine_tenancy.py` gains
+`test_every_mutating_machine_route_refuses_a_read_only_token`, driven off `app.url_map` — for a
+read-scoped token that MAY view the engagement, every non-GET method on every `scribble_machine` rule is
+403 while GET is unaffected. It found one real classification case on the way in: `POST /resolve-template`
+is a body-carried QUERY that writes nothing and is correctly `read`-scoped, so it is named in
+`_READ_ONLY_POST_ENDPOINTS` with a positive control that refuses a `write`-scoped entry — a ratchet, not
+an exemption.
+
+Making that provable required the harness to stop being kinder than production. The conftest's
+`require_pat_scope` was a no-op ("scope RBAC is the HOST's concern"), under which a route with a missing
+decorator still looks gated. Two test modules had already worked around it with a private
+`_install_scope_enforcing_gate` copy; those copies are collapsed into one
+`tests/conftest.py::install_scope_enforcing_gate` rather than adding a third.
+
+Red-then-green, both directions:
+
+- Dropping `@host.require_scope("write")` from `scribble_update_attack_path` +
+  `scribble_delete_attack_path` → the sweep fails naming both, and the **DELETE returns 200**: a
+  read-only token really did destroy the row. Restored → green.
+- Reverting `install_scope_enforcing_gate` to the old no-op → the new sweep AND both pre-existing
+  scope tests (`test_read_token_cannot_reach_any_new_write_route`,
+  `test_require_scope_read_token_cannot_write`) go red together, which is the evidence that the harness
+  fidelity is load-bearing and not decoration. Restored → green.
+
+### Review outcomes on the merged diff (2026-08-28)
+
+`/adversarial-reviewer` and `/security-review` were both re-run against the FULL merged diff, not the
+pre-merge one. Two sub-bar observations from the security pass are recorded here rather than dropped,
+because "below the bar" is not the same as "nobody needs to know":
+
+1. **New retention consequence of the #114 fix (not fixed here — belongs to the host).** `_json_safe`
+   makes bodies that were previously *unstorable* memoizable, so `scribble_update_finding`'s response
+   (`content_json`, `analyst_notes` — client prose) is now copied into lotek's
+   `idempotency_keys.response_json`, a table nothing sweeps, and it survives deletion of the finding it
+   describes. Not exploitable: reads are principal-scoped, fingerprint-matched, and every idempotent
+   route does its live tenancy check OUTSIDE `_with_idempotency`, so a revoked grant 404s before any
+   stored body can be replayed. But it is a real new copy of client data with no retention policy, and
+   the fix (a sweep / TTL on that table) is core's, not scribble's. → **worth a lotek-side ticket.**
+2. **The docstring truncation in `openapi.py::_summary` does not fully achieve its stated goal.** It
+   publishes the summary line plus the FIRST paragraph, on the reasoning that the dated internal security
+   history lives further down — but `scribble_promote_job`'s first paragraph *is* that history, so it
+   ships verbatim to any read-scoped token. Left alone deliberately: core's own `openapi_gen.py` publishes
+   the ENTIRE docstring for the same views at `/api/v1/openapi.json`, also `read`-scoped, so this document
+   is strictly less disclosing to the same audience and reflowing one unrelated route's docstring buys
+   nothing measurable.
+
+Everything else the security pass walked closed at a named line: the alias-confusion IDOR (these routes
+use `_visible_engagement`, the PK-only variant, so the authorized engagement and the one `_diagram_of`
+filters on are always the same UUID), the existence oracle, cross-principal replay, replay-after-
+revocation, audit payload contents, and stored-XSS via `caption`/`embed_html` (no new sink; the single
+render site is unchanged `srcdoc` + `sandbox="allow-scripts"` without `allow-same-origin`).
+
+**#123 is untouched.** Scribble's machine API still gates writes on the client-coarse
+`_visible_engagement`/`can_view_client` rather than `can_operate_on` (INV-TENANCY-05). This branch adds a
+scope axis on top of that check; it neither narrows nor widens the tenancy axis #123 is about.
+
 ## Remaining
 
-- [ ] Orchestrator runs the combined suite + `pytest -m invariant`, the merged-diff reviews, the
-      `--ack-*` markers, and opens one PR. **This branch records no `--ack-tests` and opens no PR.**
+- [ ] Nothing on this branch. Landing it is the human's call (do not self-merge).
 
 ## Notes / gotchas
 

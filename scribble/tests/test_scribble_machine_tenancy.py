@@ -33,7 +33,8 @@ import uuid
 from flask import url_for
 
 import scribble.models as fm
-from tests.conftest import StubActor
+from scribble.host import SCOPE_ATTR
+from tests.conftest import StubActor, install_scope_enforcing_gate
 
 _MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
 
@@ -112,6 +113,7 @@ def _build_url(
     finding_id: int = 0,
     group_id: int = 0,
     attack_path_id: int = 0,
+    template_id: int = 0,
 ) -> str:
     """Build a real URL for a machine rule via `url_for`.
 
@@ -120,9 +122,11 @@ def _build_url(
     denial sweep asserting 404 would keep passing while testing nothing at all. `url_for` raises
     instead, and `_http_methods`' companion ALLOW sweep would fail too.
 
-    `finding_id`/`group_id` default to 0 (an id no row ever has) rather than being optional keywords a
-    caller can forget: a sweep that silently built a URL with a MISSING child would be asserting 404 on a
-    route that 404s for the wrong reason. The sweeps below pass real, seeded ids.
+    Every child id (`finding_id`, `group_id`, `artifact_id`, `attack_path_id`, `template_id`) defaults to
+    0 — an id no row ever has — rather than being an optional keyword a caller can forget: a sweep that
+    silently built a URL with a MISSING child would be asserting 404 on a route that 404s for the wrong
+    reason. The sweeps below pass real, seeded ids. A new id-carrying route adds a branch below AND a
+    parameter here; the `else` raises rather than guessing, so it cannot be skipped by accident.
     """
     values = {}
     for arg in rule.arguments:
@@ -145,6 +149,10 @@ def _build_url(
             # endpoint name, so `scribble_delete_attack_path` runs BEFORE `..._get_...`/`..._update_...`
             # and a shared row would be gone by the time they asked for it.
             values[arg] = attack_path_id
+        elif arg == "template_id":
+            # Only the TENANT-FREE library routes carry this, so the two tenancy sweeps below never reach
+            # it — the write sweep does, because the write axis applies to the shared library too.
+            values[arg] = template_id
         else:  # pragma: no cover - fails loudly rather than guessing a value
             raise AssertionError(f"{rule.endpoint} has an unrecognized view arg {arg!r}")
     with app.test_request_context():
@@ -388,6 +396,106 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
                 denied.append((rule.endpoint, method, url, resp.get_json()))
 
     assert denied == [], f"a granted token was WRONGLY denied on: {denied}"
+
+
+# ── 2b. the WRITE axis: a read-only token may look, never mutate ─────────────────────────────────────
+
+# POST routes that are QUERIES, not mutations: they carry a lookup in the body because the key is too
+# structured for a query string, write nothing, and are correctly `read`-scoped. The HTTP method alone
+# cannot tell them from a mutation, so the sweep below needs them named — as a RATCHET, seeded with what
+# already shipped this way. Adding an entry is a claim that the route writes nothing; the positive
+# control below refuses an entry that is `write`-scoped, so a genuine mutator cannot be parked here to
+# silence the sweep.
+_READ_ONLY_POST_ENDPOINTS = frozenset(
+    {
+        # Resolves a vuln-map rule to a template id and returns it — one `select`, no `commit`.
+        "scribble_machine.scribble_resolve_template",
+    }
+)
+
+
+
+def test_every_mutating_machine_route_refuses_a_read_only_token(app, stub_host, session_factory):
+    """A token that MAY view this engagement but holds only the ``read`` scope must not mutate anything.
+
+    The machine-surface counterpart of `test_scribble_tenancy_gate`'s write sweep (#131). That gate is a
+    ``before_request`` on the two COOKIE blueprints and is deliberately NOT attached to ``machine_bp``
+    (it resolves the browser-session actor, which is None on a PAT request, so it would 404 every machine
+    route). The machine surface's write axis is `@host.require_scope("write")` applied PER ROUTE — which
+    is precisely the shape that rots: a new mutator ships ungated the day someone forgets the decorator,
+    and under the conftest's no-op ``require_pat_scope`` it still looks perfectly gated.
+
+    So this asserts the CLASS, not a list. It is driven off ``app.url_map``, so `PATCH`/`DELETE`
+    ``…/attack-paths/<id>`` (added here for #114) — and anything added after them — are covered without
+    being named. `test_machine_findings_crud`'s `_WRITE_ROUTE_CALLS` pair proves the same property
+    against eight hand-written URLs with real bodies; it is the readable per-route control, this is the
+    one that cannot go stale.
+
+    Red → green: dropping `@host.require_scope("write")` from `scribble_update_attack_path` and
+    `scribble_delete_attack_path` turns their 403s into 200/business-4xx and this fails naming both
+    (the DELETE answers 200 — a read-only token really does destroy the row); restoring the decorators is
+    green.
+
+    Honest limit, per this repo's own rule: a stub proves logic, never the mount. What is asserted here is
+    that each route DECLARES the right scope and that the declaration is load-bearing — the real gate is
+    lotek's `api_v1.require_scope`, reached through `host_contract.require_pat_scope`, and only a MOUNTED
+    test in core (`tests/test_scribble_extension.py`) proves that wiring.
+    """
+    install_scope_enforcing_gate(app, stub_host)
+    stub_host.actor = StubActor(
+        id=31, username="read-only-tool", role="operator", scopes=frozenset({"read"})
+    )
+    stub_host.viewable_client_ids = {ACME}  # it MAY see this client — only the write axis refuses
+    stub_host.findings.add_job("job-1", owner_id=31, dtos=[])
+    eid = _engagement(session_factory, client_id=ACME)
+    aid = _artifact_on(session_factory, eid)
+    tid = _template(session_factory)
+    client = app.test_client()
+
+    mutated, view_refused = [], []
+    for rule in _machine_rules(app):
+        if rule.endpoint in _READ_ONLY_POST_ENDPOINTS:
+            continue
+        for method in _http_methods(rule):
+            # Fresh children per request, for the same reason the sweeps above do it: this walks the
+            # DELETE routes too, and a 403 today is no guarantee a future regression won't let one land.
+            fid, gid = _children(session_factory, eid)
+            url = _build_url(
+                app,
+                rule,
+                engagement_id=eid,
+                job_id="job-1",
+                artifact_id=aid,
+                finding_id=fid,
+                group_id=gid,
+                attack_path_id=_diagram_on(session_factory, eid),
+                template_id=tid,
+            )
+            resp = client.open(url, method=method, json={})
+            if method == "GET":
+                # The positive control, and not a formality: without it a blanket 403 (a broken gate that
+                # refused everything, or a token with no scopes at all) would satisfy the sweep above.
+                if resp.status_code == 403:
+                    view_refused.append((rule.endpoint, url, resp.get_json()))
+            elif resp.status_code != 403:
+                mutated.append((rule.endpoint, method, url, resp.status_code))
+
+    assert mutated == [], (
+        f"a read-only token was NOT refused (403) on mutating machine route(s): {mutated}. "
+        "Every mutating route on `machine_bp` needs `@host.require_scope(\"write\")`."
+    )
+    assert view_refused == [], f"the write axis wrongly refused a READ route: {view_refused}"
+
+    # The ratchet's positive control: every exemption must really be a `read`-scoped route, so the set
+    # cannot be padded with a mutator instead of the route being fixed.
+    for endpoint in _READ_ONLY_POST_ENDPOINTS:
+        rule = next(r for r in _machine_rules(app) if r.endpoint == endpoint)
+        view = app.view_functions[endpoint]
+        assert getattr(view, SCOPE_ATTR, None) == "read", (
+            f"{endpoint} is exempted from the write sweep but is not read-scoped — fix the route, "
+            "do not extend _READ_ONLY_POST_ENDPOINTS"
+        )
+        assert "POST" in (rule.methods or set()), f"{endpoint} is exempted but takes no POST"
 
 
 # ── 3. add-finding ───────────────────────────────────────────────────────────────────────────────────
