@@ -6,10 +6,16 @@ order.
 """
 
 from scribble.reporting.context import (  # noqa: F401
+    DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
+    DiagramCtx,
     FindingCtx,
     GroupCtx,
     ReportContext,
     SeverityRollup,
     build_report_context,
+    figure_anchor,
+    figure_caption,
+    figure_label,
+    number_figures,
 )

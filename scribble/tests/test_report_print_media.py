@@ -414,3 +414,79 @@ def test_pdf_printed_without_background_graphics_keeps_the_severity_fills(
         f"printing with background graphics off lost the {label} fill: {painted_without} painted pixels "
         f"vs {painted_with} with them on — this is what the client received"
     )
+
+
+def test_ctrl_p_opens_the_child_findings_so_the_figure_sequence_starts_at_one(
+    browser, session_factory, tmp_path
+):
+    """ext#117 — a nested child's evidence is numbered BEFORE the parent's own gallery, and children
+    live in a ``<details class="children">`` that is CLOSED by default. The toolbar's Print button
+    opened them; Ctrl+P / File -> Print / Save as PDF did not, so the primary client deliverable
+    printed a PDF whose figure sequence began at "Figure 2" while the ``.docx`` began at "Figure 1".
+
+    Driven through a real browser because that is the only place ``beforeprint`` exists: asserting on
+    the emitted JS string would pass for a listener that is registered and wrong."""
+    from scribble.models import Artifact, ArtifactKind, ArtifactPlacement
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
+        "53de0000000c4944415478da6360606000000005000166ff0f0e0000000049454e44ae426082"
+    )
+    store = tmp_path / "artifacts"
+    store.mkdir(exist_ok=True)
+    (store / "child.png").write_bytes(png)
+    with session_factory() as db:
+        client = Client(name="PrintChildren")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="Print Children", client_id=client.id, company_name="PrintChildren")
+        grp = FindingGroup(engagement=eng, name="Web", order_index=0)
+        parent = EngagementFinding(
+            engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
+            content_json={"description": _block("Reflected XSS on /search.")},
+        )
+        db.add(eng)
+        db.flush()
+        child = EngagementFinding(
+            engagement=eng, group=grp, title="Reflected XSS host b", severity=Severity.high,
+            order_index=1, parent_id=parent.id,
+            content_json={"description": _block("Same issue, host b.")},
+        )
+        db.add(child)
+        db.flush()
+        db.add(Artifact(
+            engagement_id=eng.id, finding_id=child.id, kind=ArtifactKind.screenshot,
+            placement=ArtifactPlacement.attached, filename="child.png", caption="Host b payload",
+            content_type="image/png", storage_path=str(store / "child.png"),
+            order_index=0, byte_size=len(png),
+        ))
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        html = render_report_html(
+            build_report_context(db.get(Engagement, eid)),
+            inline_assets=True,
+            artifact_bytes=lambda path: Path(path).read_bytes(),
+        )
+    path = tmp_path / "report.html"
+    path.write_text(html, encoding="utf-8")
+    page = browser.new_page(viewport={"width": 1400, "height": 1000})
+    try:
+        page.goto(path.as_uri(), wait_until="load")
+        assert page.locator("details.children").count() >= 1
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('details.children')].every(d => !d.open)"
+        ), "the fixture is wrong: children should start CLOSED, or this guard proves nothing"
+        # Chromium dispatches beforeprint for real on the print path; dispatching it directly is the
+        # same event the print engine sends and keeps the test off printToPDF's timing.
+        page.evaluate("() => window.dispatchEvent(new Event('beforeprint'))")
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('details.children')].every(d => d.open)"
+        ), "Ctrl+P would print a PDF with the child figures missing from the sequence"
+        # ...and the figure the child owns is Figure 1, i.e. the sequence a reader sees starts at 1.
+        first = page.evaluate(
+            "() => (document.querySelector('details.children figcaption')||{}).textContent || ''"
+        )
+        assert first.startswith("Figure 1 —"), first
+    finally:
+        page.close()

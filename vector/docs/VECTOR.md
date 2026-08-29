@@ -154,6 +154,20 @@ renderer would choke on.
 - **Export JSON** — round-trips the model as a `vector.attackpath/v1` document, re-importable via the
   editor's **Import JSON** or `POST /vector/api/import`.
 
+**On paper the deliverable shows its FINAL keyframe** (ext#115). A walkthrough printed at whatever phase
+it happened to be on is normally the intro — an empty diagram — so the viewer jumps to the last phase on
+`beforeprint` (which also stops auto-play, so the printed frame cannot move under the print engine) and
+restores the reader's phase on `afterprint`. Its `@media print` block drops the step controls and the
+phase rail (interactive furniture with nothing to click) and stops every animation, so what rasterizes is
+a settled frame. Only the FIRST `beforeprint` of a run captures the phase, so a second print before an
+`afterprint` cannot strand the reader at the end of the walkthrough. (`goto` stops auto-play and nothing
+restarts it — the phase is restored, the playing is not.)
+
+This applies to the deliverable printed on its own **and** to the copy Scribble embeds in its report
+iframe, which is the print-to-PDF half of that issue — with one caveat: that iframe is `loading="lazy"`,
+so a diagram still below the fold when the parent prints may never have booted, and an unbooted viewer
+has no listener to fire.
+
 The exported HTML carries the host-held **`deliverable_footer`** admin setting (below) as a fixed
 footer line, when one is set. It is autoescaped — an admin typing HTML into the settings form must not
 inject markup into a file a client opens.

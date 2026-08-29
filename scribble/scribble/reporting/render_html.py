@@ -43,7 +43,16 @@ from urllib.parse import quote, unquote
 import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
-from scribble.reporting.context import ArtifactCtx, DiagramCtx, FindingCtx, GroupCtx, ReportContext
+from scribble.reporting.context import (
+    DIAGRAM_CAPTION_FALLBACK,
+    ArtifactCtx,
+    DiagramCtx,
+    FindingCtx,
+    GroupCtx,
+    ReportContext,
+    figure_anchor,
+    figure_caption,
+)
 from scribble.reporting.layouts import ReportLayout, list_layouts
 from scribble.reporting.selection import resolve_selection
 from scribble.reporting.theme_css import build_theme_assets
@@ -87,9 +96,9 @@ _ASSET_TAGS = {"figure", "figcaption", "a", "img", "div", "span"}
 _ASSET_ATTRS = {
     "a": {"href", "download", "class", "id"},
     "img": {"src", "alt", "class", "loading"},
-    "div": {"class"},
+    "div": {"class", "id"},
     "span": {"class"},
-    "figure": {"class"},
+    "figure": {"class", "id"},
     "figcaption": {"class"},
 }
 _ASSET_URL_SCHEMES = {"http", "https", "mailto", "data"}
@@ -303,24 +312,37 @@ def _substitute_inline_placeholders(fragment: str, resolver: _AssetResolver) -> 
     return _INLINE_IMG_TAG_RE.sub(_sub_tag, fragment)
 
 
+def _figure_id_attr(number: int | None) -> str:
+    """``' id="fig-3"'`` — the stable cross-reference target ext#117 asks for, or nothing when the
+    figure carries no number (a hand-built context that never called ``number_figures``)."""
+    anchor = figure_anchor(number)
+    return f' id="{anchor}"' if anchor else ""
+
+
 def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str:
     href = resolver.resolve_gallery(artifact)
+    # ext#117: "Figure N — <caption>", numbered continuously across the whole report by
+    # ``context.number_figures`` so the DOCX can print the SAME number. The ALT text stays the bare
+    # caption: "Figure 3" describes the document, not the picture, and a screen reader announcing the
+    # number twice (once from the caption, once from the alt) is noise.
     cap = _esc(artifact.caption or artifact.filename)
+    numbered = _esc(figure_caption(artifact.figure_number, artifact.caption or artifact.filename))
+    fig_id = _figure_id_attr(artifact.figure_number)
     is_image = _is_image(artifact.content_type)
     if href and is_image:
         raw = (
-            f'<figure class="evidence-item">'
+            f'<figure class="evidence-item"{fig_id}>'
             f'<a class="evidence-link" href="#ev-{artifact.id}">'
             f'<img src="{href}" alt="{cap}" loading="lazy"/></a>'
-            f"<figcaption>{cap}</figcaption></figure>"
+            f"<figcaption>{numbered}</figcaption></figure>"
             f'<a class="lightbox" id="ev-{artifact.id}" href="#_" aria-label="close">'
             f'<img src="{href}" alt="{cap}"/></a>'
         )
     elif href:
         raw = (
-            f'<div class="evidence-item file"><a class="file-chip" href="{href}" '
+            f'<div class="evidence-item file"{fig_id}><a class="file-chip" href="{href}" '
             f'download="{_esc(artifact.filename)}">\U0001f4c4 {_esc(artifact.filename)}</a>'
-            f'<div class="cap">{cap}</div></div>'
+            f'<div class="cap">{numbered}</div></div>'
         )
     else:
         # The evidence is NAMED but its bytes are not in the document: no reader available, over the
@@ -330,9 +352,17 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
         detail = "not embedded"
         if artifact.byte_size:
             detail += f" · {_human_bytes(artifact.byte_size)}"
-        caption = f'<div class="cap">{cap}</div>' if artifact.caption else ""
+        # The number AND the caption TEXT are carried even here. Whether an artifact's bytes embed
+        # depends on the inlining budget and on whether a reader was supplied, so a report big enough to
+        # exhaust the budget would otherwise print "Figure 12" here and "Figure 12 - screenshot.png" in
+        # the .docx -- two delivered documents disagreeing about one figure, which is the defect
+        # ext#117 exists to close. Same ``caption or filename`` fallback as the embedded path and as
+        # ``render_docx._artifact_ctx``; it repeats the chip's filename for an uncaptioned artifact,
+        # and that redundancy is the cheaper of the two costs.
+        cap_only = _esc(figure_caption(artifact.figure_number, artifact.caption or artifact.filename))
+        caption = f'<div class="cap">{cap_only}</div>' if cap_only else ""
         raw = (
-            f'<div class="evidence-item file missing">\U0001f4c4 {_esc(artifact.filename)} '
+            f'<div class="evidence-item file missing"{fig_id}>\U0001f4c4 {_esc(artifact.filename)} '
             f'<span class="cap">({detail})</span>{caption}</div>'
         )
     return _sanitize_asset_html(raw)
@@ -510,8 +540,11 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         f'<div class="finding-head"><h3>{_esc(f.title)}</h3>'
         f'<div class="finding-badges">{badges}</div></div>'
         f'<div class="finding-body">{body}</div>'
-        f"{_render_gallery(f, resolver)}"
+        # Children BEFORE the parent's own gallery, so the figure numbers ``context.number_figures``
+        # assigns count upward as the reader scrolls -- the .docx emits the children's evidence first
+        # (it lives inside ``{{r f.body }}`` in a binary template) and cannot be reordered as cheaply.
         f"{_render_children(f, resolver)}"
+        f"{_render_gallery(f, resolver)}"
         "</article>"
     )
 
@@ -1204,12 +1237,20 @@ def _render_diagram_item(d: DiagramCtx) -> str:
     cookies, or storage). ``embed_html`` is operator/agent-supplied content (came in over a PAT POST — see
     ``api_pat.scribble_link_attack_path``), so it is HTML-escaped into the ``srcdoc`` ATTRIBUTE like any
     other untrusted string, never interpolated as raw markup."""
-    caption = f'<figcaption class="diagram-caption">{_esc(d.caption)}</figcaption>' if d.caption else ""
+    # ext#117: a diagram is a numbered figure like any other, so it always carries a caption line now —
+    # falling back to "Attack path" when the operator left the caption blank, because the FIGURE NUMBER
+    # is what body text cross-references and an unnumbered diagram breaks the sequence.
+    caption_text = figure_caption(d.figure_number, d.caption or DIAGRAM_CAPTION_FALLBACK)
+    caption = f'<figcaption class="diagram-caption">{_esc(caption_text)}</figcaption>'
     return (
-        '<figure class="attack-path-item">'
+        f'<figure class="attack-path-item"{_figure_id_attr(d.figure_number)}>'
         f'<iframe class="attack-path-frame" sandbox="allow-scripts" '
         f'srcdoc="{_esc(d.embed_html)}" loading="lazy" '
-        f'title="Attack path diagram{" — " + _esc(d.caption) if d.caption else ""}">'
+        # The accessible name gets the same "Attack path" FALLBACK the figcaption got (it used to read
+        # a bare "Attack path diagram" for an uncaptioned figure) but NOT the figure number: "Figure 3"
+        # describes the document, not the picture, and a screen reader announcing it twice is noise --
+        # the same call already made for evidence ``alt`` text.
+        f'title="Attack path diagram — {_esc(d.caption or DIAGRAM_CAPTION_FALLBACK)}">'
         "</iframe>"
         f"{caption}"
         "</figure>"
@@ -2337,6 +2378,10 @@ _JS = """
   }
   if (sortBox) sortBox.addEventListener("change", applySort);
 
+  // Load-bearing for ext#117 as well as for readability. A nested child's evidence is numbered BEFORE
+  // the parent's own gallery, and children live in a <details> that is CLOSED by default -- so without
+  // this, Ctrl+P / Save as PDF would print a PDF whose figure sequence opens at "Figure 2" while the
+  // .docx opens at "Figure 1". Pinned by test_report_print_media.py's Ctrl+P guard.
   window.addEventListener("beforeprint", function () {
     setAllCollapsed(false); openAllChildren(); resetSort();
   });

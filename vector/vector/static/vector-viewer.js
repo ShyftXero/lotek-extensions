@@ -575,7 +575,30 @@
   function boot() {
     if (typeof window === "undefined" || !window.__VECTOR_MODEL__) return;
     var host = document.getElementById("vap") || document.body;
-    mount(host, window.__VECTOR_MODEL__, { captureKeys: true });
+    var inst = mount(host, window.__VECTOR_MODEL__, { captureKeys: true });
+    // On paper, an animated walkthrough is whatever phase it happened to be on — usually the intro,
+    // i.e. an empty diagram (ext#115). Print the FINAL keyframe instead: the whole path, every node in
+    // its end state. `goto` also stops the auto-play timer, so the printed frame cannot move under the
+    // print engine. Restoring the phase afterwards keeps the on-screen walkthrough where the reader
+    // left it — the phase, not the auto-play state, which `goto` stops and nothing restarts.
+    //
+    // It fires for the deliverable embedded in scribble's report iframe too, with one caveat that is
+    // NOT handled here: that iframe is `loading="lazy"`, so a diagram still below the fold when the
+    // parent prints may never have booted, and then no listener exists to fire. Print the report with
+    // the diagram on screen, or use the toolbar's Print button after scrolling to it.
+    if (typeof window.addEventListener === "function") {
+      var resume = null;
+      window.addEventListener("beforeprint", function () {
+        // Only the FIRST of a run captures. Chrome fires beforeprint per window.print(), so two prints
+        // without an intervening afterprint would otherwise overwrite `resume` with max() and
+        // "restore" the reader to the end of the walkthrough, permanently.
+        if (resume === null) resume = inst.phase();
+        inst.goto(inst.max());
+      });
+      window.addEventListener("afterprint", function () {
+        if (resume !== null) { inst.goto(resume); resume = null; }
+      });
+    }
   }
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
