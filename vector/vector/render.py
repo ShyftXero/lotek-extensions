@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, select_autoescape
 from markupsafe import Markup
@@ -52,8 +53,19 @@ def _env_and_template():
     return env, env.from_string(_read(_TEMPLATE))
 
 
-def render_deliverable(model, *, title: str | None = None) -> str:
-    """Return a complete, self-contained HTML document for ``model`` (any dict; normalized here)."""
+def render_deliverable(model, *, title: str | None = None, footer: Any = "") -> str:
+    """Return a complete, self-contained HTML document for ``model`` (any dict; normalized here).
+
+    ``footer`` is typed ``Any``, not ``str``, because that is the truth: it arrives from the host's
+    generic ``extras["extension_setting"]`` seam, which promises nothing about the type. Coerced and
+    bounded here rather than trusted — see the call below.
+
+    ``footer`` is the host-held ADMIN setting ``deliverable_footer`` (lotek#485) — a per-install line
+    stamped under the diagram. Passed IN rather than resolved here so this stays a pure function with
+    no app-context dependency: the three export call sites read it from
+    ``deps.host_setting("deliverable_footer", "")``. Autoescaped like ``title``, because an operator
+    typing HTML into an admin form must not inject markup into a client deliverable.
+    """
     doc = normalize(model)
     css = _read(_STATIC / "vector-viewer.css")
     js = _read(_STATIC / "vector-viewer.js")
@@ -64,4 +76,11 @@ def render_deliverable(model, *, title: str | None = None) -> str:
         css=Markup(css),
         js=Markup(js),
         model_json=Markup(json_for_script(doc)),
+        # `host_setting` promises a settings lookup never breaks the export it decorates, and
+        # `extras["extension_setting"]` is a GENERIC host seam. isinstance, not str(): `.strip()` on
+        # a dict raised AttributeError and 500'd the CLIENT deliverable, but `str()` is no fix — it
+        # calls back into the far side, so a value whose __str__ raises (or returns a non-str) does
+        # the same thing, and a bytes/dict that survives gets STAMPED into a client document as
+        # `b'CONFIDENTIAL'` / `{'a': 1}`. Anything that is not a string is not a footer.
+        footer=(footer.strip()[:200] if isinstance(footer, str) else ""),  # autoescaped
     )

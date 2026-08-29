@@ -105,10 +105,16 @@ def make_app():
         cfg.extras["can_write"] = lambda: (
             holder["actor"] is None or bool(getattr(holder["actor"], "can_write", True))
         )
+        # ADMIN-scope settings the HOST holds for Vector (lotek#485). A real host injects a reader
+        # bound to Vector's own namespace; the fixture hangs a mutable dict off the app so a test can
+        # set one without a host. Absent key -> the caller's default, matching the real reader.
+        host_settings: dict = {}
+        cfg.extras["extension_setting"] = lambda key, default=None: host_settings.get(key, default)
         pat = {"actor": StubActor(), "authenticate": None}
         _wire_pat_hooks(cfg, pat)
         app.holder = holder  # type: ignore[attr-defined]
         app.pat = pat  # type: ignore[attr-defined]
+        app.host_settings = host_settings  # type: ignore[attr-defined]
         created.append(app)
         return app
 

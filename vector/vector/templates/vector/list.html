@@ -1,7 +1,22 @@
 {% extends vector_base %}
 {% block title %}Vector — Attack Paths{% endblock %}
 {% block appbar_title %}Attack Paths{% endblock %}
+{% block appbar_actions %}
+  {# The ⚙ cog (lotek#485 / lotek-extensions#111): MY Vector preferences, reached through Vector's own
+     nav. Install-wide (admin) settings are not here — they are on the host's Extensions page. A link,
+     not a <button> inside a <label>: that shape needs an explicit for= and has bitten this project. #}
+  {% if vector_has_user_settings %}
+  <a class="vec-cog" data-vector-settings-cog href="{{ url_for('vector.user_settings') }}"
+     title="My Vector settings" aria-label="My Vector settings">⚙</a>
+  {% endif %}
+{% endblock %}
 {% block content %}
+<style>
+  /* Scoped to .vec-cog so it can't restyle the host shell's own appbar controls when mounted. */
+  .vec-cog{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;
+           border:1px solid #2a3d4c;border-radius:6px;color:#dfe9f0;text-decoration:none;font-size:14px}
+  .vec-cog:hover{background:#1a2833;border-color:#365062;color:#37c9d6}
+</style>
 <style>
   .vec-list{max-width:1000px;margin:0 auto;padding:28px 20px;width:100%}
   .vec-list h1{font-size:20px;margin:0 0 4px}

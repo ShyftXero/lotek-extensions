@@ -27,6 +27,7 @@ One sidebar entry (`[[nav]]` label **Vector**, icon `◭`, path `/`). All paths 
 | `/edit/<id>` | **Editor** — the authoring surface (below). Loads a diagram you're allowed to see. |
 | `/diagrams/<id>/export.html` | GET download of the self-contained HTML deliverable. |
 | `/diagrams/<id>/export.json` | GET download of the normalized `vector.attackpath/v1` model. |
+| `/settings` | **My settings** — your own Vector preferences, reached from the ⚙ cog in the appbar. Requires a host identity; standalone Vector has one user and no page. |
 
 ### The editor
 
@@ -152,6 +153,54 @@ renderer would choke on.
   attaches to a report (via the machine `export.html` route) or an author downloads from the editor / list.
 - **Export JSON** — round-trips the model as a `vector.attackpath/v1` document, re-importable via the
   editor's **Import JSON** or `POST /vector/api/import`.
+
+The exported HTML carries the host-held **`deliverable_footer`** admin setting (below) as a fixed
+footer line, when one is set. It is autoescaped — an admin typing HTML into the settings form must not
+inject markup into a file a client opens.
+
+---
+
+## Settings — two scopes, two homes
+
+Vector has both kinds of knob, and they deliberately live in different places (lotek#485 /
+lotek-extensions#111). The rule: **a knob that changes the install for everyone is admin-scope and
+belongs to the host; a personal preference belongs to Vector.**
+
+### Admin / per-install — declared to the host
+
+| Key | Type | What it does |
+|---|---|---|
+| `deliverable_footer` | `str` | Optional line stamped into the footer of every exported attack-path HTML — e.g. *"CONFIDENTIAL — prepared by Contoso Security"*. Blank = no footer. |
+
+Declared as `[[settings]]` in `lotek-extension.toml`. The **host** renders the form (⚙ cog on Vector's
+row at *Settings → Extensions*), enforces the **admin-only** gate, stores the value, and writes an
+audit row for every change. Vector only reads it, through `deps.host_setting("deliverable_footer", "")`
+(which resolves the injected `extras["extension_setting"]` late, per request, and degrades to the
+default standalone or on any error). See lotek's `docs/EXTENSIONS.md` → *Settings*.
+
+### User / per-user — Vector's own
+
+| Key | Type | What it does |
+|---|---|---|
+| `hide_builtin_diagrams` | `bool` | Keeps the seeded read-only example out of **your** diagram list. Off by default. |
+
+Stored in Vector's own `vector_user_prefs` table (unique soft `owner_id` → the host user), edited at
+`/vector/settings` behind the ⚙ cog in Vector's appbar. No admin gate and no audit row, because
+changing it changes nothing for anyone else. The form carries **no owner field** — the row is keyed off
+`current_actor_id()` alone, so there is nothing for a caller to point at someone else's preferences.
+
+Two mounted-only consequences: a **viewer cannot save** one, because lotek's app-wide role gate
+refuses every mutating request from a read-only role before Vector's view runs — a host policy that
+fails in the safe direction. The page still renders (a preference is worth reading even when you
+cannot change it), but the Save button is **not offered**: `vector_can_write` gates it, the same flag
+every other write control in Vector already respects. Shipping a live button whose only outcome is the
+host's 403 page is a UX defect, not a posture. The second consequence: a request with **no host
+actor** gets a 404 rather than a null-owner row that would silently apply to everybody.
+
+🔴 **A preference is never an authorization input.** `blueprint.visible_diagrams_stmt()` is the IDOR
+guard and is deliberately blind to `hide_builtin_diagrams`; the list view filters what that guard
+already returned. Folding a preference into an access predicate is how a preference bug becomes a
+disclosure bug.
 
 ---
 
