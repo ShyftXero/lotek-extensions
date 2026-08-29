@@ -24,6 +24,7 @@ from vector.deps import (
     current_actor_username,
     get_config,
     host_can_write,
+    host_setting,
 )
 from vector.models import Diagram
 from vector.render import render_deliverable
@@ -162,7 +163,7 @@ def export_html_unsaved():
     body = _body()
     model = body.get("model")
     title = body.get("title") if isinstance(body.get("title"), str) else None
-    html = render_deliverable(model, title=title)
+    html = render_deliverable(model, title=title, footer=host_setting("deliverable_footer", ""))
     fname = _safe_filename(title or "attack-path") + ".html"
     return Response(
         html,

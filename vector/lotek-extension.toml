@@ -44,3 +44,20 @@ docs_title = "Vector (attack paths)"
 [db]
 base = "vector.models:Base"   # the module whose IMPORT registers the tables (db.py alone yields an empty Base)
 table_prefix = "vector_"
+
+# ADMIN-scope, per-install settings the HOST renders, gates and stores (lotek#485). The host puts a ⚙ cog
+# on Vector's row at /settings/extensions, shows this form behind its own ADMIN gate, writes the value to
+# its `settings` table under `ext:vector:<key>`, and audits every change. Vector reads it back through
+# `extras["extension_setting"]` (see vector/deps.py::host_setting) and never stores or gates it itself.
+#
+# USER-scope preferences are deliberately NOT here (lotek-extensions#111): they cross no privilege
+# boundary, so they live in Vector's own `vector_user_prefs` table behind Vector's own ⚙ cog at
+# /vector/settings. A knob belongs here only if changing it changes the install for EVERYONE.
+[[settings]]
+key = "deliverable_footer"
+label = "Deliverable footer"
+type = "str"
+default = ""
+help = """Optional line stamped into the footer of every exported attack-path HTML — e.g. \
+"CONFIDENTIAL — prepared by Contoso Security". Per-install: it is the same on every deliverable this \
+dashboard produces, which is why it is admin-only. Leave blank for no footer."""

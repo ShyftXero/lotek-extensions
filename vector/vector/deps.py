@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import contextmanager
+from typing import Any
 
 from flask import current_app
 
@@ -125,6 +126,31 @@ def host_can_write() -> bool:
         return bool(hook())
     except Exception:  # noqa: BLE001 - a throwing host hook must never block standalone-safe writes
         return True
+
+
+def host_setting(key: str, default: Any = None) -> Any:
+    """One ADMIN-scope setting the host holds for Vector, via ``extras['extension_setting']``.
+
+    These are the ``[[settings]]`` Vector declares in ``lotek-extension.toml`` (lotek#485). The HOST
+    owns the form, the admin gate, the storage and the audit row — Vector only reads. Standalone (no
+    host) resolves to ``default``, and any error does too: a settings lookup must never be the thing
+    that breaks the export it decorates.
+
+    NOT for a per-USER preference. Those are Vector's own ``vector_user_prefs`` rows behind Vector's
+    own cog — they cross no privilege boundary, so the host has no business holding them.
+    """
+    try:
+        cfg = get_config()
+    except RuntimeError:  # pragma: no cover - defensive; no app context
+        return default
+    hook = cfg.extras.get("extension_setting")
+    if hook is None:
+        return default
+    try:
+        value = hook(key, default)
+    except Exception:  # noqa: BLE001 - a throwing host hook must not break the request it decorates
+        return default
+    return default if value is None else value
 
 
 def client_model():
