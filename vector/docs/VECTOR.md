@@ -158,8 +158,14 @@ it happened to be on is normally the intro — an empty diagram — so the viewe
 `beforeprint` (which also stops auto-play, so the printed frame cannot move under the print engine) and
 restores the reader's phase on `afterprint`. Its `@media print` block drops the step controls and the
 phase rail (interactive furniture with nothing to click) and stops every animation, so what rasterizes is
-a settled frame. This applies to the deliverable printed on its own **and** to the copy Scribble embeds
-in its report iframe, which is the print-to-PDF half of that issue.
+a settled frame. Only the FIRST `beforeprint` of a run captures the phase, so a second print before an
+`afterprint` cannot strand the reader at the end of the walkthrough. (`goto` stops auto-play and nothing
+restarts it — the phase is restored, the playing is not.)
+
+This applies to the deliverable printed on its own **and** to the copy Scribble embeds in its report
+iframe, which is the print-to-PDF half of that issue — with one caveat: that iframe is `loading="lazy"`,
+so a diagram still below the fold when the parent prints may never have booted, and an unbooted viewer
+has no listener to fire.
 
 ---
 

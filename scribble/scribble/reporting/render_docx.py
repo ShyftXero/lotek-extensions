@@ -29,6 +29,7 @@ import io
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape as _html_escape
 from pathlib import Path
@@ -325,10 +326,20 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
 # ``api_pat.scribble_link_attack_path``) and is stored verbatim, so nothing guarantees it came from
 # vector or is bounded the way vector's own schema bounds a model. Every number below is scribble's own
 # cap on how much of a snapshot this renderer will turn into document, independent of vector's limits.
-# Matches ``api_pat._MAX_DIAGRAM_HTML_BYTES`` (10 MiB), so nothing the link route ACCEPTS is stored
-# and then permanently unrenderable in Word. Safe to raise now the scan is linear: 8 MiB measured
-# 0.02s (the regex this replaced would have taken hours).
+# Set to ``api_pat._MAX_DIAGRAM_HTML_BYTES``'s number (10 MiB) so nothing the link route ACCEPTS is
+# stored and then permanently unrenderable in Word. Note the units differ -- that cap counts UTF-8
+# BYTES, this one counts CHARACTERS, and ``len(str) <= len(utf8)`` -- so this bound is strictly the
+# looser of the two and never binds a row the route wrote. It bites a row written another way. Safe to
+# raise now the scan is linear: 8 MiB measured 0.02s (the regex this replaced would have taken hours).
 _MAX_DIAGRAM_SCAN_CHARS = 10 * 1024 * 1024
+# ...and the same bound again for the whole SECTION. ``_MAX_DIAGRAM_SCAN_CHARS`` bounds one snapshot;
+# nothing bounded the product, and the two caps multiply: 50 linked diagrams of 9.6 MiB each measured
+# 34s of GIL-held CPU and 515 MiB peak per ``GET …/report?format=docx``, from rows any ``write``-scope
+# PAT can store and any ``read``-scope viewer can then trigger, repeatedly. A budget spent across the
+# section makes the section's cost independent of how many diagrams are linked; a diagram that arrives
+# after it is exhausted degrades to the same honest "interactive figure in the HTML report" note the
+# renderer already emits for a snapshot it cannot read.
+_MAX_REPORT_SCAN_CHARS = 10 * 1024 * 1024
 _MAX_DIAGRAMS = 50  # a report section, not an archive (cf. render_html's _MAX_APPENDIX_ITEMS)
 _MAX_DIAGRAM_ZONES = 12  # a Word table wider than this is unreadable on a portrait page anyway
 _MAX_DIAGRAM_ROWS = 40
@@ -338,13 +349,21 @@ _MAX_DIAGRAM_EDGES = 80
 _MAX_DIAGRAM_TEXT = 400  # per field, matching vector's own _MED/_LONG spirit
 
 # Codepoints legal in a Python str and legal in JSON, but ILLEGAL in XML 1.0 -- lxml (under
-# python-docx) raises ``ValueError`` on any of them, which would turn one poisoned diagram into an
-# uncaught 500 on every ``.docx`` export of that engagement, forever. They cannot be filtered at the
-# link route: the JSON blob carries them as the six ASCII characters ``\u0000``, so the stored
-# ``embed_html`` holds no literal control byte for ``api_pat._nul_safe`` to strip, and ``json.loads``
-# materializes the real character here. (Tab/LF/CR are legal in XML and are collapsed by ``_d_str``'s
-# whitespace split anyway.)
-_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# python-docx) raises on any of them, which would turn one poisoned diagram into an uncaught 500 on
+# every ``.docx`` export of that engagement, forever. They cannot be filtered at the link route: the
+# JSON blob carries them as the six ASCII characters ``\u0000``, so the stored ``embed_html`` holds no
+# literal control byte for ``api_pat._nul_safe`` to strip, and ``json.loads`` materializes the real
+# character here. (Tab/LF/CR are legal in XML and are collapsed by ``_d_str``'s whitespace split
+# anyway.)
+#
+# THREE classes, not one -- the first pass only covered C0 and a later review found the other two
+# still live, each with a working payload:
+#   * C0 controls                -> ValueError("All strings must be XML compatible")
+#   * lone surrogates D800-DFFF  -> UnicodeEncodeError out of lxml's utf-8 encode
+#   * the noncharacters FFFE/FFFF-> ValueError, same as C0
+# C1 (80-9F), FDD0-FDEF and the non-BMP planes were measured and are fine; do not widen further, a
+# scrub that eats legible text is its own defect.
+_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff\ufffe\uffff]")
 
 
 def _xml_safe(text: str) -> str:
@@ -357,7 +376,10 @@ def _d_str(value: object, cap: int = _MAX_DIAGRAM_TEXT) -> str:
     """A capped, single-line, XML-safe string from an untrusted model field; non-scalar -> ``""``."""
     if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return ""
-    return " ".join(_xml_safe(str(value)).split())[:cap]
+    # Slice BEFORE normalising: whitespace-splitting a 5 MiB field cost 0.11s and 26 MiB of peak RSS to
+    # produce 400 characters. ``cap * 8`` leaves room for a run of separators to collapse away without
+    # the result coming up short.
+    return " ".join(_xml_safe(str(value)[: cap * 8]).split())[:cap]
 
 
 def _d_int(value: object, default: int = 0) -> int:
@@ -394,22 +416,21 @@ def _find_model_blob(embed_html: str) -> str | None:
     escapes ``<``/``>``/``&`` as ``\\uXXXX``, so a genuine model never contains either."""
     for needle in ('id="vap-model"', "id='vap-model'"):
         at = embed_html.find(needle)
-        if at < 0:
-            continue
-        start = embed_html.rfind("<script", max(0, at - 256), at)
-        if start < 0:
-            continue
-        body = embed_html.find(">", at)
-        if body < 0:
-            continue
-        end = embed_html.find("</script", body + 1)
-        if end < 0:
-            continue
-        return embed_html[body + 1 : end]
+        while at >= 0:
+            start = embed_html.rfind("<script", max(0, at - 256), at)
+            body = embed_html.find(">", at) if start >= 0 else -1
+            end = embed_html.find("</script", body + 1) if body >= 0 else -1
+            if end >= 0:
+                return embed_html[body + 1 : end]
+            # Not a real ``<script id="vap-model">`` -- keep scanning. Bailing on the FIRST hit let a
+            # decoy (``<!-- id="vap-model" -->``) hide the genuine model, so Word printed "static
+            # rendition not available" while the HTML iframe drew the diagram in full. Still linear:
+            # each pass advances past the needle it just rejected.
+            at = embed_html.find(needle, at + len(needle))
     return None
 
 
-def _diagram_model(embed_html: str | None) -> dict | None:
+def _diagram_model(embed_html: str | None, budget: list[int] | None = None) -> dict | None:
     """The ``vector.attackpath/v1`` document carried inside a stored snapshot, or ``None``.
 
     Reads a JSON blob out of HTML scribble already stores -- it does not import vector (extensions stay
@@ -418,6 +439,12 @@ def _diagram_model(embed_html: str | None) -> dict | None:
     heading + caption, so the diagram is never silently absent."""
     if not embed_html or len(embed_html) > _MAX_DIAGRAM_SCAN_CHARS:
         return None
+    if budget is not None:
+        # One mutable cell shared across the section (see ``_MAX_REPORT_SCAN_CHARS``). Charged BEFORE
+        # the scan, so an over-budget snapshot is never walked at all.
+        if budget[0] < len(embed_html):
+            return None
+        budget[0] -= len(embed_html)
     blob = _find_model_blob(embed_html)
     if blob is None:
         return None
@@ -440,36 +467,63 @@ def _styled_paragraph(doc, style: str):
         return doc.add_paragraph()
 
 
-# vector's viewer picks a node's status chip by PRECEDENCE across every state reached so far, and
-# prints the style catalog's display LABEL -- not the raw key (``static/vector-viewer.js``'s
-# ``DEFAULT_STYLE.nodeStates`` / ``nodeVisual``). Taking the last state by ``at`` and uppercasing the
-# key disagrees with the picture for the two cases that matter: ``impacted`` renders "IMPACT" there and
-# would read "[IMPACTED]" here, and a later low-precedence state (``target`` after ``impacted``) would
-# override a higher one. Mirroring the four built-ins is the whole catalog; anything else falls back to
-# the uppercased key, which is what the viewer effectively shows for an unknown state too.
+# The status chip, as ``static/vector-viewer.js``'s ``nodeVisual()`` computes it at the final keyframe.
+# Its rule is three-tiered and the order matters -- an earlier pass here got all three tiers wrong:
+#   1. an explicit ``states[].label`` wins OUTRIGHT (last one wins), printed VERBATIM -- not uppercased;
+#   2. otherwise the highest-``precedence`` state whose key is IN the catalog, printed as the catalog's
+#      display label (``impacted`` shows "IMPACT", not "IMPACTED"). A key that is NOT in the catalog is
+#      not a candidate at all -- the viewer shows nothing for it, so neither do we;
+#   3. otherwise the node's ROLE supplies the chip (``roles[role].status``), or its idle text when the
+#      role is idle and the node never activates.
+# ``node.context`` nodes carry no chip at all.
+#
+# ponytail: the two BUILT-IN catalogs only. A model may override ``style.nodeStates``/``style.roles``
+# (``vector-viewer.js``'s ``mergeStyle``), and a styled diagram's chips will read from the built-in
+# label instead. Mirroring the merge would mean re-implementing the style resolver; upgrade path is to
+# have vector serialize the resolved chip text into the model at export time.
 _NODE_STATES = {
     "target": (1, "TARGET"),
     "owned": (3, "OWNED"),
     "beacon": (3, "BEACON"),
     "impacted": (4, "IMPACT"),
 }
+_NODE_ROLES = {
+    "c2": ("C2", None),
+    "rshell": ("REV SHELL", None),
+    "stager": ("STAGER", None),
+    "payload": ("PAYLOAD", None),
+    "egress": ("EGRESS", "\u2014"),
+    "backup": ("BACKUP", "STANDBY"),
+}
 
 
-def _note_truncation(doc, model: dict) -> None:
+def _note_truncation(doc, model: dict, drawn: _Drawn | None) -> None:
     """Name anything this renderer dropped from the model. Scribble's caps are TIGHTER than vector's
     (12 zones vs 40, 60 phases vs 200, 80 edges vs 1500, 2000 nodes vs 600-per-vector), so a large
     genuine diagram can lose content here -- and a silently truncated figure is the same defect class
-    ext#115 is about. Counted against what the model declares, not against what got drawn."""
+    ext#115 is about.
+
+    Counted against what the grid ACTUALLY DREW, not against the caps. Counting against the caps
+    under-reported, and it under-reported the hosts specifically: a node is also dropped when its zone
+    fell past the zone cap, when its zone id is unknown, when two zones shared an id and de-duped, or
+    when it is not a dict at all. On the branch's own 400-zone fixture the old arithmetic announced
+    "388 zones" and said nothing about the 388 hosts that vanished with them."""
     dropped = []
-    for label, key, cap in (
-        ("zone", "zones", _MAX_DIAGRAM_ZONES),
-        ("host", "nodes", _MAX_DIAGRAM_NODES),
-        ("phase", "phases", _MAX_DIAGRAM_PHASES),
-        ("connection", "edges", _MAX_DIAGRAM_EDGES),
+    zones_declared = len(_d_list(model.get("zones")))
+    nodes_declared = len(_d_list(model.get("nodes")))
+    for label, over in (
+        ("zone", zones_declared - (drawn.zones if drawn else 0)),
+        ("host", nodes_declared - (len(drawn.node_ids) if drawn else 0)),
+        ("phase", len(_d_list(model.get("phases"))) - _MAX_DIAGRAM_PHASES),
+        ("connection", len(_d_list(model.get("edges"))) - _MAX_DIAGRAM_EDGES),
     ):
-        over = len(_d_list(model.get(key))) - cap
         if over > 0:
             dropped.append(f"{over} {label}{'s' if over != 1 else ''}")
+    if drawn and drawn.rows_clamped:
+        # Not a drop -- a COLLAPSE. Those hosts are in the table, stacked into its last row rather than
+        # placed where the viewer places them, which is worth saying out loud for the same reason.
+        dropped.append(f"the placement of {drawn.rows_clamped} host"
+                       f"{'s' if drawn.rows_clamped != 1 else ''} below row {_MAX_DIAGRAM_ROWS}")
     if not dropped:
         return
     note = doc.add_paragraph()
@@ -480,19 +534,32 @@ def _note_truncation(doc, model: dict) -> None:
 
 
 def _node_state_label(node: dict) -> str:
-    """The node's status chip at the FINAL keyframe, chosen the way the viewer chooses it: highest
-    ``precedence`` across every state, then the catalog's display label (see ``_NODE_STATES``)."""
-    best_rank, best_label = -1, ""
+    """The node's status chip at the FINAL keyframe, chosen the way ``nodeVisual()`` chooses it -- see
+    the tiers documented on :data:`_NODE_STATES`."""
+    if node.get("context"):
+        return ""
+    explicit, best_rank, best_key = "", -1, ""
     for st in _d_list(node.get("states")):
         if not isinstance(st, dict):
             continue
-        key = _d_str(st.get("state"), 40)
-        rank, label = _NODE_STATES.get(key.lower(), (0, key.upper()))
-        if not label:
-            label = _d_str(st.get("label"), 40).upper()
-        if label and rank >= best_rank:
-            best_rank, best_label = rank, label
-    return best_label
+        key = _d_str(st.get("state"), 40).lower()
+        if key in _NODE_STATES:
+            rank = _NODE_STATES[key][0]
+            if rank >= best_rank:
+                best_rank, best_key = rank, key
+        label = _d_str(st.get("label"), 40)
+        if label:
+            explicit = label  # last one wins, exactly as the viewer's forEach does
+    if explicit:
+        return explicit
+    if best_key:
+        return _NODE_STATES[best_key][1]
+    status, idle_status = _NODE_ROLES.get(_d_str(node.get("role"), 40).lower(), ("", None))
+    if idle_status is not None and node.get("activateAt") is None:
+        # An idle role stays idle unless the node activates; at the final keyframe an ``activateAt``
+        # has always been reached, so its presence alone is enough.
+        return idle_status
+    return status
 
 
 def _node_cell_text(node: dict) -> str:
@@ -506,9 +573,19 @@ def _node_cell_text(node: dict) -> str:
     return "\n".join(x for x in lines if x)
 
 
-def _add_diagram_grid(doc, model: dict) -> bool:
+@dataclass(frozen=True)
+class _Drawn:
+    """What :func:`_add_diagram_grid` actually put in the table, so the truncation note and the edge
+    list can both be honest about it rather than re-deriving it from the caps."""
+
+    zones: int
+    node_ids: set[str]
+    rows_clamped: int
+
+
+def _add_diagram_grid(doc, model: dict) -> _Drawn | None:
     """The static frame: zones as columns, ``row`` as rows — the same placement ``vector-viewer.js``'s
-    ``geometry()`` computes. Returns False when the model has nothing placeable to draw."""
+    ``geometry()`` computes. Returns ``None`` when the model has nothing placeable to draw."""
     zones = [z for z in _d_list(model.get("zones")) if isinstance(z, dict)]
     zones.sort(key=lambda z: _d_int(z.get("order")))
     # De-dupe by id BEFORE capping: two zones sharing an id would otherwise key the same bucket and
@@ -518,9 +595,11 @@ def _add_diagram_grid(doc, model: dict) -> bool:
     zones = [z for z in zones if not (_d_str(z.get("id")) in seen_ids or seen_ids.add(_d_str(z.get("id"))))]
     zones = zones[:_MAX_DIAGRAM_ZONES]
     if not zones:
-        return False
+        return None
     by_zone: dict[str, dict[int, list[dict]]] = {_d_str(z.get("id")): {} for z in zones}
     max_row = 0
+    placed: set[str] = set()
+    rows_clamped = 0
     # ``nodes`` is the one list vector's own caps do not reach here, and every node sharing a
     # ``(zone, row)`` is concatenated into ONE cell -- one ``<w:br/>`` element each. Measured
     # uncapped: 100k nodes = 8.8s and 204 MB peak per render, multiplied by however many diagrams are
@@ -531,11 +610,15 @@ def _add_diagram_grid(doc, model: dict) -> bool:
         zone_id = _d_str(node.get("zone"))
         if zone_id not in by_zone:
             continue  # a node in a zone this table does not show (unknown id, or past the zone cap)
-        row = max(0, min(_d_int(node.get("row")), _MAX_DIAGRAM_ROWS - 1))
+        declared_row = _d_int(node.get("row"))
+        row = max(0, min(declared_row, _MAX_DIAGRAM_ROWS - 1))
+        if declared_row > row:
+            rows_clamped += 1
         by_zone[zone_id].setdefault(row, []).append(node)
+        placed.add(_d_str(node.get("id")))
         max_row = max(max_row, row)
     if not any(by_zone.values()):
-        return False
+        return None
 
     table = doc.add_table(rows=1, cols=len(zones))
     table.style = "Table Grid"
@@ -549,7 +632,7 @@ def _add_diagram_grid(doc, model: dict) -> bool:
         for cell, zone in zip(cells, zones, strict=True):
             nodes = by_zone[_d_str(zone.get("id"))].get(row_idx, [])
             cell.text = "\n".join(_node_cell_text(n) for n in nodes)
-    return True
+    return _Drawn(zones=len(zones), node_ids=placed, rows_clamped=rows_clamped)
 
 
 def _add_diagram_walkthrough(doc, model: dict) -> None:
@@ -576,16 +659,27 @@ def _add_diagram_walkthrough(doc, model: dict) -> None:
             doc.add_paragraph(desc)
 
 
-def _add_diagram_edges(doc, model: dict) -> None:
-    """The connections, resolved to node LABELS — an edge list of bare ids is not a deliverable."""
+def _add_diagram_edges(doc, model: dict, drawn: _Drawn | None) -> None:
+    """The connections, resolved to node LABELS — an edge list of bare ids is not a deliverable.
+
+    Scoped to the nodes the GRID drew. Resolving against every node in the model let a connection name
+    a host that appears nowhere in the table (its zone fell past the zone cap), which is a worse
+    deliverable than omitting the line."""
+    if drawn is None:
+        return
     labels = {
         _d_str(n.get("id")): (_d_str(n.get("label")) or _d_str(n.get("id")))
         for n in _d_list(model.get("nodes"))[:_MAX_DIAGRAM_NODES]
-        if isinstance(n, dict)
+        if isinstance(n, dict) and _d_str(n.get("id")) in drawn.node_ids
     }
-    edges = [e for e in _d_list(model.get("edges")) if isinstance(e, dict)][:_MAX_DIAGRAM_EDGES]
     rendered = []
-    for edge in edges:
+    # Sliced AFTER the dangling filter, not before: 80 leading dangling edges used to consume the whole
+    # budget and print an empty Connections list while real edges sat behind them.
+    for edge in _d_list(model.get("edges")):
+        if len(rendered) >= _MAX_DIAGRAM_EDGES:
+            break
+        if not isinstance(edge, dict):
+            continue
         src, dst = _d_str(edge.get("from")), _d_str(edge.get("to"))
         if src not in labels or dst not in labels:
             continue  # vector drops dangling edges too — do not draw a line to nowhere
@@ -620,8 +714,9 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         "and hosts as placed in the diagram, and the phase walkthrough, at the final step."
     )
     # Nothing caps how many diagrams may be linked to an engagement (``scribble_link_attack_path``
-    # appends unconditionally), so cap what one section renders -- same reasoning as render_html's
-    # ``_MAX_APPENDIX_ITEMS``, and SAY SO in the document rather than truncating silently.
+    # appends unconditionally; since #133 the operator's non-destructive out is ``include_in_report``,
+    # which ``ReportContext`` already honours), so cap what one section renders -- same reasoning as
+    # render_html's ``_MAX_APPENDIX_ITEMS``, and SAY SO in the document rather than truncating silently.
     withheld = max(0, len(ctx.diagrams) - _MAX_DIAGRAMS)
     if withheld:
         note = doc.add_paragraph()
@@ -630,15 +725,17 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
             f"{'are' if withheld != 1 else 'is'} not shown here "
             f"(this section lists at most {_MAX_DIAGRAMS})."
         ).italic = True
+    budget = [_MAX_REPORT_SCAN_CHARS]
     for index, d in enumerate(ctx.diagrams[:_MAX_DIAGRAMS], start=1):
-        model = _diagram_model(d.embed_html)
+        model = _diagram_model(d.embed_html, budget)
         # ``meta`` was only guarded against None: a snapshot carrying ``"meta": "oops"`` (or a list)
         # reached ``.get`` on a str and raised AttributeError -- an uncaught 500 on EVERY future .docx
         # export of that engagement, from one stored PAT write, while the HTML export kept working.
         # That is this branch's own defect class inverted, so it is a dict or it is nothing.
         raw_meta = model.get("meta") if isinstance(model, dict) else None
         meta = raw_meta if isinstance(raw_meta, dict) else {}
-        # ``d.caption`` comes from the link route, which strips NUL but not the other 22 XML-illegal
+        # ``d.caption`` comes from one of the two write paths (``POST …/attack-paths`` or, since #133,
+        # ``PATCH …/attack-paths/<id>``), both of which strip NUL but not the other XML-illegal
         # control characters -- and those reach lxml unfiltered through add_heading/add_run.
         # The HEADING may use the model's own title -- more informative than a bare fallback. The
         # CAPTION may not: ``render_html`` falls back to the literal "Attack path", so using meta.title
@@ -650,8 +747,8 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         subtitle = _d_str(meta.get("subtitle"))
         if subtitle:
             doc.add_paragraph(subtitle)
-        drew_grid = _add_diagram_grid(doc, model) if model else False
-        if not drew_grid:
+        drawn = _add_diagram_grid(doc, model) if model else None
+        if drawn is None:
             # Be loud about a snapshot this renderer could not read: an honest "the diagram is over
             # there" beats the silent omission ext#115 is about. It goes HERE, where the figure would
             # have been, and names ``diagram_ref`` -- for a reader holding only the .docx that is the
@@ -665,8 +762,8 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
             ).italic = True
         if model:
             _add_diagram_walkthrough(doc, model)
-            _add_diagram_edges(doc, model)
-            _note_truncation(doc, model)
+            _add_diagram_edges(doc, model, drawn)
+            _note_truncation(doc, model, drawn)
         # The caption goes BENEATH the figure, carrying the same continuous number AND the same text
         # the HTML prints. "Caption" is a real Word style, so the hand-off can build a List of Figures.
         caption = _styled_paragraph(doc, "Caption")

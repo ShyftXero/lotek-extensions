@@ -366,3 +366,174 @@ def test_the_diagram_count_is_capped_and_says_so(session_factory):
     assert f"Diagram {_MAX_DIAGRAMS - 1}" in text
     assert f"Diagram {_MAX_DIAGRAMS + 2}" not in text
     assert "3 further diagrams" in text
+
+
+def test_a_non_dict_meta_does_not_500_the_deliverable(session_factory):
+    """``meta`` was guarded against ``None`` only, so a snapshot carrying ``"meta": "oops"`` reached
+    ``.get`` on a ``str`` and raised ``AttributeError`` -- an uncaught 500 on every future ``.docx``
+    export of that engagement from one stored PAT write, while the HTML export kept working. Every
+    other JSON shape a hostile snapshot can put there is covered here too, in ONE engagement so a
+    single render has to survive all of them."""
+    def _m(bad_meta):
+        return {"meta": bad_meta,
+                "zones": [{"id": "z", "title": "Zed", "order": 0}],
+                "nodes": [{"id": "n", "zone": "z", "label": "host"}],
+                "edges": [], "phases": []}
+
+    eng_id = _engagement(session_factory, diagrams=[
+        (f"Meta {i}", snapshot(_m(bad)))
+        for i, bad in enumerate(("oops", ["a", "list"], 7, True, None))
+    ])
+    text = _text(_render(session_factory, eng_id))  # must not raise
+    assert text.count("Zed") == 5, "one of the five hostile `meta` shapes lost its diagram"
+
+
+def test_xml_illegal_surrogates_and_noncharacters_do_not_500_the_deliverable(session_factory):
+    """The first hardening pass derived its character class from C0 alone. Two more classes survive
+    ``json.loads`` and still kill lxml: lone surrogates ``D800``-``DFFF`` (``UnicodeEncodeError`` out
+    of lxml's utf-8 encode) and the noncharacters ``FFFE``/``FFFF`` (``ValueError``). Same permanent
+    500 on every future ``.docx`` export, from one stored write.
+
+    Note how they must arrive: a lone surrogate is not encodable, so it can NEVER be a literal
+    character in a stored ``embed_html`` -- it comes in as the six ASCII characters of a JSON escape,
+    which is exactly why the route's scrub cannot see it. So this snapshot is built ASCII-only."""
+    bad = "\ud800\udfff\ufffe\uffff"
+    model = {
+        "meta": {"title": "Surrogates" + bad, "subtitle": "sub" + bad},
+        "zones": [{"id": "z", "title": "Zone" + bad, "order": 0}],
+        "nodes": [{"id": "n", "zone": "z", "label": "host" + bad,
+                   "states": [{"at": 1, "label": "state" + bad}]}],
+        "edges": [], "phases": [{"n": 1, "title": "Phase" + bad, "desc": "desc" + bad}],
+    }
+    embed = (
+        "<!doctype html><html><body>"
+        f'<script type="application/json" id="vap-model">'
+        f"{json.dumps(model, ensure_ascii=True, separators=(',', ':'))}</script></body></html>"
+    )
+    assert embed.isascii(), "the stored snapshot must be pure ASCII -- that is the whole point"
+    eng_id = _engagement(session_factory, diagrams=[("Surrogates", embed)])
+    text = _text(_render(session_factory, eng_id))  # must not raise
+    assert "Zone" in text and "host" in text and "Phase" in text
+    for ch in bad:
+        assert ch not in text
+
+
+def test_the_int_coercion_survives_an_infinite_float():
+    """The parser kills ``Infinity`` before it can reach here, so the ``OverflowError`` arm of the
+    coercion is unreachable through a snapshot -- which means the end-to-end test above cannot prove
+    it. Asserted directly instead, because ``int(float("inf"))`` raises ``OverflowError``, an
+    ``ArithmeticError`` and NOT a ``ValueError``: the day a second caller feeds ``_d_int`` from
+    somewhere other than ``parse_constant``'d JSON, the missing arm is a 500 again."""
+    from scribble.reporting.render_docx import _d_int
+
+    assert _d_int(float("inf")) == 0
+    assert _d_int(float("-inf"), default=7) == 7
+    assert _d_int(float("nan")) == 0
+
+
+def test_the_report_wide_scan_budget_bounds_the_whole_section(session_factory):
+    """``_MAX_DIAGRAM_SCAN_CHARS`` bounds ONE snapshot; nothing bounded the product. 50 linked
+    diagrams of 9.6 MiB each measured 34s of GIL-held CPU and 515 MiB peak per ``.docx`` GET -- rows
+    any ``write``-scope PAT can store and any ``read``-scope viewer can then trigger, repeatedly.
+
+    The budget is spent across the section, so a diagram arriving after it is exhausted degrades to
+    the same honest note a snapshot the renderer cannot read already gets."""
+    from scribble.reporting.render_docx import _MAX_REPORT_SCAN_CHARS
+
+    filler = "<!--" + ("x" * (_MAX_REPORT_SCAN_CHARS // 2)) + "-->"
+    eng_id = _engagement(session_factory, diagrams=[
+        ("First", filler + snapshot()),
+        ("Second", filler + snapshot()),
+        ("Third", filler + snapshot()),
+    ])
+    text = _text(_render(session_factory, eng_id))
+    # All three are still ANNOUNCED -- the section never goes silent, which is the whole point of #115.
+    assert "First" in text and "Second" in text and "Third" in text
+    # ...but the third was past the budget, so it degrades to the note instead of being scanned.
+    assert "interactive figure in the HTML report" in text
+
+
+def test_a_decoy_model_id_cannot_hide_the_real_diagram(session_factory):
+    """Extraction took the FIRST ``id="vap-model"`` only and gave up if it was not inside a
+    ``<script>``. A snapshot that puts a decoy ahead of the genuine block therefore made Word print
+    "static rendition not available" while the HTML iframe drew the diagram in full -- the Word reader
+    silently getting less, which is ext#115 restated."""
+    decoy = '<!-- id="vap-model" --><div id="vap-model">not json</div>'
+    eng_id = _engagement(session_factory, diagrams=[("Decoy", decoy + snapshot())])
+    text = _text(_render(session_factory, eng_id))
+    assert "Internet" in text and "DC01" in text, "the decoy hid the real model"
+    assert "interactive figure in the HTML report" not in text
+
+
+def test_the_truncation_note_counts_what_was_DRAWN_not_the_caps(session_factory):
+    """The note used to count ``len(nodes) - _MAX_DIAGRAM_NODES``, which under-reports -- and it
+    under-reports the HOSTS specifically. A node is also dropped when its zone fell past the zone cap,
+    when its zone id is unknown, or when two zones shared an id and de-duped. On this very fixture the
+    old arithmetic announced "388 zones" and said nothing at all about the 388 hosts that went with
+    them; a silently truncated figure is the defect class this branch exists to fix."""
+    from scribble.reporting.render_docx import _MAX_DIAGRAM_ZONES
+
+    model = {
+        "meta": {"title": "Flood"},
+        "zones": [{"id": f"z{i}", "title": f"Zone {i}", "order": i} for i in range(400)],
+        "nodes": [{"id": f"n{i}", "zone": f"z{i}", "label": f"host{i}", "row": 0} for i in range(400)],
+        "edges": [], "phases": [],
+    }
+    eng_id = _engagement(session_factory, diagrams=[("Flood", snapshot(model))])
+    text = _text(_render(session_factory, eng_id))
+    assert f"{400 - _MAX_DIAGRAM_ZONES} zones" in text
+    assert f"{400 - _MAX_DIAGRAM_ZONES} hosts" in text, "the vanished hosts were not named"
+
+
+def test_a_connection_never_names_a_host_that_is_not_in_the_table(session_factory):
+    """The edge list resolved labels from EVERY node in the model, so a connection could name a host
+    the reader cannot find anywhere in the figure -- its zone having fallen past the zone cap. A
+    dangling reference in a client deliverable is worse than an omitted line."""
+    from scribble.reporting.render_docx import _MAX_DIAGRAM_ZONES
+
+    model = {
+        "meta": {"title": "Offscreen"},
+        "zones": [{"id": f"z{i}", "title": f"Zone {i}", "order": i}
+                  for i in range(_MAX_DIAGRAM_ZONES + 1)],
+        "nodes": [{"id": "shown", "zone": "z0", "label": "shownhost", "row": 0},
+                  {"id": "hidden", "zone": f"z{_MAX_DIAGRAM_ZONES}", "label": "hiddenhost", "row": 0}],
+        "edges": [{"id": "e", "from": "shown", "to": "hidden", "kind": "attack"}],
+        "phases": [],
+    }
+    eng_id = _engagement(session_factory, diagrams=[("Offscreen", snapshot(model))])
+    text = _text(_render(session_factory, eng_id))
+    assert "shownhost" in text
+    assert "hiddenhost" not in text, "a connection named a host that is nowhere in the table"
+
+
+def test_the_status_chip_matches_what_the_viewer_prints(session_factory):
+    """The chip must read the way ``vector-viewer.js``'s ``nodeVisual()`` renders it at the final
+    keyframe, because the section's claim is that the Word table is the same figure. Its rule is
+    three-tiered and an earlier pass here inverted all three: an explicit ``states[].label`` wins
+    outright and prints VERBATIM; otherwise the highest-precedence state that is actually IN the
+    catalog prints the catalog's display label; an UNKNOWN state key is not a candidate at all (the
+    viewer shows nothing for it); and with no state the node's ROLE supplies the chip."""
+    model = {
+        "meta": {"title": "Chips"},
+        "zones": [{"id": "z", "title": "Zone", "order": 0}],
+        "nodes": [
+            # 1. explicit label beats the catalog, and is NOT uppercased
+            {"id": "a", "zone": "z", "label": "alpha", "row": 0,
+             "states": [{"at": 1, "state": "owned", "label": "Domain Admin"}]},
+            # 2. catalog display label, highest precedence wins over a later lower one
+            {"id": "b", "zone": "z", "label": "bravo", "row": 1,
+             "states": [{"at": 1, "state": "impacted"}, {"at": 2, "state": "target"}]},
+            # 3. an unknown state key is not a candidate -- no chip
+            {"id": "c", "zone": "z", "label": "charlie", "row": 2,
+             "states": [{"at": 1, "state": "pwned"}]},
+            # 4. no state at all -> the role's status text
+            {"id": "d", "zone": "z", "label": "delta", "row": 3, "role": "c2"},
+        ],
+        "edges": [], "phases": [],
+    }
+    eng_id = _engagement(session_factory, diagrams=[("Chips", snapshot(model))])
+    text = _text(_render(session_factory, eng_id))
+    assert "Domain Admin" in text and "[OWNED]" not in text  # 1
+    assert "[IMPACT]" in text and "[TARGET]" not in text     # 2
+    assert "[PWNED]" not in text                              # 3
+    assert "[C2]" in text                                     # 4

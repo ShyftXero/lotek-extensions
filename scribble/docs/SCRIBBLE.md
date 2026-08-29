@@ -394,14 +394,23 @@ outstanding gap and no longer does):
 
 **Every figure is numbered `Figure N — …`, continuously across the report, and the number is the SAME in
 both deliverables** (ext#117). The numbers are assigned once, in `reporting/context.py`'s
-`number_figures`, in document order — each finding's evidence (a parent's own, then each nested child's),
+`number_figures`, in document order — each finding's evidence (each nested child's first, then the parent's own),
 then the attack-path diagrams, then the engagement-level appendix. That is the order both the `default`
 and `compliance` HTML templates render and the order `render_report_docx` appends its post-render
 sections in, which is what makes the two agree structurally rather than by two renderers separately
 remembering to. In the HTML each figure also carries an `id="fig-N"` anchor, so a finding's body text can
 cross-reference `#fig-3`. Numbering is assigned to **every** gallery artifact, embedded or not: embed
 success depends on the renderer's inlining budget and on whether the caller supplied an artifact reader,
-so numbering off it would give one engagement two different sequences.
+so numbering off it would give one engagement two different sequences — and for the same reason an
+artifact whose bytes did *not* embed still prints the same caption text it would have printed if they
+had. Because a child's figures now come first and children sit in a `<details>` that is closed by
+default, the report's existing `beforeprint` handler is what keeps **Ctrl+P / Save as PDF** producing a
+sequence that opens at Figure 1 rather than Figure 2 — it was a readability nicety before and is
+load-bearing now, so it is pinned by a browser test.
+
+The two shipped Layouts (`default`, `compliance`) both keep `findings → diagrams → evidence` in relative
+order, which is what makes the agreement structural. The `.docx` has no Layout concept, so a future
+Layout that **dropped** a figure-bearing block would need `number_figures` to become Layout-aware.
 
 An engagement-level artifact is exposed to the renderers as `ReportContext.artifacts` (an additive field
 on the otherwise frozen contract) and rendered by the `evidence` block; the section — and its toolbar
@@ -519,21 +528,28 @@ snapshot it will scan at all), because `embed_html` arrives over a PAT POST and 
 from vector. A snapshot it cannot read still emits the heading, the caption, and an explicit note that the
 figure is interactive in the HTML report: before ext#115 the Word deliverable dropped the diagram in
 total silence, which is the defect. Four bounds make a hostile snapshot survivable, all of them found
-by this branch's own security review: extraction is three **linear** `str.find` scans, not a regex
+by this branch's own security review: extraction is **linear** `str.find` scans, not a regex
 (the regex it replaced was O(n²) — `"<script " * 8000` measured 15.9s, extrapolating to ~71 minutes at
 1 MiB, inside the 10 MiB the link route accepts, on a `re` engine that never yields the GIL to the
 gevent hub); `json.loads` runs with `parse_constant` so `Infinity`/`NaN` cannot reach an `int()` and
 raise `OverflowError`; every string is scrubbed of the 23 XML-illegal control characters lxml refuses
-(they arrive as the six ASCII characters `\u0000` inside the JSON, so the route's NUL scrub never sees
-them); and the node count and the per-section diagram count are capped like everything else, with the
-shortfall named in the document. A raster still was rejected — a `.docx` picture must be raster, and
+(three classes — C0 controls, lone surrogates and the noncharacters `FFFE`/`FFFF` — all of which arrive
+as the six ASCII characters of a JSON escape, so the route's NUL scrub never sees them); and the node
+count, the per-section diagram count and a **section-wide scan budget** are all capped, with the
+shortfall named in the document. The shortfall is counted against what the table actually **drew**, not
+against the caps, so hosts that vanished with a dropped zone are named too. The rendition also follows
+the viewer's own status-chip precedence (an explicit state label wins verbatim; an unknown state key is
+not a chip; a node with no state shows its role) so the Word table and the diagram read the same. A raster still was rejected — a `.docx` picture must be raster, and
 the diagram only becomes pixels once a browser has run the viewer, so it would mean shipping a headless
 browser (or a second, drifting Python renderer) into a mounted extension.
 
 **Printed, the embedded diagram shows its FINAL keyframe.** vector's viewer jumps to the last phase on
 `beforeprint` and restores the reader's phase on `afterprint`, and its `@media print` block drops the step
 controls and stops the animations — otherwise the printed page rasterized whatever phase the walkthrough
-happened to be on, normally the intro, i.e. an empty diagram. The print stylesheet marks the elements whose BACKGROUND carries meaning
+happened to be on, normally the intro, i.e. an empty diagram. One caveat, **not** fixed: the report
+embeds each diagram in a `loading="lazy"` iframe, so a diagram still below the fold when the parent
+prints may never have booted, and then there is no listener to fire. Scroll it into view first, or use
+the toolbar's *Print* button. The print stylesheet marks the elements whose BACKGROUND carries meaning
 (severity bar and legend, severity tags/badges, the metric and methodology tiles) `print-color-adjust:
 exact`, so they survive Chrome's *Background graphics: off* — the print-dialog default, under which the
 severity block used to print blank (ext#39). It also pins the light paper palette at a specificity that

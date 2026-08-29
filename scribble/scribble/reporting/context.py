@@ -288,6 +288,13 @@ def number_figures(
     deliverables number the same figure the same way *structurally* — not by two renderers separately
     remembering to.
 
+    That is structural for the Layouts that exist, not for every Layout that could. ``layouts.py``
+    advertises that a Layout may reorder or DROP whole blocks, and the ``.docx`` has no Layout concept
+    at all — so a Layout that dropped ``diagrams`` would leave a gap in the HTML sequence that the
+    ``.docx`` does not have. Both registered Layouts (``default``, ``compliance``) keep
+    ``findings`` -> ``diagrams`` -> ``evidence`` in relative order, so the two agree TODAY. Anyone
+    adding a third should either keep that relative order or make this function Layout-aware.
+
     EVERY gallery artifact is numbered, embeddable or not. Whether an artifact's bytes actually make it
     into a given deliverable depends on that renderer's inlining budget and on whether the caller
     supplied an artifact reader at all, so numbering off embed success would hand the same report

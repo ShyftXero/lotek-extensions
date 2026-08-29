@@ -81,11 +81,32 @@ def test_printing_advances_to_the_final_keyframe(page, tmp_path):
 
 
 def test_printing_restores_the_phase_the_reader_was_on(page, tmp_path):
-    """Print is not supposed to be a destructive act on the open document."""
+    """Print is not supposed to be a destructive act on the open document.
+
+    The restore is only meaningful if something MOVED, so the jump is measured mid-print as well —
+    without that, deleting both listeners left the phase untouched and this test still passed."""
     page.click("[data-next]")  # reader steps to phase 1
     assert page.locator(_EDGES).count() == 1
+    page.evaluate(
+        "() => { window.__mid = null;"
+        " window.addEventListener('beforeprint', () => {"
+        "   window.__mid = document.querySelectorAll('svg.map path.edge').length; }); }"
+    )
     page.pdf(path=str(tmp_path / "out.pdf"))
+    assert page.evaluate("() => window.__mid") == 2, "the print did not advance to the final keyframe"
     assert page.locator(_EDGES).count() == 1
+
+
+def test_a_second_print_does_not_strand_the_reader_at_the_end(page, tmp_path):
+    """``resume`` was assigned unconditionally, so a second ``beforeprint`` before any ``afterprint``
+    overwrote the reader's phase with the LAST one — and ``afterprint`` then "restored" them to the end
+    of the walkthrough, permanently. Chrome fires one ``beforeprint`` per ``window.print()``."""
+    page.click("[data-next]")  # reader is on phase 1
+    assert page.locator(_EDGES).count() == 1
+    page.evaluate("() => { window.dispatchEvent(new Event('beforeprint'));"
+                  "        window.dispatchEvent(new Event('beforeprint'));"
+                  "        window.dispatchEvent(new Event('afterprint')); }")
+    assert page.locator(_EDGES).count() == 1, "the reader was stranded on the final keyframe"
 
 
 def test_print_media_hides_the_walkthrough_controls(page):

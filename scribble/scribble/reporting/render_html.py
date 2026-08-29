@@ -352,12 +352,14 @@ def _render_gallery_item(artifact: ArtifactCtx, resolver: _AssetResolver) -> str
         detail = "not embedded"
         if artifact.byte_size:
             detail += f" · {_human_bytes(artifact.byte_size)}"
-        # The number is carried even here: this artifact IS a numbered figure in the DOCX (and in an
-        # inline-assets render of this same report), so dropping it on the un-embedded path would make
-        # the sequence disagree between two renders of one engagement.
-        # The filename is already in the chip, so this line carries the NUMBER plus whatever the
-        # operator actually captioned -- never the filename again.
-        cap_only = _esc(figure_caption(artifact.figure_number, artifact.caption))
+        # The number AND the caption TEXT are carried even here. Whether an artifact's bytes embed
+        # depends on the inlining budget and on whether a reader was supplied, so a report big enough to
+        # exhaust the budget would otherwise print "Figure 12" here and "Figure 12 - screenshot.png" in
+        # the .docx -- two delivered documents disagreeing about one figure, which is the defect
+        # ext#117 exists to close. Same ``caption or filename`` fallback as the embedded path and as
+        # ``render_docx._artifact_ctx``; it repeats the chip's filename for an uncaptioned artifact,
+        # and that redundancy is the cheaper of the two costs.
+        cap_only = _esc(figure_caption(artifact.figure_number, artifact.caption or artifact.filename))
         caption = f'<div class="cap">{cap_only}</div>' if cap_only else ""
         raw = (
             f'<div class="evidence-item file missing"{fig_id}>\U0001f4c4 {_esc(artifact.filename)} '
@@ -1244,7 +1246,11 @@ def _render_diagram_item(d: DiagramCtx) -> str:
         f'<figure class="attack-path-item"{_figure_id_attr(d.figure_number)}>'
         f'<iframe class="attack-path-frame" sandbox="allow-scripts" '
         f'srcdoc="{_esc(d.embed_html)}" loading="lazy" '
-        f'title="Attack path diagram{" — " + _esc(d.caption) if d.caption else ""}">'
+        # The accessible name gets the same "Attack path" FALLBACK the figcaption got (it used to read
+        # a bare "Attack path diagram" for an uncaptioned figure) but NOT the figure number: "Figure 3"
+        # describes the document, not the picture, and a screen reader announcing it twice is noise --
+        # the same call already made for evidence ``alt`` text.
+        f'title="Attack path diagram — {_esc(d.caption or DIAGRAM_CAPTION_FALLBACK)}">'
         "</iframe>"
         f"{caption}"
         "</figure>"
@@ -2372,6 +2378,10 @@ _JS = """
   }
   if (sortBox) sortBox.addEventListener("change", applySort);
 
+  // Load-bearing for ext#117 as well as for readability. A nested child's evidence is numbered BEFORE
+  // the parent's own gallery, and children live in a <details> that is CLOSED by default -- so without
+  // this, Ctrl+P / Save as PDF would print a PDF whose figure sequence opens at "Figure 2" while the
+  // .docx opens at "Figure 1". Pinned by test_report_print_media.py's Ctrl+P guard.
   window.addEventListener("beforeprint", function () {
     setAllCollapsed(false); openAllChildren(); resetSort();
   });

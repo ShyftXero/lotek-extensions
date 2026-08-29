@@ -185,8 +185,10 @@ def test_figure_numbers_ascend_down_the_page_in_both_deliverables(session_factor
             render_report_html(ctx, inline_assets=True, artifact_bytes=reader))]
         docx_numbers = [n for n, _ in _figures(
             _docx_text(render_report_docx(ctx, artifact_bytes=reader)))]
-    assert html_numbers == sorted(html_numbers), f"HTML figures out of order: {html_numbers}"
-    assert docx_numbers == sorted(docx_numbers), f"DOCX figures out of order: {docx_numbers}"
+    # Non-emptiness first: `[] == sorted([])` is true, so without this the whole test passed with
+    # numbering deleted outright — it caught a mis-ORDER and nothing else.
+    assert html_numbers and docx_numbers, "no figures were numbered at all"
+    assert html_numbers == docx_numbers == [1, 2, 3, 4, 5]
 
 
 def test_numbering_does_not_depend_on_whether_the_bytes_embedded(session_factory, tmp_path):
@@ -314,3 +316,27 @@ def test_every_numbered_figure_has_its_anchor_even_when_the_bytes_are_absent(ses
     assert numbers, "expected numbered figures even with nothing embedded"
     for n in numbers:
         assert f'id="fig-{n}"' in html, f"figure {n} is numbered but has no anchor"
+
+
+def test_an_uncaptioned_figure_reads_the_same_whether_or_not_its_bytes_embedded(
+    session_factory, tmp_path
+):
+    """The sibling test above compares captions, but every artifact in its fixture HAS one — so it
+    could not see that the three render paths disagreed for an artifact with NO operator caption. The
+    embedded HTML and the .docx fell back to the filename; the un-embedded HTML printed a bare
+    "Figure N". Two delivered documents naming one figure differently is what ext#117 forbids, and
+    "over the inlining budget" is a routine reason for the un-embedded path to be the delivered one."""
+    eng_id, store = _engagement(session_factory, tmp_path)
+    with session_factory() as db:
+        eng = db.get(Engagement, eng_id)
+        for artifact in eng.artifacts:
+            artifact.caption = ""  # the operator attached evidence and never typed a caption
+        db.commit()
+        ctx = build_report_context(db.get(Engagement, eng_id))
+        embedded = _figures(render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store)))
+        bare = _figures(render_report_html(ctx))
+        in_docx = _figures(_docx_text(render_report_docx(ctx, artifact_bytes=_read(store))))
+    assert embedded, "no figures rendered — the fixture stopped exercising the gallery"
+    assert bare == embedded, f"un-embedded HTML disagrees: {bare} != {embedded}"
+    # The diagram is numbered in both but is not a gallery artifact, so compare the artifact figures.
+    assert [f for f in in_docx if f[0] <= 3] == [f for f in embedded if f[0] <= 3]

@@ -1,8 +1,8 @@
 # Plan: fix/scribble-report-export-fidelity
 
 - **Branch:** `fix/scribble-report-export-fidelity`  (worktree: `.claude/worktrees/report-export-fidelity`, off `origin/main`)
-- **PR:** not opened yet — stacked onto the orchestrator's integration branch (no PR from this session, by direction)
-- **Status:** 🟢 ready to merge — stacked for the orchestrator's integration branch (no PR from this session)
+- **PR:** [#134](https://github.com/ShyftXero/lotek-extensions/pull/134)
+- **Status:** 🟢 ready for review — `origin/main` merged in 2026-08-28, re-reviewed and re-verified against it
 
 ## Purpose
 
@@ -149,10 +149,64 @@ An independent review of the branch diff found four, all in the new untrusted-sn
    capped that either). Added `_MAX_DIAGRAM_NODES` and `_MAX_DIAGRAMS`, with the shortfall NAMED in
    the document rather than truncated silently.
 
+## 2026-08-28 — merge with `origin/main`, second review round
+
+The branch was written on 2026-08-26 against `a35eff7` and sat 56 commits behind. Merged rather than
+rebased, then re-reviewed and re-verified end to end.
+
+**The merge.** One textual conflict, in `render_html.py`'s import block: `#100` deleted
+`reporting/templates.py` and split it into `layouts.py` + `themes.py` + `selection.py`, and this branch
+had added names to the adjacent `reporting.context` import. Resolved by taking `main`'s side and adding
+this branch's four names to it. Everything else auto-merged.
+
+**The hazard that was checked BY HAND, because a quiet merge is the dangerous outcome.** `#125`/`#130`
+deleted `save_bytes` / `resolve_path` / `safe_join` and collapsed three evidence readers into
+`artifacts_storage.artifact_bytes`. A `grep` over both packages found **no live caller** of any of the
+three: every surviving hit is a comment, a docstring, or the drift guard in
+`tests/test_artifact_object_store.py` that asserts they are gone. This branch reads evidence only
+through the `artifact_bytes` callable it is handed, so nothing needed porting. Likewise `#133`'s new
+`include_in_report` on a diagram is honoured for free — the DOCX section reads `ctx.diagrams`, which
+`build_report_context` already filters.
+
+**Second review round.** An independent security review and an independent adversarial review were run
+against the MERGED diff. Findings and dispositions:
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| S1 | BLOCK | `_xml_safe` covered C0 only; lone surrogates and `FFFE`/`FFFF` still 500 the export permanently | fixed + guard |
+| S2 | MEDIUM | 50 linked diagrams x 9.6 MiB = 34s GIL-held / 515 MiB per `.docx` GET — the per-diagram cap never bounded the product | fixed: report-wide scan budget |
+| S3 | MEDIUM | `_d_str` whitespace-split a 5 MiB field to produce 400 chars | fixed: slice before split |
+| S4 | LOW | first-match model lookup let a decoy `id="vap-model"` hide the real diagram from Word only | fixed + guard |
+| A1 | BLOCK | "Ctrl+P prints without the child figures" | **not a defect** — `render_html` already had a `beforeprint` handler that opens them; the reviewer read only the toolbar button. Kept a browser guard, since the child-first reorder made that handler load-bearing |
+| A2 | BLOCK | `_note_truncation` counted against the CAPS, so hosts dropped with a capped zone were never named | fixed + guard |
+| A3 | CONCERN | the status chip disagreed with `nodeVisual()` four ways | fixed + guard |
+| A4 | CONCERN | an uncaptioned artifact read differently on the un-embedded path | fixed + guard |
+| A5 | CONCERN | a second `beforeprint` stranded the reader at the final keyframe | fixed + guard |
+| A6 | CONCERN | the "prints correctly inside scribble's iframe" claim is untested | **doc softened, not fixed** — see Remaining |
+| A7 | CONCERN | `_MAX_DIAGRAM_ROWS` collapse was silent | the new note names it |
+| A8 | CONCERN | Connections could name a host absent from the table; `edges` sliced before the dangling filter | both fixed + guard |
+| A9-A13 | NIT | layout-drop honesty, two vacuous tests, chars-vs-bytes, stale `#133` comment, iframe `title=` fallback | all addressed |
+| A14 | NIT | `pyrefly` would flag `str` into `id: int` in the tests | **not reproduced** — `pyrefly check` reports 0 errors on every changed file |
+
+Two guards the first round had shipped were found **vacuous** by neutralising them: the
+`OverflowError` arm of `_d_int` (unreachable through a snapshot, since `parse_constant` kills the float
+special at the parser) and the `isinstance(raw_meta, dict)` guard. Both now have direct tests.
+
 ## Remaining
 
-- [ ] Nothing on this branch. It is stacked for the orchestrator's integration branch: **no
-      `--ack-tests`, no PR**, issues stay at `status:doing`.
+- [ ] **Not fixed, named deliberately:** the report embeds each diagram in a `loading="lazy"` iframe, so
+      a diagram still below the fold when the PARENT document prints may never have booted, and an
+      unbooted viewer has no `beforeprint` listener to fire. Both docs now say so. Fixing it means
+      dropping `loading="lazy"` (and paying for every snapshot on load) or a Playwright test of the
+      embedded case; neither belongs in this branch.
+- [ ] **Pre-existing, not this branch:** `scribble/artifacts_storage.py`'s module docstring still
+      describes `safe_join` as the confinement mechanism, three PRs after `#125`/`#130` deleted it.
+- [ ] **Pre-existing, not this branch:** `render_html._render_diagrams` has no count cap at all, where
+      the evidence appendix has `_MAX_APPENDIX_ITEMS`. The new section-wide scan budget bounds the
+      `.docx` side only.
+- [ ] **Known asymmetry, not live:** `_styled_paragraph` degrades a missing `Caption` style, but
+      `add_heading`, `Heading 3`, `List Bullet` and `Table Grid` are unguarded. All four exist in the
+      only template used; it becomes live the day `build_default_docx.py` is regenerated without one.
 
 ## Notes / gotchas
 
@@ -168,15 +222,17 @@ An independent review of the branch diff found four, all in the new untrusted-sn
   longer be unaware that an attack path exists.
 - **Where the model comes from.** vector's `export.html` embeds the normalized document verbatim in
   `<script type="application/json" id="vap-model">`, with `<`/`>`/`&` escaped as `\uXXXX` (see
-  `vector/render.py::json_for_script`), so there is no `</script>` inside it and a non-greedy regex +
-  `json.loads` is a complete, deterministic extraction. scribble does **not** import vector (extensions
+  `vector/render.py::json_for_script`), so there is no `</script>` inside it and three LINEAR `str.find`
+  scans + `json.loads` are a complete, deterministic extraction. (This started as a non-greedy regex; that
+  regex was quadratic in `embed_html` — the ReDoS finding recorded above — and was replaced.) scribble does **not** import vector (extensions
   are independent — CLAUDE.md); it reads a JSON blob out of a snapshot it already stores, and treats it
   as untrusted (every field is coerced/capped on the way out).
 - **Figure numbers are assigned in `context.py`, not in either renderer.** That is the only way "the
   numbering is identical in HTML and DOCX" can be structurally true rather than a coincidence two
-  renderers have to keep re-establishing. Canonical order = findings' evidence in board order (a
-  parent's own, then each child's) → diagrams → engagement-level evidence appendix, which is the order
-  BOTH the `default`/`compliance` HTML templates and the DOCX render in.
+  renderers have to keep re-establishing. Canonical order = findings' evidence in board order (each
+  nested child's first, then the parent's own — `3cd2607`) → diagrams → engagement-level evidence appendix, which is the order
+  BOTH the `default`/`compliance` HTML **Layouts** (`reporting/layouts.py`, since #100) and the DOCX
+  render in.
 - Numbering is assigned to **every** gallery artifact, embeddable or not. Embed success depends on the
   renderer's budget and on whether an artifact reader was supplied, so numbering off it would give the
   same report different figure numbers in HTML and DOCX — the exact failure #117 calls out.
