@@ -1,6 +1,6 @@
 """The optional engagement Activity Log appendix (lotek#442).
 
-An OPT-IN report appendix — included by putting the ``activity_log`` block in a template (the
+An OPT-IN report appendix — included by putting the ``activity_log`` block in a Layout (the
 "checkbox") — that renders a timestamped trail of engagement activity (finding added, evidence
 uploaded, diagram created) built from scribble's OWN ``created_at`` columns, with its own TOC entry.
 These pin: the trail is built chronologically from real timestamps, the appendix + its TOC entry appear
@@ -15,18 +15,19 @@ from types import SimpleNamespace
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import Artifact, Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
+from scribble.reporting.layouts import ReportLayout
 from scribble.reporting.render_html import (
     _AssetResolver,
     _render_activity_appendix,
     _render_document,
     _toc_entries,
 )
-from scribble.reporting.templates import ReportTemplate
 
-# A template that opts the appendix in (the "checkbox"), and one that does not.
-_WITH_ACTIVITY = ReportTemplate("with-activity", "With activity", "auto",
-                                ("cover", "toc", "findings", "activity_log"))
-_WITHOUT_ACTIVITY = ReportTemplate("no-activity", "No activity", "auto", ("cover", "toc", "findings"))
+# A Layout that opts the appendix in (the "checkbox"), and one that does not.
+_WITH_ACTIVITY = ReportLayout(
+    "with-activity", "With activity", ("cover", "toc", "findings", "activity_log")
+)
+_WITHOUT_ACTIVITY = ReportLayout("no-activity", "No activity", ("cover", "toc", "findings"))
 
 
 def _engagement_with_activity(session_factory) -> int:
@@ -72,20 +73,20 @@ def test_appendix_and_toc_entry_appear_only_when_opted_in(session_factory):
     eid = _engagement_with_activity(session_factory)
     with session_factory() as db:
         ctx = build_report_context(db.get(Engagement, eid))
-    with_html = _render_document(ctx, _AssetResolver("none", None), template=_WITH_ACTIVITY)
+    with_html = _render_document(ctx, _AssetResolver("none", None), layout=_WITH_ACTIVITY)
     assert 'id="sec-activity_log"' in with_html
     assert "Activity Log" in with_html
     assert "sec-activity_log" in _toc_targets(with_html)  # gets its own TOC entry
     assert "Finding added: SMB signing not required" in with_html
     # opt-out: no block -> no section, no contents entry
-    without_html = _render_document(ctx, _AssetResolver("none", None), template=_WITHOUT_ACTIVITY)
+    without_html = _render_document(ctx, _AssetResolver("none", None), layout=_WITHOUT_ACTIVITY)
     assert 'id="sec-activity_log"' not in without_html
     assert "sec-activity_log" not in _toc_targets(without_html)
 
 
 def test_empty_activity_log_omits_the_appendix_and_its_toc_entry():
     """Like the Evidence appendix: an empty trail renders nothing and registers no TOC entry, so a
-    template that opts the block in for an engagement with no activity stays clean."""
+    Layout that opts the block in for an engagement with no activity stays clean."""
     empty = SimpleNamespace(activity_log=[], groups=[], diagrams=[], artifacts=[], checklists=[])
     assert _render_activity_appendix(empty) == ""
     entries = _toc_entries(empty, ("activity_log",))
@@ -105,6 +106,6 @@ def test_summaries_are_escaped(session_factory):
         eid = eng.id
     with session_factory() as db:
         ctx = build_report_context(db.get(Engagement, eid))
-    html = _render_document(ctx, _AssetResolver("none", None), template=_WITH_ACTIVITY)
+    html = _render_document(ctx, _AssetResolver("none", None), layout=_WITH_ACTIVITY)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html

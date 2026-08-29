@@ -53,7 +53,15 @@ from scribble.reporting.context import (
     figure_anchor,
     figure_caption,
 )
-from scribble.reporting.templates import ReportTemplate, get_template, list_templates
+from scribble.reporting.layouts import ReportLayout, list_layouts
+from scribble.reporting.selection import resolve_selection
+from scribble.reporting.theme_css import build_theme_assets
+from scribble.reporting.themes import ReportTheme, get_theme, list_themes
+
+# The Theme every report rendered under before Themes were selectable: stamps nothing, so the viewer's
+# prefers-color-scheme decides. Used as ``_render_document``'s default so a caller that cares only about
+# structure does not have to name a Theme.
+_AUTO_THEME: ReportTheme = get_theme(None)
 
 ArtifactBytes = Callable[[str], "bytes | None"]
 
@@ -62,7 +70,7 @@ SEVERITY_ORDER: tuple[str, ...] = tuple(s.value for s in _ENUM_SEVERITY_ORDER)  
 _BLOCK_LABELS = {"description": "Description", "remediation": "Remediation", "details": "Details"}
 _BLOCK_ORDER = ("description", "remediation", "details")
 
-# Toolbar label per top-level block key (``reporting.templates.BLOCK_KEYS``). A key is linked only when
+# Toolbar label per top-level block key (``reporting.layouts.BLOCK_KEYS``). A key is linked only when
 # its block actually rendered its ``id="sec-<key>"`` anchor — see ``_render_document``/``_render_header``.
 # ``cover`` and ``toc`` are deliberately ABSENT: both are print-only (``display: none`` on screen), so a
 # toolbar link would scroll a reader to an invisible element — the same class of broken link as ext#42's
@@ -584,7 +592,8 @@ def _render_filter_bar(ctx: ReportContext) -> str:
 
 def _render_header(
     ctx: ReportContext,
-    template: ReportTemplate,
+    layout: ReportLayout,
+    theme: ReportTheme,
     *,
     nav_keys: tuple[str, ...] = (),
     engagement_url: str | None = None,
@@ -598,14 +607,25 @@ def _render_header(
     document, in document order — see ``_render_document``. Section links are emitted for those and only
     those: a link to an anchor that isn't in the document reads as a broken report to the client clicking
     it (ext#42, where a checklist-less engagement kept a live "Methodology" link to an empty anchor)."""
-    opts = "".join(
-        f'<option value="{_esc(t.name)}"{" selected" if t.name == template.name else ""}>'
-        f"{_esc(t.label)}</option>"
-        for t in list_templates()
+    # Two independent switchers, because Layout and Theme are two independent axes: any Layout renders
+    # under any Theme, so a single combined list would be their product (and was, until #100).
+    layout_opts = "".join(
+        f'<option value="{_esc(lay.name)}"{" selected" if lay.name == layout.name else ""}>'
+        f"{_esc(lay.label)}</option>"
+        for lay in list_layouts()
+    )
+    theme_opts = "".join(
+        f'<option value="{_esc(th.name)}"{" selected" if th.name == theme.name else ""}>'
+        f"{_esc(th.label)}</option>"
+        for th in list_themes()
     )
     switcher = (
-        '<label class="tmpl-switch" title="Report layout template">'
-        f'<span>Layout</span><select id="template-select" aria-label="Report layout">{opts}</select></label>'
+        '<label class="tmpl-switch" title="Report layout — which sections, in what order">'
+        f'<span>Layout</span><select id="layout-select" aria-label="Report layout">{layout_opts}'
+        "</select></label>"
+        '<label class="tmpl-switch" title="Report theme — palette and typography">'
+        f'<span>Theme</span><select id="theme-select" aria-label="Report theme">{theme_opts}'
+        "</select></label>"
     )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
     # Same helpers the cover page uses, so the two title blocks cannot describe the engagement differently.
@@ -1411,7 +1431,7 @@ def _render_toc(ctx: ReportContext, blocks: tuple[str, ...]) -> str:
 def _render_block_by_key(
     key: str, ctx: ReportContext, resolver: _AssetResolver, *, blocks: tuple[str, ...] = ()
 ) -> str:
-    """Render one top-level document block by its template key (see ``reporting.templates``). The filter
+    """Render one top-level document block by its block key (see ``reporting.layouts``). The filter
     bar travels with the ``findings`` block so it always sits directly above the finding groups, whatever
     order the template puts them in. ``blocks`` is the template's full block list — only the ``toc`` needs
     it, because a table of contents is a statement about the whole document."""
@@ -1442,37 +1462,50 @@ def _render_document(
     ctx: ReportContext,
     resolver: _AssetResolver,
     *,
-    template: ReportTemplate,
+    layout: ReportLayout,
+    theme: ReportTheme = _AUTO_THEME,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
 ) -> str:
-    # A template's theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so
-    # the report follows the viewer's prefers-color-scheme (the default behavior).
-    theme_attr = f' data-theme="{template.theme}"' if template.theme in ("light", "dark") else ""
+    # A Theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so the report
+    # follows the viewer's prefers-color-scheme (the default behavior).
+    theme_attr = theme.html_attr
+    # ...and contributes its Token payload as a SECOND <style>, after the base sheet. It has to be a
+    # separate element emitted here rather than concatenated into _CSS, because _CSS is a module-level
+    # constant shared by every render — splicing per-request content into it would leak one
+    # engagement's Theme into the next. See reporting/theme_css.py for why the override sits where it
+    # does in the cascade (short version: the dark and print rules are 0-2-0, so 0-1-0 loses to both).
+    assets = build_theme_assets(theme)
+    theme_style = f"<style>{assets.css}</style>\n" if assets.css else ""
     # Render the blocks FIRST, then build the toolbar from what they produced: a section link is emitted
     # only for a block that actually put its ``id="sec-<key>"`` anchor in this document, in document
     # order. Deriving the nav from the rendered output (rather than from a fixed list, as it was until
     # ext#42) is what makes a dangling link structurally impossible — a block that renders nothing, or a
-    # template that drops a block entirely, cannot leave a live link behind it.
+    # Layout that drops a block entirely, cannot leave a live link behind it.
     rendered = [
-        (k, _render_block_by_key(k, ctx, resolver, blocks=template.blocks)) for k in template.blocks
+        (k, _render_block_by_key(k, ctx, resolver, blocks=layout.blocks)) for k in layout.blocks
     ]
     blocks = "\n".join(html for _k, html in rendered if html)
     nav_keys = tuple(k for k, html in rendered if f'id="sec-{k}"' in html)
     # ``has-cover`` lets the print sheet hide the masthead when — and only when — a cover page rendered in
     # its place (ext#43). It has to be a class the renderer stamps rather than a CSS ``:has()`` test,
-    # because the masthead must keep printing for a template that carries no ``cover`` block: dropping it
+    # because the masthead must keep printing for a Layout that carries no ``cover`` block: dropping it
     # unconditionally would leave such a PDF with no title anywhere.
     body_class = ' class="has-cover"' if any(k == "cover" and html for k, html in rendered) else ""
     header = _render_header(
-        ctx, template, nav_keys=nav_keys, engagement_url=engagement_url, dashboard_url=dashboard_url
+        ctx,
+        layout,
+        theme,
+        nav_keys=nav_keys,
+        engagement_url=engagement_url,
+        dashboard_url=dashboard_url,
     )
     return (
         "<!doctype html>\n"
         f'<html lang="en"{theme_attr}>\n<head>\n<meta charset="utf-8"/>\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1"/>\n'
         f"<title>{_esc(ctx.engagement_name)} — Report</title>\n"
-        f"<style>{_CSS}</style>\n</head>\n<body{body_class}>\n"
+        f"<style>{_CSS}</style>\n{theme_style}</head>\n<body{body_class}>\n"
         f"{header}\n"
         '<main class="wrap">\n'
         f"{blocks}\n"
@@ -1490,6 +1523,8 @@ def render_report_html(
     artifact_bytes: ArtifactBytes | None = None,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    layout: str | None = None,
+    theme: str | None = None,
     template: str | None = None,
 ) -> str:
     """Render a full, self-contained HTML report for ``ctx``.
@@ -1509,21 +1544,32 @@ def render_report_html(
     direction lives in ``scribble/templates/scribble/engagement.html``'s ``View Report`` button).
     Callers with no request/app context (e.g. tests, standalone rendering) simply omit them and get the
     same header as before nav links existed.
+
+    ``layout`` selects which blocks render and in what order; ``theme`` selects the palette. They are
+    independent — any Layout renders under any Theme. ``template`` is the pre-#100 single-axis parameter,
+    still honoured for bookmarked report URLs; see ``reporting/selection.py`` for the precedence rules.
     """
     resolver = _AssetResolver("inline" if inline_assets else "none", artifact_bytes)
+    sel_layout, sel_theme = resolve_selection(layout=layout, theme=theme, template=template)
     return _render_document(
-        ctx, resolver, template=get_template(template),
+        ctx, resolver, layout=sel_layout, theme=sel_theme,
         engagement_url=engagement_url, dashboard_url=dashboard_url,
     )
 
 
 def export_zip(
-    ctx: ReportContext, artifact_bytes: ArtifactBytes | None, *, template: str | None = None
+    ctx: ReportContext,
+    artifact_bytes: ArtifactBytes | None,
+    *,
+    layout: str | None = None,
+    theme: str | None = None,
+    template: str | None = None,
 ) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
     ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7)."""
     resolver = _AssetResolver("zip", artifact_bytes)
-    html_doc = _render_document(ctx, resolver, template=get_template(template))
+    sel_layout, sel_theme = resolve_selection(layout=layout, theme=theme, template=template)
+    html_doc = _render_document(ctx, resolver, layout=sel_layout, theme=sel_theme)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("report.html", html_doc)
@@ -1659,7 +1705,7 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 }
 .toolbar { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* cover page + table of contents — PRINT ONLY (see reporting/templates.py). Hidden here in the base
+/* cover page + table of contents — PRINT ONLY (see reporting/layouts.py). Hidden here in the base
    sheet rather than inside an `@media screen` block so they stay hidden under every non-print medium,
    and shown again only in the `@media print` block at the foot of this sheet. */
 .cover, .toc { display: none; }
@@ -2223,15 +2269,34 @@ table.index td.ix-cvss {
 _JS = """
 (function () {
   "use strict";
-  // Layout switcher: reload with ?template=<name> so the server re-renders in the chosen template.
-  var tmpl = document.getElementById("template-select");
-  if (tmpl) {
-    tmpl.addEventListener("change", function () {
+  // Switchers reload with the chosen parameter so the SERVER re-renders — a Layout change is a
+  // different document, not a restyle, so it cannot be done client-side.
+  // Layout and Theme are separate axes, but a switcher must write BOTH of them, not just its own.
+  // The legacy single-axis `template` carries a Layout AND a Theme together, and it is deleted here
+  // because leaving it beside an explicit choice would leave the URL describing two selections. So a
+  // switcher that wrote only its own axis silently DISCARDED the other one: arriving at
+  // `?template=dark` and changing the Layout produced `?layout=compliance` with no theme, which
+  // resolves to `auto` — the dark selection vanished on the first click, defeating exactly the
+  // bookmarked-URL guarantee `reporting/selection.py` exists to provide.
+  //
+  // Both <select>s are server-rendered with the RESOLVED selection already preselected (including the
+  // one translated out of a legacy `template=`), so reading the other element's current value is
+  // correct, not a guess.
+  function bindSelector(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", function () {
       var u = new URL(window.location.href);
-      u.searchParams.set("template", tmpl.value);
+      var layout = document.getElementById("layout-select");
+      var theme = document.getElementById("theme-select");
+      if (layout) u.searchParams.set("layout", layout.value);
+      if (theme) u.searchParams.set("theme", theme.value);
+      u.searchParams.delete("template");
       window.location.assign(u.toString());
     });
   }
+  bindSelector("layout-select");
+  bindSelector("theme-select");
   var sections = Array.prototype.slice.call(document.querySelectorAll("section.sec"));
   sections.forEach(function (sec) {
     var h = sec.querySelector(".sec-h");

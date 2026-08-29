@@ -27,6 +27,10 @@ class ArtifactCtx:
     filename: str
     caption: str
     content_type: str | None
+    # WHERE THE BYTES ARE, not necessarily a path: either a disk path relative to ``artifact_root`` or
+    # an ``obj:<uuid>`` reference into the core object store (``Artifact.storage_path``, carried
+    # through verbatim). The paired ``artifact_bytes`` reader resolves whichever it is, so a renderer
+    # never has to know, and this stays a plain copy of the column rather than a second opinion on it.
     storage_path: str
     # What the row recorded for this file, so a renderer can decide whether to carry its bytes WITHOUT
     # reading them first (``render_html``'s inlining budget). Advisory only -- the bytes on disk stay the
@@ -279,7 +283,7 @@ def number_figures(
     Document order is: each finding's evidence in board order (each nested child's artifacts, then the
     parent's own gallery -- see the comment in the loop for why that way round) -> attack-path diagrams
     -> the engagement-level evidence appendix. That is the order the ``default`` AND ``compliance`` HTML
-    templates render (``reporting/templates.py``: ``findings`` -> ``diagrams`` -> ``evidence``) and the
+    templates render (``reporting/layouts.py``: ``findings`` -> ``diagrams`` -> ``evidence``) and the
     order ``render_docx.render_report_docx`` appends its post-render sections in, so the two
     deliverables number the same figure the same way *structurally* — not by two renderers separately
     remembering to.

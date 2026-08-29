@@ -34,8 +34,8 @@ import pytest
 from scribble.content import schema
 from scribble.models import Engagement, EngagementFinding, FindingGroup
 from scribble.reporting import build_report_context
+from scribble.reporting.layouts import list_layouts
 from scribble.reporting.render_html import _LIMITATIONS, render_report_html
-from scribble.reporting.templates import list_templates
 
 # Past-tense assertions about work done on THIS engagement. Each one was in the shipped prose.
 #
@@ -84,20 +84,20 @@ def test_the_report_asserts_no_unrecorded_work(promoted_report, phrase):
     )
 
 
-@pytest.mark.parametrize("template", [t.name for t in list_templates()])
-def test_no_shipped_template_can_reintroduce_the_claims(session_factory, template):
-    """Every shipped template, because "a template could drop the block" is not a control here: the report
-    template registry is FROZEN data (reporting/templates.py) with no editor and no operator route, so all
-    three ship the same prose and the only real fix is for the prose itself to be honest."""
+@pytest.mark.parametrize("layout", [lay.name for lay in list_layouts()])
+def test_no_shipped_layout_can_reintroduce_the_claims(session_factory, layout):
+    """Every shipped Layout, because "a Layout could drop the block" is not a control here: the Layout
+    registry is FROZEN data (reporting/layouts.py) with no editor and no operator route, so all
+    of them ship the same prose and the only real fix is for the prose itself to be honest."""
     with session_factory() as db:
         eng = Engagement(name="Bulk Promoted", company_name="Acme", scope_type="external")
         db.add(eng)
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), template=template)
+        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
     for phrase in FORBIDDEN:
-        assert phrase not in html, f"template {template!r} asserts {phrase!r}"
+        assert phrase not in html, f"layout {layout!r} asserts {phrase!r}"
 
 
 def test_the_methodology_says_it_is_a_standing_description_not_a_work_log(promoted_report):

@@ -606,7 +606,7 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
 
     Placed BEFORE the checklists and the evidence appendix so the .docx section order matches the HTML
     templates' (``findings`` -> ``diagrams`` -> ``methodology`` -> ``evidence``, see
-    ``reporting/templates.py``) — which is also what makes ``context.number_figures``'s single
+    ``reporting/layouts.py``) — which is also what makes ``context.number_figures``'s single
     numbering sequence correct for both deliverables.
 
     Renders nothing when the engagement has no linked diagram, so a report without one is byte-identical
@@ -800,7 +800,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
     # Section order mirrors the HTML templates' block order (findings -> diagrams -> methodology ->
-    # evidence, reporting/templates.py), which is what makes context.number_figures' single figure
+    # evidence, reporting/layouts.py), which is what makes context.number_figures' single figure
     # sequence come out the same in both deliverables.
     _append_attack_paths(tpl.docx, ctx)  # ext#115
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)

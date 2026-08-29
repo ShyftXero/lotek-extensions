@@ -94,4 +94,7 @@ verbs = [
     "reorder_groups",
     "upload_artifact",
     "update_artifact",
+    "link_attack_path",
+    "update_attack_path",
+    "delete_attack_path",
 ]

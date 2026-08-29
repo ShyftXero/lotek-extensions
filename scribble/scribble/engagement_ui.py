@@ -69,7 +69,7 @@ from datetime import date
 from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
-from scribble import findings_service
+from scribble import findings_service, host
 from scribble.artifacts_storage import delete_file
 from scribble.authz import can_view_client_id, host_is_mounted, visible_engagements
 from scribble.content import schema
@@ -79,7 +79,7 @@ from scribble.deps import (
     current_actor,
     current_actor_id,
     current_actor_username,
-    get_config,
+    host_can_write,
     open_session,
     severity_enum,
 )
@@ -293,9 +293,38 @@ def register(api_bp, bp) -> None:
                         400,
                     )
 
+                # THE ANCHOR — see api_pat's create for the full reasoning. Obtained at CREATE time
+                # so an upload never finds it missing. Creating one is manager-or-admin in the host,
+                # so an operator using the browser gets a plain, actionable refusal rather than a
+                # working engagement whose evidence has nowhere to go.
+                # Not gated on `host_is_mounted()`: storage and authorization are separate host
+                # capabilities, and evidence needs its anchor wherever an object store exists.
+                try:
+                    core_engagement_id = host.create_engagement(client_id, name)
+                except PermissionError:
+                    return (
+                        render_template(
+                            "scribble/engagement_new.html",
+                            clients=_viewable_clients(db),
+                            error="Creating an engagement requires manager or admin. Ask one to "
+                                  "create it, or create it in lotek first.",
+                        ),
+                        403,
+                    )
+                except ValueError:
+                    return (
+                        render_template(
+                            "scribble/engagement_new.html",
+                            clients=_viewable_clients(db),
+                            error="An engagement with this name already exists for this client.",
+                        ),
+                        409,
+                    )
+
                 engagement = Engagement(
                     name=name,
                     client_id=client_id,
+                    core_engagement_id=core_engagement_id,
                     scope_type=(request.form.get("scope_type") or "external").strip() or "external",
                     company_name=(request.form.get("company_name") or "").strip() or None,
                     start_date=_parse_date(request.form.get("start_date")),
@@ -361,7 +390,6 @@ def register(api_bp, bp) -> None:
 
     @bp.post("/engagements/<uuid:engagement_id>/delete", endpoint="engagement_delete")
     def engagement_delete(engagement_id: int):
-        cfg = get_config()
         with open_session() as db:
             engagement = db.get(Engagement, engagement_id)
             if engagement is None:
@@ -382,7 +410,7 @@ def register(api_bp, bp) -> None:
             db.delete(engagement)  # cascades to groups/findings/artifacts/variable_values (delete-orphan)
             db.commit()
         for storage_path in storage_paths:
-            delete_file(cfg, storage_path)
+            delete_file(storage_path)
         return redirect(url_for("scribble.engagements"))
 
     # =============================================================================== UI: board (detail)
@@ -495,13 +523,64 @@ def register(api_bp, bp) -> None:
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
+    # ============================================================================ UI: promote scan job
+
+    @bp.post("/engagements/<uuid:engagement_id>/promote-job", endpoint="promote_job")
+    def promote_job_ui(engagement_id: uuid.UUID):
+        """Human twin of the machine route (`api_pat.scribble_promote_job`): pull a lotek scan job's
+        findings onto THIS board from the browser.
+
+        Before this route, promotion existed ONLY on the PAT/machine surface — a person operating in the
+        browser could not turn a finished scan into a report at all, which is why a UI-only lifecycle had
+        to hand-build findings from templates. Found by driving the app as a human (BusyBody, 2026-08-27).
+
+        Tenancy and CSRF are handled the same way every other human route here handles them, so this body
+        stays as thin as `add_finding`: the blueprint-wide `_gate` has already resolved + authorized
+        `engagement_id` before we run (unknown/forbidden -> 404, no existence leak), the host applies
+        `user_can_view_job` to the session actor inside `get_job`/`list_findings` (unknown/forbidden job
+        -> None -> a no-op, same one-answer-no-leak the machine twin gives), and the host owns CSRF
+        (lotek does NOT exempt `/scribble/*`). Aggregation is `scribble.promote.promote_job`'s concern.
+
+        `job_id` arrives as a FORM field, not a URL segment, because there is no host hook to LIST an
+        engagement's promotable jobs yet, so the operator supplies the id (BusyBody carries it from the
+        queue_job step). A job `<select>` is the follow-on once a host `list_jobs` hook exists.
+        """
+        # Route-level WRITE gate. The blueprint `_gate` only authorizes VIEW, and every other scribble
+        # mutating route (add_finding, create_group, delete_*) currently relies on that plus the UI-only
+        # `scribble_can_write` display flag — so a viewer who can SEE an engagement can POST a mutation
+        # directly. That is a SYSTEMIC scribble gap (noted for a broader fix); a NEW mutating route must
+        # not ship with the weaker posture, so promotion — which pours a whole scan's findings onto the
+        # board — checks write at the route. `host_can_write()` defaults True when no host hook is wired
+        # (standalone), and reads the host's real capability under lotek.
+        if not host_can_write():
+            abort(403)
+        job_id = (request.form.get("job_id") or "").strip()
+        actor = current_actor()
+        promoted_ref = None
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            findings_ns = host.findings()
+            job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
+            if job is not None:
+                from scribble.promote import promote_job  # lazy: promote.py is Track D's file
+                dtos = findings_ns.list_findings(job_id, actor)
+                promote_job(db, engagement=engagement, findings=dtos,
+                            actor_username=current_actor_username())
+                db.commit()
+                promoted_ref = engagement.id  # capture inside the session for the host-side write below
+        if promoted_ref is not None:
+            # The one host-contract write, in its own transaction (mirrors the machine route).
+            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=promoted_ref)
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
     # =============================================================================== UI: delete finding
 
     @bp.post(
         "/engagements/<uuid:engagement_id>/findings/<uuid:finding_id>/delete", endpoint="delete_finding"
     )
     def delete_finding(engagement_id: int, finding_id: int):
-        cfg = get_config()
         with open_session() as db:
             finding = db.get(EngagementFinding, finding_id)
             if finding is None or finding.engagement_id != engagement_id:
@@ -514,7 +593,7 @@ def register(api_bp, bp) -> None:
             storage_paths = findings_service.delete_finding(db, finding).storage_paths
             db.commit()
         for storage_path in storage_paths:
-            delete_file(cfg, storage_path)
+            delete_file(storage_path)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     # =============================================================================== UI: finding detail

@@ -22,8 +22,9 @@ import pytest
 
 import scribble.models as fm
 from scribble import api_pat
-from scribble.artifacts_storage import SAFE_NAME_MAX, resolve_path
+from scribble.artifacts_storage import SAFE_NAME_MAX
 from scribble.host import SCOPE_ATTR
+from scribble.testing import read_evidence
 from tests.conftest import StubActor
 
 _MISSING_ID = uuid.uuid7()  # a well-formed id that is not in the table
@@ -121,23 +122,22 @@ def test_upload_rejects_overlong_filename(client, stub_host):
 
 
 def test_upload_bounds_stored_name_after_secure_filename_expansion(client, stub_host, session_factory, app):
-    """#55 residual 1: ``secure_filename`` NFKD-normalizes and can EXPAND the caller's filename well
-    past what this route's own input-side cap looks like it should allow for -- 200 '½' characters
-    (well under the ``SAFE_NAME_MAX`` == 222 input cap) secure_filename to 400 ASCII characters, which
-    would overrun ``NAME_MAX`` (255) once ``save_bytes`` prefixes the uuid. Proves the on-disk write
-    survives: ``artifacts_storage._bounded_name`` truncates the SECURED name, not the wire-length one."""
+    """#55 residual 1: a filename that EXPANDS under ``secure_filename`` must not break the upload.
+
+    200 '½' characters sit well under the ``SAFE_NAME_MAX`` (222) input cap and expand to 400 ASCII,
+    which used to overrun ``NAME_MAX`` (255) once the on-disk writer prefixed a uuid — an ENAMETOOLONG
+    500 on a legitimate upload. Evidence is keyed by object id now, so no filesystem name is derived
+    from the caller's at all and that whole failure mode is structurally gone. What still matters, and
+    is what this asserts, is that the row keeps the caller's filename and the bytes come back."""
     eid = _engagement(client, stub_host)
     filename = "½" * 200 + ".png"
     resp = _upload_json(client, eid, filename=filename)
     assert resp.status_code == 201, resp.get_json()
 
-    cfg = app.extensions["scribble"]
     with session_factory() as db:
         art = db.get(fm.Artifact, resp.get_json()["id"])
-        path = resolve_path(cfg, art.storage_path)
-        assert path.is_file()
-        assert len(path.name.encode()) <= 255
-        assert art.storage_path.endswith(".png")
+        assert art.filename == filename, "the caller's own filename is preserved on the row"
+        assert read_evidence(app, art.storage_path) is not None
 
 
 def test_a_text_artifact_is_classified_as_text(client, stub_host):
@@ -740,9 +740,12 @@ def test_upload_emits_audit_row(client, stub_host):
     action, kw = stub_host.audit_calls[0]
     assert action == "ext:scribble:upload_artifact"
     assert kw["subject_type"] == "artifact"
-    assert kw["subject_id"] == body["id"]
+    # `subject_id` is the real `uuid.UUID` the audit seam is handed; `body["id"]` came back through JSON
+    # and is its string form. Compared raw these are never equal — the assertion has been dead since the
+    # UUIDv7 migration (#36 / lotek#335), when both sides stopped being ints. Same for `engagement_id`.
+    assert str(kw["subject_id"]) == body["id"]
     assert kw["after"]["include_in_report"] is True
-    assert kw["after"]["engagement_id"] == eid
+    assert str(kw["after"]["engagement_id"]) == str(eid)
 
 
 def test_update_emits_audit_with_transition(client, stub_host):
@@ -762,7 +765,7 @@ def test_update_emits_audit_with_transition(client, stub_host):
     action, kw = stub_host.audit_calls[0]
     assert action == "ext:scribble:update_artifact"
     assert kw["subject_type"] == "artifact"
-    assert kw["subject_id"] == aid
+    assert str(kw["subject_id"]) == aid  # UUID vs its JSON string form — see the note above
     assert kw["before"]["include_in_report"] is True
     assert kw["after"]["include_in_report"] is False
     assert kw["before"]["caption"] == "x"
