@@ -146,6 +146,32 @@ def approve(db: Session, staged: StagedAction, *, confirmer_id: uuid.UUID | None
     return ActionResult(status="executed", detail=result)
 
 
+def reject(db: Session, staged: StagedAction, *, rejector_id: uuid.UUID | None,
+           rejector_name: str | None, is_interactive: bool, can_write: bool,
+           can_operate_on=None, host_audit=None) -> ActionResult:
+    """Reject a staged confirm-tier action WITHOUT executing it. Same interactive + write + engagement-
+    operator gates as :func:`approve`, MINUS the confirmer-different-from-initiator rule: rejecting runs
+    nothing, so it is safe for the initiator to cancel their own pending action. Sets ``rejected`` and
+    audits (result=``rejected``), so a declined action is as attributable as an executed one."""
+    if staged.status != "pending":
+        raise ConfirmationRequired(f"staged action is already {staged.status}")
+    if not is_interactive:
+        raise ApprovalDenied("rejection requires an interactive dashboard session, not a machine/PAT caller")
+    if not can_write:
+        raise ApprovalDenied("not authorized to reject")
+    eng = staged.engagement_id
+    if eng is not None and can_operate_on is not None and not can_operate_on(eng):
+        raise ApprovalDenied("the rejector is not an operator on the action's engagement")
+    staged.status = "rejected"
+    staged.confirmed_by = rejector_id
+    staged.confirmed_at = datetime.now(UTC)
+    record_audit(db, verb=staged.verb, provider=staged.provider, tier=Tier.confirm, actor=rejector_name,
+                 result="rejected", args=json.loads(staged.args_json or "{}"), host_audit=host_audit,
+                 subject_id=staged.id)
+    db.commit()
+    return ActionResult(status="rejected", detail="staged action rejected")
+
+
 def visible_servers(db: Session, *, visible_engagement_ids, is_admin: bool) -> list[Server]:
     """Transient servers scoped to the actor's engagements; static (org) infra is admin-only (B2c)."""
     out = []

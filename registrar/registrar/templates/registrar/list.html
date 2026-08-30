@@ -9,6 +9,48 @@
     actions (create/destroy/register/send) are confirm-tier and audited; an agent may stage, never fire.
   </p>
 
+  {% if request.args.get('notice') %}<div style="margin:0 0 14px;padding:9px 12px;border-radius:6px;background:#12341f;color:#8ff0b0;font-size:13px">{{ request.args.get('notice') }}</div>{% endif %}
+  {% if request.args.get('error') %}<div style="margin:0 0 14px;padding:9px 12px;border-radius:6px;background:#3a1720;color:#ff9db0;font-size:13px">{{ request.args.get('error') }}</div>{% endif %}
+
+  <h2 style="font-size:15px;margin:18px 0 6px">Staged actions <span style="color:#7f93a3;font-weight:400">(awaiting approval)</span></h2>
+  <p style="color:#7f93a3;margin:0 0 8px;font-size:12px">
+    Confirm-tier actions an agent staged. A different interactive user approves (two-person control) or
+    rejects; the initiator sees their own but cannot approve it.
+  </p>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
+      <th style="padding:6px">Verb</th><th style="padding:6px">Provider</th><th style="padding:6px">Args</th>
+      <th style="padding:6px">Initiator</th><th style="padding:6px">Staged</th><th style="padding:6px"></th></tr></thead>
+    <tbody>
+    {% for a in staged %}
+      <tr style="border-bottom:1px solid #16222b">
+        <td style="padding:6px">{{ a.verb }}</td><td style="padding:6px">{{ a.provider }}</td>
+        <td style="padding:6px;font-family:monospace;font-size:12px;color:#9fb2c0">{{ a.args }}</td>
+        <td style="padding:6px;font-family:monospace;font-size:11px">{{ a.initiator }}</td>
+        <td style="padding:6px;color:#9fb2c0">{{ a.at }}</td>
+        <td style="padding:6px;white-space:nowrap">
+          {% if can_write %}
+          {% if a.approvable %}
+          <form method="post" action="{{ url_for('registrar.approve_staged_ui', staged_id=a.id) }}" style="display:inline"
+                onsubmit="return confirm('Approve and EXECUTE this {{ a.verb }} action?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+            <button type="submit" style="padding:4px 10px;border:1px solid #2f6b3f;background:#12341f;color:#8ff0b0;border-radius:4px;cursor:pointer">Approve</button>
+          </form>
+          {% else %}<span style="color:#7f93a3;font-size:12px">you staged this</span>{% endif %}
+          <form method="post" action="{{ url_for('registrar.reject_staged_ui', staged_id=a.id) }}" style="display:inline"
+                onsubmit="return confirm('Reject this staged {{ a.verb }} action?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+            <button type="submit" style="padding:4px 10px;border:1px solid #6b2f3a;background:#3a1720;color:#ff9db0;border-radius:4px;cursor:pointer">Reject</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" style="padding:12px 6px;color:#7f93a3">Nothing staged.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
   <h2 style="font-size:15px;margin:18px 0 6px">Servers</h2>
   <table style="width:100%;border-collapse:collapse;font-size:13px">
     <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
