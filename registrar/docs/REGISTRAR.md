@@ -36,16 +36,26 @@ host provides PAT authentication.
 
 Registrar declares a single nav entry (`⌘ Registrar`) pointing at one page:
 
-**`/registrar/` — Infrastructure dashboard.** Three read-only tables:
+**`/registrar/` — Infrastructure dashboard.** Four tables — three read-only, plus the staged-action
+approval queue:
 
+- **Staged actions** — confirm-tier actions an agent staged, awaiting a human. Each row shows verb,
+  provider, args, initiator and age, with **Approve** and **Reject** buttons (plain form POSTs — no
+  JS; `#140`). The two-person rule is *visible*: the initiator sees their own row marked "you staged
+  this" with no Approve button, and Approve is refused server-side for them regardless. Approve and
+  Reject are scoped by the read rule below and are audited (`executed` / `rejected`). Rows are
+  admin-only when unbound to an engagement, engagement-scoped otherwise.
 - **Servers** — name, kind (`static`/`transient`), state (`planned`/`active`/`missing`/`destroyed`),
   provider, IP, role. Scoped by the read rule below.
 - **Domains** — name, provider, registered (yes/no).
 - **Recent actions** — the last 10 audit rows (time, verb, tier, result).
 
-The dashboard is inventory + audit only. There is no create/destroy button on the page — outward changes
-go through the API's tiered `action` flow (below), and a `can_write` host signal drives a UI nudge, not
-the enforcement.
+There is still no create/destroy *button* — an outward change is STAGED through the API's tiered
+`action` flow (below) and only ever executed by a second human clicking **Approve** here. A `can_write`
+host signal gates the Approve/Reject controls; `service.approve`/`service.reject` are the enforcement
+(interactive session, confirmer ≠ initiator for approve, live write authz, engagement-operator
+re-check). Approval remains **absent from the machine surface** on purpose (INV-EXT-02): a PAT stages,
+a human approves.
 
 ---
 
