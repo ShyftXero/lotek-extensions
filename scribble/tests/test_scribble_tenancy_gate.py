@@ -107,6 +107,11 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         "scribble_api.export_checklist_template",
         "scribble_api.create_artifact",  # body-scoped; direct call instead -- see artifacts_api.py
         "scribble_api.templating_preview",  # body-scoped; direct call instead -- see templating_api.py
+        # ext#142 vuln-map: a library-wide (tenant-free) mapping table like the templates it points at,
+        # so these carry no engagement axis. Write-gated by their own host_can_write check (library_ui).
+        "scribble.vuln_map",
+        "scribble.vuln_map_create",
+        "scribble.vuln_map_delete",
     }
 )
 
@@ -171,6 +176,11 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
         db.commit()
         item = fm.EngagementChecklistItem(engagement_checklist_id=checklist.id, text="Item one")
         db.add(item)
+
+        diagram = fm.EngagementDiagram(
+            engagement_id=eng.id, embed_html="<p>gate</p>", caption="gate", order_index=0
+        )
+        db.add(diagram)
         db.commit()
 
         return {
@@ -179,6 +189,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
             "finding_id": finding.id,
             "group_id": group.id,
             "artifact_id": artifact.id,
+            "diagram_id": diagram.id,
             "cid": checklist.id,
             "iid": item.id,
         }

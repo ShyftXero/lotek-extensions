@@ -246,6 +246,64 @@
     }
   });
 
+  // --- multi-select bulk move (ext#143) ----------------------------------------------------------
+  // Checkboxes on finding rows drive a bulk bar; "Move selected" posts every checked id to the board's
+  // data-batch-move-url in ONE atomic request (the singular drag path is untouched).
+
+  function checkedFindingIds() {
+    return Array.prototype.slice
+      .call(document.querySelectorAll(".scribble-finding-check:checked"))
+      .map(function (cb) {
+        var li = cb.closest(".scribble-board-finding");
+        return li ? li.dataset.findingId : null;
+      })
+      .filter(Boolean);
+  }
+
+  function updateBulkBar() {
+    var bar = document.getElementById("scribble-bulk-bar");
+    if (!bar) return;
+    var ids = checkedFindingIds();
+    var n = document.getElementById("scribble-bulk-n");
+    if (n) n.textContent = String(ids.length);
+    bar.hidden = ids.length === 0;
+  }
+
+  document.addEventListener("change", function (ev) {
+    if (ev.target.closest(".scribble-finding-check")) updateBulkBar();
+  });
+
+  document.addEventListener("click", function (ev) {
+    if (ev.target.closest("#scribble-bulk-clear")) {
+      Array.prototype.forEach.call(
+        document.querySelectorAll(".scribble-finding-check:checked"),
+        function (cb) { cb.checked = false; }
+      );
+      updateBulkBar();
+      return;
+    }
+    if (!ev.target.closest("#scribble-bulk-move")) return;
+    var board = document.querySelector("[data-batch-move-url]");
+    var groupSel = document.getElementById("scribble-bulk-group");
+    if (!board || !groupSel) return;
+    var ids = checkedFindingIds();
+    if (!ids.length) return;
+    var groupId = groupSel.value ? groupSel.value : null;  // "" -> Ungrouped (null)
+    var label = groupSel.options[groupSel.selectedIndex].textContent.trim();
+    if (!window.confirm("Move " + ids.length + " finding(s) to \"" + label + "\"?")) return;
+    fetch(board.dataset.batchMoveUrl, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ finding_ids: ids, group_id: groupId, order_index: 0 }),
+    })
+      .then(function (r) { if (!r.ok) throw new Error("bulk move failed"); return r.json(); })
+      .then(function () { window.location.reload(); })
+      .catch(function () {
+        window.alert("Could not move the selected findings. Reloading to resync.");
+        window.location.reload();
+      });
+  });
+
   document.addEventListener("click", function (ev) {
     var rerankBtn = ev.target.closest(".scribble-board-group-rerank");
     if (!rerankBtn || rerankBtn.disabled) return;
@@ -269,4 +327,64 @@
         window.alert("Could not re-rank the group.");
       });
   });
+
+  // --- attack-path linking (ext#141) --------------------------------------------------------------
+  // Scribble has no seam to vector, so the picker talks to vector's cookie API directly (same origin):
+  // list the author's diagrams, fetch the chosen one's self-contained export.html, and POST that
+  // snapshot to scribble's cookie link route. Vector's cookie routes are tenancy-scoped, so a diagram
+  // the author cannot see is never offered.
+  (function initAttackPaths() {
+    var section = document.querySelector(".scribble-attack-paths[data-link-url]");
+    if (!section) return;
+    var select = document.getElementById("scribble-diagram-select");
+    var linkBtn = document.getElementById("scribble-diagram-link-btn");
+    var captionEl = document.getElementById("scribble-diagram-caption");
+    var msg = document.getElementById("scribble-diagram-link-msg");
+    if (!select || !linkBtn) return;
+    var vectorBase = (section.dataset.vectorBase || "/vector").replace(/\/$/, "");
+
+    function setMsg(t) { if (msg) msg.textContent = t || ""; }
+
+    fetch(vectorBase + "/api/diagrams", { headers: { Accept: "application/json" } })
+      .then(function (r) { if (!r.ok) throw new Error("vector unavailable"); return r.json(); })
+      .then(function (data) {
+        var diagrams = (data && data.diagrams) || [];
+        select.innerHTML = "";
+        if (!diagrams.length) {
+          select.innerHTML = '<option value="">No Vector diagrams available</option>';
+          linkBtn.disabled = true;
+          return;
+        }
+        select.appendChild(new Option("Choose a diagram…", ""));
+        diagrams.forEach(function (d) { select.appendChild(new Option(d.name, d.id)); });
+      })
+      .catch(function () {
+        select.innerHTML = '<option value="">Vector not available</option>';
+        linkBtn.disabled = true;
+      });
+
+    linkBtn.addEventListener("click", function () {
+      var diagramId = select.value;
+      if (!diagramId) { setMsg("Pick a diagram first."); return; }
+      linkBtn.disabled = true;
+      setMsg("Fetching diagram…");
+      fetch(vectorBase + "/diagrams/" + encodeURIComponent(diagramId) + "/export.html")
+        .then(function (r) { if (!r.ok) throw new Error("export failed"); return r.text(); })
+        .then(function (embedHtml) {
+          setMsg("Linking…");
+          return fetch(section.dataset.linkUrl, {
+            method: "POST",
+            headers: jsonHeaders(),
+            body: JSON.stringify({
+              diagram_ref: diagramId,
+              caption: (captionEl && captionEl.value.trim()) || null,
+              embed_html: embedHtml,
+            }),
+          });
+        })
+        .then(function (r) { if (!r.ok) throw new Error("link failed"); return r.json(); })
+        .then(function () { window.location.reload(); })
+        .catch(function () { setMsg("Could not link that diagram."); linkBtn.disabled = false; });
+    });
+  })();
 })();

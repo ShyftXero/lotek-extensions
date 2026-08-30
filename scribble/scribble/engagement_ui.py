@@ -87,6 +87,7 @@ from scribble.enums import Confidence, FindingStatus, OrderMode
 from scribble.models import (
     AssessmentType,
     Engagement,
+    EngagementDiagram,
     EngagementFinding,
     FindingGroup,
     VulnerabilityTemplate,
@@ -452,6 +453,8 @@ def register(api_bp, bp) -> None:
                 key=lambda a: (a.order_index, a.id),
             )
 
+            diagrams = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
@@ -461,6 +464,7 @@ def register(api_bp, bp) -> None:
                 templates=templates,
                 assessment_types=assessment_types,
                 engagement_artifacts=engagement_artifacts,
+                diagrams=diagrams,
             )
 
     # =============================================================================== UI: groups
@@ -736,6 +740,126 @@ def register(api_bp, bp) -> None:
                 ),
             }
         return jsonify(response)
+
+    # ============================================================================ API: move findings (bulk)
+
+    @api_bp.post("/engagements/<uuid:engagement_id>/findings/move")
+    def move_findings(engagement_id: int):
+        """Move SEVERAL findings into one group at once — the cookie sibling of the machine API's
+        ``scribble_move_findings`` (api_pat.py), for the board's multi-select bulk bar. Body:
+        ``{"finding_ids": [...], "group_id": <uuid|null>, "order_index": <int>}``.
+
+        ATOMIC like the machine route: every id must belong to THIS engagement or the whole request is
+        refused (same ``finding not found`` a foreign id gets) and nothing moves — a partial success
+        would be indistinguishable from a complete one, and skipping is what makes a foreign id a probe.
+        Duplicate ids (a multi-select artefact) collapse to their first occurrence; the listed order is
+        preserved (each finding lands at ``order_index + its position``)."""
+        payload = request.get_json(silent=True) or {}
+        if "group_id" not in payload:
+            return jsonify(error="group_id is required (use null for ungrouped)"), 400
+        raw_ids = payload.get("finding_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify(error="finding_ids must be a non-empty list"), 400
+        # Bound the walk BEFORE touching the DB (mirrors the machine route's _BULK_ID_LIST_MAX).
+        if len(raw_ids) > 500:
+            return jsonify(error="finding_ids may contain at most 500 ids"), 400
+        finding_ids: list[uuid.UUID] = []
+        for raw in raw_ids:
+            parsed = _as_uuid(raw)
+            if parsed is None:
+                return jsonify(error="finding_ids must contain UUIDs"), 400
+            if parsed not in finding_ids:
+                finding_ids.append(parsed)
+
+        requested_index = _as_int(payload.get("order_index", 0))
+        if requested_index is None:
+            return jsonify(error="order_index must be an integer"), 400
+
+        with open_session() as db:
+            target_group = None
+            raw_group_id = payload.get("group_id")
+            if raw_group_id is not None:
+                target_group_id = _as_uuid(raw_group_id)
+                if target_group_id is None:
+                    return jsonify(error="group_id must be a UUID or null"), 400
+                target_group = db.get(FindingGroup, target_group_id)
+                if target_group is None or target_group.engagement_id != engagement_id:
+                    return jsonify(error=f"group {target_group_id} not found on this engagement"), 404
+
+            # One query, all-or-nothing: the set difference is empty only if every id belongs to this
+            # engagement. A foreign id gets the same 404 a nonexistent one does, and NOTHING moves.
+            present = set(db.scalars(
+                select(EngagementFinding.id).where(
+                    EngagementFinding.id.in_(finding_ids),
+                    EngagementFinding.engagement_id == engagement_id,
+                )
+            ).all())
+            if len(present) != len(finding_ids):
+                return jsonify(error="finding not found"), 404
+
+            placed = []
+            for offset, fid in enumerate(finding_ids):
+                finding = db.get(EngagementFinding, fid)
+                findings_service.place_finding(finding, target_group, requested_index + offset)
+                placed.append(finding)
+            # Read order_index AFTER every placement — each insert reindexes the destination.
+            moved = [{"id": f.id, "group_id": f.group_id, "order_index": f.order_index} for f in placed]
+            db.commit()
+        return jsonify(ok=True, moved=moved,
+                       group_id=str(target_group.id) if target_group is not None else None)
+
+    # ======================================================================== attack paths (ext#141)
+    # Link/unlink a vector attack-path diagram from the browser. Scribble has no seam to vector, so the
+    # picker (board.js) fetches vector's cookie API to list the author's diagrams and its export.html,
+    # then POSTs the self-contained snapshot here — the cookie sibling of api_pat's link/delete. The
+    # report renders embed_html in a SANDBOXED iframe (render_html), so a stored snapshot is contained
+    # exactly as the machine path already assumes.
+
+    _MAX_DIAGRAM_HTML_BYTES = 10 * 1024 * 1024
+
+    @api_bp.post("/engagements/<uuid:engagement_id>/attack-paths")
+    def link_attack_path(engagement_id: int):
+        payload = request.get_json(silent=True) or {}
+        embed_html = payload.get("embed_html")
+        if not isinstance(embed_html, str) or not embed_html.strip():
+            return jsonify(error="embed_html is required"), 400
+        if len(embed_html.encode("utf-8")) > _MAX_DIAGRAM_HTML_BYTES:
+            return jsonify(error="embed_html exceeds the 10 MiB limit"), 413
+        diagram_ref = (payload.get("diagram_ref") or None)
+        if diagram_ref is not None:
+            diagram_ref = str(diagram_ref)[:64]
+        caption = (payload.get("caption") or None)
+        if caption is not None:
+            caption = str(caption)[:255]
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                return jsonify(error="engagement not found"), 404
+            diagram = EngagementDiagram(
+                engagement_id=engagement_id, diagram_ref=diagram_ref, caption=caption,
+                embed_html=embed_html, order_index=len(list(engagement.diagrams)),
+                include_in_report=True,
+            )
+            db.add(diagram)
+            db.flush()
+            body = {"id": str(diagram.id), "caption": diagram.caption or "",
+                    "diagram_ref": diagram.diagram_ref}
+            db.commit()
+        return jsonify(ok=True, **body)
+
+    @bp.post("/engagements/<uuid:engagement_id>/attack-paths/<uuid:diagram_id>/unlink",
+             endpoint="unlink_attack_path")
+    def unlink_attack_path(engagement_id: int, diagram_id: int):
+        if not host_can_write():
+            abort(403)
+        with open_session() as db:
+            diagram = db.get(EngagementDiagram, diagram_id)
+            # Scope to the URL engagement — a diagram id from another engagement is a 404, not a delete.
+            if diagram is None or diagram.engagement_id != engagement_id:
+                abort(404)
+            db.delete(diagram)
+            db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     # =============================================================================== API: update group
 

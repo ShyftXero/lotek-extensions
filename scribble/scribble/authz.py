@@ -71,6 +71,7 @@ from scribble.models import (
     Engagement,
     EngagementChecklist,
     EngagementChecklistItem,
+    EngagementDiagram,
     EngagementFinding,
     FindingGroup,
 )
@@ -252,6 +253,11 @@ def _via_artifact(db, value) -> Engagement | None:
     return None if artifact is None else db.get(Engagement, artifact.engagement_id)
 
 
+def _via_diagram(db, value) -> Engagement | None:
+    diagram = db.get(EngagementDiagram, value)
+    return None if diagram is None else db.get(Engagement, diagram.engagement_id)
+
+
 def _via_engagement_checklist(db, value) -> Engagement | None:
     checklist = db.get(EngagementChecklist, value)
     return None if checklist is None else db.get(Engagement, checklist.engagement_id)
@@ -275,6 +281,7 @@ _CHILD_RESOLVERS: dict[str, object] = {
     "finding_id": _via_finding,
     "group_id": _via_group,
     "artifact_id": _via_artifact,
+    "diagram_id": _via_diagram,
     "cid": _via_engagement_checklist,
     "iid": _via_checklist_item,
 }

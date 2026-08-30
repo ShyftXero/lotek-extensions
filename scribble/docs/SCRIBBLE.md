@@ -53,6 +53,7 @@ Four sidebar entries come from the manifest's `[[nav]]` tables, in this order:
 | Scribble | `/scribble/` | Dashboard: engagement/finding/client counts + the 10 most recent engagements, **scoped to the clients you can see**. The Vuln Templates tile is the one deliberately global number — the library is a shared, tenant-free table. |
 | Report Boards | `/scribble/engagements` | Engagement list + **New** (name, scope type, company name, optional dates, select-or-create client). An engagement is the container for a report's findings, groups, checklists and artifacts. |
 | Vuln Library | `/scribble/library` | The seeded templates plus anything you author. Search by name, filter by category/severity/tag, toggle inactive templates into view. |
+| Vuln-map | `/scribble/library/vuln-map` | The scan-finding → template mapping `promote_job` resolves through (ext#142). List, add, and delete mappings (source / title pattern / dedupe prefix → template) — the person who notices a wrong mapping is the one who can now fix it. Reachable from the library header. |
 | Assessment Types | `/scribble/assessment-types` | The user-managed lookup that names board groups (report sections). Not hardcoded — add your own. |
 
 One further page exists without a nav entry: **`/scribble/checklists`**, the checklist library
@@ -69,6 +70,10 @@ Board order *is* document order.
   drag into a group flips it to manual; `POST /scribble/api/groups/<id>` with
   `{"order_mode": "auto_severity"}` — the board's *re-rank by severity* control — is the way back.
 - Ungrouped findings sit in their own bucket, always shown severity-first.
+- **Multi-select bulk move (ext#143):** tick several findings and a bulk bar offers *Move selected to…*
+  a group in one atomic request (`POST /scribble/api/engagements/<id>/findings/move` — the cookie sibling
+  of the machine bulk-move; either every id belongs to the engagement or nothing moves). Single-item drag
+  is unchanged.
 - A group can be excluded from the rendered report without deleting it. **Deleting a group detaches its
   findings** (they go ungrouped) rather than destroying them — a report section is not the same thing as
   the findings inside it. **Deleting a finding does take its artifacts with it**, rows and files both — but
@@ -85,6 +90,12 @@ Board order *is* document order.
 
 Drag-and-drop is native HTML5 with no external sortable library; lotek is CSP-strict, so nothing here
 loads from a CDN.
+
+**Attack paths (ext#141).** The engagement board has an *Attack paths* section that links a
+[vector](../../vector) diagram into the report without a PAT: the picker lists your Vector diagrams
+(via vector's own cookie API, so a diagram you cannot see is never offered), fetches the chosen one's
+self-contained `export.html`, and POSTs that snapshot to `POST /scribble/api/engagements/<id>/attack-paths`.
+Unlinking is a form POST scoped to the engagement. The report embeds the snapshot in a sandboxed iframe.
 
 ### Finding editor + artifact gallery
 
