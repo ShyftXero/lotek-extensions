@@ -1,6 +1,7 @@
 {% extends scribble_base %}
 {% block title %}Scribble — Vuln Library{% endblock %}
 {% block appbar_actions %}
+<a class="btn" href="{{ url_for('scribble.vuln_map') }}">Vuln-map</a>
 <a class="btn btn-primary" href="{{ url_for('scribble.library_new') }}">+ New template</a>
 {% endblock %}
 {% block content %}

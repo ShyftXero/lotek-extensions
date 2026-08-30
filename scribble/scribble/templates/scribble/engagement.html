@@ -78,8 +78,55 @@
 </div>
 {% endif %}
 
+<div class="scribble-attack-paths card" data-vector-base="/vector"
+     data-link-url="{{ url_for('scribble_api.link_attack_path', engagement_id=engagement.id) }}">
+  <h2 style="margin-top:0">Attack paths</h2>
+  <p class="muted">Vector attack-path diagrams linked into this report. Author the diagram in Vector, then
+    link it here — the report embeds a self-contained snapshot.</p>
+  <ul class="scribble-attack-list">
+    {% for d in diagrams %}
+    <li>
+      <span>{{ d.caption or d.diagram_ref or 'diagram' }}</span>
+      {% if not d.include_in_report %}<span class="muted">(excluded)</span>{% endif %}
+      {% if scribble_can_write %}
+      <form method="post" style="display:inline"
+            action="{{ url_for('scribble.unlink_attack_path', engagement_id=engagement.id, diagram_id=d.id) }}"
+            onsubmit="return confirm('Unlink this diagram from the report?');">
+        <button type="submit" class="btn btn-sm">Unlink</button>
+      </form>
+      {% endif %}
+    </li>
+    {% else %}
+    <li class="muted">No attack paths linked yet.</li>
+    {% endfor %}
+  </ul>
+  {% if scribble_can_write %}
+  <div class="scribble-attack-link">
+    <select id="scribble-diagram-select"><option value="">Loading Vector diagrams…</option></select>
+    <input type="text" id="scribble-diagram-caption" placeholder="Caption (optional)" />
+    <button type="button" class="btn" id="scribble-diagram-link-btn">Link diagram</button>
+    <span id="scribble-diagram-link-msg" class="muted"></span>
+  </div>
+  {% endif %}
+</div>
+
+{% if scribble_can_write %}
+<div class="scribble-bulk-bar" id="scribble-bulk-bar" hidden>
+  <span class="scribble-bulk-count"><strong id="scribble-bulk-n">0</strong> selected</span>
+  <label>Move to
+    <select class="scribble-bulk-group" id="scribble-bulk-group">
+      {% for entry in board_groups %}<option value="{{ entry.group.id }}">{{ entry.group.name }}</option>{% endfor %}
+      <option value="">Ungrouped</option>
+    </select>
+  </label>
+  <button type="button" class="btn" id="scribble-bulk-move">Move selected</button>
+  <button type="button" class="btn" id="scribble-bulk-clear">Clear</button>
+</div>
+{% endif %}
+
 <div class="scribble-board" data-board
-     data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}">
+     data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}"
+     data-batch-move-url="{{ url_for('scribble_api.move_findings', engagement_id=engagement.id) }}">
 
   {% if not board_groups and not ungrouped %}
   <div class="card"><p class="muted">No groups yet. Add one above to start organizing findings.</p></div>
@@ -118,6 +165,7 @@
       <li class="scribble-board-finding{% if not f.include_in_report %} is-excluded{% endif %}"
           draggable="true" data-finding-id="{{ f.id }}"
           data-move-url="{{ url_for('scribble_api.move_finding', finding_id=f.id) }}">
+        {% if scribble_can_write %}<input type="checkbox" class="scribble-finding-check" aria-label="Select finding for bulk move" />{% endif %}
         <span class="scribble-board-handle mono">&#x2837;</span>
         <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
         <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
@@ -152,6 +200,7 @@
       <li class="scribble-board-finding{% if not f.include_in_report %} is-excluded{% endif %}"
           draggable="true" data-finding-id="{{ f.id }}"
           data-move-url="{{ url_for('scribble_api.move_finding', finding_id=f.id) }}">
+        {% if scribble_can_write %}<input type="checkbox" class="scribble-finding-check" aria-label="Select finding for bulk move" />{% endif %}
         <span class="scribble-board-handle mono">&#x2837;</span>
         <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
         <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
@@ -206,6 +255,14 @@
   .scribble-board-finding-delete:hover { color: var(--danger); }
   .scribble-board-findings-empty { padding: 10px; border: 1px dashed var(--line); border-radius: 8px; }
   .scribble-board-group-ungrouped { border-style: dashed; }
+  .scribble-bulk-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 8px 12px;
+    border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface, #12202a); font-size: 13px; }
+  .scribble-bulk-bar select { font: inherit; }
+  .scribble-finding-check { margin-right: 4px; }
+  .scribble-attack-list { list-style: none; padding: 0; margin: 8px 0; }
+  .scribble-attack-list li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+  .scribble-attack-link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .scribble-attack-link select, .scribble-attack-link input { font: inherit; }
   .scribble-readonly-note { font-style: italic; }
 
   /* Engagement-level evidence panel (ext#51) -- shares the finding gallery's item classes so

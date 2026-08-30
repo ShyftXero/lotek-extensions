@@ -50,14 +50,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import abort, jsonify, render_template, request, url_for
+from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
+from scribble.artifacts_api import _as_uuid  # one shared body-id parser (lotek#335)
 from scribble.content import schema
 from scribble.content.render_html import render_block
-from scribble.deps import open_session, severity_enum
+from scribble.deps import current_actor_username, host_can_write, open_session, severity_enum
 from scribble.enums import Severity
-from scribble.models import Tag, VulnerabilityTemplate
+from scribble.models import ScribbleVulnMap, Tag, VulnerabilityTemplate
 
 _REGISTERED = False
 
@@ -158,6 +159,66 @@ def register(api_bp, bp) -> None:
                 references_text=references_text,
                 all_tags=all_tags,
             )
+
+    # ----------------------------------------------------------------- vuln-map (ext#142)
+    # The title/source -> template mapping `promote_job` resolves through. Managed here in the library
+    # area (a library-wide, tenant-free table like the templates it points at). No-JS form POSTs.
+
+    @bp.get("/library/vuln-map", endpoint="vuln_map")
+    def vuln_map_page():
+        with open_session() as db:
+            templates = db.scalars(
+                select(VulnerabilityTemplate)
+                .where(VulnerabilityTemplate.active.is_(True))
+                .order_by(VulnerabilityTemplate.name)
+            ).all()
+            template_names = {t.id: t.name for t in templates}
+            mappings = [
+                {"id": m.id, "source": m.source, "title_pattern": m.title_pattern,
+                 "dedupe_prefix": m.dedupe_prefix, "template_id": m.template_id,
+                 "template_name": template_names.get(m.template_id, "(missing template)")}
+                for m in db.scalars(select(ScribbleVulnMap).order_by(ScribbleVulnMap.id)).all()
+            ]
+            return render_template(
+                "scribble/vuln_map.html", mappings=mappings, templates=templates,
+                notice=request.args.get("notice"), error=request.args.get("error"),
+            )
+
+    @bp.post("/library/vuln-map", endpoint="vuln_map_create")
+    def vuln_map_create():
+        if not host_can_write():
+            abort(403)
+        source = (request.form.get("source") or "").strip() or None
+        title_pattern = (request.form.get("title_pattern") or "").strip() or None
+        dedupe_prefix = (request.form.get("dedupe_prefix") or "").strip() or None
+        template_id = _as_uuid(request.form.get("template_id"))
+        if template_id is None:
+            return redirect(url_for("scribble.vuln_map", error="A template is required."))
+        if not (source or title_pattern or dedupe_prefix):
+            return redirect(url_for(
+                "scribble.vuln_map",
+                error="At least one match key (source, title pattern, or dedupe prefix) is required."))
+        with open_session() as db:
+            t = db.get(VulnerabilityTemplate, template_id)
+            if t is None or not t.active:
+                return redirect(url_for("scribble.vuln_map", error="That template no longer exists."))
+            db.add(ScribbleVulnMap(
+                source=source, title_pattern=title_pattern, dedupe_prefix=dedupe_prefix,
+                template_id=template_id, created_by=current_actor_username(),
+            ))
+            db.commit()
+        return redirect(url_for("scribble.vuln_map", notice="Mapping added."))
+
+    @bp.post("/library/vuln-map/<uuid:map_id>/delete", endpoint="vuln_map_delete")
+    def vuln_map_delete(map_id):
+        if not host_can_write():
+            abort(403)
+        with open_session() as db:
+            m = db.get(ScribbleVulnMap, map_id)
+            if m is not None:
+                db.delete(m)
+                db.commit()
+        return redirect(url_for("scribble.vuln_map", notice="Mapping deleted."))
 
     # ------------------------------------------------------------------------------- JSON (api_bp)
 

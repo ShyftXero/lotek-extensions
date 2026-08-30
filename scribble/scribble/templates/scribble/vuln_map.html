@@ -1,0 +1,63 @@
+{% extends scribble_base %}
+{% block title %}Scribble — Vuln-map{% endblock %}
+{% block appbar_actions %}
+<a class="btn" href="{{ url_for('scribble.library') }}">← Library</a>
+{% endblock %}
+{% block content %}
+{% if notice %}<div class="banner" style="margin-bottom:12px;padding:9px 12px;border-radius:6px;background:#12341f;color:#8ff0b0">{{ notice }}</div>{% endif %}
+{% if error %}<div class="banner banner-warn" style="margin-bottom:12px;padding:9px 12px;border-radius:6px;background:#3a1720;color:#ff9db0">{{ error }}</div>{% endif %}
+
+<div class="card">
+  <h2>Vuln-map <span class="muted">({{ mappings|length }})</span></h2>
+  <p class="muted">
+    When <code>promote_job</code> pulls a scan finding onto a report board, it resolves the library
+    template to attach by matching the finding's <strong>source</strong> and/or <strong>title</strong>
+    against these rules. A missing or wrong mapping is why a promoted finding lands with the wrong
+    write-up (or none) — fix it here.
+  </p>
+
+  <table class="table" style="width:100%">
+    <thead><tr><th>Source</th><th>Title pattern</th><th>Dedupe prefix</th><th>→ Template</th><th></th></tr></thead>
+    <tbody>
+    {% for m in mappings %}
+      <tr>
+        <td>{{ m.source or '—' }}</td>
+        <td><code>{{ m.title_pattern or '—' }}</code></td>
+        <td>{{ m.dedupe_prefix or '—' }}</td>
+        <td>{{ m.template_name }}</td>
+        <td>
+          {% if scribble_can_write %}
+          <form method="post" action="{{ url_for('scribble.vuln_map_delete', map_id=m.id) }}" style="display:inline"
+                onsubmit="return confirm('Delete this mapping?');">
+            <button type="submit" class="btn btn-sm">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">No mappings yet — a promoted finding falls back to its scan title with no library write-up.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if scribble_can_write %}
+<div class="card">
+  <h3>Add a mapping</h3>
+  <p class="muted">Give at least one match key. Source matches the scanner (e.g. <code>nuclei</code>);
+    title pattern matches the finding title (substring); dedupe prefix groups near-duplicates.</p>
+  <form method="post" action="{{ url_for('scribble.vuln_map_create') }}" class="fr-lib-filters">
+    <label>Source<br/><input type="text" name="source" placeholder="e.g. nuclei" /></label>
+    <label>Title pattern<br/><input type="text" name="title_pattern" placeholder="e.g. TLS" /></label>
+    <label>Dedupe prefix<br/><input type="text" name="dedupe_prefix" placeholder="optional" /></label>
+    <label>Template<br/>
+      <select name="template_id" required>
+        <option value="">Choose a template…</option>
+        {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-primary">Add mapping</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}
