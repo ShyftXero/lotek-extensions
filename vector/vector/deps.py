@@ -153,6 +153,82 @@ def host_setting(key: str, default: Any = None) -> Any:
     return default if value is None else value
 
 
+def host_is_mounted() -> bool:
+    """Whether a host capability bundle was injected (``extras['host']``). Standalone Vector has no host
+    tenancy model at all, so the engagement predicates below degrade to the owner-scope fallback."""
+    try:
+        return bool(get_config().extras.get("host"))
+    except RuntimeError:  # pragma: no cover - defensive; no app context
+        return False
+
+
+def host_can_view_engagement(engagement_id) -> bool:
+    """Does the CURRENT request's principal hold a live observer-or-better membership on this engagement?
+
+    Asked of the host's ``extras['can_view_engagement']`` hook (``(engagement_id) -> bool``), which reads
+    the request principal itself — so it answers for BOTH the cookie and the PAT surface without either
+    passing an actor. Fails CLOSED (False) when a host is mounted but injected no hook: an engagement-bound
+    row with no way to check membership must not be shown. Standalone (no host) also returns False, but a
+    standalone diagram is never engagement-bound so this is never reached there.
+    """
+    hook = _extras().get("can_view_engagement")
+    if hook is None:
+        return False
+    try:
+        return bool(hook(engagement_id))
+    except Exception:  # noqa: BLE001 - a throwing host hook fails closed, never widens visibility
+        return False
+
+
+def host_can_operate_on(engagement_id) -> bool:
+    """Does the current principal hold a live OPERATOR capability on this engagement? (INV-TENANCY-05.)
+
+    The WRITE gate for an engagement-bound diagram — asked of ``extras['can_operate_on']``, never
+    ``can_write()`` (the global ceiling) which the invariant's red-path forbids as the object gate. Fails
+    closed."""
+    hook = _extras().get("can_operate_on")
+    if hook is None:
+        return False
+    try:
+        return bool(hook(engagement_id))
+    except Exception:  # noqa: BLE001 - fail closed
+        return False
+
+
+def host_visible_engagement_ids():
+    """The scoped SET of engagement ids the current principal may see, or ``None`` when unavailable
+    (standalone / a host bundle predating the hook). ``None`` is distinct from an EMPTY set: empty means
+    "this actor holds nothing", None means "no set to scope by" — the list statement treats both as
+    "no engagement-bound rows are visible" (fail closed), which is safe because a standalone/unmounted
+    Vector has no engagement-bound rows anyway."""
+    hook = _extras().get("visible_engagement_ids")
+    if hook is None:
+        return None
+    try:
+        return frozenset(hook())
+    except Exception:  # noqa: BLE001 - fail closed: no set -> no bound rows shown
+        return None
+
+
+def host_audit(db, verb: str, *, subject_type: str, subject_id=None, before=None, after=None) -> None:
+    """Append one ``ext:vector:<verb>`` row through the host audit seam (INV-AUDIT-03), in the SAME
+    session/txn as the change (``db``) so it commits atomically. No-op standalone (no host). ``subject_id``
+    is coerced to ``str`` — the host's column is text and a route serializes the same id as a string, so a
+    raw ``uuid.UUID`` would never correlate against the API response (the scribble fix, #256)."""
+    hook = _extras().get("audit")
+    if hook is None:
+        return
+    hook(db, f"ext:vector:{verb}", subject_type=subject_type,
+         subject_id=None if subject_id is None else str(subject_id), before=before, after=after)
+
+
+def _extras() -> dict:
+    try:
+        return get_config().extras or {}
+    except RuntimeError:  # pragma: no cover - defensive; no app context
+        return {}
+
+
 def client_model():
     """The ``Client`` model this mounted Vector queries against — the host-injected one when present,
     else Vector's own ``vector.models.Client`` (standalone)."""

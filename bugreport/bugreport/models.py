@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import enum
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bugreport.db import Base, TimestampMixin, UuidPk
@@ -134,5 +135,10 @@ class Attachment(Base, UuidPk, TimestampMixin):
     size: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str] = mapped_column(String(64), default="")
     share_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    # When the current share_token stops resolving (lotek#585). Stamped alongside the token in
+    # `service.share_attachment`; a NULL here on a row that carries a token means a link minted before this
+    # column existed — `_resolve_by_token` treats such legacy links as still valid (they were unbounded
+    # when issued; re-sharing stamps an expiry). Nullable + additive so an existing DB migrates in place.
+    share_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     report: Mapped[Report] = relationship(back_populates="attachments")

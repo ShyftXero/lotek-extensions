@@ -96,9 +96,10 @@ class StagedAction(Base, UuidPk):
 class AuditRecord(Base, UuidPk):
     """Append-only local audit of every privileged action (who, verb, provider, args, result).
 
-    Registrar keeps its OWN trail for the MVP; the roadmap's owed follow-up is to append to core's
-    ``audit_events`` via a ``HostAudit`` host-contract verb so there is one defensible trail. No UPDATE,
-    no DELETE — rows are only ever inserted."""
+    This is the LOCAL (UI) trail. It is NOT the only one: when mounted, ``service.record_audit`` also
+    appends to core's ``audit_events`` through the host ``audit`` seam, in the SAME transaction as this
+    row and the change (INV-AUDIT-03) — so there is one defensible core trail plus this human-facing local
+    view. No UPDATE, no DELETE — rows are only ever inserted."""
 
     __tablename__ = "registrar_audit"
 

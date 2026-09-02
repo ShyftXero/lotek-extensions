@@ -31,11 +31,15 @@ import logging
 import uuid
 
 from flask import Blueprint, Response, jsonify, request
-from sqlalchemy import or_, select
 
-from vector import host
+from vector import access, host
 from vector.api_schemas import CreateDiagramRequest, UpdateDiagramRequest, request_body
-from vector.deps import get_config, host_setting
+from vector.deps import (
+    get_config,
+    host_audit,
+    host_can_operate_on,
+    host_setting,
+)
 from vector.models import Diagram
 from vector.render import render_deliverable
 from vector.schema import normalize
@@ -77,27 +81,18 @@ def _actor_owner_id(actor):
 
 
 def _visible_stmt(actor):
-    """Diagrams the token's user may see: own + builtin; admins see all. NULL-owner rows are visible
-    only to admins (never guessed onto a PAT user).
-
-    A principal whose id this package cannot represent gets builtin-only. Comparing against a None uid
-    would render as ``owner_id IS NULL`` and LIST exactly the null-owner rows that
-    ``_load_visible_or_none`` correctly refuses — list and get must agree.
-    """
-    if _is_admin(actor):
-        return select(Diagram)
-    uid = _actor_owner_id(actor)
-    if uid is None:
-        return select(Diagram).where(Diagram.builtin.is_(True))
-    return select(Diagram).where(or_(Diagram.owner_id == uid, Diagram.builtin.is_(True)))
+    """Diagrams the token's user may see — engagement-scoped, then owner-scoped for unbound rows. Routes
+    through the SAME ``vector.access`` seam the cookie surface uses, so the two cannot drift; the only
+    difference is that the PAT actor's ``(is_admin, owner_id)`` is resolved from the bearer principal."""
+    return access.visible_diagrams_stmt(
+        is_admin=_is_admin(actor), owner_id=_actor_owner_id(actor))
 
 
 def _load_visible_or_none(db, actor, diagram_id: uuid.UUID) -> Diagram | None:
     row = db.get(Diagram, diagram_id)
     if row is None:
         return None
-    uid = _actor_owner_id(actor)
-    if _is_admin(actor) or row.builtin or (uid is not None and row.owner_id == uid):
+    if access.diagram_visible(row, is_admin=_is_admin(actor), owner_id=_actor_owner_id(actor)):
         return row
     return None  # same 404 for missing and not-visible — no existence oracle
 
@@ -136,21 +131,46 @@ def get_diagram(diagram_id: uuid.UUID):
         )
 
 
+def _parse_engagement_id(body):
+    """A create body's optional ``engagement_id`` (the tenancy binding). Adopting it from the request is
+    sound only because create gates it with ``can_operate_on`` right after (INV-TENANCY-05); every later
+    read/write re-derives the key from the stored row. Returns (ok, value): (False, response) on a bad
+    UUID so the caller can early-return the 400."""
+    raw = body.get("engagement_id")
+    if raw in (None, ""):
+        return True, None
+    try:
+        return True, uuid.UUID(str(raw))
+    except (ValueError, TypeError):
+        return False, (jsonify({"error": "bad_request", "detail": "engagement_id must be a UUID"}), 400)
+
+
 @machine_bp.post("/diagrams")
 @host.require_scope("write")
 @request_body(CreateDiagramRequest)
 def create_diagram():
-    """Create an attack-path diagram owned by the token's user."""
+    """Create an attack-path diagram. Bind it to an engagement (``engagement_id``) the token holds an
+    operator capability on, or leave it unbound (owner-scoped)."""
     actor = host.actor()
     body = request.get_json(silent=True) or {}
+    ok, eid = _parse_engagement_id(body)
+    if not ok:
+        return eid
+    if eid is not None and not host_can_operate_on(eid):
+        return jsonify({"error": "forbidden",
+                        "detail": "you are not an operator on that engagement"}), 403
     with get_config().session_factory() as db:
         row = Diagram(
             name=_clean_name(body.get("name")),
             model_json=json.dumps(normalize(body.get("model")), ensure_ascii=False),
             owner_id=_actor_owner_id(actor),
             created_by=getattr(actor, "username", None),
+            engagement_id=eid,
         )
         db.add(row)
+        db.flush()
+        host_audit(db, "create", subject_type="vector_diagram", subject_id=row.id,
+                   after={"name": row.name, "engagement_id": str(eid) if eid else None})
         db.commit()
         return jsonify(id=row.id, name=row.name), 201
 
@@ -168,10 +188,16 @@ def update_diagram(diagram_id: uuid.UUID):
             return jsonify({"error": "not_found"}), 404
         if d.builtin:
             return jsonify({"error": "forbidden", "detail": "builtin diagrams are read-only"}), 403
+        if not access.diagram_writable(d, is_admin=_is_admin(actor), owner_id=_actor_owner_id(actor)):
+            # Viewable but not writable: an observer membership on the engagement (INV-TENANCY-05).
+            return jsonify({"error": "forbidden", "detail": "you may not modify this diagram"}), 403
+        before = {"name": d.name}
         if "name" in body:
             d.name = _clean_name(body.get("name"), d.name)
         if "model" in body:
             d.model_json = json.dumps(normalize(body.get("model")), ensure_ascii=False)
+        host_audit(db, "update", subject_type="vector_diagram", subject_id=d.id,
+                   before=before, after={"name": d.name})
         db.commit()
         return jsonify(id=d.id, name=d.name)
 
@@ -187,6 +213,11 @@ def delete_diagram(diagram_id: uuid.UUID):
             return jsonify({"error": "not_found"}), 404
         if d.builtin:
             return jsonify({"error": "forbidden", "detail": "builtin diagrams are read-only"}), 403
+        if not access.diagram_writable(d, is_admin=_is_admin(actor), owner_id=_actor_owner_id(actor)):
+            return jsonify({"error": "forbidden", "detail": "you may not modify this diagram"}), 403
+        eid = str(d.engagement_id) if d.engagement_id else None
+        host_audit(db, "delete", subject_type="vector_diagram", subject_id=d.id,
+                   before={"name": d.name, "engagement_id": eid})
         db.delete(d)
         db.commit()
         return jsonify(deleted=str(diagram_id))

@@ -30,6 +30,13 @@ class CreateDiagramRequest(BaseModel):
 
     name: str | None = Field(None, description="Diagram name; defaults to 'Untitled attack path'.")
     model: Any = Field(None, description="A vector.attackpath/v1 document; normalized before storage.")
+    engagement_id: str | None = Field(
+        None,
+        description="Optional engagement (UUID) to bind this diagram to. If set, the token must hold an "
+        "operator capability on it, and thereafter only live members of that engagement may read/export "
+        "it and only operators may modify it — a revoked member loses access. Omit for an unbound, "
+        "owner-scoped diagram.",
+    )
 
 
 class UpdateDiagramRequest(BaseModel):

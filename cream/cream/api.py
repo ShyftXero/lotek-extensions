@@ -29,6 +29,7 @@ from cream.deps import (
     current_actor_is_admin,
     current_actor_username,
     get_config,
+    host_audit,
     host_can_operate_on,
     host_can_write,
     host_engagement_burn,
@@ -265,6 +266,7 @@ def write_brand():
     cfg = get_config()
     with cfg.session_factory() as db:
         brand = get_brand(db)
+        before = _brand_audit_snapshot(brand)
         for name, limit in _BRAND_TEXT.items():
             if name in body:
                 raw = body.get(name)
@@ -281,8 +283,20 @@ def write_brand():
         brand.company_name = brand.company_name or "Your Firm"
         brand.default_currency = brand.default_currency or "USD"
         brand.accent_color = brand.accent_color or "#0f766e"
+        # Per-entity audit with before/after on the brand text fields — `payment_instructions` above all,
+        # which redirects remittance on every FUTURE invoice, so the change must be visible (INV-AUDIT-03).
+        host_audit(db, "update_brand", subject_type="cream_brand", subject_id=brand.id,
+                   before=before, after=_brand_audit_snapshot(brand))
         db.commit()
         return jsonify(_brand_json(brand))
+
+
+def _brand_audit_snapshot(brand) -> dict:
+    """The editable brand text fields as a flat dict, for the before/after of an ``update_brand`` audit
+    row. Includes ``payment_instructions`` (the remit-to details) and the rest of the text set; the logo
+    data-URI is excluded — it is large and binary-ish, and a change to it is not the fraud vector."""
+    fields = list(_BRAND_TEXT) + list(_BRAND_LONGTEXT)
+    return {name: getattr(brand, name, None) for name in fields}
 
 
 # --- documents -----------------------------------------------------------------------------------
@@ -494,6 +508,16 @@ def document_burn(doc_id: uuid.UUID):
 # --- lifecycle -----------------------------------------------------------------------------------
 
 
+def _lifecycle_audit(db, doc, verb: str, before_status) -> None:
+    """One per-entity audit row for a document state transition, in the SAME txn as the change (before the
+    caller's ``db.commit()``). before/after carry the status so an auditor can see WHAT moved — the coarse
+    ``EXTENSION_MACHINE_WRITE`` backstop only records that a write happened, not that this invoice was
+    issued or voided."""
+    host_audit(db, verb, subject_type="cream_document", subject_id=doc.id,
+               before={"status": getattr(before_status, "value", str(before_status))},
+               after={"status": getattr(doc.status, "value", str(doc.status)), "number": doc.number})
+
+
 @api_bp.post("/documents/<uuid:doc_id>/issue")
 def issue_document(doc_id: uuid.UUID):
     """Freeze a draft into an immutable, numbered document. Human-only (never agent-autonomous)."""
@@ -501,10 +525,12 @@ def issue_document(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         doc = _load(db, doc_id, write=True)
+        before = doc.status
         try:
             issue(db, doc, brand=get_brand(db))
         except DocumentFrozen as e:
             abort(409, str(e))
+        _lifecycle_audit(db, doc, "issue", before)
         db.commit()
         return jsonify(_doc_json(doc))
 
@@ -515,10 +541,12 @@ def mark_sent_document(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         doc = _load(db, doc_id, write=True)
+        before = doc.status
         try:
             mark_sent(db, doc)
         except DocumentFrozen as e:
             abort(409, str(e))
+        _lifecycle_audit(db, doc, "mark_sent", before)
         db.commit()
         return jsonify(_doc_json(doc))
 
@@ -529,10 +557,12 @@ def accept_document(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         doc = _load(db, doc_id, write=True)
+        before = doc.status
         try:
             accept(db, doc)
         except (DocumentFrozen, NotConvertible) as e:
             abort(409, str(e))
+        _lifecycle_audit(db, doc, "accept", before)
         db.commit()
         return jsonify(_doc_json(doc))
 
@@ -549,6 +579,10 @@ def convert_document(doc_id: uuid.UUID):
                                          created_by=current_actor_username())
         except NotConvertible as e:
             abort(409, str(e))
+        # The subject is the NEW invoice; before/after name the source quote it derives from.
+        host_audit(db, "convert", subject_type="cream_document", subject_id=invoice.id,
+                   before={"converted_from": str(quote.id), "status": quote.status.value},
+                   after={"status": invoice.status.value, "kind": invoice.kind.value})
         db.commit()
         return jsonify(_doc_json(invoice)), 201
 
@@ -559,6 +593,8 @@ def void_document(doc_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         doc = _load(db, doc_id, write=True)
+        before = doc.status
         void(db, doc)
+        _lifecycle_audit(db, doc, "void", before)
         db.commit()
         return jsonify(_doc_json(doc))
