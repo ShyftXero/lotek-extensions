@@ -4,9 +4,12 @@ A diagram is a single row holding the whole ``vector.attackpath/v1`` document as
 granularity lives client-side, the server is a JSON store + HTML exporter. Tables are ``vector_``-prefixed
 so they never collide with a host's tables when mounted in the shared database.
 
-Ownership (``owner_id`` / ``created_by``) is soft attribution + an access scope: list/read/write are
-scoped to the owner (admins see everything, incl. legacy NULL-owner rows) by the blueprint/API, mirroring
-lotek's job tenancy posture. ``client_id`` / ``owner_id`` / ``source_job_id`` are SOFT references (UUIDs,
+Tenancy is the ENGAGEMENT (``engagement_id``), not the owner: a diagram bound to an engagement is
+visible/mutable only to a LIVE member/operator of it (host predicate; owner irrelevant, revocation
+respected — lotek#585). An UNBOUND diagram (NULL engagement) has no engagement to check, so it falls back
+to the older owner scope: ``owner_id`` / ``created_by`` is soft attribution + that fallback access scope
+(owner + admins; legacy NULL-owner rows are admin-only). ``client_id`` / ``owner_id`` / ``source_job_id``
+/ ``engagement_id`` are SOFT references (UUIDs,
 no FK) to whatever host tables exist — Vector may run standalone with no such tables at all. They are
 UUID-typed because lotek's core keys ``Client``/``User``/``Job`` on UUIDv7 (v2); an Integer column can't
 hold a UUID and the mounted INSERT would fail ``cannot cast type uuid to integer``.
@@ -44,6 +47,14 @@ class Diagram(Base, TimestampMixin):
     # UUID-typed to match lotek's core UUIDv7 keys — see the module docstring.
     client_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     source_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    # ENGAGEMENT BINDING — the tenancy key (lotek#585 / INV-TENANCY-05/06). A diagram BOUND to an
+    # engagement (non-NULL) is visible/mutable ONLY to a LIVE member/operator of that engagement, asked
+    # of the host's `can_view_engagement`/`can_operate_on` predicate — owner_id is NOT the gate, so a
+    # member revoked from the engagement (owner included) loses read/export/write. Soft ref (no FK), same
+    # reason the others are. NULLABLE on purpose: a diagram with no engagement is a personal/standalone
+    # sketch or a legacy row — it has no engagement to check membership against, so it falls back to the
+    # prior owner scope (owner + admins; NULL-owner = admin-only). See vector.access.
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     # Access scope + attribution. NULL owner = "legacy / no owner" — visible only to admins (see the
     # blueprint/API scoping), never guessed onto another user.
     owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)

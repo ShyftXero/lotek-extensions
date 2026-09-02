@@ -35,6 +35,10 @@ icon = "◭"
 # lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
+# Table in the shared DB whose rows soft-reference a host Client (client_id). The host's client-delete
+# guard counts these generically so deleting a client can't orphan them (lotek#585, data-lifecycle).
+client_ref_table = "vector_diagrams"
+client_ref_label = "diagram"
 # Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
 docs = "docs/VECTOR.md"
 docs_title = "Vector (attack paths)"

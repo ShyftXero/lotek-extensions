@@ -329,7 +329,14 @@ the authorization ones fail **closed**.
   with that id exists, which is precisely what an id-guessing probe wants.
 - **Branding writes are admin-only.** `PUT /cream/api/brand` carries `payment_instructions` — the block
   telling a client where to send money. Gating it on ordinary write capability would let anyone who can
-  edit a line item silently re-route remittance on every future document, with no per-document trace.
+  edit a line item silently re-route remittance on every future document.
+- **Every lifecycle transition and every brand edit leaves a per-entity audit row** (lotek#585,
+  INV-AUDIT-03). `issue` / `mark-sent` / `accept` / `convert` / `void` each emit one
+  `ext:cream:<verb>` row naming the document with `before`/`after` status, and `update_brand` emits one
+  with `before`/`after` on the brand text fields — `payment_instructions` above all, so a remittance
+  redirect is *visible* rather than silent. The row is written in the same transaction as the change (a
+  rejected transition leaves none) and never carries a secret. This is the richer trail on top of core's
+  coarse `EXTENSION_MACHINE_WRITE` backstop.
 - **The logo must be an inline raster `data:` URI** (`png|jpeg|jpg|gif|webp`), ≤ ~2 MB, no quotes/angle
   brackets/whitespace. Validated when stored **and again at render time** with the identical allowlist.
   A remote URL is dropped, never fetched: the PDF engine fetches what a document references, so an

@@ -15,9 +15,10 @@ import uuid
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 from markupsafe import Markup
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from vector import access
 from vector._version import __version__
 from vector.deps import (
     current_actor_id,
@@ -53,20 +54,19 @@ def _inject_base():
 
 
 def visible_diagrams_stmt():
-    """A SELECT of the diagrams the current actor may see (own + builtin; admins see all)."""
-    if current_actor_is_admin():
-        return select(Diagram)
-    uid = current_actor_id()
-    return select(Diagram).where(or_(Diagram.owner_id == uid, Diagram.builtin.is_(True)))
+    """A SELECT of the diagrams the current actor may see — engagement-scoped, then owner-scoped for
+    unbound rows. See ``vector.access`` (the single seam both surfaces share)."""
+    return access.visible_diagrams_stmt(
+        is_admin=current_actor_is_admin(), owner_id=current_actor_id())
 
 
 def load_visible_or_404(db, diagram_id: uuid.UUID) -> Diagram:
     row = db.get(Diagram, diagram_id)
     if row is None:
         abort(404)
-    if current_actor_is_admin() or row.builtin or row.owner_id == current_actor_id():
+    if access.diagram_visible(row, is_admin=current_actor_is_admin(), owner_id=current_actor_id()):
         return row
-    abort(404)  # 404 not 403 — don't disclose existence of another owner's diagram
+    abort(404)  # 404 not 403 — don't disclose existence of another engagement's/owner's diagram
 
 
 def _counts(model_json: str) -> tuple[int, int]:

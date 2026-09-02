@@ -430,3 +430,66 @@ def test_a_wrong_share_token_is_a_404_even_when_the_store_is_unavailable(
     hooks["actor"] = None
     resp = client.get("/bugreport/s/" + "z" * 43)
     assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------- share-link expiry (lotek#585)
+
+
+def test_sharing_stamps_an_expiry(client, report_id, session_factory):
+    """A minted public link is time-bounded, not eternal."""
+    from datetime import UTC, datetime
+
+    from bugreport.models import Attachment
+    from bugreport.service import SHARE_TTL_DAYS
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    client.post(f"/bugreport/attachments/{aid}/share")
+    with session_factory() as db:
+        exp = db.query(Attachment).one().share_expires_at
+    assert exp is not None
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC)
+    remaining = (exp - datetime.now(UTC)).total_seconds()
+    assert 0 < remaining <= SHARE_TTL_DAYS * 86400 + 5  # ~TTL out, small clock slack
+
+
+def test_an_expired_share_token_404s_while_a_fresh_one_resolves(
+    client, report_id, session_factory, hooks
+):
+    from datetime import UTC, datetime, timedelta
+
+    from bugreport.models import Attachment
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    client.post(f"/bugreport/attachments/{aid}/share")
+    with session_factory() as db:
+        token = db.query(Attachment).one().share_token
+
+    hooks["actor"] = None
+    assert client.get(f"/bugreport/s/{token}").status_code == 200  # unexpired resolves
+
+    with session_factory() as db:  # force it into the past
+        row = db.query(Attachment).one()
+        row.share_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        db.commit()
+    assert client.get(f"/bugreport/s/{token}").status_code == 404  # expired 404s
+
+
+def test_a_legacy_link_with_no_expiry_still_resolves(client, report_id, session_factory, hooks):
+    """A token minted before this column existed has share_expires_at NULL — it stays valid (unbounded
+    when issued; re-sharing stamps a TTL). Don't retroactively break outstanding links."""
+    from bugreport.models import Attachment
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    client.post(f"/bugreport/attachments/{aid}/share")
+    with session_factory() as db:
+        row = db.query(Attachment).one()
+        row.share_expires_at = None  # simulate a legacy row
+        db.commit()
+        token = row.share_token
+
+    hooks["actor"] = None
+    assert client.get(f"/bugreport/s/{token}").status_code == 200

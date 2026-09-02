@@ -116,6 +116,24 @@ def _extras() -> dict:
         return {}
 
 
+def host_audit(db, verb: str, *, subject_type: str, subject_id=None, before=None, after=None) -> None:
+    """Append one ``ext:cream:<verb>`` row through the host audit seam (INV-AUDIT-03), in the SAME
+    session/txn as the change (``db``) so it commits atomically with it — a business state change that
+    rolls back leaves no audit row, and one that commits always leaves exactly one. No-op standalone (no
+    host audit trail). ``subject_id`` is coerced to ``str`` — the host column is text and a route
+    serializes the same id as a string (the scribble fix, #256), so a raw ``uuid.UUID`` would never
+    correlate against the API response.
+
+    This is the per-entity trail the coarse ``EXTENSION_MACHINE_WRITE`` backstop cannot give: it names the
+    document/brand and, for a lifecycle transition or a brand edit, the before/after — the precondition for
+    ever noticing an invoice-fraud remittance redirect (``payment_instructions``)."""
+    hook = _extras().get("audit")
+    if hook is None:
+        return
+    hook(db, f"ext:cream:{verb}", subject_type=subject_type,
+         subject_id=None if subject_id is None else str(subject_id), before=before, after=after)
+
+
 def host_can_operate_on(engagement_id: uuid.UUID) -> bool:
     """Operator capability on ``engagement_id`` for the current principal, via the host's
     ``can_operate_on`` seam (INV-TENANCY-05). Standalone (no host hook) is a single local user -> True.

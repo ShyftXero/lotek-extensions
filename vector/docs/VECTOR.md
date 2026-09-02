@@ -96,10 +96,19 @@ through migrations and attribute them for cleanup:
 | `vector_clients` | Minimal standalone Client (id, name). Stays empty when a host injects its own `client_model`. |
 
 **References to the host are soft** (no foreign key), because Vector may run standalone where those host
-tables don't exist. `owner_id`, `client_id`, and `source_job_id` on `vector_diagrams` are **UUID
-references** to lotek core's `User` / `Client` / `Job` (all UUIDv7 in lotek v2). Ownership is an access
-scope + soft attribution: a diagram is visible to its `owner_id`, to admins, and — for `builtin`
-examples — to everyone; a NULL owner is admin-visible only.
+tables don't exist. `owner_id`, `client_id`, `source_job_id`, and `engagement_id` on `vector_diagrams`
+are **UUID references** to lotek core's `User` / `Client` / `Job` / `Engagement` (all UUIDv7 in lotek v2).
+
+**Tenancy is the engagement, not the owner** (lotek#585). A diagram BOUND to an engagement
+(`engagement_id` set, stamped at create from an operator's engagement selector) is visible/exportable
+only to a **live member** of that engagement and writable only by an **operator** — asked of the host's
+`can_view_engagement` / `can_operate_on` predicate, so a member **revoked** from the engagement (the owner
+included) loses access, with **no admin bypass** (v2 removed it). An **unbound** diagram (NULL
+`engagement_id` — standalone, legacy, or created without an engagement) has no engagement to check, so it
+keeps the older owner scope: visible to its `owner_id` and to admins; a NULL-owner unbound row is
+admin-visible only. `builtin` examples are visible to everyone. Both surfaces route through the single
+`vector.access` seam so cookie and PAT cannot drift, and create/update/delete each emit an
+`ext:vector:*` audit row.
 
 ### Seed
 
@@ -120,11 +129,11 @@ its session gate and CSRF.
 
 | Method | Path | Scope | Purpose |
 |---|---|---|---|
-| `GET` | `/vector/machine/diagrams` | `read` | List diagrams visible to the token's user (own + builtin; admin sees all). |
-| `GET` | `/vector/machine/diagrams/{diagram_id}` | `read` | Fetch one diagram's normalized `vector.attackpath/v1` model. |
-| `POST` | `/vector/machine/diagrams` | `write` | Create a diagram owned by the token's user. Body: `{name?, model?}`. |
-| `PUT` | `/vector/machine/diagrams/{diagram_id}` | `write` | Update name and/or model. Owner or admin only; builtin is read-only. |
-| `DELETE` | `/vector/machine/diagrams/{diagram_id}` | `write` | Delete a diagram. Owner or admin only; builtin cannot be deleted. |
+| `GET` | `/vector/machine/diagrams` | `read` | List diagrams the token may see: engagement-bound ones the token is a live member of, plus its own unbound diagrams, plus builtins. |
+| `GET` | `/vector/machine/diagrams/{diagram_id}` | `read` | Fetch one diagram's normalized `vector.attackpath/v1` model (must be visible per the rule above). |
+| `POST` | `/vector/machine/diagrams` | `write` | Create a diagram. Body: `{name?, model?, engagement_id?}`. Binding to an `engagement_id` requires an operator capability on it; omit it for an unbound owner-scoped diagram. |
+| `PUT` | `/vector/machine/diagrams/{diagram_id}` | `write` | Update name and/or model. Bound → operator on the engagement; unbound → owner or admin. Builtin is read-only. |
+| `DELETE` | `/vector/machine/diagrams/{diagram_id}` | `write` | Delete a diagram. Same write rule as PUT; builtin cannot be deleted. |
 | `GET` | `/vector/machine/diagrams/{diagram_id}/export.html` | `read` | Render a saved diagram to the self-contained HTML deliverable (report evidence to attach). |
 
 Request bodies (`CreateDiagramRequest`, `UpdateDiagramRequest`) are declared as pydantic models, so the

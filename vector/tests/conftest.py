@@ -110,11 +110,32 @@ def make_app():
         # set one without a host. Absent key -> the caller's default, matching the real reader.
         host_settings: dict = {}
         cfg.extras["extension_setting"] = lambda key, default=None: host_settings.get(key, default)
+        # ENGAGEMENT tenancy hooks (lotek#585). A real host injects these principal-reading predicates
+        # after register(); the fixture backs them with two mutable sets so a test can grant, then REVOKE,
+        # membership between requests (the revocation case is the whole point). `eng_view` = engagements
+        # the current actor may see; `eng_op` = those it may operate on. Marking `extras['host']` present
+        # so `host_is_mounted()` is true, matching a mounted deployment.
+        cfg.extras["host"] = object()
+        eng_view: set = set()
+        eng_op: set = set()
+        cfg.extras["can_view_engagement"] = lambda eid: eid in eng_view
+        cfg.extras["can_operate_on"] = lambda eid: eid in eng_op
+        cfg.extras["visible_engagement_ids"] = lambda: frozenset(eng_view)
+        # The host audit seam (INV-AUDIT-03): record every call so a test can assert exactly one row per
+        # mutation with before/after. A real host writes core's audit_events in the same txn.
+        audit_log: list = []
+        cfg.extras["audit"] = lambda db, action, *, subject_type, subject_id=None, before=None, after=None: (
+            audit_log.append({"action": action, "subject_type": subject_type,
+                              "subject_id": subject_id, "before": before, "after": after})
+        )
         pat = {"actor": StubActor(), "authenticate": None}
         _wire_pat_hooks(cfg, pat)
         app.holder = holder  # type: ignore[attr-defined]
         app.pat = pat  # type: ignore[attr-defined]
         app.host_settings = host_settings  # type: ignore[attr-defined]
+        app.eng_view = eng_view  # type: ignore[attr-defined]
+        app.eng_op = eng_op  # type: ignore[attr-defined]
+        app.audit_log = audit_log  # type: ignore[attr-defined]
         created.append(app)
         return app
 

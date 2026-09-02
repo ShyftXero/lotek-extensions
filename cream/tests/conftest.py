@@ -106,6 +106,14 @@ def app(tmp_path, hooks):
     cfg.extras["engagement_burn"] = lambda eid: (
         {} if hooks["engagement_burn"] is None else hooks["engagement_burn"](eid)
     )
+    # The host audit seam (INV-AUDIT-03): capture every call so a test can assert one per-entity row per
+    # business mutation, with before/after. A real host writes core's audit_events in the same txn.
+    audit_log: list = []
+    cfg.extras["audit"] = lambda db, action, *, subject_type, subject_id=None, before=None, after=None: (
+        audit_log.append({"action": action, "subject_type": subject_type, "subject_id": subject_id,
+                          "before": before, "after": after})
+    )
+    application.audit_log = audit_log  # type: ignore[attr-defined]
     _wire_pat_hooks(cfg, hooks)
     with cfg.session_factory() as session:
         seed_defaults(session)

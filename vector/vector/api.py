@@ -16,6 +16,7 @@ import uuid
 from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import select
 
+from vector import access
 from vector._version import __version__
 from vector.blueprint import load_visible_or_404, visible_diagrams_stmt
 from vector.deps import (
@@ -23,6 +24,8 @@ from vector.deps import (
     current_actor_is_admin,
     current_actor_username,
     get_config,
+    host_audit,
+    host_can_operate_on,
     host_can_write,
     host_setting,
 )
@@ -41,12 +44,28 @@ def _require_write():
 
 
 def _require_owner(row: Diagram):
-    """Only the owner or an admin may modify; builtin examples are never modified/deleted."""
+    """Tenancy write gate: builtin examples are never modified/deleted; an engagement-bound diagram needs
+    a live operator capability on its engagement (owner_id is NOT the gate — revocation is respected); an
+    unbound diagram keeps the owner/admin scope. See ``vector.access.diagram_writable``."""
     if row.builtin:
         abort(403)
-    if current_actor_is_admin() or row.owner_id == current_actor_id():
+    if access.diagram_writable(row, is_admin=current_actor_is_admin(), owner_id=current_actor_id()):
         return
     abort(403)
+
+
+def _parse_engagement_id(body) -> uuid.UUID | None:
+    """A create body's optional ``engagement_id`` — the tenancy binding. Adopting it from the request is
+    sound ONLY because create gates it with ``can_operate_on`` right after (INV-TENANCY-05: you may create
+    a diagram in an engagement you operate on); every later read/write re-derives the key from the stored
+    row, never the request."""
+    raw = body.get("engagement_id")
+    if raw in (None, ""):
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (ValueError, TypeError):
+        abort(400, "engagement_id must be a UUID")
 
 
 def _clean_name(raw, fallback: str = "Untitled attack path") -> str:
@@ -90,7 +109,8 @@ def get_diagram(diagram_id: uuid.UUID):
         )
 
 
-def _create(db, name: str, model, *, source_job_id: uuid.UUID | None = None) -> Diagram:
+def _create(db, name: str, model, *, source_job_id: uuid.UUID | None = None,
+            engagement_id: uuid.UUID | None = None) -> Diagram:
     doc = normalize(model)
     row = Diagram(
         name=name,
@@ -98,8 +118,12 @@ def _create(db, name: str, model, *, source_job_id: uuid.UUID | None = None) -> 
         owner_id=current_actor_id(),
         created_by=current_actor_username(),
         source_job_id=source_job_id,
+        engagement_id=engagement_id,
     )
     db.add(row)
+    db.flush()  # assign row.id before the audit row references it, in the same txn
+    host_audit(db, "create", subject_type="vector_diagram", subject_id=row.id,
+               after={"name": row.name, "engagement_id": str(engagement_id) if engagement_id else None})
     db.commit()
     return row
 
@@ -109,9 +133,16 @@ def _create(db, name: str, model, *, source_job_id: uuid.UUID | None = None) -> 
 def create_diagram():
     _require_write()
     body = _body()
+    eid = _parse_engagement_id(body)
+    # Binding a diagram to an engagement requires a live operator capability on it (INV-TENANCY-05). An
+    # unbound diagram (no engagement_id) stays owner-scoped — the standalone/personal case. Fail closed:
+    # a standalone/unmounted Vector has no can_operate_on hook, so a bind attempt there is refused (it has
+    # no engagement model at all), which is correct — standalone never sends an engagement_id.
+    if eid is not None and not host_can_operate_on(eid):
+        abort(403, "you are not an operator on that engagement")
     cfg = get_config()
     with cfg.session_factory() as db:
-        row = _create(db, _clean_name(body.get("name")), body.get("model"))
+        row = _create(db, _clean_name(body.get("name")), body.get("model"), engagement_id=eid)
         return jsonify(id=row.id, name=row.name), 201
 
 
@@ -123,10 +154,13 @@ def update_diagram(diagram_id: uuid.UUID):
     with cfg.session_factory() as db:
         d = load_visible_or_404(db, diagram_id)
         _require_owner(d)
+        before = {"name": d.name}
         if "name" in body:
             d.name = _clean_name(body.get("name"), d.name)
         if "model" in body:
             d.model_json = json.dumps(normalize(body.get("model")), ensure_ascii=False)
+        host_audit(db, "update", subject_type="vector_diagram", subject_id=d.id,
+                   before=before, after={"name": d.name})
         db.commit()
         return jsonify(id=d.id, name=d.name)
 
@@ -138,6 +172,9 @@ def delete_diagram(diagram_id: uuid.UUID):
     with cfg.session_factory() as db:
         d = load_visible_or_404(db, diagram_id)
         _require_owner(d)
+        eid = str(d.engagement_id) if d.engagement_id else None
+        host_audit(db, "delete", subject_type="vector_diagram", subject_id=d.id,
+                   before={"name": d.name, "engagement_id": eid})
         db.delete(d)
         db.commit()
         return jsonify(deleted=str(diagram_id))
@@ -149,7 +186,11 @@ def duplicate_diagram(diagram_id: uuid.UUID):
     cfg = get_config()
     with cfg.session_factory() as db:
         d = load_visible_or_404(db, diagram_id)  # may duplicate any VISIBLE diagram (incl. builtin)
-        row = _create(db, _dup_name(d.name), json.loads(d.model_json or "{}"))
+        # Carry the engagement binding forward so a copy of client attack-path data stays tenant-scoped
+        # (a builtin has none, so its copy is an unbound personal diagram — the intended "start from the
+        # example" flow). Never widens access: you already had to be able to VIEW the source.
+        row = _create(db, _dup_name(d.name), json.loads(d.model_json or "{}"),
+                      engagement_id=d.engagement_id)
         return jsonify(id=row.id, name=row.name), 201
 
 

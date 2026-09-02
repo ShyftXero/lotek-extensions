@@ -18,10 +18,12 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
+from datetime import UTC, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from bugreport.db import utcnow
 from bugreport.models import (
     DEFAULT_CONTENT_TYPE,
     INLINE_SAFE_TYPES,
@@ -44,6 +46,12 @@ LIST_LIMIT = 500
 #: Bound the admin note copied into the core audit row — the note itself is free text, the audit is not
 #: the place for 20k of it.
 _AUDIT_NOTE_CHARS = 200
+
+#: How long a minted public share link stays valid (lotek#585). A default, not a policy engine: an
+#: unauthenticated bearer link should not live forever, and 7 days covers "send a repro to a vendor" while
+#: bounding the leak window. ponytail: a module constant, not a per-install setting — promote it to a
+#: `[[settings]]` knob if an operator actually needs to tune it.
+SHARE_TTL_DAYS = 7
 
 
 class Denied(PermissionError):
@@ -387,10 +395,24 @@ def load_attachment_by_token(db: Session, token: object) -> Attachment | None:
     row = db.scalar(select(Attachment).where(Attachment.share_token == tok))
     if row is None:
         return None
+    if _share_expired(row.share_expires_at):
+        return None  # the capability lapsed — same "nothing here" answer as a bad/rotated token
     report = db.get(Report, row.report_id)
     if report is None or report.status is ReportStatus.deleted:
         return None
     return row
+
+
+def _share_expired(expires_at) -> bool:
+    """Whether a share link's expiry has passed. NULL = a legacy link minted before expiry existed (it
+    was unbounded when issued; re-sharing stamps one) — treated as not-expired. Normalizes a naive value
+    to UTC first: a ``DateTime`` column round-trips tz-naive on Postgres (and on SQLite depending on the
+    driver), while ``utcnow()`` is tz-aware, and comparing the two raises."""
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at < utcnow()
 
 
 def _attachment_for_write(
@@ -442,6 +464,9 @@ def share_attachment(
     was_shared = row.share_token is not None
     token = secrets.token_urlsafe(32)
     row.share_token = token
+    # The link now EXPIRES (lotek#585): an unauthenticated bearer capability that lives forever is a
+    # standing leak. Rotating (re-sharing) restarts the clock, which is also the revoke-a-leak story.
+    row.share_expires_at = utcnow() + timedelta(days=SHARE_TTL_DAYS)
     if host_audit is not None:
         host_audit(
             db,
