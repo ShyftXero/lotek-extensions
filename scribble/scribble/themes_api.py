@@ -389,7 +389,11 @@ def register(api_bp, bp) -> None:
                 return jsonify(ok=False, error=collision), 409
             username = current_actor_username()
             row = ScribbleThemeOverride(
-                name=parsed.name, label=parsed.label, source_toml=text,
+                # Stored CASE-FOLDED. `theme_registry.resolve_theme` lower-cases the requested name and
+                # the switcher renders the folded name as its `<option value>`, so a row stored as
+                # `Acme` was offered as `acme` and then failed to resolve -- silently falling back to
+                # `auto`, i.e. a Theme that shows up in the list and does nothing when picked.
+                name=parsed.name.strip().lower(), label=parsed.label, source_toml=text,
                 created_by=username, updated_by=username,
             )
             db.add(row)
@@ -434,7 +438,7 @@ def register(api_bp, bp) -> None:
                     return jsonify(ok=False, error=collision), 409
             before = _audit_snapshot(row)
             old_name = row.name
-            row.name = parsed.name
+            row.name = parsed.name.strip().lower()  # canonical, same reason as create
             row.label = parsed.label
             row.source_toml = text
             row.updated_by = current_actor_username()

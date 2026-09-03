@@ -519,3 +519,126 @@ def test_a_unique_violation_at_commit_is_a_409_not_a_500(client, stub_host, monk
     resp = _upload(client, VALID_TOML)
     assert resp.status_code == 409, resp.get_json()
     assert resp.get_json()["ok"] is False
+
+# --- findings from the security review of this branch -------------------------------------------------
+
+
+def test_a_mixed_case_theme_name_is_stored_folded_and_is_actually_selectable(
+    client, stub_host, session_factory
+):
+    """Found by review: a Theme stored as `Acme` was OFFERED in the switcher as `acme` (the registry
+    lower-cases, and the switcher renders the folded name as its option value) and then failed to
+    resolve -- silently falling back to `auto`. A Theme that appears in the list and does nothing when
+    picked is worse than one that is absent."""
+    _make_admin(stub_host)
+    mixed = VALID_TOML.replace('name = "acme"', 'name = "AcMe"')
+    resp = _upload(client, mixed)
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["theme"]["name"] == "acme"
+
+    rows = _override_rows(session_factory)
+    assert [r.name for r in rows] == ["acme"]
+
+    # ...and it now resolves through the registry the way the switcher will ask for it.
+    from scribble.reporting.theme_registry import resolve_theme
+
+    by_name = {r.name: r.source_toml for r in rows}
+    resolved = resolve_theme("acme", override_lookup=by_name.get)
+    assert resolved.provenance == "override"
+    assert resolved.carries_payload
+
+
+def test_an_over_length_name_is_refused_with_a_message_not_a_500(client, stub_host, session_factory):
+    """`name` is String(64). SQLite accepts an over-length value silently while Postgres raises
+    DataError, so without a bound this saved cleanly in dev and 500'd on prod."""
+    _make_admin(stub_host)
+    long_name = "a" * 65
+    resp = _upload(client, VALID_TOML.replace('name = "acme"', f'name = "{long_name}"'))
+    assert resp.status_code in (400, 409, 422), resp.get_json()
+    assert resp.get_json()["ok"] is False
+    assert _override_rows(session_factory) == []
+
+
+def test_an_over_length_label_is_refused(client, stub_host, session_factory):
+    _make_admin(stub_host)
+    long_label = "b" * 256
+    resp = _upload(client, VALID_TOML.replace('label = "Acme Brand"', f'label = "{long_label}"'))
+    assert resp.status_code in (400, 409, 422), resp.get_json()
+    assert _override_rows(session_factory) == []
+
+# --- the per-install default actually reaches a rendered report ----------------------------------------
+#
+# Found by review: `default_report_theme` was settable, name-validated and audited, and NOTHING read
+# it. An admin could choose the Theme every report inherits and no report inherited it. These pin the
+# reader, at the route, because that is the only place the wiring exists.
+
+
+
+def _html_tag(html: str) -> str:
+    """Just the opening `<html ...>` tag.
+
+    Asserting against the whole document does not work: `_CSS` contains `[data-theme="dark"]`
+    SELECTORS, so a naive `'data-theme="dark"' in html` is true for every report regardless of which
+    Theme was applied. The stamp is an attribute on one element, so the test has to look there.
+    """
+    import re as _re
+
+    m = _re.search(r"<html[^>]*>", html)
+    assert m, "no <html> tag in the rendered report"
+    return m.group(0)
+
+
+def _engagement_for_report(session_factory):
+    import uuid as _uuid
+
+    import scribble.models as fm
+
+    client_id = _uuid.uuid7()
+    with session_factory() as db:
+        eng = fm.Engagement(
+            name="themed engagement", scope_type="external", client_id=client_id
+        )
+        db.add(eng)
+        db.commit()
+        return eng.id, client_id
+
+
+def _grant(stub_host, client_id):
+    stub_host.current_user = StubUser(id=7, username="op-granted", role=_StubRole("operator"))
+    stub_host.viewable_client_ids = {client_id}
+
+
+def test_the_install_default_theme_is_applied_with_no_query_parameter(
+    client, stub_host, session_factory
+):
+    eid, client_id = _engagement_for_report(session_factory)
+    _make_admin(stub_host)
+    assert client.post(f"{API}/default", json={"name": "dark"}).status_code == 200
+
+    _grant(stub_host, client_id)
+    html = client.get(f"/scribble/engagements/{eid}/report").get_data(as_text=True)
+    assert 'data-theme="dark"' in _html_tag(html), "the install default was not applied"
+
+
+def test_an_explicit_theme_query_still_wins_over_the_install_default(
+    client, stub_host, session_factory
+):
+    """The switcher writes `?theme=`, and a shared report URL has to keep meaning what it says --
+    otherwise changing the install default would silently restyle every link already sent to a client."""
+    eid, client_id = _engagement_for_report(session_factory)
+    _make_admin(stub_host)
+    assert client.post(f"{API}/default", json={"name": "dark"}).status_code == 200
+
+    _grant(stub_host, client_id)
+    tag = _html_tag(client.get(f"/scribble/engagements/{eid}/report?theme=light").get_data(as_text=True))
+    assert 'data-theme="light"' in tag
+    assert 'data-theme="dark"' not in tag
+
+
+def test_no_install_default_leaves_the_report_unstamped(client, stub_host, session_factory):
+    """The shipped behaviour: no default set means `auto`, which stamps nothing and follows the
+    viewer -- so introducing the reader must not change what an unconfigured install renders."""
+    eid, client_id = _engagement_for_report(session_factory)
+    _grant(stub_host, client_id)
+    tag = _html_tag(client.get(f"/scribble/engagements/{eid}/report").get_data(as_text=True))
+    assert "data-theme=" not in tag

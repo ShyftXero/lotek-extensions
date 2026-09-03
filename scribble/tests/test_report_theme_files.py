@@ -199,7 +199,11 @@ def test_build_font_face_css_embeds_a_present_face(monkeypatch):
     stands between "file exists" and "CSS text comes out"."""
     face = FontFace(family="Inter", weight=400, style="normal", file="inter.woff2")
     theme = ThemeFile(name="t", label="T", tokens={}, embed_fonts=True, faces=(face,))
-    monkeypatch.setattr(theme_files, "_read_font_bytes", lambda f, pkg=None: b"FAKEFONTBYTES" if f is face else None)
+    monkeypatch.setattr(
+        theme_files,
+        "_read_font_bytes",
+        lambda f, pkg=None: b"FAKEFONTBYTES" if f is face else None,
+    )
     css = build_font_face_css(theme)
     assert "@font-face" in css
     assert 'font-family: "Inter"' in css
@@ -451,7 +455,10 @@ def test_a_variable_font_may_declare_a_weight_range(weight):
     assert theme.faces[0].weight == weight
 
 
-@pytest.mark.parametrize("weight", ["700 300", "0 700", "300 1001", "300  700", "300,700", "a b", "300 700 900"])
+@pytest.mark.parametrize(
+    "weight",
+    ["700 300", "0 700", "300 1001", "300  700", "300,700", "a b", "300 700 900"],
+)
 def test_a_malformed_or_descending_weight_range_is_refused(weight):
     """Ascending, two values, both in range. `700 300` is the interesting one: CSS reads it as a range
     and a descending pair is not a range at all."""
@@ -496,3 +503,71 @@ def test_the_logo_is_NOT_sanitized_here():
     hostile = "<svg><script>alert(1)</script></svg>"
     theme = theme_files._parse_theme_toml("sample", _with("marks", f"logo_svg = '{hostile}'"))
     assert theme.logo_svg == hostile  # stored verbatim; the gate is elsewhere, by design
+
+# --- [fonts].package is honoured only for provenances that are already CODE -------------------------
+#
+# Security review of this branch proved, by execution, that `importlib.resources.files(name)` IMPORTS
+# the named module. `[fonts].package` is operator-supplied TOML, so honouring it for an `override`
+# Theme turned "edit branding" into "cause an arbitrary module import in the server process" --
+# triggerable afterwards by ANY user who can view a report, since the font read happens during render
+# and is not admin-gated, and silently, because that read swallows every exception.
+
+
+def _themed_with_package(pkg: str) -> ThemeFile:
+    face = FontFace(family="Acme", weight=400, style="normal", file="acme.woff2")
+    return ThemeFile(
+        name="acme", label="Acme", tokens={}, embed_fonts=True, faces=(face,), font_package=pkg
+    )
+
+
+@pytest.mark.parametrize("provenance", ["bundled", "installed"])
+def test_a_code_provenance_may_name_its_own_font_package(provenance, monkeypatch):
+    """A bundled Theme ships in this wheel; an installed one had to be pip-installed AND imported for
+    its entry point to resolve at all. Naming a package it could already import grants it nothing."""
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("some.installed.fonts"), provenance=provenance)
+    assert seen == ["some.installed.fonts"]
+
+
+def test_an_override_theme_cannot_choose_the_font_package(monkeypatch):
+    """The positive control. Remove the provenance check in `build_font_face_css` and this goes red:
+    the operator-declared package would be passed through to `importlib.resources.files`, importing it.
+    """
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("evil_side_effects"), provenance="override")
+    assert seen == [theme_files._PACKAGE], "an override Theme must resolve inside scribble's package"
+    assert "evil_side_effects" not in seen
+
+
+def test_an_unknown_provenance_also_refuses_a_declared_package(monkeypatch):
+    """Allowlist, not blocklist -- a typo'd or future provenance gets the safe branch, matching how
+    `marks._SVG_ALLOWED_PROVENANCES` behaves for the same reason."""
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("whatever"), provenance="something-new")
+    assert seen == [theme_files._PACKAGE]
+
+
+def test_the_two_provenance_allowlists_agree():
+    """`[fonts].package` and an SVG Mark are the two capabilities keyed off Provenance, and they must
+    not drift apart -- "may name a package" and "may carry SVG" are the same trust question."""
+    from scribble.reporting.marks import _SVG_ALLOWED_PROVENANCES
+
+    assert theme_files._PACKAGE_ALLOWED_PROVENANCES == _SVG_ALLOWED_PROVENANCES

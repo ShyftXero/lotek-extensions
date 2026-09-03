@@ -124,7 +124,9 @@ def build_theme_assets(resolved: ResolvedTheme) -> ThemeAssets:
     # turned a cosmetic Theme fault into a 500 on `/engagements/<id>/report` — the report route failing
     # closed over branding, which is precisely the trade this module exists to refuse.
     try:
-        font_css = theme_files.build_font_face_css(loaded)
+        # Provenance is threaded in, not assumed: an override Theme must not have its declared
+        # `[fonts].package` honoured, because resolving a package name imports it.
+        font_css = theme_files.build_font_face_css(loaded, provenance=resolved.provenance)
         if font_css:
             parts.append(font_css if font_css.endswith("\n") else font_css + "\n")
 

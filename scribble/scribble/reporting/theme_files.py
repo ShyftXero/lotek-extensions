@@ -238,11 +238,29 @@ def _parse_theme_toml(expected_name: str, text: str) -> ThemeFile:
         raise ThemeFileError(f"{expected_name}: missing [identity] section")
     name = identity.get("name")
     label = identity.get("label")
-    if not isinstance(name, str) or not name:
-        raise ThemeFileError(f"{expected_name}: [identity].name must be a non-empty string")
-    if not isinstance(label, str) or not label:
-        raise ThemeFileError(f"{expected_name}: [identity].label must be a non-empty string")
-    if name != expected_name:
+    # Bounded to the widths `ScribbleThemeOverride` stores them at (String(64)/String(255)). Checked
+    # HERE, in the shared parser, rather than at the upload route: SQLite silently accepts an
+    # over-length value while Postgres raises DataError, so without this an operator uploading a
+    # 100-character Theme name got a 500 on prod and a clean save in dev. One grammar, one place.
+    if not isinstance(name, str) or not name or len(name) > _NAME_MAX_LEN:
+        raise ThemeFileError(
+            f"{expected_name}: [identity].name must be a non-empty string of at most "
+            f"{_NAME_MAX_LEN} characters"
+        )
+    if not isinstance(label, str) or not label or len(label) > _LABEL_MAX_LEN:
+        raise ThemeFileError(
+            f"{expected_name}: [identity].label must be a non-empty string of at most "
+            f"{_LABEL_MAX_LEN} characters"
+        )
+    # Compared CASE-FOLDED, and stored folded, because every other layer folds: discovery folds before
+    # its collision check, `resolve_theme` lower-cases the requested name, and the switcher renders the
+    # folded name as its `<option value>`. A Theme declaring `AcMe` was therefore offered as `acme` and
+    # then refused by THIS check when asked for under the name it was advertised as -- degrading to
+    # `auto`, i.e. an entry in the switcher that does nothing when picked. Folding here makes the
+    # canonical name one thing rather than two. (Found by a regression test written for the
+    # write-time fold, which was necessary but not sufficient on its own.)
+    name = name.strip().lower()
+    if name != expected_name.strip().lower():
         # Catches a copy-paste Theme file whose filename and declared identity have drifted apart —
         # a mismatch here would otherwise surface much later as a Theme that answers to two names.
         raise ThemeFileError(
@@ -388,6 +406,10 @@ def _parse_face(theme_name: str, index: int, face_raw: object) -> FontFace:
 # A brand lockup is a handful of paths. 64 KiB is generous for that and still refuses a blob.
 _MAX_LOGO_SVG_CHARS = 64 * 1024
 
+# Match the columns `ScribbleThemeOverride` stores an override Theme's identity in.
+_NAME_MAX_LEN = 64
+_LABEL_MAX_LEN = 255
+
 _FAMILY_MAX_LEN = 60
 _FAMILY_RE = re.compile(r"[A-Za-z0-9 -]+")
 _PACKAGE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
@@ -474,7 +496,28 @@ def font_data_uri(face: FontFace, package: str = _PACKAGE) -> str | None:
     return _to_data_uri(raw)
 
 
-def build_font_face_css(theme: ThemeFile) -> str:
+# Provenances whose Theme may name its OWN font package. Deliberately the same allowlist shape, and the
+# same two members, as `marks._SVG_ALLOWED_PROVENANCES` -- and for the same reason.
+#
+# `importlib.resources.files(name)` IMPORTS the named module, executing its top-level code. That is
+# fine for a Theme that is already code: a bundled Theme ships in this wheel, and an installed one had
+# to be pip-installed (and imported) for its entry point to resolve at all, so naming a package it
+# could already have imported itself grants it nothing new.
+#
+# An `override` Theme is DATA -- TOML an operator pasted into a form. Honouring its `[fonts].package`
+# turned "edit branding" into "cause an arbitrary module import in the server process", triggerable
+# afterwards by ANY user who can view a report (the font read is not admin-gated; it happens during
+# render), and silently, because the read swallows every exception. Found by security review of this
+# branch, reproduced end to end with a side-effect package.
+#
+# So an override Theme's faces resolve inside scribble's own package, where the only files are the ones
+# scribble ships. Its `[fonts].package` is ignored rather than rejected at parse time, because the
+# parser is shared by all three provenances and deliberately does not know which one it is serving --
+# one grammar, one place, trust applied at use.
+_PACKAGE_ALLOWED_PROVENANCES: frozenset[str] = frozenset({"bundled", "installed"})
+
+
+def build_font_face_css(theme: ThemeFile, *, provenance: str = "bundled") -> str:
     """Build `@font-face` declarations for a Theme's declared faces, or `""`.
 
     Returns `""` — the signal to keep whatever fallback font stack the page CSS already has — when
@@ -486,10 +529,13 @@ def build_font_face_css(theme: ThemeFile) -> str:
     """
     if not theme.embed_fonts or not theme.faces:
         return ""
+    # See `_PACKAGE_ALLOWED_PROVENANCES`: an override Theme's declared package is NOT honoured, because
+    # resolving it would import it.
+    package = theme.font_package if provenance in _PACKAGE_ALLOWED_PROVENANCES else _PACKAGE
     blocks: list[str] = []
     budget = MAX_EMBEDDED_FONT_BYTES
     for face in theme.faces:
-        raw = _read_font_bytes(face, theme.font_package)
+        raw = _read_font_bytes(face, package)
         if raw is None or len(raw) > budget:
             continue
         budget -= len(raw)
