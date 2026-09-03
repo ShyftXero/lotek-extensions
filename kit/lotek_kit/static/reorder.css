@@ -1,0 +1,60 @@
+/* lotek-kit — drag-reorder affordances.
+ *
+ * Deliberately minimal and unopinionated about the host's design system: this ships colour only
+ * through `currentColor` and a single custom property, so a consumer's theme wins by default and a
+ * themed report does not have to fight it. Every class is `lk-`-prefixed to stay out of the way of
+ * lotek's, scribble's and any future consumer's stylesheets.
+ */
+
+:root {
+  --lk-drop-accent: currentColor;
+}
+
+/* The card being dragged. Kept legible rather than nearly invisible — at 0.4 opacity you lose track
+ * of what you are moving on a long list. */
+.lk-dragging {
+  opacity: 0.65;
+}
+
+/* Where the drop will land. A 2px inset edge rather than an outline, so it does not reflow the list
+ * mid-drag and make the target move away from the pointer. */
+.lk-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--lk-drop-accent);
+}
+
+.lk-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--lk-drop-accent);
+}
+
+/* The drag handle is decorative — the ▲/▼ buttons are the accessible path, so this must not be
+ * focusable or announced. Consumers mark it up as a <span aria-hidden="true">. */
+.lk-handle {
+  cursor: grab;
+  user-select: none;
+}
+
+.lk-handle:active {
+  cursor: grabbing;
+}
+
+/* Keyboard and touch reorder controls. */
+.lk-move[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A visible focus ring is load-bearing here, not decoration: these buttons ARE the keyboard path, so
+ * a user who cannot see which one has focus cannot use them at all. */
+.lk-move:focus-visible {
+  outline: 2px solid var(--lk-drop-accent);
+  outline-offset: 1px;
+}
+
+/* Respect a reduced-motion preference if a consumer adds transitions on top of these classes. */
+@media (prefers-reduced-motion: reduce) {
+  .lk-dragging,
+  .lk-drop-before,
+  .lk-drop-after {
+    transition: none !important;
+  }
+}

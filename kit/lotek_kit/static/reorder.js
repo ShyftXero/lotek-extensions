@@ -1,0 +1,221 @@
+/* lotek-kit — one reorder implementation for the whole platform.
+ *
+ * This repo carried three hand-written copies of native HTML5 drag-and-drop: lotek core's
+ * scan-composer.js, scribble's artifacts.js (evidence gallery) and scribble's board.js (findings
+ * board). They disagreed on the persisted payload and on whether a keyboard could reorder at all.
+ * This is the one implementation they collapse into.
+ *
+ * Two layers, on purpose:
+ *
+ *   - A MODEL layer of pure array functions (moveItem, reorderByKey). No DOM, no fetch, no globals —
+ *     which is what makes the ordering logic testable at all. All three donors buried this logic in
+ *     event handlers, where nothing could reach it.
+ *   - A DOM layer (attach, arrows) that wires drag-and-drop and keyboard controls and then hands the
+ *     caller a result. It never persists anything itself: the caller owns the request, because the
+ *     three surfaces sit behind different routes and different auth.
+ *
+ * No external library, by constraint — scribble is CSP-strict and takes no CDN scripts. Classic
+ * script exposing one frozen global, not an ES module: both consumers are already guarded IIFEs, and
+ * an ESM specifier across two different static roots needs either a brittle relative path or an
+ * inline import map, which is CSP surface for no gain.
+ *
+ * Accessibility is not optional here. HTML5 drag-and-drop fires on neither a keyboard nor a
+ * touchscreen, so a drag-only surface is unusable by both. Only one of the three donors (core's
+ * scan-composer.js) had the arrow-button fallback; `arrows()` is that pattern, extracted.
+ */
+(function (global) {
+  "use strict";
+
+  /* ---------------------------------------------------------------- model layer (pure) */
+
+  /** Index of the item whose `keyOf` matches `key`, or -1. */
+  function indexOfKey(items, key, keyOf) {
+    for (var i = 0; i < items.length; i += 1) {
+      if (String(keyOf(items[i])) === String(key)) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * `items` with the entry at `index` moved by `delta`. Returns a NEW array; the input is untouched.
+   * An out-of-range index or a move that would fall off either end returns a copy, unchanged — the
+   * caller gets to be naive about bounds, which is what the arrow buttons rely on.
+   */
+  function moveItem(items, index, delta) {
+    var out = items.slice();
+    var target = index + delta;
+    if (index < 0 || index >= out.length) return out;
+    if (target < 0 || target >= out.length) return out;
+    var moved = out.splice(index, 1)[0];
+    out.splice(target, 0, moved);
+    return out;
+  }
+
+  /**
+   * `items` with `dragKey`'s entry moved to sit before (or, with `after`, immediately following)
+   * `targetKey`'s. Keyed rather than indexed because a drop reports what it landed ON, and indices
+   * shift the moment the dragged item is removed — the bug every hand-rolled version of this has.
+   */
+  function reorderByKey(items, dragKey, targetKey, after, keyOf) {
+    var key = keyOf || function (item) { return item; };
+    var from = indexOfKey(items, dragKey, key);
+    var to = indexOfKey(items, targetKey, key);
+    if (from < 0 || to < 0 || from === to) return items.slice();
+    var out = items.slice();
+    var moved = out.splice(from, 1)[0];
+    var insertAt = indexOfKey(out, targetKey, key) + (after ? 1 : 0);
+    out.splice(insertAt, 0, moved);
+    return out;
+  }
+
+  /* ------------------------------------------------------------------------- DOM layer */
+
+  function itemsOf(container, itemSelector) {
+    return Array.prototype.slice.call(container.querySelectorAll(itemSelector));
+  }
+
+  /** Element-wise, not `a.join(sep) === b.join(sep)`: any separator can occur inside a key, and then
+   * two genuinely different orders compare equal and the move is silently dropped. */
+  function sameOrder(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  function keyOfElement(element, keyAttr) {
+    return element.getAttribute(keyAttr);
+  }
+
+  /** True when the pointer is past the vertical midpoint of `element` — i.e. drop AFTER it. */
+  function isAfter(event, element) {
+    var box = element.getBoundingClientRect();
+    return event.clientY > box.top + box.height / 2;
+  }
+
+  function clearMarkers(container, itemSelector) {
+    itemsOf(container, itemSelector).forEach(function (element) {
+      element.classList.remove("lk-drop-before", "lk-drop-after", "lk-dragging");
+    });
+  }
+
+  /**
+   * Wire drag-and-drop reordering onto `container`.
+   *
+   * options:
+   *   itemSelector  CSS selector for a draggable child (required)
+   *   keyAttr       attribute carrying the item's identity, default "data-id"
+   *   onMove        called with {key, index, order, container} after a successful drop. The caller
+   *                 persists; this module never does.
+   *
+   * Returns a function that removes every listener it added.
+   */
+  function attach(container, options) {
+    var opts = options || {};
+    var itemSelector = opts.itemSelector;
+    var keyAttr = opts.keyAttr || "data-id";
+    var onMove = opts.onMove || function () {};
+    if (!container || !itemSelector) throw new Error("lotekReorder.attach: container and itemSelector are required");
+
+    var draggedKey = null;
+
+    function onDragStart(event) {
+      var item = event.target.closest ? event.target.closest(itemSelector) : null;
+      if (!item || !container.contains(item)) return;
+      // Let a form control inside a card own its own drag (text selection, etc.) rather than
+      // hijacking it into a reorder — the behaviour core's scan-composer settled on.
+      if (event.target.closest("input, select, textarea, [contenteditable]")) {
+        event.preventDefault();
+        return;
+      }
+      draggedKey = keyOfElement(item, keyAttr);
+      item.classList.add("lk-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        // Firefox refuses to start a drag unless some data is set.
+        try { event.dataTransfer.setData("text/plain", String(draggedKey)); } catch (ignored) {}
+      }
+    }
+
+    function onDragOver(event) {
+      if (draggedKey === null) return;
+      var item = event.target.closest ? event.target.closest(itemSelector) : null;
+      if (!item || !container.contains(item)) return;
+      event.preventDefault();
+      var after = isAfter(event, item);
+      itemsOf(container, itemSelector).forEach(function (other) {
+        other.classList.remove("lk-drop-before", "lk-drop-after");
+      });
+      item.classList.add(after ? "lk-drop-after" : "lk-drop-before");
+    }
+
+    function onDrop(event) {
+      if (draggedKey === null) return;
+      var item = event.target.closest ? event.target.closest(itemSelector) : null;
+      if (!item || !container.contains(item)) return;
+      event.preventDefault();
+      var after = isAfter(event, item);
+      var targetKey = keyOfElement(item, keyAttr);
+      var keys = itemsOf(container, itemSelector).map(function (element) {
+        return keyOfElement(element, keyAttr);
+      });
+      var order = reorderByKey(keys, draggedKey, targetKey, after);
+      var moved = draggedKey;
+      clearMarkers(container, itemSelector);
+      draggedKey = null;
+      if (sameOrder(order, keys)) return; // dropped where it already was
+      onMove({ key: moved, index: order.indexOf(moved), order: order, container: container });
+    }
+
+    function onDragEnd() {
+      clearMarkers(container, itemSelector);
+      draggedKey = null;
+    }
+
+    container.addEventListener("dragstart", onDragStart);
+    container.addEventListener("dragover", onDragOver);
+    container.addEventListener("drop", onDrop);
+    container.addEventListener("dragend", onDragEnd);
+
+    return function detach() {
+      container.removeEventListener("dragstart", onDragStart);
+      container.removeEventListener("dragover", onDragOver);
+      container.removeEventListener("drop", onDrop);
+      container.removeEventListener("dragend", onDragEnd);
+    };
+  }
+
+  /**
+   * A pair of real <button> elements that move an item up or down — the keyboard and touch path,
+   * since HTML5 drag-and-drop serves neither.
+   *
+   * spec: {index, length, onMove(delta), labelUp, labelDown}
+   * Returns a DocumentFragment for the caller to place; buttons are disabled at the ends.
+   */
+  function arrows(spec) {
+    var fragment = global.document.createDocumentFragment();
+    var index = spec.index;
+    var length = spec.length;
+
+    function button(delta, glyph, label, disabled) {
+      var element = global.document.createElement("button");
+      element.type = "button"; // never "submit" — these live inside forms on two of the three surfaces
+      element.className = "btn btn-sm lk-move " + (delta < 0 ? "lk-move-up" : "lk-move-down");
+      element.textContent = glyph;
+      element.title = label;
+      element.setAttribute("aria-label", label);
+      element.disabled = disabled;
+      element.addEventListener("click", function () { spec.onMove(delta); });
+      return element;
+    }
+
+    fragment.appendChild(button(-1, "▲", spec.labelUp || "Move up", index <= 0));
+    fragment.appendChild(button(1, "▼", spec.labelDown || "Move down", index >= length - 1));
+    return fragment;
+  }
+
+  var api = { moveItem: moveItem, reorderByKey: reorderByKey, indexOfKey: indexOfKey, attach: attach, arrows: arrows };
+  if (Object.freeze) Object.freeze(api);
+  global.lotekReorder = api;
+})(this);
