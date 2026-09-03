@@ -22,6 +22,24 @@ JS = asset_text("reorder.js")
 CSS = asset_text("reorder.css")
 
 
+@pytest.mark.parametrize("text,label", [(JS, "reorder.js"), (CSS, "reorder.css")])
+def test_a_shipped_asset_contains_no_control_characters(text, label):
+    """A shipped asset must be plain text.
+
+    This guard exists because it was needed: `reorder.js` shipped with a **NUL byte** inside a string
+    literal (`order.join("\\0")`) through a full green test run. Nothing caught it — and `grep` made it
+    worse by silently classifying the file as binary and printing *nothing at all*, which reads exactly
+    like "the pattern is not there" rather than "I refuse to look". A control character in an asset is
+    never intentional, so it fails here instead.
+    """
+    offenders = {
+        f"U+{ord(ch):04X} at offset {index}"
+        for index, ch in enumerate(text)
+        if ord(ch) < 0x20 and ch not in "\n\t"
+    }
+    assert offenders == set(), f"{label} contains control characters: {sorted(offenders)}"
+
+
 @pytest.mark.parametrize("name", ["moveItem", "reorderByKey", "indexOfKey", "attach", "arrows"])
 def test_the_public_api_is_exported(name):
     """Consumers' markup and call sites depend on these names. Renaming one is a silent breakage in
