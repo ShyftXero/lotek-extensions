@@ -1,8 +1,8 @@
 # Plan: feat/scribble-theme-operational
 
 - **Branch:** `feat/scribble-theme-operational`  (worktree: `.claude/worktrees/scribble-report-themes`, off `origin/main` @ 926ca39)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/163
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 
