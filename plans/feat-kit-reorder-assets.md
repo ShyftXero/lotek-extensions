@@ -52,3 +52,11 @@ board). They disagree on the persisted payload, and only one of them can be driv
   global, a missing export). Real drag/keyboard coverage lands in scribble with #153, which already
   runs Playwright.
 - `.gitkeep` was removed from `static/` — the directory now has real contents.
+- **A NUL byte shipped in `reorder.js` through a fully green run** (`order.join("\0")` where a space was
+  intended). 88 tests, ruff, pyrefly and twelve guard mutations all passed over it, because nothing
+  looked at the bytes. Worse, **`grep` hid it**: a NUL makes grep treat the file as binary, and it then
+  printed *nothing at all* for a pattern that was present — not "Binary file matches", nothing — which
+  reads exactly like "not found". `grep -a` showed it instantly. If a search over an asset comes back
+  suspiciously empty, re-run it with `-a` before concluding anything.
+- The guard added for it is deliberately broad (no C0 control characters except newline/tab in a shipped
+  asset) rather than NUL-specific: nobody writes a NUL on purpose, so the useful guard is the category.
