@@ -24,6 +24,10 @@ dev = [
     # the build backend present at TEST time too. It stays out of [build-system] duty here — this is
     # only so tests/test_build_id_parity.py can load the module at all.
     "hatchling>=1.24",
+    # So the flask_assets tests actually RUN rather than skipping. Being in `dev` and not in
+    # `dependencies` is what keeps "the kit has no runtime dependencies" true — and the tests that
+    # assert nothing imports flask at module scope still hold, because they read source, not imports.
+    "flask>=3.0",
 ]
 
 # NOTE: there is deliberately no [project.entry-points."lotek.extensions"] table and no

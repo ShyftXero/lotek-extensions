@@ -98,6 +98,7 @@ source = { editable = "." }
 
 [package.optional-dependencies]
 dev = [
+    { name = "flask" },
     { name = "hatchling" },
     { name = "pyrefly" },
     { name = "pytest" },
@@ -109,6 +110,7 @@ flask = [
 
 [package.metadata]
 requires-dist = [
+    { name = "flask", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "flask", marker = "extra == 'flask'", specifier = ">=3.0" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = ">=1.24" },
     { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=0.16.0" },

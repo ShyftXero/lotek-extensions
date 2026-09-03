@@ -65,3 +65,13 @@ def test_the_static_package_actually_resolves():
     from lotek_kit.assets import _STATIC
 
     assert files(_STATIC).is_dir()
+
+
+@pytest.mark.parametrize("name", ["reorder.js", "reorder.css"])
+def test_a_shipped_asset_reads_back_as_bytes_and_as_text(name):
+    """The bytes path is the one a self-contained deliverable needs: ``vector/vector/render.py``
+    inlines its viewer off disk so the exported HTML makes no external request, and a URL cannot serve
+    that."""
+    assert asset_bytes(name)
+    assert asset_text(name).strip()
+    assert asset_bytes(name).decode("utf-8") == asset_text(name)
