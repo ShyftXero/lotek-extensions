@@ -86,9 +86,17 @@ LOCAL_TESTS_MARKER_BASENAME = "claude-local-tests.json"
 ADVERSARIAL_MARKER_BASENAME = "claude-adversarial-review.json"
 TRANSCRIPTS_MARKER_BASENAME = "claude-guard-transcripts.json"
 
-# The four independent uv subprojects. A staged path's first component identifies which one owns
-# it (or None for a repo-level path like CLAUDE.md, scripts/, .github/, plans/).
-_SUBPROJECTS = ("cream", "registrar", "scribble", "vector")
+# The independent uv subprojects. A staged path's first component identifies which one owns it (or
+# None for a repo-level path like CLAUDE.md, scripts/, .github/, plans/).
+#
+# `kit` is NOT an extension — it is the shared contract library (see kit/README.md) — but it is a
+# subproject in every sense this gate cares about: its own pyproject.toml, its own venv and lock, its
+# own dev extra. So it belongs here, or `uv run --extra dev pyrefly check` would never run against it.
+#
+# KNOWN GAP, pre-existing and deliberately not widened here: `bugreport` and `exploiteer` are also
+# subprojects on disk and are absent from this tuple, so staged Python under them skips the per-project
+# pyrefly pass. Adding them changes the gate's behaviour for code this branch does not touch.
+_SUBPROJECTS = ("cream", "kit", "registrar", "scribble", "vector")
 
 # lotek core's canonical invariant contract. Checked locally (best-effort, never required) so the
 # reminder can point at a real path when one exists; falls back to the public URL. This repo must

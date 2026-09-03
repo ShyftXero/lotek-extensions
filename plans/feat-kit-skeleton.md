@@ -29,16 +29,26 @@ Both facts below were measured, not assumed, and both eliminate the obvious alte
 
 ## Done
 - [x] `plans/feat-kit-skeleton.md` (this file), committed first
+- [x] `kit/pyproject.toml` — `lotek-kit`, `dynamic = ["version"]`, `dependencies = []`
+- [x] `kit/hatch_build.py` — dated build-id metadata hook
+- [x] `kit/lotek_kit/__init__.py` — `__version__` only; deliberately no `require()`
+- [x] `kit/lotek_kit/attackpath.py` — port of `vector/vector/schema.py`
+- [x] `kit/lotek_kit/assets.py` — stdlib asset accessor
+- [x] `kit/tests/` — 44 tests, all green
+- [x] `.claude/hooks/rails_gate.py` `_SUBPROJECTS` += `"kit"`
+- [x] `CLAUDE.md` + `kit/README.md`: `kit/` is not an extension
+- [x] Verified end to end: `uv sync` installs `lotek-kit==2026.9.3.40038+ga467191` (the dated build id
+      with HEAD's short hash), `uv build --wheel` ships `lotek_kit/static/` as package data with no
+      `force-include`, ruff clean, pyrefly 0 errors
 
 ## Remaining
-- [ ] `kit/pyproject.toml` — `lotek-kit`, `dynamic = ["version"]`, `dependencies = []`
-- [ ] `kit/hatch_build.py` — dated build-id metadata hook
-- [ ] `kit/lotek_kit/__init__.py` — `__version__` only; deliberately no `require()`
-- [ ] `kit/lotek_kit/attackpath.py` — port of `vector/vector/schema.py`
-- [ ] `kit/lotek_kit/assets.py` — stdlib asset accessor
-- [ ] `kit/tests/` — the guard tests that keep the kit a library
-- [ ] `.claude/hooks/rails_gate.py` `_SUBPROJECTS` += `"kit"`
-- [ ] `CLAUDE.md` + `README.md`: `kit/` is not an extension
+
+Nothing on this branch. Stacked follow-ups, in order:
+
+- [ ] `feat/kit-reorder-assets` (stacked on this) — `reorder.js`/`reorder.css` + `lotek_kit/flask_assets.py`
+- [ ] lotek core: `lotek-kit` as a BASE dependency (not the `extensions` extra — core's PR-gate lane runs
+      `uv sync --extra dev` and installs no extensions)
+- [ ] scribble consumes the kit; evidence gallery converts first, then the findings board (#153)
 
 ## Notes / gotchas
 
@@ -63,3 +73,15 @@ Both facts below were measured, not assumed, and both eliminate the obvious alte
 - Correction for anyone reading #148: its standing hazards say "lotek is CSP-strict, no CDN scripts".
   That is true of **scribble**, not of core — `lotek:src/app/__init__.py:517-521` allowlists
   `cdn.jsdelivr.net` and `cdn.socket.io`. The kit still ships no CDN reference.
+
+- **Known gap left alone deliberately.** `_SUBPROJECTS` in the gate was `("cream", "registrar",
+  "scribble", "vector")` — `bugreport` and `exploiteer` are subprojects on disk and were already absent,
+  so staged Python under them skips the per-project pyrefly pass. This branch adds `kit` and leaves that
+  pre-existing gap alone rather than changing gate behaviour for code it does not touch. Worth its own
+  issue.
+- **`hatchling` is in the `dev` extra**, not just `[build-system]`: `hatch_build.py` subclasses
+  `MetadataHookInterface`, so the parity test cannot import the module without it. Runtime dependencies
+  stay empty, and a test asserts that.
+- Running the suite on a shared box needs a private `TMPDIR` (`TMPDIR=... uv run --extra dev pytest -q`)
+  — `/tmp/pytest-of-<user>` collides between parallel jobs and `tmp_path` then fails with an ownership
+  error that looks like a test bug and is not.
