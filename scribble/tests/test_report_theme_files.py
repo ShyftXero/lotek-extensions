@@ -199,7 +199,11 @@ def test_build_font_face_css_embeds_a_present_face(monkeypatch):
     stands between "file exists" and "CSS text comes out"."""
     face = FontFace(family="Inter", weight=400, style="normal", file="inter.woff2")
     theme = ThemeFile(name="t", label="T", tokens={}, embed_fonts=True, faces=(face,))
-    monkeypatch.setattr(theme_files, "_read_font_bytes", lambda f: b"FAKEFONTBYTES" if f is face else None)
+    monkeypatch.setattr(
+        theme_files,
+        "_read_font_bytes",
+        lambda f, pkg=None: b"FAKEFONTBYTES" if f is face else None,
+    )
     css = build_font_face_css(theme)
     assert "@font-face" in css
     assert 'font-family: "Inter"' in css
@@ -212,7 +216,7 @@ def test_build_font_face_css_skips_a_face_that_would_exceed_the_total_budget(mon
     fits = FontFace(family="Small", weight=700, style="italic", file="small.woff2")
     theme = ThemeFile(name="t", label="T", tokens={}, embed_fonts=True, faces=(too_big, fits))
 
-    def fake_read(face: FontFace) -> bytes | None:
+    def fake_read(face: FontFace, package: str | None = None) -> bytes | None:
         if face is too_big:
             return b"x" * (theme_files.MAX_EMBEDDED_FONT_BYTES + 1)
         if face is fits:
@@ -228,7 +232,7 @@ def test_build_font_face_css_skips_a_face_that_would_exceed_the_total_budget(mon
 def test_font_data_uri_rejects_a_single_face_over_the_ceiling(monkeypatch):
     face = FontFace(family="Huge", weight=400, style="normal", file="huge.woff2")
     monkeypatch.setattr(
-        theme_files, "_read_font_bytes", lambda f: b"x" * (theme_files.MAX_EMBEDDED_FONT_BYTES + 1)
+        theme_files, "_read_font_bytes", lambda f, pkg=None: b"x" * (theme_files.MAX_EMBEDDED_FONT_BYTES + 1)
     )
     assert font_data_uri(face) is None
 
@@ -360,3 +364,210 @@ def test_importlib_resources_path_is_what_load_theme_file_actually_uses():
     assert names == list_theme_files()
     assert (root / "light.toml").is_file()
     assert (root / "dark.toml").is_file()
+
+
+@pytest.mark.parametrize(("name", "expected"), [("light", "light"), ("dark", "dark")])
+def test_a_bundled_themes_declared_stamp_matches_the_registry(name, expected):
+    """Two sources of truth for the same fact, so pin them together. `reporting/themes.py`'s registry
+    is what actually stamps `<html data-theme>` for a bundled Theme; the `.toml` declares the same
+    thing for the benefit of an INSTALLED Theme, which has no registry entry. If they ever disagree,
+    a Theme's file says one palette and the page says another."""
+    from scribble.reporting.themes import THEMES
+
+    theme = load_theme_file(name)
+    assert theme is not None
+    assert theme.stamp == expected == THEMES[name].stamp
+
+
+def test_an_unknown_stamp_is_refused():
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml(
+            "sample", _MINIMAL_TOML.replace('label = "Sample"', 'label = "Sample"\nstamp = "chartreuse"')
+        )
+
+
+def test_stamp_defaults_to_following_the_viewer():
+    """A Theme that says nothing gets "" — auto. Correct only for a Theme that re-themes BOTH palettes;
+    a light-tuned brand should say `light` (see `_parse_theme_toml`'s note on the partial-set mix)."""
+    assert theme_files._parse_theme_toml("sample", _MINIMAL_TOML).stamp == ""
+
+
+# --- schema additions for INSTALLED Themes ---------------------------------------------------------
+#
+# A bundled Theme is a file in this package. An installed Theme arrives as TOML TEXT from another
+# distribution's entry point, with no filesystem identity of its own — which breaks two assumptions
+# the schema quietly made, and needs a third field for a logo. These pin all three.
+
+
+def _with(section: str, body: str) -> str:
+    """_MINIMAL_TOML with one section replaced/appended."""
+    return _MINIMAL_TOML.replace(f"[{section}]", f"[{section}]\n{body}", 1)
+
+
+def test_font_package_defaults_to_scribbles_own_for_a_bundled_theme():
+    theme = theme_files._parse_theme_toml("sample", _MINIMAL_TOML)
+    assert theme.font_package == "scribble.report_themes"
+
+
+def test_an_installed_theme_may_name_its_own_font_package():
+    """The gap this closes is silent: without it, `build_font_face_css` looks for an installed Theme's
+    faces inside `scribble.report_themes`, finds nothing, and returns "" — a brand that renders in the
+    right colours with the wrong typeface, and no error anywhere."""
+    text = _with("fonts", 'package = "somepkg.fonts"')
+    theme = theme_files._parse_theme_toml("sample", text)
+    assert theme.font_package == "somepkg.fonts"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../evil", "/abs/path", "pkg/sub", "pkg-with-dash", "1leading", "", "pkg..dup", "pkg."],
+)
+def test_a_font_package_that_is_not_a_dotted_identifier_is_refused(bad):
+    """`package` names a package and must never be able to express a path. Combined with
+    `_is_safe_sibling_filename` on each face, a Theme can reach exactly one directory: its own."""
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml("sample", _with("fonts", f'package = "{bad}"'))
+
+
+def test_a_bad_font_package_degrades_rather_than_raising_at_read_time():
+    """A package name that passes the grammar but is not importable must still not 500 a report —
+    `resources.files` raises ModuleNotFoundError, which is not an OSError."""
+    face = FontFace(family="Inter", weight=400, style="normal", file="x.woff2")
+    assert theme_files._read_font_bytes(face, "no.such.package.exists") is None
+    theme = ThemeFile(
+        name="t", label="T", tokens={}, embed_fonts=True, faces=(face,),
+        font_package="no.such.package.exists",
+    )
+    assert build_font_face_css(theme) == ""
+
+
+@pytest.mark.parametrize("weight", ["300 700", "100 900", "400 400"])
+def test_a_variable_font_may_declare_a_weight_range(weight):
+    """Google serves Heebo and Montserrat as ONE file spanning the whole weight axis. Without ranges a
+    Theme declares one face per weight pointing at the same file and pays the base64 cost per
+    declaration — six files and 181 KB where three and 83 KB will do."""
+    text = _with(
+        "fonts",
+        f'embed = true\n\n[[fonts.face]]\nfamily = "Heebo"\nweight = "{weight}"\n'
+        'style = "normal"\nfile = "heebo.woff2"',
+    )
+    theme = theme_files._parse_theme_toml("sample", text)
+    assert theme.faces[0].weight == weight
+
+
+@pytest.mark.parametrize(
+    "weight",
+    ["700 300", "0 700", "300 1001", "300  700", "300,700", "a b", "300 700 900"],
+)
+def test_a_malformed_or_descending_weight_range_is_refused(weight):
+    """Ascending, two values, both in range. `700 300` is the interesting one: CSS reads it as a range
+    and a descending pair is not a range at all."""
+    text = _with(
+        "fonts",
+        f'embed = true\n\n[[fonts.face]]\nfamily = "Heebo"\nweight = "{weight}"\n'
+        'style = "normal"\nfile = "heebo.woff2"',
+    )
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml("sample", text)
+
+
+def test_a_logo_svg_is_read_as_source_text():
+    text = _with("marks", "logo_svg = '<svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>'")
+    theme = theme_files._parse_theme_toml("sample", text)
+    assert theme.logo_svg is not None
+    assert theme.logo_svg.startswith("<svg")
+
+
+def test_a_theme_without_marks_has_no_logo():
+    assert theme_files._parse_theme_toml("sample", _MINIMAL_TOML).logo_svg is None
+
+
+def test_a_non_string_logo_is_refused():
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml("sample", _with("marks", "logo_svg = 42"))
+
+
+def test_an_oversize_logo_is_refused_before_it_reaches_a_parser():
+    """Bounded at the door. An unbounded blob here would be parsed, sanitized, and then inlined into a
+    document — the cheapest place to refuse it is before any of that."""
+    huge = "<svg>" + ("x" * (theme_files._MAX_LOGO_SVG_CHARS + 1)) + "</svg>"
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml("sample", _with("marks", f"logo_svg = '''{huge}'''"))
+
+
+def test_the_logo_is_NOT_sanitized_here():
+    """Deliberate, and worth pinning so nobody "hardens" it by adding a second opinion. Vetting lives
+    in `reporting.marks.resolve_mark`, which keys off Provenance and is called by BOTH the write path
+    and the render path. cream shipped a real bug by having its API and its renderer disagree about
+    what was acceptable; one gate called from both sides is how that is not repeated."""
+    hostile = "<svg><script>alert(1)</script></svg>"
+    theme = theme_files._parse_theme_toml("sample", _with("marks", f"logo_svg = '{hostile}'"))
+    assert theme.logo_svg == hostile  # stored verbatim; the gate is elsewhere, by design
+
+# --- [fonts].package is honoured only for provenances that are already CODE -------------------------
+#
+# Security review of this branch proved, by execution, that `importlib.resources.files(name)` IMPORTS
+# the named module. `[fonts].package` is operator-supplied TOML, so honouring it for an `override`
+# Theme turned "edit branding" into "cause an arbitrary module import in the server process" --
+# triggerable afterwards by ANY user who can view a report, since the font read happens during render
+# and is not admin-gated, and silently, because that read swallows every exception.
+
+
+def _themed_with_package(pkg: str) -> ThemeFile:
+    face = FontFace(family="Acme", weight=400, style="normal", file="acme.woff2")
+    return ThemeFile(
+        name="acme", label="Acme", tokens={}, embed_fonts=True, faces=(face,), font_package=pkg
+    )
+
+
+@pytest.mark.parametrize("provenance", ["bundled", "installed"])
+def test_a_code_provenance_may_name_its_own_font_package(provenance, monkeypatch):
+    """A bundled Theme ships in this wheel; an installed one had to be pip-installed AND imported for
+    its entry point to resolve at all. Naming a package it could already import grants it nothing."""
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("some.installed.fonts"), provenance=provenance)
+    assert seen == ["some.installed.fonts"]
+
+
+def test_an_override_theme_cannot_choose_the_font_package(monkeypatch):
+    """The positive control. Remove the provenance check in `build_font_face_css` and this goes red:
+    the operator-declared package would be passed through to `importlib.resources.files`, importing it.
+    """
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("evil_side_effects"), provenance="override")
+    assert seen == [theme_files._PACKAGE], "an override Theme must resolve inside scribble's package"
+    assert "evil_side_effects" not in seen
+
+
+def test_an_unknown_provenance_also_refuses_a_declared_package(monkeypatch):
+    """Allowlist, not blocklist -- a typo'd or future provenance gets the safe branch, matching how
+    `marks._SVG_ALLOWED_PROVENANCES` behaves for the same reason."""
+    seen: list[str] = []
+
+    def spy(face, package=theme_files._PACKAGE):
+        seen.append(package)
+        return None
+
+    monkeypatch.setattr(theme_files, "_read_font_bytes", spy)
+    build_font_face_css(_themed_with_package("whatever"), provenance="something-new")
+    assert seen == [theme_files._PACKAGE]
+
+
+def test_the_two_provenance_allowlists_agree():
+    """`[fonts].package` and an SVG Mark are the two capabilities keyed off Provenance, and they must
+    not drift apart -- "may name a package" and "may carry SVG" are the same trust question."""
+    from scribble.reporting.marks import _SVG_ALLOWED_PROVENANCES
+
+    assert theme_files._PACKAGE_ALLOWED_PROVENANCES == _SVG_ALLOWED_PROVENANCES

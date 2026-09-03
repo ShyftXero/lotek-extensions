@@ -30,8 +30,7 @@ label = "Light"      # required, non-empty — display text in the Theme switche
 # applies to an operator-supplied `override` Theme, because a bundled file that typos a colour is no
 # more trustworthy than one an attacker crafted. See `reporting/tokens.py` for the exact grammar each
 # Token kind accepts (colours: strict `#rgb`/`#rrggbb`/`#rrggbbaa` hex only; dimensions: a bounded
-# number plus `px`/`rem`/`em`/`ch`/`%`; font stacks: a restricted charset, no token wired to real CSS
-# yet). Convention: name a token after the CSS custom property it feeds, minus the leading `--` (e.g.
+# number plus `px`/`rem`/`em`/`ch`/`%`; font stacks: a restricted charset). Convention: name a token after the CSS custom property it feeds, minus the leading `--` (e.g.
 # the `--sev-critical` custom property <-> the `sev-critical` token) — see light.toml / dark.toml,
 # which are a straight port of `render_html`'s stylesheet under that rule.
 bg = "#f6f8fa"
@@ -39,7 +38,14 @@ sev-critical = "#b3261e"
 # … etc. — the full set this loader currently accepts is `reporting.tokens.ALLOWED_TOKENS`.
 
 [fonts]
-# Optional table. `embed` (bool, default false) gates whether `build_font_face_css` emits ANYTHING
+# Optional table. `package` (string, optional) names the importable package the face files live in,
+# and defaults to `scribble.report_themes` — i.e. this directory, which is what a BUNDLED Theme wants.
+# An INSTALLED Theme has to set it: such a Theme reaches Scribble as TOML *text* through its entry
+# point and has no filesystem identity of its own, so without this its faces would be looked for in
+# Scribble's own package, silently not found, and skipped — a brand rendering in the right colours
+# with the wrong typeface and nothing in the log. It is validated as a dotted identifier and resolved
+# only through importlib.resources, so it can name a package but can never express a path.
+# `embed` (bool, default false) gates whether `build_font_face_css` emits ANYTHING
 # for this Theme at all — see `theme_files.py` for why embedding (not a <link>) is the only supported
 # mechanism for a report. A Theme may declare faces with `embed = false` (e.g. while sourcing fonts)
 # without anything rendering yet.
@@ -49,7 +55,10 @@ embed = false
 # Zero or more of these. Each is one @font-face this Theme wants embedded, once `embed = true` and the
 # named file actually exists (see "Font files" below).
 family = "Inter"                 # required, non-empty — the CSS font-family name
-weight = 400                     # required — int (400, 700, …) or CSS keyword string ("bold")
+weight = 400                     # required — int (400, 700, …), a CSS keyword string ("bold"),
+                                 # or a RANGE for a variable font: "300 700" (ascending, 1-1000).
+                                 # Heebo and Montserrat ship as ONE file covering the whole weight
+                                 # axis, so a range is three files where naming each weight is six.
 style = "normal"                 # required, non-empty — "normal" | "italic" | …
 file = "inter-regular.woff2"     # required — a BARE filename, sibling of this .toml, ending .woff2.
                                   # No path separators and no "..": it is resolved inside THIS
@@ -57,9 +66,16 @@ file = "inter-regular.woff2"     # required — a BARE filename, sibling of this
                                   # rejected at parse time (ThemeFileError), not silently ignored.
 
 [marks]
-# Reserved placeholder for #104 (logo/shape assets — see CONTEXT.md's Mark definition). The section
-# may be present-and-empty (as in light.toml / dark.toml) or omitted entirely; nothing under it is
-# read by this loader yet. Do not rely on any key here surviving #104's schema.
+# The Theme's graphical identity (see CONTEXT.md's Mark definition). The section may be
+# present-and-empty (as in light.toml / dark.toml) or omitted entirely.
+logo_svg = '''<svg viewBox="0 0 100 24">…</svg>'''
+# Optional. SVG SOURCE, not a path and not a data URI. Read here as text and length-bounded, but NOT
+# sanitized at load: `reporting/marks.py`'s `resolve_mark` is the single gate, it keys off the Theme's
+# PROVENANCE, and both the write path and the render path call it. A bundled or installed Theme may
+# carry SVG — installing a Python package is already arbitrary code execution, so its SVG is not the
+# weak link — while an operator-uploaded `override` Theme is RASTER-ONLY. Sanitizing here as well
+# would create a second opinion about what is acceptable, which is the exact split that let a sibling
+# extension ship a renderer more permissive than its own API.
 ```
 
 ## Font files

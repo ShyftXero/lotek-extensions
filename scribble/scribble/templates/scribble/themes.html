@@ -1,0 +1,237 @@
+{#
+  scribble/themes.html — report Theme admin (ext#113 + #105).
+
+  Lists every Theme this install knows about across all three Provenances (CONTEXT.md): bundled
+  (reporting/theme_files.py), installed (reporting/theme_discovery.py), and override
+  (scribble.models.ScribbleThemeOverride, this ticket). Only override rows are editable/deletable —
+  bundled and installed Themes are code, not data, and this page never claims otherwise.
+
+  Mutating controls (upload / edit / delete / set-default) are rendered only when `is_admin` is true —
+  matching this ticket's server-side gate (`themes_api._actor_is_admin`), which is the REAL
+  enforcement; hiding the controls here is a courtesy, not the boundary. A non-admin still sees the
+  read-only list with each Theme's Provenance, same as `assessment_types.html`'s list is open to anyone.
+#}
+{% extends scribble_base %}
+{% block title %}Scribble — Report Themes{% endblock %}
+{% block appbar_actions %}
+<a class="btn" href="{{ url_for('scribble.dashboard') }}">Back to dashboard</a>
+{% endblock %}
+{% block content %}
+
+{% if discovery_errors %}
+<div class="card">
+  <h2>Installed Theme problems</h2>
+  <p class="muted">These packages advertise a <code>scribble.report_themes</code> entry point that did
+     not resolve to a usable Theme. Every OTHER Theme below still loaded normally.</p>
+  <ul>
+    {% for err in discovery_errors %}
+    <li><code>{{ err.entry_point_name }}</code>{% if err.distribution %} ({{ err.distribution }}){% endif %} — {{ err.error }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% if discovery_collisions %}
+<div class="card">
+  <h2>Installed Theme name collisions</h2>
+  <p class="muted">An installed Theme whose name matched a bundled one was excluded — bundled always wins.</p>
+  <ul>
+    {% for c in discovery_collisions %}
+    <li><code>{{ c.name }}</code>{% if c.distribution %} ({{ c.distribution }}){% endif %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Per-install default Theme</h2>
+  <p class="muted">Used whenever a Report does not choose its own Theme. Leave blank to fall back to
+     Scribble's own built-in default ({{ '"auto"' }}).</p>
+  <form id="thm-default-form" class="thm-default-form">
+    <select id="thm-default-select" name="name">
+      <option value=""{% if not default_name %} selected{% endif %}>— inherit (auto) —</option>
+      {% for name in known_names %}
+      <option value="{{ name }}"{% if name == default_name %} selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    {% if is_admin %}
+    <button type="submit" class="btn btn-primary">Save default</button>
+    {% endif %}
+    <span class="muted" id="thm-default-status"></span>
+  </form>
+</div>
+
+{% if is_admin %}
+<div class="card">
+  <h2>Add an override Theme</h2>
+  <p class="muted">Upload a <code>.toml</code> file, or paste its text below. Its
+     <code>[identity].name</code> becomes the Theme's name — it must not match a bundled or installed
+     Theme's name. Every value is validated against the same closed Token/font schema a bundled Theme
+     file is held to; an invalid Theme is refused and nothing is stored.</p>
+  <form id="thm-new-form" class="thm-form" enctype="multipart/form-data">
+    <input type="file" id="thm-new-file" accept=".toml,text/plain" />
+    <textarea id="thm-new-toml" rows="10" placeholder="[identity]&#10;name = &quot;acme&quot;&#10;label = &quot;Acme&quot;&#10;&#10;[tokens]&#10;accent = &quot;#0f766e&quot;"></textarea>
+    <div class="thm-form-actions">
+      <button type="submit" class="btn btn-primary">Upload</button>
+      <span class="thm-err" id="thm-new-err"></span>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Themes <span class="muted">({{ rows|length }})</span></h2>
+  <div class="table-scroll">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th><th>Label</th><th>Provenance</th><th>Default</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in rows %}
+      <tr class="thm-row" data-thm-provenance="{{ t.provenance }}"{% if t.id is defined %} data-thm-id="{{ t.id }}"{% endif %}>
+        <td class="mono">{{ t.name }}{% if t.is_default %} <span class="pill">default</span>{% endif %}</td>
+        <td>
+          {{ t.label }}
+          {% if t.error %}<div class="thm-row-error">{{ t.error }}</div>{% endif %}
+        </td>
+        <td><span class="pill pill-{{ t.provenance }}">{{ t.provenance }}</span></td>
+        <td>{{ "yes" if t.is_default else "" }}</td>
+        <td class="thm-row-actions">
+          {% if is_admin and t.provenance == "override" %}
+          <button type="button" class="btn thm-edit" data-thm-id="{{ t.id }}">Edit</button>
+          <button type="button" class="btn thm-delete" data-thm-id="{{ t.id }}" data-thm-name="{{ t.name }}">Delete</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% if is_admin and t.provenance == "override" %}
+      <tr class="thm-edit-row" id="thm-edit-row-{{ t.id }}" hidden>
+        <td colspan="5">
+          <textarea class="thm-edit-toml" data-thm-id="{{ t.id }}" rows="10">{{ t.source_toml }}</textarea>
+          <div class="thm-form-actions">
+            <button type="button" class="btn btn-primary thm-save" data-thm-id="{{ t.id }}">Save</button>
+            <button type="button" class="btn ghost thm-cancel" data-thm-id="{{ t.id }}">Cancel</button>
+            <span class="thm-err" id="thm-edit-err-{{ t.id }}"></span>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<style>
+  .thm-form { display: flex; flex-direction: column; gap: 10px; }
+  .thm-form textarea, .thm-edit-toml {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 8px 10px; font: 13px/1.4 var(--font-mono, monospace); width: 100%;
+  }
+  .thm-form-actions { display: flex; gap: 8px; align-items: center; }
+  .thm-err { color: var(--sev-high); }
+  .thm-row-error { color: var(--sev-high); font-size: 12px; }
+  .thm-default-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pill-bundled { background: var(--surface-2); }
+  .pill-installed { background: var(--accent-wash); }
+  .pill-override { background: var(--line-2); }
+</style>
+
+<script>
+(function () {
+  var API = "{{ scribble_api_prefix | default('/scribble/api') }}";
+
+  function postJSON(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    });
+  }
+
+  function postFile(url, file) {
+    var fd = new FormData();
+    fd.append('file', file);
+    return fetch(url, { method: 'POST', credentials: 'same-origin', body: fd }).then(function (res) {
+      return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+    });
+  }
+
+  var defaultForm = document.getElementById('thm-default-form');
+  if (defaultForm) {
+    defaultForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var status = document.getElementById('thm-default-status');
+      var name = document.getElementById('thm-default-select').value;
+      status.textContent = 'saving…';
+      postJSON(API + '/themes/default', { name: name })
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) { throw new Error((result.data && result.data.error) || 'save failed'); }
+          window.location.reload();
+        })
+        .catch(function (err) { status.textContent = 'error: ' + err.message; });
+    });
+  }
+
+  var newForm = document.getElementById('thm-new-form');
+  if (newForm) {
+    newForm.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var err = document.getElementById('thm-new-err');
+      err.textContent = '';
+      var file = document.getElementById('thm-new-file').files[0];
+      var toml = document.getElementById('thm-new-toml').value;
+      var req = file ? postFile(API + '/themes', file) : postJSON(API + '/themes', { source_toml: toml });
+      req.then(function (result) {
+          if (!result.ok || !result.data.ok) { throw new Error((result.data && result.data.error) || 'upload failed'); }
+          window.location.reload();
+        })
+        .catch(function (e) { err.textContent = e.message; });
+    });
+  }
+
+  document.querySelectorAll('.thm-edit').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = document.getElementById('thm-edit-row-' + btn.getAttribute('data-thm-id'));
+      if (row) { row.hidden = !row.hidden; }
+    });
+  });
+  document.querySelectorAll('.thm-cancel').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = document.getElementById('thm-edit-row-' + btn.getAttribute('data-thm-id'));
+      if (row) { row.hidden = true; }
+    });
+  });
+  document.querySelectorAll('.thm-save').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.getAttribute('data-thm-id');
+      var toml = document.querySelector('.thm-edit-toml[data-thm-id="' + id + '"]').value;
+      var err = document.getElementById('thm-edit-err-' + id);
+      err.textContent = '';
+      postJSON(API + '/themes/' + id, { source_toml: toml })
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) { throw new Error((result.data && result.data.error) || 'save failed'); }
+          window.location.reload();
+        })
+        .catch(function (e) { err.textContent = e.message; });
+    });
+  });
+  document.querySelectorAll('.thm-delete').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.getAttribute('data-thm-id');
+      var name = btn.getAttribute('data-thm-name') || 'this Theme';
+      if (!window.confirm('Delete "' + name + '"? This cannot be undone.')) { return; }
+      postJSON(API + '/themes/' + id + '/delete', {})
+        .then(function (result) {
+          if (!result.ok || !result.data.ok) { throw new Error((result.data && result.data.error) || 'delete failed'); }
+          window.location.reload();
+        })
+        .catch(function (e) { window.alert('error: ' + e.message); });
+    });
+  });
+})();
+</script>
+{% endblock %}

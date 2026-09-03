@@ -572,6 +572,125 @@ class ReportRender(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(128))
 
 
+# --------------------------------------------------------------------------- report themes (override
+# provenance + the per-install default) — ext#113/#105.
+#
+# See ``scribble/CONTEXT.md``'s **Provenance** entry: a Theme is **bundled** (ships inside
+# ``reporting/theme_files.py``'s ``report_themes/`` package), **installed** (a separate Python package
+# Scribble discovers — not implemented yet, see ``75159ed``'s cut of ``theme_discovery.py``), or
+# **override** (data an operator supplied at runtime). ``ScribbleThemeOverride`` is the "override" half:
+# every row in this table IS an override Theme, so — unlike ``reporting.marks.PROVENANCES`` — no
+# ``provenance`` COLUMN exists here; provenance is a property of which table a Theme's row lives in, not
+# a value stored alongside it.
+#
+# An install-wide default Theme (`ScribbleSettings`) is a SEPARATE, second table rather than a column on
+# this one: #105 originally proposed folding both into one row, but a default Theme need not be an
+# override at all (the common case is a bundled ``light``/``dark`` default), so it cannot be a column
+# on a table whose every row IS an override.
+
+
+class ScribbleThemeOverride(Base, TimestampMixin):
+    """One operator-supplied report Theme (CONTEXT.md Provenance: **override**) — ext#113.
+
+    ``source_toml`` is the operator's ORIGINAL TOML text, stored verbatim — not the parsed
+    :class:`~scribble.reporting.theme_files.ThemeFile` dataclass. Two reasons this must be text, not a
+    parsed blob: (1) it is the operator's own artifact and has to round-trip byte-for-byte back into an
+    edit form, and (2) ``reporting.theme_files._parse_theme_toml`` is already the ONE validator every
+    other Theme (bundled, and eventually installed) is checked against — a second, JSON-shaped schema
+    for override Themes would be a second grammar to keep in sync with the first, exactly the
+    write-path/render-path duplication ``reporting.marks.resolve_mark``'s docstring warns against. Every
+    read of an override Theme's payload re-runs ``_parse_theme_toml`` on this column, so a Theme that
+    validated at upload time and would now fail (e.g. ``reporting.tokens.ALLOWED_TOKENS`` shrank in a
+    later release) is caught at RENDER time too, never silently trusted because it was accepted once.
+
+    ``name`` is both this row's lookup key AND required to equal the stored TOML's own
+    ``[identity].name`` — the same rule a bundled Theme's FILENAME is held to (see
+    ``theme_files._parse_theme_toml``'s "does not match the filename" check, reused verbatim here since
+    an override Theme has no filename to anchor to instead). ``scribble.themes_api`` refuses to store a
+    ``name`` that collides with a BUNDLED Theme (``reporting.theme_files.list_theme_files()``) — bundled
+    wins, so an operator cannot shadow ``light``/``dark`` with their own data. The column is UNIQUE so two
+    override Themes can never collide with EACH OTHER either.
+
+    🔴 Raster-only Marks, and this schema deliberately does NOT stop an operator writing a ``[marks]``
+    table into ``source_toml``. ``theme_files._parse_theme_toml`` validates ``[marks]`` as a table and
+    reads ``[marks].logo_svg`` as bounded SOURCE TEXT — it does not sanitize it, on purpose, so that
+    there is exactly one opinion about what an acceptable Mark is. That opinion is
+    ``reporting.marks.resolve_mark``, whose ``_SVG_ALLOWED_PROVENANCES`` is closed over
+    ``{"bundled", "installed"}`` ONLY, deliberately excluding ``"override"`` — so an operator-uploaded
+    Theme's SVG is refused at render time no matter what this table holds. Storing it unsanitized and
+    gating at render is the safer arrangement of the two: it keeps the stored artifact identical to
+    what the operator submitted (so it round-trips for editing and can be re-vetted if the gate
+    tightens) while making the gate impossible to bypass by writing to the DB directly. Whatever
+    ``resolve_mark`` is wired to read out of an override row's
+    ``[marks]`` table MUST still go through that same gate, never a shortcut that trusts this table's
+    data because it already passed ``_parse_theme_toml``. Passing the closed token/font grammar is not
+    the same claim as "safe to render as SVG".
+    """
+
+    __tablename__ = "scribble_theme_overrides"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    # The Theme's selectable name (matches `[identity].name` in `source_toml`) — see the class
+    # docstring for why this must be kept in lockstep with the stored TOML rather than trusted blind.
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str] = mapped_column(String(255))
+    # The operator's ORIGINAL TOML text, byte-for-byte — never a parsed/normalized re-serialization.
+    # No length cap at the schema layer (Text is unbounded); `scribble.themes_api` enforces a sane
+    # request-body ceiling before this ever reaches a session, the same "reject before you touch the
+    # DB" shape `reporting.theme_files.MAX_EMBEDDED_FONT_BYTES` uses for font payloads.
+    source_toml: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(128))
+    updated_by: Mapped[str | None] = mapped_column(String(128))
+
+
+class ScribbleSettings(Base, TimestampMixin):
+    """Install-wide Scribble configuration — a singleton row, one per Scribble install (ext#105).
+
+    ``slot`` is unique and always ``"default"``, the same pattern as CREAM's ``Brand``
+    (``cream/cream/models.py``) and Vector's own per-install knobs: a setting that applies to every
+    engagement belongs in the database (edited from the UI; a UNIQUE constraint is what makes
+    "exactly one row" enforceable, where a config file can't stop a second deploy writing a second one).
+
+    **Why this is a Scribble-owned table, not the host's generic ``[[settings]]`` seam** (see Vector's
+    ``lotek-extension.toml`` for that seam's shape, and ``vector/vector/deps.py::host_setting``): this
+    checkout's own ``scribble/deps.py`` carries no ``host_setting``/``extras["extension_setting"]``
+    accessor and ``scribble/lotek-extension.toml`` declares no ``[[settings]]`` table — the seam Vector
+    already uses simply does not exist in Scribble yet, and neither file is this ticket's to create
+    (``lotek-extension.toml``/``deps.py`` are the orchestrator's integration points, not
+    ``models.py``/``themes_api.py``). ext#100/#105/#106's own investigation record (commit ``75159ed``)
+    anticipated this might not be needed "if the host seam exists" — it does not, HERE, so this table is
+    the minimal singleton the same note prescribed as the fallback. If ``scribble/deps.py`` later grows
+    ``host_setting`` the way Vector's has it, migrating ``default_report_theme`` there and dropping this
+    table is a natural follow-up; nothing about the shape below blocks that.
+
+    **Why not fold this into ``TemplateVariable``?** ``TemplateVariable`` rows are ``{{VARIABLES}}``
+    interpolated into report BODY TEXT — an entirely different axis from "which Theme does an install
+    default to". Storing the default Theme name as a ``TemplateVariable`` would re-collapse the exact
+    vocabulary this whole effort exists to untangle (see ``scribble/CONTEXT.md``): Layout, Theme, and
+    Token would once again share one bucket with report prose.
+
+    Kept deliberately small: ``default_report_theme`` is the only knob #105 asks for. A later ticket
+    earns its own column the same way this one did — do not pre-add speculative settings nobody asked
+    for.
+    """
+
+    __tablename__ = "scribble_theme_settings"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    slot: Mapped[str] = mapped_column(String(16), unique=True, default="default")
+
+    # The per-install default Theme NAME (`scribble.reporting.themes.ReportTheme.name`, a bundled Theme
+    # name today; an override or installed Theme name once selection is wired to consult them), used
+    # whenever an Engagement's own Theme choice is unset. No FK/no Enum — same reasoning as the cut
+    # `Engagement.report_theme` column this recovers from (`75159ed`): the set of valid names is a
+    # Python-level registry (plus, after this ticket, `ScribbleThemeOverride.name`) that can grow
+    # without a schema change, so this column only stores the chosen name; resolving it safely (falling
+    # back for an unknown/removed name) is the reader's job, same as an untrusted `?theme=` query value.
+    # NULL is a legal, meaningful value: "no install override; fall back to
+    # `reporting.themes.DEFAULT_THEME`" — not merely "not configured yet".
+    default_report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 # --------------------------------------------------------------------------- collaboration (Phase B)
 
 
@@ -709,6 +828,8 @@ __all__ = [
     "TemplateTag",
     "ReportTemplate",
     "ReportRender",
+    "ScribbleThemeOverride",
+    "ScribbleSettings",
     "CollabDoc",
     "ChecklistTemplate",
     "ChecklistTemplateItem",

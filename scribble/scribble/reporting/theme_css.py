@@ -46,7 +46,8 @@ import logging
 from dataclasses import dataclass
 
 from scribble.reporting import theme_files
-from scribble.reporting.themes import ReportTheme
+from scribble.reporting.marks import ResolvedMark, resolve_mark
+from scribble.reporting.theme_registry import ResolvedTheme
 from scribble.reporting.tokens import render_token_block, validate_tokens
 
 # 0-2-0, matching the dark and print rules rather than trying to outrank them; later in the sheet, so
@@ -78,36 +79,30 @@ class ThemeAssets:
     """Everything a Theme contributes to one rendered report."""
 
     css: str
+    mark: ResolvedMark | None = None
 
     @property
     def is_empty(self) -> bool:
-        return not self.css
+        return not self.css and self.mark is None
 
 
-def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
-    """Resolve ``theme`` to the CSS (and Mark) the renderer should splice in after the base sheet.
+def build_theme_assets(resolved: ResolvedTheme) -> ThemeAssets:
+    """Compose an already-resolved Theme into the CSS and Mark the renderer splices in.
 
-    Returns empty assets — never raises — when the Theme has no bundled file (``auto`` has none by
-    design: it *is* the base stylesheet's own behaviour) or when its payload fails validation. A Theme
-    that cannot be resolved must degrade to the shipped appearance, not to a broken page.
+    This is a pure composer: ``theme_registry.resolve_theme`` has already found the Theme across all
+    three Provenances and parsed it. Loading used to happen here, which only ever worked for a BUNDLED
+    Theme — the name was looked up as a filename in Scribble's own package, so an installed or
+    operator-supplied Theme could never resolve no matter that the rest of the machinery could see it.
+
+    Returns empty assets — never raises — when the Theme carries no payload (``auto`` has none by
+    design: it *is* the base stylesheet) or when its payload fails re-validation. A Theme that cannot
+    be composed must degrade to the shipped appearance, not to a broken page.
     """
-    try:
-        loaded = theme_files.load_theme_file(theme.name)
-    except Exception as exc:  # noqa: BLE001 — degrade to the base sheet, never to a 500
-        # LOUDLY. A Theme that fails to load still renders a perfectly clean report — just an
-        # UNBRANDED one — so without this line the single artifact this feature exists to produce goes
-        # to a client looking wrong, with nothing raised, nothing logged, and nothing in the UI. That
-        # is precisely the swallow-everything behaviour `theme_discovery` was forbidden from copying
-        # (CLAUDE.md records how baffling lotek's silent extension discovery made a real bug), and
-        # INV-EXT-05 requires a denial to be loud. Degrading safely and degrading silently are two
-        # different decisions; only the first one is wanted here.
-        _log.warning("scribble: report Theme %r failed to load, rendering unthemed: %s", theme.name, exc)
-        return ThemeAssets(css="")
+    loaded = resolved.file
     if loaded is None:
-        # Not an error: `auto` has no bundled file by design, and an unknown name already fell back to
-        # `auto` in `get_theme`. Nothing to say.
+        # Not an error: `auto` has no payload, and an unresolvable name already degraded to `auto` in
+        # the registry (which logs it there). Nothing to say.
         return ThemeAssets(css="")
-
     # theme_files validates on load, but re-validate at the render boundary anyway: this is the same
     # belt-and-braces rule cream learned the hard way, where the write path and the render path
     # disagreed about what was acceptable and the renderer was the lenient one.
@@ -118,7 +113,7 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
         _log.error(
             "scribble: report Theme %r passed load-time validation but failed at the render "
             "boundary; rendering unthemed. This is a grammar inconsistency, not bad data.",
-            theme.name,
+            resolved.theme.name,
         )
         return ThemeAssets(css="")
 
@@ -129,7 +124,9 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
     # turned a cosmetic Theme fault into a 500 on `/engagements/<id>/report` — the report route failing
     # closed over branding, which is precisely the trade this module exists to refuse.
     try:
-        font_css = theme_files.build_font_face_css(loaded)
+        # Provenance is threaded in, not assumed: an override Theme must not have its declared
+        # `[fonts].package` honoured, because resolving a package name imports it.
+        font_css = theme_files.build_font_face_css(loaded, provenance=resolved.provenance)
         if font_css:
             parts.append(font_css if font_css.endswith("\n") else font_css + "\n")
 
@@ -144,15 +141,30 @@ def build_theme_assets(theme: ReportTheme) -> ThemeAssets:
             parts.append(f"@media print {{\n{render_token_block(paper, _OVERRIDE_SELECTOR)}}}\n")
     except Exception as exc:  # noqa: BLE001 — degrade to the base sheet, never to a 500
         _log.warning(
-            "scribble: report Theme %r failed to compose, rendering unthemed: %s", theme.name, exc
+            "scribble: report Theme %r failed to compose, rendering unthemed: %s",
+            resolved.theme.name,
+            exc,
         )
         return ThemeAssets(css="")
 
-    # Marks (a Theme's logo) are NOT part of this branch. `reporting/marks.py` was written and tested
-    # here, then cut before merge because nothing calls it: the Theme schema carries no field to read a
-    # logo out of, so it was 419 lines of unreachable production code behind 345 lines of passing tests.
-    # It returns with the schema field that needs it -- see ext#104. Note the cut version already
-    # carried three security fixes made on this branch at bd8d8af (a CSS-escape bypass in the attribute
-    # filter, magic-byte checking on raster payloads, and an allow-list Provenance gate); recover THAT
-    # revision, not the one before it.
-    return ThemeAssets(css=_assert_style_safe("".join(parts)))
+    # The Mark, gated by PROVENANCE. `resolve_mark` is the single decision point both the write path
+    # and the render path call, which is the whole fix for the cream bug where an API and a renderer
+    # independently decided what a safe logo was and drifted apart. Re-checking here rather than
+    # trusting that a stored/parsed Mark is still safe to splice is cream's belt-and-braces instinct
+    # kept, just pointed at one function instead of two: a bundled or installed Theme may carry SVG
+    # (installing a package is already arbitrary code execution), an operator-uploaded `override`
+    # Theme is raster-only and never even reaches the XML parser.
+    mark = None
+    if loaded.logo_svg:
+        mark = resolve_mark(loaded.logo_svg, provenance=resolved.provenance)
+        if mark is None:
+            # Loud, for the same reason a failed Theme load is loud: a silently absent logo is a
+            # client deliverable that went out looking wrong with nothing to explain why.
+            _log.warning(
+                "scribble: report Theme %r declared a Mark that was refused at %r provenance; "
+                "rendering without it",
+                resolved.theme.name,
+                resolved.provenance,
+            )
+
+    return ThemeAssets(css=_assert_style_safe("".join(parts)), mark=mark)

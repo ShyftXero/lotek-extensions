@@ -24,7 +24,8 @@ from a query string.
 from __future__ import annotations
 
 from scribble.reporting.layouts import DEFAULT_LAYOUT, ReportLayout, get_layout
-from scribble.reporting.themes import DEFAULT_THEME, ReportTheme, get_theme
+from scribble.reporting.theme_registry import OverrideLookup, ResolvedTheme, resolve_theme
+from scribble.reporting.themes import DEFAULT_THEME
 
 # Legacy ``?template=`` value -> (layout name, theme name). ``dark`` is the interesting one: it was never
 # a distinct structure, only the standard blocks with a forced palette, which is exactly the conflation
@@ -41,10 +42,21 @@ def resolve_selection(
     layout: str | None = None,
     theme: str | None = None,
     template: str | None = None,
-) -> tuple[ReportLayout, ReportTheme]:
+    override_lookup: OverrideLookup | None = None,
+) -> tuple[ReportLayout, ResolvedTheme]:
     """Resolve the Layout and Theme to render with. See this module's docstring for precedence.
 
     Every argument is untrusted; an unrecognised value falls back instead of raising.
+
+    The Theme comes back as a :class:`ResolvedTheme` — the ``ReportTheme`` a switcher and the
+    ``data-theme`` stamp need, PLUS its parsed payload and its Provenance. Resolving in one place is
+    deliberate: the payload decides how the report looks and the Provenance decides whether its Mark
+    may be an SVG, so a second resolution somewhere else could disagree with this one about either.
+    Previously this returned a bare ``ReportTheme`` from a frozen three-entry registry, which is
+    precisely why an installed Theme was unreachable no matter that discovery could see it.
+
+    ``override_lookup`` is how an operator-supplied Theme becomes resolvable without dragging a DB
+    session into ``reporting/``; a caller without a database omits it and gets bundled + installed.
     """
     legacy = _LEGACY.get((template or "").strip().lower())
     if legacy is not None:
@@ -52,4 +64,4 @@ def resolve_selection(
         # An explicit value on an axis wins; the legacy value fills only what was left unspecified.
         layout = layout or legacy_layout
         theme = theme or legacy_theme
-    return get_layout(layout), get_theme(theme)
+    return get_layout(layout), resolve_theme(theme, override_lookup=override_lookup)

@@ -9,6 +9,9 @@
 [identity]
 name = "light"
 label = "Light"
+# Which palette these values are tuned for. Matches this Theme's entry in `reporting/themes.py`'s
+# registry; a test asserts the two agree, so the file and the registry cannot drift.
+stamp = "light"
 
 [tokens]
 bg = "#f6f8fa"
@@ -30,6 +33,13 @@ sev-info = "#64748b"
 radius = "8px"
 measure = "72ch"
 maxw = "1080px"
+
+# Type stacks. Identical in both bundled Themes: `_CSS` declares these once in `:root` and never
+# re-themes them per palette, so the effective value is the same light or dark. They exist as tokens
+# so a BRAND Theme can replace them; the shipped values are the system stacks.
+font-body = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+font-display = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+font-mono = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace'
 
 # No custom web fonts today — the shipped report stack is the `system-ui` fallback stack already in
 # `_CSS`'s `body { font-family: … }`, and no `.woff2` files are committed alongside this Theme yet.
