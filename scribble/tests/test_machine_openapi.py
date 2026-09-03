@@ -255,14 +255,32 @@ def test_finding_id_is_a_read_alias_for_id(client, stub_host):
 
 
 def _emitted_audit_verbs() -> set[str]:
-    """Every bare verb `api_pat.py` passes to ``_audit``, read out of the source.
+    """Every bare verb ANY scribble module passes to ``_audit``, read out of the source.
 
     Source text, not runtime: a verb is only emitted when its route actually runs, so a runtime probe
     would need every route driven to completion and would silently under-report the ones it missed —
     which is the failure mode this guard exists to prevent.
+
+    Scans the whole package rather than a named file, and that widening IS the fix for a real blind
+    spot: this guard used to read `api_pat.py` alone. When `themes_api.py` arrived emitting four new
+    verbs, the declared-vs-emitted property silently stopped holding and this test stayed GREEN,
+    because the second file was invisible to it. A guard that only watches the place the problem was
+    first found is a guard that expires the moment the code grows — so it now watches every module
+    that can emit, and a NEW module emitting a new verb is covered without anyone remembering to add
+    it here.
     """
-    src = (Path(__file__).resolve().parents[1] / "scribble" / "api_pat.py").read_text()
-    return set(re.findall(r'_audit\(\s*\w+,\s*"([a-z_]+)"', src))
+    pkg = Path(__file__).resolve().parents[1] / "scribble"
+    pattern = re.compile(r'_audit\(\s*\w+,\s*"([a-z_]+)"')
+    verbs: set[str] = set()
+    scanned = 0
+    for path in sorted(pkg.rglob("*.py")):
+        text = path.read_text()
+        if "_audit(" not in text:
+            continue
+        scanned += 1
+        verbs.update(pattern.findall(text))
+    assert scanned, "no module in the package calls _audit — the scan has drifted from the source"
+    return verbs
 
 
 def _declared_audit_verbs() -> set[str]:
@@ -285,7 +303,7 @@ def test_every_emitted_audit_verb_is_registered_in_the_manifest():
     emitted, declared = _emitted_audit_verbs(), _declared_audit_verbs()
     assert emitted, "found no _audit call sites at all — the regex above has drifted from the source"
     assert emitted - declared == set(), (
-        f"audit verb(s) emitted by api_pat.py but missing from lotek-extension.toml [audit] verbs: "
+        f"audit verb(s) emitted by the package but missing from lotek-extension.toml [audit] verbs: "
         f"{sorted(emitted - declared)} — they will be invisible in /admin/audit's action filter."
     )
 

@@ -68,11 +68,30 @@ def _override_theme_sources(db):
     Theme that appears in the list and does nothing when picked. Folding here fixes existing rows;
     `themes_api` also folds at write time so new ones are canonical.
     """
-    rows = list(db.scalars(select(ScribbleThemeOverride)))
-    by_name = {(r.name or "").strip().lower(): r.source_toml for r in rows}
+    # NAMES ONLY for the switcher, and the payload fetched LAZILY for the one Theme actually selected.
+    # Loading every override Theme's full `source_toml` on every report render and every export -- to
+    # use at most one of them -- grew the per-render cost with the number of Themes an install had
+    # accumulated, for no benefit. The switcher needs names; the renderer needs one payload.
+    names = tuple(
+        sorted(
+            (n or "").strip().lower()
+            for n in db.scalars(select(ScribbleThemeOverride.name))
+        )
+    )
+
+    def lookup(name: str) -> str | None:
+        """Fetch one override Theme's TOML. Closes over the request's session, which is still open:
+        the renderer is called inside the same `with open_session()` block."""
+        folded = (name or "").strip().lower()
+        if folded not in names:
+            return None  # spares a query for the overwhelmingly common bundled/installed case
+        return db.scalar(
+            select(ScribbleThemeOverride.source_toml).where(ScribbleThemeOverride.name == folded)
+        )
+
     settings = db.scalar(select(ScribbleSettings).where(ScribbleSettings.slot == "default"))
     install_default = (settings.default_report_theme if settings else None) or None
-    return (lambda name: by_name.get(name)), tuple(sorted(by_name)), install_default
+    return lookup, names, install_default
 
 
 def _selected_theme(install_default: str | None) -> str | None:
