@@ -112,6 +112,24 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         "scribble.vuln_map",
         "scribble.vuln_map_create",
         "scribble.vuln_map_delete",
+        # ext#113 report Themes. Install-WIDE appearance configuration: which Themes exist and which one
+        # every report inherits by default. There is no engagement axis to scope to -- a Theme is not
+        # owned by an engagement, it is chosen BY one -- so the engagement gate structurally cannot
+        # apply, exactly like the library-wide template routes above.
+        #
+        # Non-engagement-scoped is NOT ungated. Every mutating route here is admin-only via
+        # `themes_api._require_admin` (cream's `current_actor_is_admin`, fail-closed when a host is
+        # mounted and nobody is authenticated) and audited with before/after through the host seam;
+        # `tests/test_theme_override_crud.py` enumerates the mutating routes and asserts a non-admin is
+        # refused on each, so a new route added here without the gate breaks THAT test. The read routes
+        # (`themes_library`, `list_themes`) expose Theme names, labels and palette values -- install
+        # configuration, carrying no client or engagement data.
+        "scribble.themes_library",
+        "scribble_api.list_themes",
+        "scribble_api.create_theme_override",
+        "scribble_api.update_theme_override",
+        "scribble_api.delete_theme_override",
+        "scribble_api.set_default_theme",
     }
 )
 

@@ -195,17 +195,17 @@ def test_explicit_axis_beats_a_stale_legacy_template():
     """The switcher writes ?layout=/?theme= and deletes ?template=, but a hand-edited URL can carry
     both. An explicit axis wins on its own axis; the legacy value fills only what is unspecified."""
     layout, theme = resolve_selection(theme="light", template="dark")
-    assert theme.name == "light"      # explicit theme beat the legacy dark
+    assert theme.theme.name == "light"      # explicit theme beat the legacy dark
     assert layout.name == "default"   # layout unspecified, so the legacy value supplied it
 
     layout, theme = resolve_selection(layout="compliance", template="dark")
     assert layout.name == "compliance"
-    assert theme.name == "dark"       # theme unspecified, so the legacy value supplied it
+    assert theme.theme.name == "dark"       # theme unspecified, so the legacy value supplied it
 
 
 def test_resolve_selection_defaults_with_nothing_supplied():
     layout, theme = resolve_selection()
-    assert (layout.name, theme.name) == ("default", "auto")
+    assert (layout.name, theme.theme.name) == ("default", "auto")
 
 
 # --- switchers ---------------------------------------------------------------------------------------
