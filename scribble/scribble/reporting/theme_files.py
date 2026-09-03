@@ -60,10 +60,20 @@ authors should read):
   (see that module's docstring), so it gets no special trust for being data on disk instead of an
   admin-submitted form. ``ThemeFile.tokens`` is therefore always a value that has already passed the
   closed grammar, never a raw echo of what the TOML happened to say.
-- ``[fonts]`` — ``embed`` (bool) plus zero or more ``[[fonts.face]]`` tables, each naming a ``.woff2``
-  file that must be a bare SIBLING filename in this same directory (see "Font embedding" below).
-- ``[marks]`` — reserved placeholder for #104 (logo/shape assets). Accepted so a Theme author can start
-  writing the section without a schema error; nothing under it is read yet.
+- ``[fonts]`` — ``embed`` (bool), an optional ``package`` naming where the face files live, plus zero
+  or more ``[[fonts.face]]`` tables, each naming a ``.woff2`` file that must be a bare SIBLING filename
+  inside that package (see "Font embedding" below). ``package`` defaults to this module's own
+  ``report_themes``, which is right for a bundled Theme; an INSTALLED Theme arrives as TOML text with
+  no filesystem identity of its own, so it must name its own distribution's resource package or its
+  fonts would be looked for in scribble's and silently not found. A face's ``weight`` may be a single
+  value or a RANGE (``"300 700"``) for a variable font — Google serves Heebo and Montserrat as one
+  file spanning the whole axis, so a range is three files where naming each weight was six.
+- ``[marks]`` — the Theme's graphical identity. ``logo_svg`` is SVG source, read here as TEXT and
+  bounded, but NOT vetted here: ``reporting.marks.resolve_mark`` is the single gate, it keys off
+  Provenance (bundled/installed may carry SVG; an operator-uploaded ``override`` Theme is
+  raster-only), and both the write path and the render path call it. Sanitizing at parse time as well
+  would create a second opinion about what is acceptable, which is precisely the split that let cream
+  ship a renderer more permissive than its own API.
 
 ## Font embedding — WHY inline, never a ``<link>``
 
@@ -76,7 +86,8 @@ is a data-handling problem for a pentest report in a way it would not be for a p
 Embedding the font bytes as a ``data:`` URI keeps the report closed: once rendered, it makes no network
 requests at all.
 
-No ``.woff2`` files are committed yet — this ticket ships the loader and the two palettes, not fonts.
+No ``.woff2`` file is committed alongside the two BUNDLED Themes — they use the shipped fallback
+stack. An installed Theme may well carry real faces (the Synoptek brand Theme carries three).
 Every function below therefore MUST treat an absent font file as the normal, expected, non-error state:
 ``font_data_uri`` returns ``None`` and ``build_font_face_css`` returns ``""``, never an exception, so a
 Theme that later grows real font files just starts working without anyone touching the caller.
@@ -159,6 +170,18 @@ class ThemeFile:
     # rule keeps full control of paper, which is what stops a screen-tuned palette reaching a client's
     # printed deliverable. See `_parse_theme_toml` for the incident this guards.
     print_tokens: dict[str, str] = field(default_factory=dict)
+    # Where this Theme's font files live, as an importable package name. A BUNDLED Theme's faces are
+    # siblings of its own `.toml` inside `report_themes/`, which is the default. An INSTALLED Theme's
+    # faces live in ITS OWN distribution — it arrives here as TOML text with no filesystem identity at
+    # all, so it has to say where its resources are or `_read_font_bytes` would look for them in
+    # scribble's package and silently find nothing.
+    font_package: str = _PACKAGE
+    # The Theme's logo, as SVG source. Vetting is NOT done here: `reporting.marks.resolve_mark` is the
+    # single gate both the write path and the render path call, and it keys off Provenance — an
+    # installed or bundled Theme may carry SVG, an operator-uploaded `override` Theme is raster-only.
+    # cream shipped a real bug by having its API and its renderer disagree about what was acceptable;
+    # one gate, called from both sides, is how that is not repeated.
+    logo_svg: str | None = None
 
 
 def list_theme_files() -> list[str]:
@@ -257,17 +280,39 @@ def _parse_theme_toml(expected_name: str, text: str) -> ThemeFile:
     embed_fonts = fonts_raw.get("embed", False)
     if not isinstance(embed_fonts, bool):
         raise ThemeFileError(f"{expected_name}: [fonts].embed must be a bool")
+    # Where this Theme's font files live. Defaults to scribble's own `report_themes` package, which is
+    # correct for a bundled Theme; an installed Theme must name its own. Validated as a dotted
+    # identifier and resolved only through importlib.resources, so it can name a package but can never
+    # express a filesystem path — combined with `_is_safe_sibling_filename` on each face, a Theme can
+    # reach exactly one directory: the one it declares.
+    font_package = fonts_raw.get("package", _PACKAGE)
+    if not isinstance(font_package, str) or not _PACKAGE_NAME_RE.fullmatch(font_package):
+        raise ThemeFileError(
+            f"{expected_name}: [fonts].package must be a dotted importable package name"
+        )
+
     faces_raw = fonts_raw.get("face", [])
     if not isinstance(faces_raw, list):
         raise ThemeFileError(f"{expected_name}: [[fonts.face]] must be an array of tables")
     faces = tuple(_parse_face(expected_name, i, face_raw) for i, face_raw in enumerate(faces_raw))
 
-    # [marks] is a placeholder reserved for #104 (logo/shape assets) — accepted here (so a Theme
-    # author can start writing the section without a schema error) but nothing under it is read yet.
-    # `.get` rather than indexing means an ABSENT [marks] is equally fine.
+    # [marks] — a Theme's graphical identity (#104). `logo_svg` is read as SOURCE TEXT and is NOT
+    # vetted here: `reporting.marks.resolve_mark` is the one gate, it keys off Provenance, and both the
+    # write path and the render path call it. Deliberately not sanitizing at parse time, because that
+    # would create a second opinion about what is acceptable — exactly the split that let cream ship a
+    # renderer more permissive than its own API. An absent [marks] is entirely normal.
     marks_raw = data.get("marks", {})
     if not isinstance(marks_raw, dict):
         raise ThemeFileError(f"{expected_name}: [marks] must be a table")
+    logo_svg = marks_raw.get("logo_svg")
+    if logo_svg is not None and not isinstance(logo_svg, str):
+        raise ThemeFileError(f"{expected_name}: [marks].logo_svg must be a string of SVG source")
+    if isinstance(logo_svg, str) and len(logo_svg) > _MAX_LOGO_SVG_CHARS:
+        # Bounded before it ever reaches a parser: an unbounded blob here would be parsed, sanitized
+        # and then inlined into a document, so the cheapest place to refuse it is at the door.
+        raise ThemeFileError(
+            f"{expected_name}: [marks].logo_svg exceeds {_MAX_LOGO_SVG_CHARS} characters"
+        )
 
     return ThemeFile(
         name=name,
@@ -276,6 +321,8 @@ def _parse_theme_toml(expected_name: str, text: str) -> ThemeFile:
         embed_fonts=embed_fonts,
         faces=faces,
         print_tokens=print_tokens,
+        font_package=font_package,
+        logo_svg=logo_svg,
     )
 
 
@@ -318,8 +365,12 @@ def _parse_face(theme_name: str, index: int, face_raw: object) -> FontFace:
 
 # Deliberately restrictive — see `_parse_face`'s comment on why these are held to the same bar as
 # `reporting.tokens`'s font-stack grammar even though bundled Theme files are code-reviewed today.
+# A brand lockup is a handful of paths. 64 KiB is generous for that and still refuses a blob.
+_MAX_LOGO_SVG_CHARS = 64 * 1024
+
 _FAMILY_MAX_LEN = 60
 _FAMILY_RE = re.compile(r"[A-Za-z0-9 -]+")
+_PACKAGE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _STYLE_VALUES: frozenset[str] = frozenset({"normal", "italic", "oblique"})
 _WEIGHT_KEYWORDS: frozenset[str] = frozenset({"normal", "bold", "bolder", "lighter"})
 
@@ -340,7 +391,18 @@ def _valid_weight(value: object) -> bool:
     if isinstance(value, str):
         if value in _WEIGHT_KEYWORDS:
             return True
-        return value.isdigit() and 1 <= int(value) <= 1000
+        if value.isdigit():
+            return 1 <= int(value) <= 1000
+        # A weight RANGE, e.g. "300 700", for a VARIABLE font. Not a nicety: Google serves Heebo and
+        # Montserrat as one file spanning the whole weight axis (verified — the 300/400/700 downloads
+        # are byte-identical), so without ranges a Theme must declare one face per weight pointing at
+        # the SAME file and pay the base64 cost once per declaration. For those two families that was
+        # six files and 181 KB instead of three and 83 KB, in a document that already inlines evidence
+        # images. Two ascending integers, space-separated — CSS's own `font-weight: <min> <max>` form.
+        parts = value.split(" ")
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            lo, hi = int(parts[0]), int(parts[1])
+            return 1 <= lo <= hi <= 1000
     return False
 
 
@@ -355,7 +417,7 @@ def _is_safe_sibling_filename(value: object) -> bool:
     return value.lower().endswith(".woff2")
 
 
-def _read_font_bytes(face: FontFace) -> bytes | None:
+def _read_font_bytes(face: FontFace, package: str = _PACKAGE) -> bytes | None:
     """Read one declared face's `.woff2` sibling, or `None` if it is absent or unreadable.
 
     Absence is the NORMAL state today — see the module docstring's "Font embedding" section. This
@@ -363,11 +425,15 @@ def _read_font_bytes(face: FontFace) -> bytes | None:
     fail a report render over a font file that simply hasn't been committed yet.
     """
     try:
-        resource = resources.files(_PACKAGE).joinpath(face.file)
+        resource = resources.files(package).joinpath(face.file)
         if not resource.is_file():
             return None
         return resource.read_bytes()
-    except OSError:
+    except Exception:  # noqa: BLE001
+        # Deliberately broader than OSError. `package` can now come from a Theme's own
+        # `[fonts].package`, so an installed Theme naming a package that is not importable raises
+        # ModuleNotFoundError here — and a missing font must degrade to the fallback stack, never turn
+        # `/engagements/<id>/report` into a 500 over a typo in someone's branding.
         return None
 
 
@@ -375,14 +441,14 @@ def _to_data_uri(raw: bytes) -> str:
     return f"data:font/woff2;base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-def font_data_uri(face: FontFace) -> str | None:
+def font_data_uri(face: FontFace, package: str = _PACKAGE) -> str | None:
     """Read `face.file` and return it as a base64 `data:font/woff2;base64,...` URI.
 
     Returns `None` — never raises — when the file is absent, unreadable, or larger than
     `MAX_EMBEDDED_FONT_BYTES` on its own. A single face over the ceiling can never fit the theme-wide
     budget `build_font_face_css` enforces either, so this checks it eagerly rather than only there.
     """
-    raw = _read_font_bytes(face)
+    raw = _read_font_bytes(face, package)
     if raw is None or len(raw) > MAX_EMBEDDED_FONT_BYTES:
         return None
     return _to_data_uri(raw)
@@ -403,7 +469,7 @@ def build_font_face_css(theme: ThemeFile) -> str:
     blocks: list[str] = []
     budget = MAX_EMBEDDED_FONT_BYTES
     for face in theme.faces:
-        raw = _read_font_bytes(face)
+        raw = _read_font_bytes(face, theme.font_package)
         if raw is None or len(raw) > budget:
             continue
         budget -= len(raw)

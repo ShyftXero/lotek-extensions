@@ -51,14 +51,20 @@ def test_colour_and_dimension_allowlist_matches_the_real_root_palette():
     instead of the allowlist silently drifting from the stylesheet it is supposed to describe."""
     root_block = _CSS.split(":root {", 1)[1].split("}", 1)[0]
     declared = set(re.findall(r"--([a-z0-9-]+):", root_block))
-    assert declared == set(COLOUR_TOKENS) | set(DIMENSION_TOKENS)
+    # FONT_TOKENS joined this set when the ~9 hardcoded `font-family` sites were pointed at
+    # `var(--font-*)`: until then these three named properties that did not exist, so a Theme setting
+    # `font-body` was writing a variable nothing read.
+    assert declared == set(COLOUR_TOKENS) | set(DIMENSION_TOKENS) | set(FONT_TOKENS)
 
 
-def test_font_tokens_are_not_yet_real_css_custom_properties():
-    """Documented, not just assumed: the stylesheet hardcodes font-family inline today, so these three
-    tokens name properties that do NOT exist in ``_CSS`` yet — wiring them in is future work."""
+def test_font_tokens_are_real_css_custom_properties_and_are_actually_used():
+    """This test was previously the inverse — it asserted these three named properties that did NOT
+    exist, marking the wiring as future work. That work is done, so the assertion is inverted rather
+    than deleted: declaring a token is not enough, something has to READ it, or a brand Theme sets a
+    typeface and the report renders in the system stack anyway with nothing to show why."""
     for name in FONT_TOKENS:
-        assert f"--{name}:" not in _CSS
+        assert f"--{name}:" in _CSS, f"--{name} is allowlisted but never declared"
+        assert f"var(--{name})" in _CSS, f"--{name} is declared but no rule consumes it"
 
 
 # --- happy path: every allowlisted token accepts a valid value -----------------------------------------

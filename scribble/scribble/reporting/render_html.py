@@ -1603,6 +1603,16 @@ _CSS = """
   --sev-critical: #b3261e; --sev-high: #c2410c; --sev-medium: #a16207;
   --sev-low: #1d6fa5; --sev-info: #64748b;
   --radius: 8px; --measure: 72ch; --maxw: 1080px;
+  /* Type stacks as tokens so a Theme can set them (reporting/tokens.py's FONT_TOKENS). These
+     three values are byte-identical to the stacks that were hardcoded at the call sites below,
+     so introducing them changed nothing visually — but until they existed, a Theme declaring
+     `font-body` was setting a variable that nothing read. --font-display is new in the sense
+     that no site had a separate heading stack: it defaults to the body stack, and exists so a
+     brand with a distinct display face (Synoptek pairs Heebo with Montserrat for its all-caps
+     alt-headings) has somewhere to put it. */
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 :root:not([data-theme="light"]) {
   @media (prefers-color-scheme: dark) {
@@ -1627,7 +1637,7 @@ _CSS = """
 html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 15px; line-height: 1.6;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
@@ -1636,7 +1646,7 @@ h1, h2, h3 { margin: 0 0 4px; text-wrap: balance; letter-spacing: -0.01em; }
 a { color: var(--accent-ink); text-underline-offset: 2px; }
 .muted { color: var(--muted); }
 .mono {
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 .tnum { font-variant-numeric: tabular-nums; }
@@ -1693,6 +1703,7 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 }
 .report-nav a { white-space: nowrap; }
 .eyebrow {
+  font-family: var(--font-display);
   font-size: 12px; font-weight: 700; letter-spacing: .13em;
   text-transform: uppercase; color: var(--accent-ink);
 }
@@ -1764,6 +1775,7 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 main.wrap { padding-bottom: 72px; }
 section.sec { padding-top: 34px; scroll-margin-top: 64px; }
 .sec-h {
+  font-family: var(--font-display);
   font-size: 15px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   color: var(--ink-2); margin: 0 0 18px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
   display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none;
@@ -1993,12 +2005,12 @@ table.index td.ix-cvss {
   padding: 10px 12px; font-size: 12.5px; overflow: auto; max-height: 24em;
 }
 .finding-body .block-body code {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px;
+  font-family: var(--font-mono); font-size: 13px;
 }
 .empty { color: var(--muted); font-style: italic; }
 .finding-body .asset-list { margin: 4px 0 0; padding-left: 18px; }
 .finding-body .asset-list li {
-  margin: 3px 0; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  margin: 3px 0; font-family: var(--font-mono);
   font-size: 13px; font-variant-numeric: tabular-nums;
 }
 .finding-body .block.recommendations .block-label { color: var(--accent-ink); }
@@ -2027,14 +2039,14 @@ table.index td.ix-cvss {
   color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
 }
 .act-table td.act-ts {
-  white-space: nowrap; color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+  white-space: nowrap; color: var(--muted); font-family: var(--font-mono);
 }
 .act-table td.act-kind { white-space: nowrap; color: var(--muted); text-transform: capitalize; }
 .children-table th {
   color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
 }
 .children-table td.child-host {
-  white-space: nowrap; font-weight: 600; font-family: ui-monospace, Menlo, monospace;
+  white-space: nowrap; font-weight: 600; font-family: var(--font-mono);
 }
 .children-table td.child-evidence { color: var(--muted); }
 .children-table td.child-evidence .child-facts { margin-bottom: 6px; }
