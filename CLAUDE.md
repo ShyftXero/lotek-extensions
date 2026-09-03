@@ -5,11 +5,28 @@ framework's flow and processes. The essentials:
 
 ## One monorepo, self-contained subdirectories
 
-Each extension lives in its own subdir (`cream/`, `registrar/`, `scribble/`, `vector/`), carrying its own
-`pyproject.toml`, `lotek-extension.toml`, and package. A change touches ONE extension's subdir unless it
-is a cross-cutting repo change (this file, CI, the plan template). Keep extensions independent — an
-extension reaches lotek only through the injected host contract, never by importing lotek or another
-extension.
+Each extension lives in its own subdir (`bugreport/`, `cream/`, `exploiteer/`, `registrar/`, `scribble/`,
+`vector/`), carrying its own `pyproject.toml`, `lotek-extension.toml`, and package. A change touches ONE
+extension's subdir unless it is a cross-cutting repo change (this file, CI, the plan template). Keep
+extensions independent — an extension reaches lotek only through the injected host contract, never by
+importing lotek or another extension.
+
+### `kit/` is NOT an extension
+
+`kit/` holds **`lotek-kit`**, a shared contract library (see `kit/README.md`). It is the one subdir with
+no `lotek-extension.toml`, no `lotek.extensions` entry point and no `register()` — lotek's discovery
+enumerates exactly that entry-point group, so their absence is what makes it structurally unmountable.
+
+It exists because the rule above leaves two consumers who may not import each other with nowhere to put
+code they both need, so they copy it instead — this repo carries three hand-written drag-reorder
+implementations, and core knows the `attackpath/v1` schema id as a string literal. Core depends on the
+kit, extensions depend on the kit, and the kit depends on neither.
+
+**The admission rule: something enters the kit only when two consumers that may not import each other
+both need it.** Convenience is not a reason to widen a package every consumer must install. `lotek-kit`
+carries **no runtime dependencies** (core takes it as a *base* dependency, so anything added here lands
+in lotek and in every extension downstream) and **never imports lotek or an extension**. All three
+constraints are pinned by tests in `kit/tests/`.
 
 ## Branch per change type — off `main` (GitHub Flow)
 
