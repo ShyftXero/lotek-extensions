@@ -30,9 +30,37 @@ constraints are pinned by tests in `kit/tests/`.
 
 ## Branch per change type — off `main` (GitHub Flow)
 
-Cut a **short-lived** branch off `main` (`feat/` · `fix/` · `chore/`), PR it **into `main`**,
-**squash-merge**, and let it **auto-delete** (`delete_branch_on_merge` is on). Don't pile new work onto a
+Cut a **short-lived** branch off `main` (`feat/` · `fix/` · `chore/`), PR it **into `main`**, merge it,
+and let it **auto-delete** (`delete_branch_on_merge` is on). Don't pile new work onto a
 finished-but-unmerged branch. Prefix the branch with the extension when it helps: `feat/cream-pdf`.
+
+**Squash merge is DISABLED on this repository.** `gh pr merge --squash` fails with
+`GraphQL: Squash merges are not allowed on this repository`. Use `--merge` (a merge commit) or
+`--rebase`; `required_linear_history` is off, so a merge commit is permitted. Check rather than
+remember:
+
+```sh
+gh api repos/ShyftXero/lotek-extensions \
+  --jq '{squash:.allow_squash_merge, merge:.allow_merge_commit, rebase:.allow_rebase_merge}'
+```
+
+### Stacked PRs: merge order matters, and getting it wrong closes a PR
+
+When PR B targets PR A's branch rather than `main`:
+
+- **Merge B into A first, or omit `--delete-branch` until the stack is drained.** GitHub **closes** a PR
+  whose base branch is deleted — it does not retarget it. So `gh pr merge A --delete-branch` while B is
+  still open silently closes B.
+- **Recovering is order-forced**, because a *closed* PR cannot be retargeted and a PR with a *missing*
+  base cannot be reopened: restore the base ref (push it back — creating a ref, not a force-push) →
+  `gh pr reopen B` → `gh pr edit B --base main` → merge → delete the ref again.
+- **Prefer `--merge` over `--rebase` for the lower PR of a stack.** A merge commit keeps A's head a real
+  ancestor of `main`, so B's merge-base stays valid and B retargets cleanly showing only its own changes.
+  Rebase-merge rewrites SHAs and strands B's base, which then needs a force-push to repair — and
+  force-pushing is barred (`allow_force_pushes` is off on `main`, and agents must not force-push at all).
+- **Scope each review to the branch's own diff** (`git diff <parent-branch>...HEAD`), not
+  `git diff main...HEAD`, or B's review re-reads everything A already covered. The gate records a marker
+  against a HEAD and never inspects *what* was reviewed, so this is on you.
 
 ## One working tree per session
 
@@ -247,8 +275,11 @@ this public monorepo (one subdirectory per extension), discovers it via the `lot
 and reads its metadata from the wheel-shipped `lotek-extension.toml`. There is no vendored tree and no
 `stage-extension.sh`. To ship a change:
 
-1. **Land it here.** PR the extension's subdir into `main`, squash-merge. On merge, CI
-   (`.github/workflows/release-tag.yml`) cuts a dated release tag `v<YYYY.M.D.HHMMSS+g<sha>>`.
+1. **Land it here.** PR the extension's subdir into `main` and merge it (see the merge-method note above
+   — **not** `--squash`). On merge, CI (`.github/workflows/release-tag.yml`) cuts a dated release tag
+   `v<YYYY.M.D.HHMMSS+g<sha>>` automatically, with no human step. **A tag here is not a deploy** — it
+   only gives lotek something to pin. Nothing reaches an environment until lotek is re-pinned (step 2)
+   and lotek cuts its own release.
 2. **Re-pin in lotek.** Bump that extension's `tag = "…"` under `[tool.uv.sources]` in lotek's
    `pyproject.toml`, then `uv lock --upgrade-package <ext>` + `uv sync --extra extensions`, run the mounted
    tests (`tests/test_<ext>_*`, `test_extension_nav`), and PR into lotek `main`.

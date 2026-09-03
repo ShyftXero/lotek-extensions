@@ -30,11 +30,15 @@ against `gh api repos/.../branches/main/protection`:
 
 ## Done
 - [x] This plan, committed first
+- [x] `CLAUDE.md` branch-per-change-type recipe: `squash-merge` → merge, plus the disabled-squash note
+      and the API command to check rather than remember (command run as written, output verified)
+- [x] `CLAUDE.md` "shipping a change back to lotek" step 1: same correction, plus the clarification that
+      a tag in this repo is not a deploy — it only gives lotek something to pin
+- [x] New `### Stacked PRs` subsection: the `--delete-branch` trap, the order-forced recovery, why
+      `--merge` beats `--rebase` for the lower PR, and scoping each review to its own diff
 
 ## Remaining
-- [ ] `CLAUDE.md:34` — the branch-per-change-type recipe
-- [ ] `CLAUDE.md:250` — the "shipping a change back to lotek" step 1
-- [ ] A short stacked-PR subsection under the branch discipline
+- [ ] Nothing.
 
 ## Notes / gotchas
 
