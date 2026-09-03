@@ -303,6 +303,10 @@ def is_supported_schema_id(value: Any) -> bool:
     :func:`normalize` deliberately accepts anything and stamps :data:`SCHEMA_ID` over it, so it can
     never tell a caller "that was not an attack path". A caller importing a foreign document needs to
     make that distinction BEFORE normalizing, and this is how.
+
+    **Nothing calls this yet**, and that is a known state rather than an oversight: the import path
+    that needs it lands with the authoring UI (#154). It is here now because the legacy-id knowledge it
+    encodes belongs beside the constants, not scattered across whichever consumer needs it first.
     """
     return isinstance(value, str) and value in SUPPORTED_SCHEMA_IDS
 

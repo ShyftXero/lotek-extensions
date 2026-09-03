@@ -41,3 +41,27 @@ def test_an_unknown_asset_raises_a_distinguishable_error():
 
 def test_asset_not_found_is_catchable_as_lookup_error():
     assert issubclass(AssetNotFound, LookupError)
+
+
+def test_a_name_containing_a_null_byte_raises_the_documented_error():
+    """A NUL in a path makes the stdlib raise ValueError, not the module's own error. A caller
+    catching AssetNotFound would otherwise get something it never agreed to handle."""
+    with pytest.raises(AssetNotFound):
+        asset_bytes("x\x00.js")
+
+
+def test_the_static_package_actually_resolves():
+    """``static/`` has no ``__init__.py``, so it is a namespace package and ``files()`` returns a
+    MultiplexedPath rather than a plain path. Every other test here asserts a FAILURE, so without
+    this one a totally unresolvable asset directory would ship green — the reachable assets, and the
+    success path over them, arrive with the reorder assets in the stacked branch.
+
+    Resolved through the module's own ``_STATIC`` constant, deliberately: an earlier version of this
+    test hardcoded the package name, which meant breaking ``_STATIC`` left the test green. A guard
+    that cannot see the break it exists for is worse than no guard, because it reads as coverage.
+    """
+    from importlib.resources import files
+
+    from lotek_kit.assets import _STATIC
+
+    assert files(_STATIC).is_dir()

@@ -65,6 +65,16 @@ def test_the_hook_falls_back_rather_than_exploding_outside_a_checkout(tmp_path):
     assert hook.FALLBACK_VERSION == "0.0.0.dev0"
 
 
+def test_the_two_fallback_versions_agree():
+    """``lotek_kit.FALLBACK_VERSION`` and ``hatch_build.FALLBACK_VERSION`` are the same value in two
+    files, because the build hook runs long before the package is importable and cannot share a
+    constant with it. Unavoidable duplication, so it gets a guard rather than a promise."""
+    import lotek_kit
+
+    hook = _load(KIT_ROOT / "hatch_build.py", "_kit_hatch_build_fallback_parity")
+    assert lotek_kit.FALLBACK_VERSION == hook.FALLBACK_VERSION
+
+
 def test_the_hook_needs_no_third_party_imports():
     tree = ast.parse((KIT_ROOT / "hatch_build.py").read_text(encoding="utf-8"))
     imported = set()

@@ -27,9 +27,15 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
+#: What an uninstalled source tree reports. Must equal ``hatch_build.FALLBACK_VERSION``, and cannot
+#: simply import it: ``hatch_build`` needs hatchling and runs at BUILD time, long before this module is
+#: importable in a consumer's environment. Two copies are structurally unavoidable, so a test asserts
+#: they agree rather than leaving it to whoever edits one of them next.
+FALLBACK_VERSION = "0.0.0.dev0"
+
 try:
     __version__ = _pkg_version("lotek-kit")
 except PackageNotFoundError:  # running from a source tree that was never installed
-    __version__ = "0.0.0.dev0"
+    __version__ = FALLBACK_VERSION
 
-__all__ = ["__version__"]
+__all__ = ["FALLBACK_VERSION", "__version__"]
