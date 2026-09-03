@@ -18,11 +18,12 @@ import re
 from collections.abc import Callable
 
 from flask import Response, abort, request, url_for
+from sqlalchemy import select
 
 from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
 from scribble.deps import open_session
-from scribble.models import Engagement
+from scribble.models import Engagement, ScribbleThemeOverride
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
 
@@ -51,6 +52,21 @@ def _slugify(value: str) -> str:
     return slug or "report"
 
 
+
+def _override_theme_sources(db):
+    """``(lookup, names)`` for the operator-supplied Themes in this install.
+
+    ``reporting/`` never touches a session -- the renderers are pure functions over a frozen
+    ``ReportContext``, which is what lets the whole report suite run with no database. So an override
+    Theme reaches the renderer the same way evidence bytes do: as an injected callable plus the list of
+    names the switcher should offer. A caller with no database (a test, a standalone render) passes
+    neither and gets bundled + installed Themes only.
+    """
+    rows = list(db.scalars(select(ScribbleThemeOverride)))
+    by_name = {r.name: r.source_toml for r in rows}
+    return (lambda name: by_name.get(name)), tuple(sorted(by_name))
+
+
 def register(api_bp, bp) -> None:
     """Attach the report routes to the UI blueprint ``bp``.
 
@@ -65,6 +81,7 @@ def register(api_bp, bp) -> None:
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)
+            _override_lookup, _override_names = _override_theme_sources(db)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             html_doc = render_report_html(
                 ctx,
@@ -75,6 +92,8 @@ def register(api_bp, bp) -> None:
                 layout=request.args.get("layout"),
                 theme=request.args.get("theme"),
                 template=request.args.get("template"),
+                override_lookup=_override_lookup,
+                override_theme_names=_override_names,
             )
         return Response(html_doc, mimetype="text/html")
 
@@ -86,6 +105,7 @@ def register(api_bp, bp) -> None:
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)
+            _override_lookup, _override_names = _override_theme_sources(db)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             slug = _slugify(engagement.name)
 
@@ -96,6 +116,7 @@ def register(api_bp, bp) -> None:
                     layout=request.args.get("layout"),
                     theme=request.args.get("theme"),
                     template=request.args.get("template"),
+                    override_lookup=_override_lookup,
                 )
                 return Response(
                     payload,
@@ -112,6 +133,8 @@ def register(api_bp, bp) -> None:
                 layout=request.args.get("layout"),
                 theme=request.args.get("theme"),
                 template=request.args.get("template"),
+                override_lookup=_override_lookup,
+                override_theme_names=_override_names,
             )
 
         return Response(

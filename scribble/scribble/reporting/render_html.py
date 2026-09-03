@@ -54,14 +54,23 @@ from scribble.reporting.context import (
     figure_caption,
 )
 from scribble.reporting.layouts import ReportLayout, list_layouts
+from scribble.reporting.marks import ResolvedMark
 from scribble.reporting.selection import resolve_selection
 from scribble.reporting.theme_css import build_theme_assets
-from scribble.reporting.themes import ReportTheme, get_theme, list_themes
+from scribble.reporting.theme_registry import (
+    OverrideLookup,
+    ResolvedTheme,
+    list_all_themes,
+    resolve_theme,
+)
 
 # The Theme every report rendered under before Themes were selectable: stamps nothing, so the viewer's
 # prefers-color-scheme decides. Used as ``_render_document``'s default so a caller that cares only about
 # structure does not have to name a Theme.
-_AUTO_THEME: ReportTheme = get_theme(None)
+# The Theme every report rendered under before Themes were selectable: no payload, stamps nothing,
+# so the viewer's prefers-color-scheme decides. Used as `_render_document`'s default so a caller
+# that cares only about structure need not name a Theme.
+_AUTO_THEME: ResolvedTheme = resolve_theme(None)
 
 ArtifactBytes = Callable[[str], "bytes | None"]
 
@@ -595,11 +604,13 @@ def _render_filter_bar(ctx: ReportContext) -> str:
 def _render_header(
     ctx: ReportContext,
     layout: ReportLayout,
-    theme: ReportTheme,
+    theme: ResolvedTheme,
     *,
     nav_keys: tuple[str, ...] = (),
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    override_theme_names: tuple[str, ...] = (),
+    mark: ResolvedMark | None = None,
 ) -> str:
     """A sticky command bar (back-links + section jumps + layout switcher + print/expand/collapse) over
     a flat, hairline-ruled masthead. All on-screen chrome carries ``no-print`` so the PDF opens straight
@@ -617,9 +628,11 @@ def _render_header(
         for lay in list_layouts()
     )
     theme_opts = "".join(
-        f'<option value="{_esc(th.name)}"{" selected" if th.name == theme.name else ""}>'
+        f'<option value="{_esc(th.name)}"{" selected" if th.name == theme.theme.name else ""}>'
         f"{_esc(th.label)}</option>"
-        for th in list_themes()
+        # Every Provenance, not just the three bundled ones -- an installed brand Theme that cannot
+        # be SELECTED is the exact defect that got the first cut of this feature rejected.
+        for th in list_all_themes(override_names=override_theme_names)
     )
     switcher = (
         '<label class="tmpl-switch" title="Report layout — which sections, in what order">'
@@ -668,9 +681,24 @@ def _render_header(
         '<button class="btn primary" type="button" data-action="print">⎙ Print / PDF</button>'
         "</div></div></div>"
     )
+    # The Theme's Mark, if it has one and it survived `marks.resolve_mark`. Placed in the masthead
+    # rather than the sticky toolbar because the toolbar is `no-print` chrome: a brand mark belongs on
+    # the artifact the client keeps, not on the app furniture around it. `mark.value` is already
+    # vetted -- sanitized SVG source, or a data: URI -- so it is spliced, not escaped; escaping it
+    # would emit the markup as visible text. That is exactly why `resolve_mark` is the only way a
+    # value reaches this line.
+    mark_html = ""
+    if mark is not None:
+        if mark.kind == "svg":
+            mark_html = f'<div class="brand-mark" aria-hidden="true">{mark.value}</div>'
+        else:
+            mark_html = (
+                f'<div class="brand-mark"><img src="{_esc(mark.value)}" alt="" aria-hidden="true"/></div>'
+            )
     masthead = (
         '<header class="masthead"><div class="wrap">'
         '<div class="row"><div>'
+        f'{mark_html}'
         f'<div class="eyebrow">{eyebrow}</div><h1>{_esc(ctx.engagement_name)}</h1>'
         f'<div class="sub">{"".join(sub_bits)}</div></div>'
         '<span class="confidential">Confidential</span></div></div></header>'
@@ -1469,13 +1497,14 @@ def _render_document(
     resolver: _AssetResolver,
     *,
     layout: ReportLayout,
-    theme: ReportTheme = _AUTO_THEME,
+    theme: ResolvedTheme = _AUTO_THEME,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    override_theme_names: tuple[str, ...] = (),
 ) -> str:
     # A Theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so the report
     # follows the viewer's prefers-color-scheme (the default behavior).
-    theme_attr = theme.html_attr
+    theme_attr = theme.theme.html_attr
     # ...and contributes its Token payload as a SECOND <style>, after the base sheet. It has to be a
     # separate element emitted here rather than concatenated into _CSS, because _CSS is a module-level
     # constant shared by every render — splicing per-request content into it would leak one
@@ -1505,6 +1534,8 @@ def _render_document(
         nav_keys=nav_keys,
         engagement_url=engagement_url,
         dashboard_url=dashboard_url,
+        override_theme_names=override_theme_names,
+        mark=assets.mark,
     )
     return (
         "<!doctype html>\n"
@@ -1532,6 +1563,8 @@ def render_report_html(
     layout: str | None = None,
     theme: str | None = None,
     template: str | None = None,
+    override_lookup: OverrideLookup | None = None,
+    override_theme_names: tuple[str, ...] = (),
 ) -> str:
     """Render a full, self-contained HTML report for ``ctx``.
 
@@ -1556,10 +1589,13 @@ def render_report_html(
     still honoured for bookmarked report URLs; see ``reporting/selection.py`` for the precedence rules.
     """
     resolver = _AssetResolver("inline" if inline_assets else "none", artifact_bytes)
-    sel_layout, sel_theme = resolve_selection(layout=layout, theme=theme, template=template)
+    sel_layout, sel_theme = resolve_selection(
+        layout=layout, theme=theme, template=template, override_lookup=override_lookup
+    )
     return _render_document(
         ctx, resolver, layout=sel_layout, theme=sel_theme,
         engagement_url=engagement_url, dashboard_url=dashboard_url,
+        override_theme_names=override_theme_names,
     )
 
 
@@ -1570,11 +1606,14 @@ def export_zip(
     layout: str | None = None,
     theme: str | None = None,
     template: str | None = None,
+    override_lookup: OverrideLookup | None = None,
 ) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
     ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7)."""
     resolver = _AssetResolver("zip", artifact_bytes)
-    sel_layout, sel_theme = resolve_selection(layout=layout, theme=theme, template=template)
+    sel_layout, sel_theme = resolve_selection(
+        layout=layout, theme=theme, template=template, override_lookup=override_lookup
+    )
     html_doc = _render_document(ctx, resolver, layout=sel_layout, theme=sel_theme)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1708,6 +1747,16 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
   text-transform: uppercase; color: var(--accent-ink);
 }
 .masthead h1 { font-size: 32px; line-height: 1.1; font-weight: 720; margin-top: 6px; }
+/* A Theme's Mark. Height-capped rather than width-capped because a lockup is wider than it is
+   tall and its aspect ratio must not be touched -- the brand books that supply these are explicit
+   that the mark is not to be redrawn or re-proportioned. `print-color-adjust: exact` because a
+   logo dropped by the print dialog's default "background graphics: off" leaves a blank gap where
+   the client expects the issuing firm's identity. */
+.brand-mark { margin-bottom: 14px; }
+.brand-mark svg, .brand-mark img {
+  height: 34px; width: auto; max-width: 260px; display: block;
+  print-color-adjust: exact; -webkit-print-color-adjust: exact;
+}
 .masthead .sub {
   color: var(--muted); font-size: 15px; margin-top: 8px;
   display: flex; gap: 8px 16px; flex-wrap: wrap;

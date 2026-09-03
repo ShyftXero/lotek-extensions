@@ -32,6 +32,15 @@ label = "Assessment Types"
 path = "/assessment-types"
 icon = "⚙"
 
+# Report Themes (ext#113). Deliberately IS a sidebar entry rather than a link buried in the report
+# toolbar: the page manages install-wide appearance (upload an override Theme, pick the default every
+# report inherits), which is administration, not something you reach from inside one engagement's
+# report. The routes behind it are admin-gated regardless of who can see the link.
+[[nav]]
+label = "Report Themes"
+path = "/themes"
+icon = "◐"
+
 # What this Scribble checkout supports, for a host that FEATURE-DETECTS instead of hard-assuming
 # (lotek: app.extensions.extension_supports). Declaring this table makes it AUTHORITATIVE — the host
 # stops introspecting the mounted model class and trusts exactly what's listed here. Keep in sync with

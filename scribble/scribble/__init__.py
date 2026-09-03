@@ -37,6 +37,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
     from scribble.report_docx_api import register as _report_docx
     from scribble.report_html_api import register as _report_html
     from scribble.templating_api import register as _templating
+    from scribble.themes_api import register as _themes
 
     for hook in (
         _library_ui,
@@ -47,6 +48,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
         _templating,
         _report_html,
         _report_docx,
+        _themes,
         _autosave,
         _presence,
         _collab,

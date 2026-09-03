@@ -20,11 +20,14 @@ import re
 import pytest
 
 from scribble.reporting.theme_css import build_theme_assets
-from scribble.reporting.themes import get_theme
+from scribble.reporting.theme_registry import resolve_theme
 
 
 def _css_for(theme_name: str) -> str:
-    return build_theme_assets(get_theme(theme_name)).css
+    """Resolution and composition are now two steps: `theme_registry.resolve_theme` finds the Theme
+    across all three Provenances and parses it, `build_theme_assets` composes what it found. Loading
+    used to live in the composer, which is why only a BUNDLED Theme could ever resolve."""
+    return build_theme_assets(resolve_theme(theme_name)).css
 
 
 def _block_after(css: str, at_rule: str) -> str:
@@ -94,8 +97,10 @@ accent = "#0a5b3d"
     parsed = _parse_theme_toml("papered", toml)
     assert parsed.print_tokens == {"accent": "#0a5b3d"}
 
-    monkeypatch.setattr(tc.theme_files, "load_theme_file", lambda name: parsed)
-    css = tc.build_theme_assets(get_theme("dark")).css
+    from scribble.reporting import theme_registry
+
+    monkeypatch.setattr(theme_registry.theme_files, "load_theme_file", lambda name: parsed)
+    css = tc.build_theme_assets(resolve_theme("dark")).css
 
     assert "--accent: #0a5b3d;" in _block_after(css, "@media print")
     assert "--accent: #123456;" in _block_after(css, "@media screen")
@@ -104,22 +109,24 @@ accent = "#0a5b3d"
 def test_a_broken_theme_degrades_unthemed_but_LOUDLY(monkeypatch, caplog):
     """Degrading safely and degrading silently are two different decisions; only the first is wanted.
 
-    A Theme that fails to load still renders a perfectly clean report — just an unbranded one — so a
-    swallowed exception here means a client receives a wrong-looking deliverable with nothing raised,
-    nothing logged, and nothing in the UI. That is the exact behaviour `theme_discovery` was forbidden
-    from copying, and INV-EXT-05 requires a denial to be loud.
+    A Theme that fails still renders a perfectly clean report -- just an unbranded one -- so a swallowed
+    failure means a client receives a wrong-looking deliverable with nothing raised, nothing logged, and
+    nothing in the UI. INV-EXT-05 requires a denial to be loud.
+
+    The assertion follows the code: loading moved from `theme_css` into `theme_registry`, so that is
+    where the log now has to come from. Pinning it at the composer would have passed vacuously.
     """
-    from scribble.reporting import theme_css as tc
+    from scribble.reporting import theme_registry
 
     def boom(name):
-        raise ValueError("malformed TOML")
+        raise theme_registry.ThemeFileError("malformed TOML")
 
-    monkeypatch.setattr(tc.theme_files, "load_theme_file", boom)
+    monkeypatch.setattr(theme_registry.theme_files, "load_theme_file", boom)
     with caplog.at_level("WARNING"):
-        assets = tc.build_theme_assets(get_theme("dark"))
+        assets = build_theme_assets(resolve_theme("dark"))
 
     assert assets.css == ""  # degrades to the base sheet, never to a 500
-    assert any("failed to load" in r.getMessage() for r in caplog.records), (
+    assert any("malformed" in r.getMessage() for r in caplog.records), (
         "the failure must be logged, not swallowed"
     )
 
@@ -128,7 +135,7 @@ def test_auto_is_not_logged_as_a_failure(caplog):
     """`auto` having no bundled file is by DESIGN, not an error — logging it would train the operator
     to ignore the very warning that matters."""
     with caplog.at_level("WARNING"):
-        build_theme_assets(get_theme("auto"))
+        build_theme_assets(resolve_theme("auto"))
     assert not caplog.records
 
 
@@ -139,7 +146,7 @@ def test_css_carrying_a_style_close_is_refused(monkeypatch):
     from scribble.reporting import theme_css as tc
 
     monkeypatch.setattr(tc.theme_files, "build_font_face_css", lambda theme: "</style><script>x</script>")
-    css = tc.build_theme_assets(get_theme("dark")).css
+    css = tc.build_theme_assets(resolve_theme("dark")).css
     assert css == ""
     assert "</style" not in css.lower()
 
@@ -147,7 +154,7 @@ def test_css_carrying_a_style_close_is_refused(monkeypatch):
 def test_auto_theme_contributes_nothing():
     """`auto` has no bundled file by design — it IS the base stylesheet's own behaviour, so there is
     nothing to override and the report must come out byte-identical to an unthemed one."""
-    assets = build_theme_assets(get_theme("auto"))
+    assets = build_theme_assets(resolve_theme("auto"))
     assert assets.css == ""
     assert assets.is_empty
 
@@ -155,7 +162,7 @@ def test_auto_theme_contributes_nothing():
 def test_an_unknown_theme_degrades_to_the_base_sheet():
     """get_theme falls back to auto for anything unrecognised, and a Theme that cannot be resolved
     must degrade to the shipped appearance rather than to a broken page."""
-    assert build_theme_assets(get_theme("does-not-exist")).css == ""
+    assert build_theme_assets(resolve_theme("does-not-exist")).css == ""
 
 
 def test_the_report_carries_the_override_after_the_base_sheet(session_factory):
