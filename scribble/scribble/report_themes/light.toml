@@ -9,6 +9,9 @@
 [identity]
 name = "light"
 label = "Light"
+# Which palette these values are tuned for. Matches this Theme's entry in `reporting/themes.py`'s
+# registry; a test asserts the two agree, so the file and the registry cannot drift.
+stamp = "light"
 
 [tokens]
 bg = "#f6f8fa"

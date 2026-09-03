@@ -110,6 +110,7 @@ import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
 
+from scribble.reporting.themes import STAMPS as _STAMPS
 from scribble.reporting.tokens import validate_tokens
 
 # The package that carries the bundled Theme files. A plain string (not a module reference) because
@@ -169,6 +170,9 @@ class ThemeFile:
     # Opt-in paper overrides. EMPTY is the safe default: absent these, the base sheet's @media print
     # rule keeps full control of paper, which is what stops a screen-tuned palette reaching a client's
     # printed deliverable. See `_parse_theme_toml` for the incident this guards.
+    # Which palette this Theme's values are tuned for, stamped onto <html data-theme>. "" = follow
+    # the viewer. See `_parse_theme_toml` for why a light-tuned brand must say so.
+    stamp: str = ""
     print_tokens: dict[str, str] = field(default_factory=dict)
     # Where this Theme's font files live, as an importable package name. A BUNDLED Theme's faces are
     # siblings of its own `.toml` inside `report_themes/`, which is the default. An INSTALLED Theme's
@@ -244,6 +248,21 @@ def _parse_theme_toml(expected_name: str, text: str) -> ThemeFile:
         raise ThemeFileError(
             f"{expected_name}: [identity].name={name!r} does not match the filename"
         )
+    # Which palette this Theme's values are TUNED FOR, stamped onto <html data-theme>. Not cosmetic:
+    # a Theme whose colours were chosen against white must say so, because the base sheet's dark
+    # palette is 0-2-0 and the screen override is 0-2-0-but-later, so a light-tuned palette silently
+    # wins over dark on a dark-OS viewer. For a Theme that sets every colour that is merely
+    # light-on-dark-OS (the brand's own intent for a printed deliverable); for one that sets only
+    # SOME, the unset tokens still come from the dark palette and the result is a mix of two palettes
+    # — the same defect class `@media print` exists to prevent, on the other medium. Stamping `light`
+    # makes `:root:not([data-theme="light"])` stop matching and removes the ambiguity outright.
+    # Default "" = auto, i.e. follow the viewer, which is only right for a Theme that re-themes both.
+    stamp = identity.get("stamp", "")
+    if stamp not in _STAMPS:
+        raise ThemeFileError(
+            f"{expected_name}: [identity].stamp must be one of {sorted(_STAMPS)} "
+            '(default "" means follow the viewer\'s prefers-color-scheme)'
+        )
 
     tokens_raw = data.get("tokens", {})
     # Wholesale gate, not a filter: an unknown key or a single bad value rejects the WHOLE file — see
@@ -317,6 +336,7 @@ def _parse_theme_toml(expected_name: str, text: str) -> ThemeFile:
     return ThemeFile(
         name=name,
         label=label,
+        stamp=stamp,
         tokens=tokens,
         embed_fonts=embed_fonts,
         faces=faces,

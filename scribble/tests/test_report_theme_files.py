@@ -362,6 +362,32 @@ def test_importlib_resources_path_is_what_load_theme_file_actually_uses():
     assert (root / "dark.toml").is_file()
 
 
+@pytest.mark.parametrize(("name", "expected"), [("light", "light"), ("dark", "dark")])
+def test_a_bundled_themes_declared_stamp_matches_the_registry(name, expected):
+    """Two sources of truth for the same fact, so pin them together. `reporting/themes.py`'s registry
+    is what actually stamps `<html data-theme>` for a bundled Theme; the `.toml` declares the same
+    thing for the benefit of an INSTALLED Theme, which has no registry entry. If they ever disagree,
+    a Theme's file says one palette and the page says another."""
+    from scribble.reporting.themes import THEMES
+
+    theme = load_theme_file(name)
+    assert theme is not None
+    assert theme.stamp == expected == THEMES[name].stamp
+
+
+def test_an_unknown_stamp_is_refused():
+    with pytest.raises(ThemeFileError):
+        theme_files._parse_theme_toml(
+            "sample", _MINIMAL_TOML.replace('label = "Sample"', 'label = "Sample"\nstamp = "chartreuse"')
+        )
+
+
+def test_stamp_defaults_to_following_the_viewer():
+    """A Theme that says nothing gets "" — auto. Correct only for a Theme that re-themes BOTH palettes;
+    a light-tuned brand should say `light` (see `_parse_theme_toml`'s note on the partial-set mix)."""
+    assert theme_files._parse_theme_toml("sample", _MINIMAL_TOML).stamp == ""
+
+
 # --- schema additions for INSTALLED Themes ---------------------------------------------------------
 #
 # A bundled Theme is a file in this package. An installed Theme arrives as TOML TEXT from another

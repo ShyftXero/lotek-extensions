@@ -12,6 +12,9 @@
 [identity]
 name = "dark"
 label = "Dark"
+# Which palette these values are tuned for. Matches this Theme's entry in `reporting/themes.py`'s
+# registry; a test asserts the two agree, so the file and the registry cannot drift.
+stamp = "dark"
 
 [tokens]
 bg = "#0b1016"
