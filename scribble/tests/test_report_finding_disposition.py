@@ -61,7 +61,9 @@ def _all_text(document) -> str:
     return "\n".join(parts)
 
 
-def _engagement(session_factory, findings: list[tuple[str, Severity, FindingStatus, bool]]) -> int:
+def _engagement(
+    session_factory, findings: list[tuple[str, Severity, FindingStatus, bool]]
+) -> uuid.UUID:
     """Build an engagement whose findings are ``(title, severity, status, include_in_report)``."""
     with session_factory() as db:
         # A unique name per call: `scribble_clients.name` is UNIQUE, and a test that builds two

@@ -1,8 +1,8 @@
 # Plan: feat/scribble-finding-report-disposition
 
 - **Branch:** `feat/scribble-finding-report-disposition`  (worktree: `.claude/worktrees/finding-disposition`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/166
+- **Status:** 🟢 ready to merge
 
 ## Purpose
 
