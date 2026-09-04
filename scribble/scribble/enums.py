@@ -80,6 +80,8 @@ class ArtifactPlacement(enum.StrEnum):
 class ReportFormat(enum.StrEnum):
     html = "html"
     docx = "docx"
+    json = "json"  # #627: machine-readable findings export (structured data, not a rendered deliverable)
+    csv = "csv"    # #627: one row per finding, for a spreadsheet / SIEM import
 
 
 class VariableScope(enum.StrEnum):
