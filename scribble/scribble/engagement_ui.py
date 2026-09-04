@@ -472,6 +472,11 @@ def register(api_bp, bp) -> None:
 
             diagrams = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
 
+            # Reverse of promotion (#629): the host scan jobs whose findings were promoted INTO this
+            # engagement. The host seam (`host.list_jobs`) is the ONE home for this derived view and
+            # applies its own `user_can_view_job` to the session actor; [] standalone / unmounted.
+            source_jobs = host.list_jobs(engagement, current_actor())
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
@@ -482,6 +487,7 @@ def register(api_bp, bp) -> None:
                 assessment_types=assessment_types,
                 engagement_artifacts=engagement_artifacts,
                 diagrams=diagrams,
+                source_jobs=source_jobs,
             )
 
     # =============================================================================== UI: groups

@@ -235,6 +235,10 @@ class StubHost:
     def __init__(self) -> None:
         self.findings = StubFindings()
         self.promoted_calls: list[tuple[str, Any, str, int]] = []
+        # Reverse index for `list_jobs` (core #632's host hook): the jobs promoted INTO an engagement,
+        # keyed by `(extension, ref_id)`. Tests register via `add_promoted_job(ref_id, job_ref, ...)`;
+        # the real host derives this from `Job.promoted_extension`/`.promoted_ref_id`.
+        self._promoted_jobs: dict[tuple[str, Any], list] = {}
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
@@ -260,6 +264,21 @@ class StubHost:
     def mark_job_promoted(self, job_id: str, actor: StubActor | None, *, extension: str, ref_id: int) -> bool:
         self.promoted_calls.append((job_id, actor, extension, ref_id))
         return True
+
+    def add_promoted_job(self, ref_id, job_ref: str, *, extension: str = "scribble", promoted_at=None):
+        """Register a job as already promoted INTO `ref_id`, so `list_jobs` returns it (the reverse
+        of `mark_job_promoted`). `promoted_at` defaults to now; a test that asserts on the rendered
+        timestamp should pass a fixed value. Returns the job-shaped object (`.id`, `.promoted_at`)."""
+        from datetime import UTC, datetime
+        job = SimpleNamespace(id=job_ref, promoted_at=promoted_at or datetime.now(UTC))
+        self._promoted_jobs.setdefault((extension, ref_id), []).append(job)
+        return job
+
+    def list_jobs(self, _actor, *, extension: str, ref_id) -> list:
+        """Core #632's reverse-view host hook: jobs promoted into `(extension, ref_id)`. Tenancy
+        (`user_can_view_job`) is the real host's concern and proven mounted; the stub returns the
+        registered index (`_actor` unused — the engagement view is already authorized upstream)."""
+        return list(self._promoted_jobs.get((extension, ref_id), []))
 
     def can_view_client(self, client_id: int | None, actor: Any | None = None) -> bool:
         """The host's client-scoped read gate (`app/extensions.py` injects the real one).
@@ -395,6 +414,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["pat_actor"] = pat_actor
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
+    cfg.extras["list_jobs"] = stub.list_jobs
     cfg.extras["can_view_client"] = stub.can_view_client
     # `_inject_host` provides this and the stub did not, so any code path that consults it saw a
     # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims
