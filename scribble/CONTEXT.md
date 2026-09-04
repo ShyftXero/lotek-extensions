@@ -54,6 +54,22 @@ The resolved Tokens and Marks frozen onto an Engagement when its Report is deliv
 re-theming the install later cannot restyle a Report already in a client's hands.
 _Avoid_: cache, freeze, pin
 
+## Retest
+
+**Retest**:
+One verify-the-fix round recorded against a Finding after remediation. Belongs to the Finding (not
+directly to the Engagement — it reaches the Engagement through its Finding), carries who tested it and
+when, and dies with the Finding.
+_Avoid_: recheck, revalidation, verification (unqualified)
+
+**Retest Outcome**:
+The verdict of a Retest — *remediated*, *partially remediated*, *not remediated*, *accepted risk*, or
+*not tested*. It is the one thing that moves the Finding's status, and it does so in exactly one place
+(`findings_service.record_retest`): a verified fix closes the Finding, an unresolved one reopens it for
+another round, an accepted risk records the client's decision, and an untested round leaves the status
+untouched.
+_Avoid_: result, disposition (a "disposition" here is the `FindingDTO`→`EngagementFinding` mapping)
+
 ## Adjacent terms that are NOT the above
 
 **Document Template**:

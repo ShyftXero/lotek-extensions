@@ -24,12 +24,13 @@ gone — the same order ``engagement_ui.delete_finding``/``engagement_delete`` a
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import NamedTuple
 
 from sqlalchemy import delete, select, update
 
 from scribble.artifacts_api import _as_uuid  # noqa: E402 -- one shared body-id parser (lotek#335)
-from scribble.enums import OrderMode, severity_rank
+from scribble.enums import FindingStatus, OrderMode, RetestOutcome, severity_rank
 from scribble.models import (
     CollabDoc,
     Engagement,
@@ -37,6 +38,7 @@ from scribble.models import (
     EngagementFinding,
     FindingGroup,
     ReportRender,
+    Retest,
     VariableValue,
 )
 
@@ -80,6 +82,7 @@ _FINDING_FK_HANDLED_ELSEWHERE = frozenset({
     ("scribble_findings", "parent_id"),          # detach_children / flatten_nesting
     ("scribble_artifacts", "finding_id"),        # delete_finding, explicitly (rows AND files)
     ("scribble_finding_tags", "finding_id"),     # ORM secondary cascade on EngagementFinding.tags
+    ("scribble_retests", "finding_id"),          # ORM delete-orphan cascade on EngagementFinding.retests
 })
 
 # …and the SAME question one table over, asked because asking it about ``scribble_findings`` and stopping
@@ -454,3 +457,51 @@ def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:
     detached_child_ids = detach_children(db, finding)
     db.delete(finding)
     return DeletedFinding(storage_paths, detached_child_ids)
+
+
+# ── retest (lotek#621) ───────────────────────────────────────────────────────────────────────────
+#
+# How a retest OUTCOME moves the finding's STATUS, in exactly ONE place (the "one derived-state
+# predicate, one home" rule). ``None`` = leave the status untouched: recording an UNTESTED round is not
+# a verdict on the fix, so it must not silently reopen or close the finding. Every surface calls
+# :func:`record_retest`; none sets ``finding.status`` from an outcome inline.
+_RETEST_OUTCOME_STATUS: dict[RetestOutcome, FindingStatus | None] = {
+    RetestOutcome.remediated: FindingStatus.fixed,
+    RetestOutcome.partially_remediated: FindingStatus.needs_retest,
+    RetestOutcome.not_remediated: FindingStatus.needs_retest,
+    RetestOutcome.accepted_risk: FindingStatus.accepted_risk,
+    RetestOutcome.not_tested: None,
+}
+
+
+def record_retest(
+    db,
+    finding: EngagementFinding,
+    outcome: RetestOutcome,
+    *,
+    notes: str | None = None,
+    tested_by: str | None = None,
+    tested_on: date | None = None,
+) -> Retest:
+    """Append one retest round to ``finding`` and transition its status accordingly — the ONE writer
+    both surfaces (#622 UI + the machine API) call, so the outcome→status policy lives in a single place.
+
+    Adds a :class:`~scribble.models.Retest` row and moves ``finding.status`` per
+    :data:`_RETEST_OUTCOME_STATUS` (a ``not_tested`` outcome records the round but leaves the status
+    untouched). Like every other function in this module it mutates in the caller's open session and does
+    NOT commit — the caller owns the transaction boundary. Flushed so the caller can read the new row's PK
+    (and so the status change is visible to a subsequent read in the same request).
+    """
+    retest = Retest(
+        finding_id=finding.id,
+        outcome=outcome,
+        notes=notes,
+        tested_by=tested_by,
+        tested_on=tested_on,
+    )
+    db.add(retest)
+    new_status = _RETEST_OUTCOME_STATUS[outcome]
+    if new_status is not None:
+        finding.status = new_status
+    db.flush()
+    return retest

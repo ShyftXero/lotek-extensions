@@ -36,6 +36,7 @@ from scribble.enums import (
     FindingStatus,
     OrderMode,
     ReportFormat,
+    RetestOutcome,
     Severity,
     VariableScope,
     VariableType,
@@ -331,6 +332,14 @@ class EngagementFinding(Base, TimestampMixin):
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="finding", order_by="Artifact.order_index"
     )
+    # Retest rounds recorded against this finding (lotek#621), oldest-first — the order the deliverable's
+    # remediation history reads. ``delete-orphan``: a retest is the finding's own state and dies with it,
+    # which is ALSO its delete disposition in ``findings_service`` (``_FINDING_FK_HANDLED_ELSEWHERE`` —
+    # this ORM cascade is what clears the FK, so deleting a finding, or the engagement above it, never
+    # 500s on a dangling ``scribble_retests.finding_id``).
+    retests: Mapped[list[Retest]] = relationship(
+        back_populates="finding", cascade="all, delete-orphan", order_by="Retest.created_at"
+    )
     tags: Mapped[list[Tag]] = relationship(secondary="scribble_finding_tags")
 
     @classmethod
@@ -415,6 +424,15 @@ class Artifact(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
     finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
+    # Which retest round this evidence belongs to (lotek#621), or NULL for original-assessment evidence.
+    # A SOFT reference (``ScribbleUuid``, no ``ForeignKey``) — deliberately, like ``EngagementChecklist.
+    # template_id``: a retest dies with its finding (``EngagementFinding.retests`` cascade), and a hard FK
+    # here would make that cascade an FK-ordering hazard in the shared finding/engagement delete paths
+    # (``findings_service``) for a retest-only artifact. Retest evidence is finding-scoped anyway — it
+    # carries ``finding_id`` and is removed by ``delete_finding`` with the rest of the finding's evidence
+    # — so ``retest_id`` is a provenance link, and a dangling one after the round is deleted is harmless
+    # (read as "no round", same tolerance as ``template_id``'s soft ref).
+    retest_id: Mapped[uuid.UUID | None] = mapped_column(ScribbleUuid, nullable=True, index=True)
 
     kind: Mapped[ArtifactKind] = mapped_column(Enum(ArtifactKind), default=ArtifactKind.screenshot)
     placement: Mapped[ArtifactPlacement] = mapped_column(
@@ -456,6 +474,34 @@ class Artifact(Base, TimestampMixin):
 
     engagement: Mapped[Engagement] = relationship(back_populates="artifacts")
     finding: Mapped[EngagementFinding | None] = relationship(back_populates="artifacts")
+
+
+# --------------------------------------------------------------------------- retests (verify-the-fix)
+
+
+class Retest(Base, TimestampMixin):
+    """One retest round recorded against a finding after remediation — the verify-the-fix pass a
+    deliverable reports (lotek#621). ``outcome`` (a :class:`RetestOutcome`) is the verdict;
+    ``findings_service.record_retest`` is the ONE writer that both the UI (#622) and the machine API call,
+    so appending a round and transitioning ``EngagementFinding.status`` happen together in a single place.
+
+    Finding-owned: a retest of a finding is meaningless without it, so it dies with the finding via
+    ``EngagementFinding.retests``'s ``delete-orphan`` cascade (also its delete disposition in
+    ``findings_service._FINDING_FK_HANDLED_ELSEWHERE``). ``finding_id`` is a REAL FK (an intra-scribble
+    reference to a table that always exists); there is no ``engagement_id`` column — a retest reaches its
+    engagement through its finding, so denormalising it would be a second copy of that link to keep true.
+    """
+
+    __tablename__ = "scribble_retests"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_findings.id"), index=True)
+    outcome: Mapped[RetestOutcome] = mapped_column(Enum(RetestOutcome))
+    tested_on: Mapped[date | None] = mapped_column(Date)  # when the retest was performed (author-supplied)
+    notes: Mapped[str | None] = mapped_column(Text)
+    tested_by: Mapped[str | None] = mapped_column(String(128))  # soft attribution, like created_by elsewhere
+
+    finding: Mapped[EngagementFinding] = relationship(back_populates="retests")
 
 
 # --------------------------------------------------------------------------- attack-path diagrams
@@ -840,6 +886,7 @@ __all__ = [
     "ScribbleVulnMap",
     "EngagementFinding",
     "Artifact",
+    "Retest",
     "EngagementDiagram",
     "TemplateVariable",
     "VariableValue",
