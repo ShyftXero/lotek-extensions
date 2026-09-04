@@ -832,6 +832,36 @@ def _append_attack_chains(doc, ctx: ReportContext) -> None:
             ).italic = True
 
 
+def _append_retest_closeout(doc, ctx: ReportContext) -> None:
+    """Append the Retest Closeout section to the RENDERED document (#622), mirroring the HTML
+    ``render_html._render_retest_closeout``: a finding → most-recent retest outcome table. Placed right
+    after the attack chains so the .docx section order matches the HTML layouts
+    (``chains`` -> ``retest``).
+
+    Renders nothing when no report-visible finding carries a retest, so a report without one is
+    byte-identical to before this section existed (the same backward-compat guarantee the HTML side
+    makes). Every cell is ``_xml_safe``-filtered — finding titles are engagement-controlled text."""
+    if not ctx.retest_closeout:
+        return
+    doc.add_heading("Retest Closeout", level=1)
+    doc.add_paragraph(
+        "Remediation status from the verify-the-fix retests recorded against these findings. Each row "
+        "shows the finding's most recent retest outcome."
+    )
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text, hdr[4].text = (
+        "Finding", "Severity", "Retest outcome", "Tested", "Rounds")
+    for r in ctx.retest_closeout:
+        cells = table.add_row().cells
+        cells[0].text = _xml_safe(r.finding_title)
+        cells[1].text = _xml_safe(r.severity.title())
+        cells[2].text = _xml_safe(r.outcome_label)
+        cells[3].text = _xml_safe(r.tested_on)
+        cells[4].text = str(r.rounds)
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -975,6 +1005,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     # sequence come out the same in both deliverables.
     _append_attack_paths(tpl.docx, ctx)  # ext#115
     _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
+    _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 
