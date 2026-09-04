@@ -62,6 +62,7 @@ from scribble.api_schemas import (
     CreateTemplateRequest,
     LinkAttackPathRequest,
     MoveFindingRequest,
+    PatchEngagementRequest,
     PatchFindingRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
@@ -1341,6 +1342,10 @@ def _engagement_summary(engagement: Engagement) -> dict:
         "scope_type": engagement.scope_type,
         "company_name": engagement.company_name,
         "status": engagement.status,
+        # lotek#620: the manual overall-risk override (Severity value or None) + its rationale. NULL =
+        # no override (the computed risk_rating ladder stands). Set via PATCH /engagements/<id>.
+        "risk_override": engagement.risk_override.value if engagement.risk_override else None,
+        "risk_override_rationale": engagement.risk_override_rationale,
     }
 
 
@@ -1375,6 +1380,90 @@ def scribble_get_engagement(engagement_id: str):
         summary["finding_count"] = len(engagement.findings)
         summary["group_count"] = len(engagement.groups)
         summary["artifact_count"] = len(engagement.artifacts)
+    return jsonify(summary)
+
+
+# ── 8c-bis. PATCH /engagements/<id> — set/clear the manual overall-risk override (lotek#620) ─────────
+
+
+@machine_bp.patch("/engagements/<uuid:engagement_id>")
+@host.require_scope("write")
+@request_body(PatchEngagementRequest)
+def scribble_update_engagement(engagement_id: str):
+    """Set or clear the engagement's MANUAL overall-risk override (lotek#620).
+
+    The computed ``risk_rating`` ladder is never destroyed — this only layers an authored judgement on
+    top (the renderers show the override AS the headline with an "assessor-adjusted" marker plus the
+    original computed band). ``risk_override`` is ``info|low|medium|high|critical`` and an explicit
+    ``null`` clears it; direction is unrestricted (up or down). A set override REQUIRES a non-empty
+    ``risk_override_rationale`` — an unreasoned override would read as a computed fact, exactly what the
+    report must not do — and clearing the override clears its rationale. Only supplied fields change
+    (an omitted field is ``_ABSENT`` = unchanged).
+    """
+    actor = host.actor()
+    data = request.get_json(silent=True) or {}
+    _, err = _json_object_or_400(data)
+    if err is not None:
+        return err
+
+    # Parse each field independently: absent -> unchanged, null -> clear, string -> value. The
+    # override/rationale COUPLING (a set override needs a rationale) is checked after the merge below,
+    # because it depends on the row's existing values as much as on the body.
+    raw_override = data.get("risk_override", _ABSENT)
+    override_provided = raw_override is not _ABSENT
+    parsed_override = None
+    if override_provided and raw_override is not None:
+        allowed = "|".join(_enum_value(member) or "" for member in severity_enum())
+        if not isinstance(raw_override, str):
+            return _bad_request(f"risk_override must be a string ({allowed}) or null")
+        try:
+            parsed_override = severity_enum()(raw_override.strip().lower())
+        except ValueError:
+            return _bad_request(f"risk_override must be one of {allowed}")
+
+    raw_rationale = data.get("risk_override_rationale", _ABSENT)
+    rationale_provided = raw_rationale is not _ABSENT
+    parsed_rationale = None
+    if rationale_provided and raw_rationale is not None:
+        if not isinstance(raw_rationale, str):
+            return _bad_request("risk_override_rationale must be a string or null")
+        parsed_rationale = raw_rationale.strip() or None
+
+    # Tenancy + write in one session (mirrors the sibling write routes: require_scope('write') gate +
+    # _resolve_engagement visibility; engagements are team-shared, so no per-row operator gate here).
+    with open_session() as db:
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+
+        new_override = parsed_override if override_provided else engagement.risk_override
+        new_rationale = parsed_rationale if rationale_provided else engagement.risk_override_rationale
+        if new_override is None:
+            # No override => no dangling rationale. Clearing the band clears its reason. And a rationale
+            # supplied with no override to attach it to is a confused request, not a silent no-op (400,
+            # symmetric with the set-without-rationale case below).
+            if rationale_provided and parsed_rationale:
+                return _bad_request("risk_override_rationale requires a risk_override")
+            new_rationale = None
+        elif not (new_rationale or "").strip():
+            return _bad_request("risk_override requires a non-empty risk_override_rationale")
+
+        before = {
+            "risk_override": _enum_value(engagement.risk_override),
+            "risk_override_rationale": engagement.risk_override_rationale,
+        }
+        engagement.risk_override = new_override
+        engagement.risk_override_rationale = new_rationale
+        after = {
+            "risk_override": _enum_value(engagement.risk_override),
+            "risk_override_rationale": engagement.risk_override_rationale,
+        }
+        _audit(
+            db, "update_engagement", subject_type="engagement", subject_id=engagement.id,
+            before=before, after=after,
+        )
+        summary = _engagement_summary(engagement)
+        db.commit()
     return jsonify(summary)
 
 

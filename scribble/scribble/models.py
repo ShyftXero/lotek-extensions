@@ -108,6 +108,13 @@ class Engagement(Base, TimestampMixin):
     # docs/LOTEK_ADOPTION.md §4. ``SoftHostId``, not ``Integer`` -- same int-or-UUID host id shape as
     # ``client_id`` above.
     owner_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
+    # lotek#620: manual override of the report's COMPUTED overall risk band. NULL = no override (the
+    # computed ``risk_rating`` ladder stands). When set it is an AUTHORED judgement layered on top of the
+    # computed band — the renderers show it AS the headline with an "assessor-adjusted" marker plus the
+    # original computed band, never a silent replacement. ``risk_override_rationale`` is required non-empty
+    # whenever ``risk_override`` is set (enforced at the write seam, api_pat.py); both clear together.
+    risk_override: Mapped[Severity | None] = mapped_column(Enum(Severity), nullable=True)
+    risk_override_rationale: Mapped[str | None] = mapped_column(Text)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"

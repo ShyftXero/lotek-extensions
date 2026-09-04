@@ -85,6 +85,9 @@ COMPONENTS: dict[str, Any] = {
             "scope_type": _STR_N,
             "company_name": _STR_N,
             "status": _STR_N,
+            # lotek#620: manual override of the report's computed overall risk band (null = computed).
+            "risk_override": _SEVERITY,
+            "risk_override_rationale": _STR_N,
         }
     ),
     "FindingSummary": _obj(
@@ -230,6 +233,9 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
                                             "group_count": {"type": "integer"},
                                             "artifact_count": {"type": "integer"}})],
     }),
+    # lotek#620: PATCH returns the updated engagement summary (same shape as the Engagement component,
+    # now carrying risk_override + risk_override_rationale).
+    "scribble_update_engagement": (200, _ref("Engagement")),
     # NOT JSON — see `_RESPONSE_MEDIA_TYPES`, which overrides the content type for this one operation.
     "scribble_engagement_report": (200, {
         "type": "string",

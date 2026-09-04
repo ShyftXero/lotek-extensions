@@ -961,14 +961,37 @@ def _render_summary(ctx: ReportContext) -> str:
     rollup = ctx.rollup
     counts = rollup.counts if rollup else {}
     total = rollup.total if rollup else 0
-    overall = rollup.overall if rollup else "info"
+    computed = rollup.overall if rollup else "info"
     clean = total == 0
-    banner_class = "risk-clean" if clean else f"risk-{overall}"
-    banner_label = "No Findings" if clean else overall.title()
+    # lotek#620: an operator override is an AUTHORED judgement layered on the COMPUTED band. The computed
+    # value is never destroyed — it is shown alongside the override so a reader sees both. ``risk_override``
+    # None (the default) leaves every line below identical to before the field existed.
+    override = ctx.risk_override
+    effective = override or computed
+    computed_label = "No Findings" if clean else computed.title()
+    banner_class = f"risk-{effective}" if (override or not clean) else "risk-clean"
+    banner_label = effective.title() if override else computed_label
     # A short, factual severity breakdown for the banner subline -- distinct from the (longer) generated
-    # ``summary-narrative`` paragraph below, so the two don't repeat each other.
+    # ``summary-narrative`` paragraph below, so the two don't repeat each other. Unaffected by the override:
+    # it reports the true finding distribution, which stays honest under any headline adjustment.
     parts = [f"{counts.get(s, 0)} {s}" for s in SEVERITY_ORDER if counts.get(s, 0)]
     banner_sub = " · ".join(parts) if parts else "No findings within the tested scope."
+    # lotek#620: when overridden, mark the headline as assessor-adjusted, show the original computed band,
+    # and surface the authored rationale — so it never reads as a computed fact.
+    if override:
+        adjusted_flag = (
+            ' <span class="risk-adjusted" title="Overall risk adjusted by the assessor">'
+            "⚑ assessor-adjusted</span>"
+        )
+        computed_note = f'<div class="risk-computed">computed: {_esc(computed_label)}</div>'
+        rationale = (ctx.risk_override_rationale or "").strip()
+        override_note = (
+            '<div class="risk-rationale">'
+            '<div class="risk-rationale-h">Assessor&#39;s rationale</div>'
+            f'<div class="risk-rationale-b">{_esc(rationale)}</div></div>'
+        ) if rationale else ""
+    else:
+        adjusted_flag = computed_note = override_note = ""
 
     n_groups = len(ctx.groups)
     # Render the scope verbatim (not title-cased): a group named after a scope word (e.g. "External")
@@ -990,8 +1013,8 @@ def _render_summary(ctx: ReportContext) -> str:
         f"{_render_front_matter(ctx)}"
         f'<div class="risk {banner_class}">'
         '<div class="rating"><div class="label">Overall Risk</div>'
-        f'<div class="level">{_esc(banner_label)}</div></div>'
-        f'<div class="narr">{_esc(banner_sub)}</div></div>'
+        f'<div class="level">{_esc(banner_label)}{adjusted_flag}</div>{computed_note}</div>'
+        f'<div class="narr">{_esc(banner_sub)}</div>{override_note}</div>'
         f"{_sev_bar(rollup)}"
         f"{_render_severity_definitions(rollup)}"
         '<div class="metrics">'
@@ -1866,6 +1889,19 @@ section.sec { padding-top: 34px; scroll-margin-top: 64px; }
 .risk-info .level { color: var(--sev-info); }
 .risk-clean { border-left-color: var(--accent); }
 .risk-clean .level { color: var(--accent-ink); }
+/* lotek#620: assessor-adjusted overall-risk override -- marker + computed band + rationale */
+.risk .rating .level .risk-adjusted {
+  display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); vertical-align: middle; margin-left: 6px;
+}
+.risk .risk-computed { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.risk .risk-rationale {
+  grid-column: 1 / -1; border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 10px;
+}
+.risk .risk-rationale-h {
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px;
+}
+.risk .risk-rationale-b { color: var(--ink-2); font-size: 13.5px; line-height: 1.55; max-width: 80ch; }
 
 .summary-narrative {
   color: var(--ink); font-size: 15px; line-height: 1.6; margin: 2px 0 18px; max-width: var(--measure);

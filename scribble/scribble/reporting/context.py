@@ -166,6 +166,14 @@ class ReportContext:
     # created_at timestamps in ``build_report_context``. Defaults empty — an engagement renders
     # identically to before unless a template opts the block in.
     activity_log: list[ActivityEntry] = field(default_factory=list)
+    # ADDITIVE (lotek#620): operator override of the COMPUTED overall risk band (``rollup.overall``).
+    # ``risk_override`` None = no override → an engagement renders BYTE-IDENTICALLY to before this field
+    # existed (the renderers' override branch is dormant). ``rollup.overall`` is left as the honest
+    # computed band; when an override is present the renderers show it AS the headline with an
+    # "assessor-adjusted" marker, the original computed band, and ``risk_override_rationale`` — an
+    # authored judgement, never a silent replacement (see render_html._render_summary / render_docx).
+    risk_override: str | None = None
+    risk_override_rationale: str | None = None
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -598,4 +606,8 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
         activity_log=_build_activity_log(engagement),
+        # lotek#620: carry the operator override (Severity enum → its ``.value`` string) + rationale.
+        # None when unset; the renderers keep ``rollup.overall`` as the honest computed band.
+        risk_override=engagement.risk_override.value if engagement.risk_override else None,
+        risk_override_rationale=engagement.risk_override_rationale,
     )

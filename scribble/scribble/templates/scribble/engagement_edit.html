@@ -46,6 +46,26 @@
       </label>
     </div>
 
+    {# lotek#620: manually override the report's computed overall risk band. Blank = use the computed
+       ladder. A set override needs a rationale (rendered beside the adjusted band as an assessor's
+       judgement, never a silent replacement). #}
+    <div class="scribble-form-row">
+      <label>Overall risk override
+        <select name="risk_override">
+          <option value="">— auto (computed) —</option>
+          {% for s in ["info", "low", "medium", "high", "critical"] %}
+          <option value="{{ s }}" {% if engagement.risk_override and s == engagement.risk_override.value %}selected{% endif %}>{{ s|capitalize }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="scribble-form-row">
+      <label>Override rationale <span class="muted">(required when an override is set)</span>
+        <textarea name="risk_override_rationale" rows="2"
+                  placeholder="Why the overall rating was adjusted — shown to the reader beside the adjusted band">{{ engagement.risk_override_rationale or '' }}</textarea>
+      </label>
+    </div>
+
     <div class="scribble-form-row">
       <label>Start date
         <input type="date" name="start_date" value="{{ engagement.start_date.isoformat() if engagement.start_date else '' }}" />
