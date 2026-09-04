@@ -3,8 +3,9 @@
 - **Branch:** `feat/engagementfinding-refs-metadata-columns` (scribble, off ext `main`)
 - **Tracking:** lotek#639 (build issue) — executes map lotek#616 decisions lotek#624 + lotek#625
 - **PR:** ext DRAFT PR into lotek-extensions `main` (opened at gate time; see the PR body for the URL)
-- **Status:** 🟢 rebased onto single-head main, migration rechained (single head proven), full scribble
-  suite green (1424 passed / 11 skipped / 0 failed); opening the ext draft PR after the two review acks
+- **Status:** 🟢 rebased onto single-head main, migration rechained (single head proven), adversarial +
+  security review resolved (2 fixes below), full scribble suite green (1428 passed / 11 skipped / 0
+  failed); opening the ext draft PR after the two review acks
 
 ## Purpose
 Promote the `references` and CVE/CWE/OWASP metadata that #617 left living only in the verbatim
@@ -55,8 +56,8 @@ metadata edit is never clobbered (#617 Q5). New columns are stamped at CREATE ti
   a PLAIN ADDITIVE revision `down_revision = "a7f3b9c1d2e4"` (NOT a second merge of the same two parents,
   which would fork the tree back to two heads). `alembic heads` → exactly ONE head (`a7d2c4e6f810`). New
   capability tests pass; the drift guard passes standalone (EXIT=0); ruff + pyrefly clean.
-  **Full scribble suite on the rebased tip: 1424 passed, 11 skipped, 0 failed, 0 errors (1435 collected),
-  private TMPDIR.**
+  **Full scribble suite on the reviewed tip: 1428 passed, 11 skipped, 0 failed, 0 errors (1439 collected),
+  private TMPDIR** (+4 vs the pre-review 1424 = the two adversarial-review regression tests below).
 
 ## Done
 - [x] `scribble/metadata.py` — normalize CVE/CWE, static CWE→OWASP-2021 map, `derive_owasp`,
@@ -79,8 +80,13 @@ metadata edit is never clobbered (#617 Q5). New columns are stamped at CREATE ti
 ## Remaining
 - [x] Rebase onto single-head ext main; rechain the migration to a plain additive off `a7f3b9c1d2e4`
       (`e235024`); prove ONE alembic head; full scribble suite green on the rebased tip.
-- [ ] Gates: `/security-review` + `/adversarial-reviewer` on `git diff origin/main...HEAD`, then
-      `--ack-review` + `--ack-adversarial` (bound to the ext HEAD, run from the submodule checkout where
+- [x] Adversarial + security review of `git diff origin/main...HEAD` (in-thread + an independent
+      subagent). Two findings resolved: (1) BLOCK — legacy prose `references` block silently dropped on
+      upgrade → renderers now suppress it ONLY when the structured column is non-empty (red→green proven);
+      (2) CONCERN — promote-side `cve_ids`/`cwe_ids` unbounded from scan output → capped in the
+      normalizers at `MAX_IDS`. Plus a NIT (bool-EPSS guard). Remaining NIT (mailto vs http(s) link
+      scheme differs HTML↔DOCX, both safe) is a documented no-fix.
+- [ ] `--ack-review` + `--ack-adversarial` (bound to the ext HEAD, run from the submodule checkout where
       `is_submodule` is True — ext PR needs ONLY these two markers), then the ext DRAFT PR.
 - [ ] Follow-up lotek#642: wire the live threat_intel KEV/EPSS enrichment driver (deferred, cross-ext seam).
 
