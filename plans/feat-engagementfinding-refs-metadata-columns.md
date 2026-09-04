@@ -2,8 +2,9 @@
 
 - **Branch:** `feat/engagementfinding-refs-metadata-columns` (scribble, off ext `main`)
 - **Tracking:** lotek#639 (build issue) — executes map lotek#616 decisions lotek#624 + lotek#625
-- **PR:** not opened yet (ext DRAFT PR into lotek-extensions `main`)
-- **Status:** 🟡 in progress
+- **PR:** ext DRAFT PR into lotek-extensions `main` (opened at gate time; see the PR body for the URL)
+- **Status:** 🟢 rebased onto single-head main, migration rechained (single head proven), full scribble
+  suite green (1424 passed / 11 skipped / 0 failed); opening the ext draft PR after the two review acks
 
 ## Purpose
 Promote the `references` and CVE/CWE/OWASP metadata that #617 left living only in the verbatim
@@ -46,20 +47,24 @@ metadata edit is never clobbered (#617 Q5). New columns are stamped at CREATE ti
   - [ ] full scribble suite — baseline recorded below; candidate must add no NEWLY-BROKEN test
 - **Graders:** `uv run --extra dev pytest -q` (scribble suite, before/after), the disposition drift guard,
   ruff/pyrefly clean. No LLM judge (nothing subjective).
-- **Baseline (`origin/main`, ext):** RED — the two Alembic heads (`f0a1…` #620 + `f4c9…` #617, both off
-  `76a1…`) were merged without a merge migration, so `run_migrations`' `stamp("head")`/`upgrade("head")`
-  raises `Multiple heads are present` and EVERY app-booting test ERRORs. (Confirmed on the unchanged tree.)
-- **Verdict (candidate = this branch):** the merge migration `a7d2c4e6f810` unifies the two heads AND adds
-  the columns, so the mass multi-head ERRORs become PASS (a large FIXED bucket that is a genuine repair,
-  not my regression). New capability tests pass; the drift guard still passes; ruff + pyrefly clean.
-  (Full-suite candidate counts pasted in the PR body.)
+- **Baseline (`origin/main`, ext):** GREEN and single-head. The two-heads bug (`f0a1…` #620 + `f4c9…`
+  #617, both off `76a1…`) was already repaired ON MAIN by #169's merge revision `a7f3b9c1d2e4` — so the
+  branch no longer needs to repair anything. (An EARLIER baseline recorded main as RED with the mass
+  multi-head ERRORs; that was before #169 landed. This branch was then rebased onto the fixed main.)
+- **Verdict (candidate = this branch):** rebased onto single-head main; the migration `a7d2c4e6f810` is now
+  a PLAIN ADDITIVE revision `down_revision = "a7f3b9c1d2e4"` (NOT a second merge of the same two parents,
+  which would fork the tree back to two heads). `alembic heads` → exactly ONE head (`a7d2c4e6f810`). New
+  capability tests pass; the drift guard passes standalone (EXIT=0); ruff + pyrefly clean.
+  **Full scribble suite on the rebased tip: 1424 passed, 11 skipped, 0 failed, 0 errors (1435 collected),
+  private TMPDIR.**
 
 ## Done
 - [x] `scribble/metadata.py` — normalize CVE/CWE, static CWE→OWASP-2021 map, `derive_owasp`,
       `coerce_reference`/`merge_references`/`visible_references`, `build_threat_intel`/`threat_intel_display`.
 - [x] `EngagementFinding` columns: `references`, `cve_ids`, `cwe_ids`, `owasp_categories`, `threat_intel`;
       `from_template` seeds references from `template.references`.
-- [x] Alembic `a7d2c4e6f810` — MERGE revision (unifies the two heads) + additive columns.
+- [x] Alembic `a7d2c4e6f810` — PLAIN ADDITIVE revision (`down_revision = "a7f3b9c1d2e4"`, the single head
+      #169 left on main) adding the columns; additive-nullable + idempotent. `alembic heads` → one head.
 - [x] `dispositions.py` — `references`→`column/references`, `cve`→`column/cve_ids`; docstring updated.
 - [x] `promote.py` — stamp references (template ∪ scan, deduped) + cve_ids/cwe_ids/owasp on every row.
 - [x] `context.py` `FindingCtx` + `_finding_ctx` — carry references/cve/cwe/owasp/threat-intel display.
@@ -72,18 +77,25 @@ metadata edit is never clobbered (#617 Q5). New columns are stamped at CREATE ti
 - [x] CONTEXT.md glossary: reference value object / source / suppress; finding metadata; threat-intel.
 
 ## Remaining
-- [ ] Gates: `/security-review`, `/adversarial-reviewer`, full scribble suite, then `--ack-*` (bound to
-      the ext HEAD, run from the submodule checkout where `is_submodule` is True), then the ext DRAFT PR.
+- [x] Rebase onto single-head ext main; rechain the migration to a plain additive off `a7f3b9c1d2e4`
+      (`e235024`); prove ONE alembic head; full scribble suite green on the rebased tip.
+- [ ] Gates: `/security-review` + `/adversarial-reviewer` on `git diff origin/main...HEAD`, then
+      `--ack-review` + `--ack-adversarial` (bound to the ext HEAD, run from the submodule checkout where
+      `is_submodule` is True — ext PR needs ONLY these two markers), then the ext DRAFT PR.
+- [ ] Follow-up lotek#642: wire the live threat_intel KEV/EPSS enrichment driver (deferred, cross-ext seam).
 
 ## Notes / gotchas
 - **ONE PR = the ext PR** (lotek-extensions). No core change needed: `FindingDTO.references`/`.cve`/`.facts`
   already exist. The core build issue lotek#639 is the deconfliction lock only; its board is moved by hand
   (cross-repo `Fixes` does not auto-close a lotek issue from a lotek-extensions PR).
-- **Two Alembic heads on ext main were a LIVE pre-existing bug** — this branch's merge revision repairs it.
-- **`threat_intel` LIVE population is deferred:** KEV/EPSS come from the exploiteer extension, which
-  scribble cannot import and no host seam exposes today. Per #625 the driver degrades to None when absent,
-  so this PR ships the column + render + author-clear + a PURE snapshot builder (graded with a synthetic
-  feed). Wiring the live exploiteer feed lands when a host seam exists.
+- **Two Alembic heads on ext main were a pre-existing bug — already fixed on main by #169** (`a7f3b9c1d2e4`).
+  This branch was rebased onto that single head and its migration rechained to a PLAIN additive off it; a
+  duplicate merge of the same two parents would have re-forked the tree, so that was rewritten (`e235024`).
+- **`threat_intel` LIVE population is deferred → follow-up lotek#642.** KEV/EPSS come from the exploiteer
+  extension, which scribble cannot import and no host seam exposes today. Per #625 the driver degrades to
+  None when absent, so this PR ships the column + render + author-clear + a PURE snapshot builder (graded
+  with a synthetic feed); wiring the live exploiteer verdict-feed driver in `enrichment.py` is tracked in
+  lotek#642 (blocked by #639) because it needs the cross-extension feed seam.
 - **References one home:** the legacy prose `references` content block is dropped (create/PATCH no longer
   fold it; renderers skip it); references render from the structured column only. Machine-authored
   templates stay excluded from promote auto-resolution (INV-EXT-02) — the template-ref union runs on
