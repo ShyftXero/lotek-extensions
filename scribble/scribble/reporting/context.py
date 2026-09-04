@@ -87,6 +87,31 @@ class DiagramCtx:
 
 
 @dataclass
+class ChainStepCtx:
+    """One ordered stage of an attack-chain narrative (#628). ``number`` is the 1-based position assigned
+    in ``_chain_ctxs`` (document order), so a renderer prints "1. …/2. …" without keeping its own counter."""
+
+    number: int
+    title: str
+    description: str
+
+
+@dataclass
+class ChainCtx:
+    """A report-included attack-chain narrative (#628): the authored walk-through of how findings chain
+    into a broader compromise. ``embed_html`` is an OPTIONAL self-contained snapshot (same shape as
+    ``DiagramCtx.embed_html``) so the HTML renderer can reuse ``render_html._render_diagram_item`` to draw
+    the chain's visual beside its prose; empty for a pure-narrative chain."""
+
+    id: int
+    title: str
+    summary: str
+    steps: list[ChainStepCtx]
+    diagram_ref: str = ""
+    embed_html: str = ""
+
+
+@dataclass
 class GroupCtx:
     id: int | None
     name: str
@@ -162,6 +187,10 @@ class ReportContext:
     # ``render_html._render_diagrams``/``_render_document``'s empty-block filter, and
     # ``tests/test_report_attack_path.py`` which pins that guarantee).
     diagrams: list[DiagramCtx] = field(default_factory=list)
+    # ADDITIVE (#628): authored attack-chain narratives. Defaults empty — an engagement with none renders
+    # identically to before this field existed (see ``render_html._render_chains``'s empty short-circuit,
+    # pinned by ``tests/test_report_attack_path.py``).
+    chains: list[ChainCtx] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -252,6 +281,30 @@ def _diagram_ctxs(diagrams) -> list[DiagramCtx]:
         )
         for d in sorted(diagrams, key=lambda d: (d.order_index, d.id))
         if d.include_in_report and d.embed_html
+    ]
+
+
+def _chain_ctxs(chains) -> list[ChainCtx]:
+    """``ChainCtx``\\s for the report's Attack Chains block (#628), in board order, honoring
+    ``include_in_report``. Steps are ordered the same way and numbered 1..N here so both renderers print
+    the same sequence off one context. Unlike a diagram, a narrative chain with no ``embed_html`` is still
+    shown — its prose IS the content — so this filters only on ``include_in_report``."""
+    return [
+        ChainCtx(
+            id=c.id,
+            title=c.title,
+            summary=c.summary or "",
+            steps=[
+                ChainStepCtx(number=i, title=s.title, description=s.description or "")
+                for i, s in enumerate(
+                    sorted(c.steps, key=lambda s: (s.order_index, s.id)), start=1
+                )
+            ],
+            diagram_ref=c.diagram_ref or "",
+            embed_html=c.embed_html or "",
+        )
+        for c in sorted(chains, key=lambda c: (c.order_index, c.id))
+        if c.include_in_report
     ]
 
 
@@ -607,6 +660,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         rollup=rollup,
         artifacts=engagement_artifacts,
         diagrams=diagrams,
+        chains=_chain_ctxs(engagement.chains),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),

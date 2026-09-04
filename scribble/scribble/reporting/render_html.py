@@ -46,6 +46,7 @@ from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
 from scribble.reporting.context import (
     DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
+    ChainCtx,
     DiagramCtx,
     FindingCtx,
     GroupCtx,
@@ -88,6 +89,7 @@ _NAV_LABELS = {
     "summary": "Summary",
     "findings": "Findings",
     "diagrams": "Attack Paths",
+    "chains": "Attack Chains",
     "methodology": "Methodology",
     "evidence": "Evidence",
     "activity_log": "Activity Log",
@@ -1331,6 +1333,52 @@ def _render_diagrams(ctx: ReportContext) -> str:
     )
 
 
+def _render_chain_item(c: ChainCtx) -> str:
+    """One attack-chain narrative (#628): title, optional summary, an ordered step list, and — when the
+    chain carries its own ``embed_html`` snapshot — the visual, drawn through the SAME
+    ``_render_diagram_item`` the Attack Paths block uses (a chain embed is un-numbered: ``figure_number``
+    stays None so it renders caption-only and does not disturb the report-wide figure sequence)."""
+    summary = f'<p class="chain-summary">{_esc(c.summary)}</p>' if c.summary else ""
+    steps = "".join(
+        f'<li class="chain-step"><span class="chain-step-title">{_esc(s.title)}</span>'
+        + (f'<span class="chain-step-desc">{_esc(s.description)}</span>' if s.description else "")
+        + "</li>"
+        for s in c.steps
+    )
+    steps_html = f'<ol class="chain-steps">{steps}</ol>' if steps else ""
+    embed = (
+        _render_diagram_item(
+            DiagramCtx(id=c.id, diagram_ref=c.diagram_ref, caption=c.title, embed_html=c.embed_html)
+        )
+        if c.embed_html
+        else ""
+    )
+    return (
+        f'<article class="attack-chain"><h3 class="chain-h">{_esc(c.title)}</h3>'
+        f"{summary}{steps_html}{embed}</article>"
+    )
+
+
+def _render_chains(ctx: ReportContext) -> str:
+    """Attack Chains block (#628): authored narratives of how findings chain into a broader compromise.
+
+    Returns ``""`` when the engagement has no chain — the load-bearing half of "a report with no chain
+    renders identically to before this block existed" (combined with ``_render_document``'s empty-block
+    filter; pinned by ``tests/test_report_attack_path.py``)."""
+    if not ctx.chains:
+        return ""
+    items = "".join(_render_chain_item(c) for c in ctx.chains)
+    return (
+        '<section class="sec group" id="sec-chains">'
+        '<h2 class="sec-h">Attack Chains <span class="chev">▾</span>'
+        f'<span class="count">{len(ctx.chains)} '
+        f'chain{"s" if len(ctx.chains) != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Narrative walk-throughs of how the '
+        "findings above chain together into a broader compromise.</p>"
+        f"{items}</div></section>"
+    )
+
+
 def _render_integrity_manifest(artifacts: list[ArtifactCtx]) -> str:
     """A filename → SHA-256 table for engagement-level evidence (#626), so a recipient can verify the
     delivered files were not altered in transit. Rendered INSIDE the Evidence appendix section (no
@@ -1473,6 +1521,9 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
         elif key == "diagrams":
             if ctx.diagrams:
                 entries.append((1, "sec-diagrams", "Attack Paths", ""))
+        elif key == "chains":
+            if ctx.chains:
+                entries.append((1, "sec-chains", "Attack Chains", ""))
         elif key == "evidence":
             if ctx.artifacts:
                 entries.append((1, "sec-evidence", "Evidence", ""))
@@ -1531,6 +1582,8 @@ def _render_block_by_key(
         )
     if key == "diagrams":
         return _render_diagrams(ctx)
+    if key == "chains":
+        return _render_chains(ctx)
     if key == "methodology":
         return _render_methodology(ctx)
     if key == "evidence":
