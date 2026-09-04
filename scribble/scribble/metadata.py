@@ -40,6 +40,12 @@ _REF_SOURCES = frozenset({REF_SOURCE_TEMPLATE, REF_SOURCE_SCAN, REF_SOURCE_AUTHO
 # api_pat's cap so the two paths agree.
 MAX_REFERENCES = 500
 
+# Same DoS bound for the CVE/CWE id lists. ``cve_ids``/``cwe_ids`` are seeded at PROMOTE time from
+# ``DTO.cve`` / ``DTO.facts["cwe"]`` -- attacker-influenceable, unbounded scan output -- so the
+# normalizers cap their output here, exactly as ``merge_references`` caps references. (The authoring
+# path also rejects an oversized list up front in api_pat, but promote has no such gate.)
+MAX_IDS = MAX_REFERENCES
+
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 _URLISH_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
@@ -59,6 +65,8 @@ def normalize_cve_ids(values: Any) -> list[str]:
             if cve not in seen:
                 seen.add(cve)
                 out.append(cve)
+                if len(out) >= MAX_IDS:  # bound vs unbounded scan output (DTO.cve)
+                    return out
     return out
 
 
@@ -77,6 +85,8 @@ def normalize_cwe_ids(values: Any) -> list[str]:
             if cwe not in seen:
                 seen.add(cwe)
                 out.append(cwe)
+                if len(out) >= MAX_IDS:  # bound vs unbounded scan output (DTO.facts["cwe"])
+                    return out
     return out
 
 
@@ -312,8 +322,10 @@ def threat_intel_display(threat_intel: Any) -> dict | None:
     if not isinstance(cves, dict) or not cves:
         return None
     kev = any(isinstance(c, dict) and c.get("kev") for c in cves.values())
+    # a bool is not an EPSS score -- mirror build_threat_intel's exclusion.
     epss_values = [c["epss"] for c in cves.values()
-                   if isinstance(c, dict) and isinstance(c.get("epss"), (int, float))]
+                   if isinstance(c, dict) and isinstance(c.get("epss"), (int, float))
+                   and not isinstance(c.get("epss"), bool)]
     epss = max(epss_values) if epss_values else None
     if not kev and epss is None:
         return None

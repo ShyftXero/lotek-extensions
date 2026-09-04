@@ -115,3 +115,55 @@ def test_docx_references_html_omit_when_empty_and_links():
     assert "<h4>References</h4>" in out
     assert '<a href="https://owasp.org/xss">OWASP</a>' in out
     assert "<li>CWE-79</li>" in out
+
+
+# ── #624 upgrade safety: legacy prose ``references`` block must not silently disappear ────────────────
+
+def _render_with_content(session_factory, *, content_json, **finding_kwargs) -> str:
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="E", client_id=client.id, company_name="Acme")
+        grp = FindingGroup(engagement=eng, name="Web", order_index=0)
+        EngagementFinding(
+            engagement=eng, group=grp, title="Legacy Finding", severity=Severity.high, order_index=0,
+            content_json=content_json, **finding_kwargs,
+        )
+        db.add(eng)
+        db.flush()
+        return render_report_html(build_report_context(eng))
+
+
+def test_legacy_references_prose_block_renders_when_column_empty(session_factory):
+    """A finding authored BEFORE #624 kept its references in a ``content_json["references"]`` prose block
+    and has an EMPTY structured column (no migration backfills it). That block must still render — the
+    #624 suppression is gated on the structured column being non-empty, so an upgrade never silently
+    drops an existing finding's references from the report."""
+    html = _render_with_content(
+        session_factory,
+        content_json={
+            "description": schema.doc_from_text("desc"),
+            "references": schema.doc_from_text("https://legacy.example/advisory"),
+        },
+        # ``references`` column left at its default ([]/NULL) — pre-#624 stored data.
+    )
+    assert "https://legacy.example/advisory" in html          # legacy refs NOT silently dropped
+    assert '<div class="block references">' not in html       # structured block absent (empty column)
+
+
+def test_structured_references_suppress_legacy_prose_block(session_factory):
+    """When a finding HAS structured references, the legacy prose block is suppressed so the two can't
+    double-render — the structured column is the one home (#624)."""
+    html = _render_with_content(
+        session_factory,
+        content_json={
+            "description": schema.doc_from_text("desc"),
+            "references": schema.doc_from_text("https://legacy.example/advisory"),
+        },
+        references=[{"label": "Structured", "url": "https://structured.example/ref",
+                     "source": "author", "suppressed": False}],
+    )
+    assert '<div class="block references">' in html           # structured block renders
+    assert "https://structured.example/ref" in html
+    assert "https://legacy.example/advisory" not in html      # legacy prose block suppressed (no double)

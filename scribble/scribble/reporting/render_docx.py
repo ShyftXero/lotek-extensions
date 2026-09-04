@@ -229,7 +229,11 @@ def _finding_body_richtext(
         if meta_rt.xml:
             parts.append(meta_rt.xml)
 
-    seen: set[str] = {"references"}  # references render via the structured block below, not as a prose block
+    # ``references`` render via the structured block below (references_html). Suppress a legacy prose
+    # ``references`` content block ONLY when there ARE structured refs (else double-render); when the
+    # column is empty, let the legacy block render as before -- an existing finding that stored refs as a
+    # prose block (pre-#624) must not silently lose them from the DOCX (no migration backfills). (#624)
+    seen: set[str] = {"references"} if references_html else set()
     ordered_keys = [k for k in _BLOCK_ORDER] + [k for k in blocks_html if k not in _BLOCK_ORDER]
     rendered_any = False
     for key in ordered_keys:

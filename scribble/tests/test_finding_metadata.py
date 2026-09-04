@@ -145,3 +145,22 @@ def test_threat_intel_display_reduces_to_worst_case():
     assert disp["epss"] == 0.975                  # MAX epss across the finding's CVEs
     assert disp["as_of"] == "2026-09-04"
     assert m.threat_intel_display(None) is None
+
+
+def test_normalize_ids_are_bounded_against_unbounded_scan_output():
+    """``cve_ids``/``cwe_ids`` are seeded at promote time from ``DTO.cve`` / ``DTO.facts["cwe"]`` —
+    attacker-influenceable, unbounded scan output. The normalizers cap their output at ``MAX_IDS`` so a
+    degenerate finding can't build (and later render) an unbounded id column (mirrors the references cap)."""
+    many_cves = [f"CVE-2021-{i:05d}" for i in range(m.MAX_IDS + 50)]
+    assert len(m.normalize_cve_ids(many_cves)) == m.MAX_IDS
+    many_cwes = [f"CWE-{i}" for i in range(m.MAX_IDS + 50)]
+    assert len(m.normalize_cwe_ids(many_cwes)) == m.MAX_IDS
+
+
+def test_threat_intel_display_ignores_bool_epss():
+    """A bool must not be read as an EPSS score (a future driver bypassing ``build_threat_intel`` could
+    write one); ``threat_intel_display`` mirrors the builder's bool-exclusion so KEV alone still shows."""
+    snap = {"as_of": "2026-09-04", "source": "x", "cves": {"CVE-2021-44228": {"kev": True, "epss": True}}}
+    disp = m.threat_intel_display(snap)
+    assert disp["kev"] is True
+    assert disp["epss"] is None

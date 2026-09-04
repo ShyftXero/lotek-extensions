@@ -455,11 +455,14 @@ def _render_blocks(f: FindingCtx, resolver: _AssetResolver) -> str:
     """The finding's descriptive content blocks (description, details, any custom blocks) -- NOT
     ``remediation``, which renders separately as the always-present Recommendations section."""
     parts: list[str] = []
-    # ``remediation`` -> _render_recommendations; ``references`` -> the structured References block
-    # (_render_references, #624). References have ONE home now (the typed ``EngagementFinding.references``
-    # column); a legacy prose ``references`` content block on an old row is skipped here so it can't
-    # double-render beside the structured block.
-    seen: set[str] = {"remediation", "references"}
+    # ``remediation`` -> _render_recommendations. ``references`` -> the structured References block
+    # (_render_references, #624), which is the ONE home. Suppress a legacy prose ``references`` content
+    # block ONLY when the finding HAS structured references (so the two can't double-render); when the
+    # column is empty, render the legacy block as before -- an existing finding that stored refs as a
+    # prose block (pre-#624 authoring) must not silently lose them (no migration backfills the column).
+    seen: set[str] = {"remediation"}
+    if f.references:
+        seen.add("references")
     for key in _BLOCK_ORDER:
         if key in seen:
             continue
