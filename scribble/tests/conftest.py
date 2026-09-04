@@ -238,9 +238,14 @@ class StubHost:
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
-        # Operator capability on a CORE engagement -- what a caller supplying its own
-        # `core_engagement_id` is checked against. Flip it to drive the refusal.
+        # Operator capability on a CORE engagement -- the INV-TENANCY-05 predicate every extension WRITE
+        # must gate on (never `can_view_client`, which is client-coarse). `can_operate_value` is the
+        # all-or-nothing default a caller supplying its own `core_engagement_id` is checked against; flip
+        # it to drive the refusal. `operable_engagement_ids`, when set, answers PER core engagement id
+        # instead -- an operator on E1 is NOT an operator on sibling E2 under the same client -- which is
+        # the only way to reproduce the cross-engagement write the invariant forbids.
         self.can_operate_value = True
+        self.operable_engagement_ids: set | None = None
         # Clients this NON-ADMIN actor may read. Mirrors the host's real rule
         # (`app/access.py::user_can_view_client`): admin reads any client, a non-admin reads a client it
         # owns a job under, and a NULL client_id is admin-only. Held as a set here because the stub has
@@ -253,6 +258,16 @@ class StubHost:
         # returns None and every call is a silent no-op, which is exactly how the missing audit rows
         # shipped unnoticed.
         self.audit_calls: list[tuple[str, dict]] = []
+
+    def can_operate_on(self, engagement_id) -> bool:
+        """The host's per-engagement OPERATOR gate (`app/extensions.py` injects the real one, built on
+        `Principal.is_operator_on`). When `operable_engagement_ids` is set, membership in it decides —
+        so a token operating E1 is refused on sibling E2; otherwise the all-or-nothing `can_operate_value`
+        stands, keeping every existing test that only flips that bool unchanged. Fails closed on None
+        (an unresolvable core engagement), like the real predicate."""
+        if self.operable_engagement_ids is not None:
+            return engagement_id is not None and engagement_id in self.operable_engagement_ids
+        return self.can_operate_value
 
     def audit(self, db, action: str, **kwargs) -> None:  # noqa: ARG002 - db unused by the stub
         self.audit_calls.append((action, kwargs))
@@ -399,7 +414,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     # `_inject_host` provides this and the stub did not, so any code path that consults it saw a
     # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims
     # to mirror the bundle and is one key short.
-    cfg.extras["can_operate_on"] = lambda _engagement_id: stub.can_operate_value
+    cfg.extras["can_operate_on"] = stub.can_operate_on
     cfg.extras["audit"] = stub.audit
     cfg.extras["idempotent"] = _make_stub_idempotent()
 
