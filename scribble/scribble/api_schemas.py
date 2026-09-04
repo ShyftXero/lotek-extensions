@@ -109,8 +109,11 @@ class AddFindingRequest(BaseModel):
         None, description="Plain-text remediation; wrapped into the 'remediation' content block."
     )
     cvss_vector: str | None = Field(None, description="Optional CVSS vector string.")
-    references: list[str] | None = Field(
-        None, description="Optional reference URLs/text; wrapped into the 'references' content block."
+    references: list[Any] | None = Field(
+        None,
+        description="Structured references (#624) -> the typed EngagementFinding.references column. Each "
+        "element is a URL/label string, or a {label, url, source, suppressed} object. Rendered as an "
+        "omit-when-empty labeled-link block (non-suppressed only), NOT a prose content block.",
     )
     content_json: dict[str, Any] | None = Field(
         None,
@@ -160,9 +163,10 @@ class PatchFindingRequest(BaseModel):
     otherwise return 200 for an edit that never happened. ``group_id``/``order_index`` are deliberately
     NOT here — re-ordering and grouping belong to ``POST /findings/{finding_id}/move``.
 
-    Prose can arrive either as plain text (``description``/``remediation``/``references``) or as
-    ProseMirror ``content_json``; either way it is sanitized (allowlisted node/mark set) before persist,
-    through the same path the create route uses.
+    Prose can arrive either as plain text (``description``/``remediation``) or as ProseMirror
+    ``content_json``; either way it is sanitized (allowlisted node/mark set) before persist, through the
+    same path the create route uses. ``references`` and the CVE/CWE/OWASP metadata are STRUCTURED typed
+    columns (#624/#625), not prose blocks — see the per-field descriptions below.
     """
 
     title: str | None = Field(None, description="New title (must be non-empty when supplied).")
@@ -181,7 +185,29 @@ class PatchFindingRequest(BaseModel):
     include_in_report: bool | None = Field(None, description="Whether the finding renders in the report.")
     description: str | None = Field(None, description="Plain-text prose for the 'description' block.")
     remediation: str | None = Field(None, description="Plain-text prose for the 'remediation' block.")
-    references: list[str] | None = Field(None, description="Reference URLs/text -> 'references' block.")
+    references: list[Any] | None = Field(
+        None,
+        description="Structured references (#624) -> the typed EngagementFinding.references column. Each "
+        "element is a URL/label string or a {label, url, source, suppressed} object; supply the full list "
+        "to add/edit, set an element's suppressed=true to hide it. Author-added refs are source=author.",
+    )
+    cve_ids: list[str] | None = Field(
+        None, description="CVE ids (#625), normalized to CVE-YYYY-NNNN and deduped; replaces the list."
+    )
+    cwe_ids: list[str] | None = Field(
+        None, description="CWE ids (#625), normalized to CWE-NNN and deduped; replaces the list."
+    )
+    owasp_categories: list[str] | None = Field(
+        None,
+        description="OWASP Top-10-2021 category ids (#625), e.g. 'A03:2021'; unknown ids are dropped. "
+        "Normally DERIVED from cwe_ids at promote time — this is the author override.",
+    )
+    threat_intel: dict | None = Field(
+        None,
+        description="Dated KEV/EPSS snapshot (#625). Enrichment-managed: send null to CLEAR it; a non-null "
+        "value is refused (it is refreshed by the enrichment pass keyed to the finding's CVEs, not "
+        "hand-authored — a hand-typed KEV/EPSS with no honest as_of is a stale fact).",
+    )
     content_json: dict[str, Any] | None = Field(
         None,
         description="{block_name: prosemirror_doc}; merged per block over the existing content and "
