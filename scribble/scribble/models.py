@@ -325,6 +325,39 @@ class EngagementFinding(Base, TimestampMixin):
     # reads NULL -- every read uses ``finding.source_facts or {}``, never this column bare.
     source_facts: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
 
+    # Structured references (#624): a JSON list of ``{label, url, source, suppressed}`` VALUE OBJECTS (not
+    # a child entity -- references have no lifecycle/evidence of their own). Promote UNIONS the matched
+    # library template's ``references`` + the scan ``DTO.references``, deduped by normalized url,
+    # source-tagged (``template``/``scan``/``author``); an operator may add/edit/suppress per reference
+    # (origin ``author``). The renderer shows non-suppressed refs as labeled links, omit-when-empty;
+    # ``source`` is stored but hidden by default. Additive + nullable (``scribble.db`` alembic revision
+    # a7d2c4e6f810 / create_all retrofit): a row promoted before this column existed reads NULL, and every
+    # read uses ``finding.references or []``. Fill-NULL-only re-promote (#617 Q5) never clobbers an edit.
+    references: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+
+    # Structured finding metadata (#625). All additive + defaulted so an UNENRICHED render is
+    # byte-identical to today (omit-when-empty everywhere). ``category`` above is a free-text human label
+    # and is untouched -- these are the STRUCTURED classification, added ALONGSIDE it, never repurposing it.
+    #
+    # Tier A -- intrinsic classification, typed id lists (empty-default). Promote seeds ``cve_ids`` from
+    # the scalar ``DTO.cve`` (a list, since a finding routinely maps to >=1 CVE and it is the join key for
+    # threat-intel) and ``cwe_ids`` from ``DTO.facts["cwe"]`` (no DTO widening -- ``facts`` is part of the
+    # frozen #617 boundary); ``owasp_categories`` is DERIVED from ``cwe_ids`` via a static offline
+    # CWE->OWASP-Top-10-2021 map (``scribble.metadata``). All normalized + deduped; author-editable.
+    cve_ids: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+    cwe_ids: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+    owasp_categories: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+
+    # Tier B -- threat intelligence as ONE DATED SNAPSHOT, never bare ``kev``/``epss`` columns. KEV/EPSS
+    # are a point-in-time lookup on the finding's CVEs (they CHANGE), their source is the OPTIONAL
+    # exploiteer extension, and standalone scribble may run with no exploiteer at all -- so a stored
+    # ``kev=true`` with no ``as_of`` is a lie the moment the catalog moves (#495 / standing-prose honesty).
+    # Shape: ``{"as_of": <iso>, "source": "exploiteer|cisa-kev|first-epss", "cves": {"CVE-…": {"kev":
+    # bool, "kev_date_added": …, "epss": 0.0-1.0, "epss_percentile": …}}}``. Built by the enrichment seam
+    # (``scribble.metadata.build_threat_intel``) from exploiteer's verdict feed when mounted; degrades to
+    # NULL when absent. Nullable; every read uses ``finding.threat_intel`` guarded.
+    threat_intel: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     engagement: Mapped[Engagement] = relationship(back_populates="findings")
     group: Mapped[FindingGroup | None] = relationship(back_populates="findings")
     template: Mapped[VulnerabilityTemplate | None] = relationship()
@@ -336,6 +369,8 @@ class EngagementFinding(Base, TimestampMixin):
     @classmethod
     def from_template(cls, template: VulnerabilityTemplate, **overrides) -> EngagementFinding:
         """Instantiate a finding from a library template (copies content; keeps the link)."""
+        from scribble.metadata import REF_SOURCE_TEMPLATE, merge_references  # local: avoid import cycle
+
         data = dict(
             template_id=template.id,
             title=template.name,
@@ -345,6 +380,10 @@ class EngagementFinding(Base, TimestampMixin):
             cvss_vector=template.cvss_vector,
             content_json=dict(template.content_json or {}),
             content_html=dict(template.content_html or {}),
+            # #624: carry the template's references onto the finding as structured value objects
+            # (source=template). Promote's overrides replace this with the template-UNION-scan merge for a
+            # promoted row; a PARENT / manual instantiation (no override) keeps the template refs.
+            references=merge_references(template.references or [], sources=(REF_SOURCE_TEMPLATE,)),
         )
         data.update(overrides)
         return cls(**data)

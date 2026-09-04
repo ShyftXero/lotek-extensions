@@ -19,9 +19,12 @@ to carry a considered disposition (typed column vs snapshot-only vs dropped), pr
 ``tests/test_finding_dto_disposition_drift.py`` (the pattern lotek core's
 ``test_runner_reachability_single_source.py`` established).
 
-Downstream tickets promote ``source_facts`` fields to typed columns against THIS rule: references (#624),
-cve/cwe/owasp (#625), retest fields (#621), export (#627), attack-chain links (#628). Widening the DTO
-itself to carry a currently-dropped core field is out of scope until one earns a report use (#617).
+Downstream tickets promote ``source_facts`` fields to typed columns against THIS rule: references (#624)
+and cve (#625) are now ``home=column`` (``references``/``cve_ids``); ``cwe_ids``/``owasp_categories``/
+``threat_intel`` (#625) are DERIVED columns with no direct DTO field (``cwe`` rides ``facts``, itself
+snapshot-only), so they carry no registry entry. Still pending against this rule: retest fields (#621),
+export (#627), attack-chain links (#628). Widening the DTO itself to carry a currently-dropped core field
+is out of scope until one earns a report use (#617).
 """
 
 from __future__ import annotations
@@ -84,10 +87,10 @@ DISPOSITIONS: tuple[Disposition, ...] = (
                 "prose -> content_json['description'] block"),
     Disposition("remediation", Home.column, Origin.promote, Operator.editable, "content_json",
                 "prose -> content_json['remediation'] block"),
-    Disposition("references", Home.source_facts, Origin.promote, Operator.editable, None,
-                "typed column deferred to #624 (union of template + scan refs, suppressable)"),
-    Disposition("cve", Home.source_facts, Origin.promote, Operator.editable, None,
-                "typed cve_ids column deferred to #625"),
+    Disposition("references", Home.column, Origin.promote, Operator.editable, "references",
+                "typed column (#624): union of template + scan refs, deduped by url, per-ref suppress"),
+    Disposition("cve", Home.column, Origin.promote, Operator.editable, "cve_ids",
+                "typed cve_ids list column (#625): normalized+deduped; superset of the scalar DTO.cve"),
     Disposition("cvss_score", Home.column, Origin.promote, Operator.editable, "cvss_score", ""),
     Disposition("analyst_notes", Home.column, Origin.promote, Operator.editable, "analyst_notes", ""),
     Disposition("evidence", Home.column, Origin.promote, Operator.editable, "content_json",
