@@ -33,6 +33,13 @@ REF_SOURCE_SCAN = "scan"           # the scan finding's DTO.references
 REF_SOURCE_AUTHOR = "author"       # added/edited by a human in the finding editor
 _REF_SOURCES = frozenset({REF_SOURCE_TEMPLATE, REF_SOURCE_SCAN, REF_SOURCE_AUTHOR})
 
+# Bound on a finding's stored references. The authoring surfaces cap the INPUT before they call in (api_pat
+# `_REFERENCE_LIST_MAX`), but ``merge_references`` also runs at PROMOTE time on ``DTO.references`` — scan
+# tool output, which is attacker-influenceable and unbounded (host_contract). A degenerate scan finding
+# citing 200k references must not build a 200k-object column, so the merge stops here too. Matches
+# api_pat's cap so the two paths agree.
+MAX_REFERENCES = 500
+
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
 _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 _URLISH_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
@@ -248,6 +255,8 @@ def merge_references(*groups: Any, sources: tuple[str, ...] | None = None) -> li
                 continue
             seen.add(key)
             out.append(ref)
+            if len(out) >= MAX_REFERENCES:  # bound the column vs an unbounded scan references list
+                return out
     return out
 
 

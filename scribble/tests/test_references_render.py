@@ -80,8 +80,9 @@ def test_unenriched_finding_has_no_metadata_markup(session_factory):
     assert 'class="chip cwe"' not in html
     assert 'class="chip cve"' not in html
     assert 'class="chip kev"' not in html
-    # the index metadata cells are present as headers but the row cells are the empty em-dash.
-    assert "<th>CWE</th>" in html and "<th>CVE</th>" in html
+    # an unenriched report's index is BYTE-IDENTICAL to before #625: the CWE/CVE columns appear ONLY when
+    # some finding carries that data, so here they are absent entirely (not empty-celled).
+    assert "<th>CWE</th>" not in html and "<th>CVE</th>" not in html
 
 
 # ── DOCX body helpers (pure — no docx template boot needed) ──────────────────────────────────────────

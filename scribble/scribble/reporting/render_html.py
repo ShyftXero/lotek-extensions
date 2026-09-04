@@ -1008,37 +1008,49 @@ def _index_ids_cell(ids: list) -> str:
 
 
 def _findings_index(ctx: ReportContext) -> str:
-    """A scan-then-jump index of every top-level finding (severity · title→its card · host · CWE · CVE ·
-    CVSS), in board order. Nested children stay out of this list, matching the finding cards below. The
-    CWE/CVE columns + a KEV flag are #625's skimmable metadata (OWASP/EPSS stay chip-only, per #625 Q3, to
-    keep the index narrow); every metadata cell is omit-when-empty so an unenriched report shows ``—``."""
+    """A scan-then-jump index of every top-level finding (severity · title→its card · host · [CWE] · [CVE] ·
+    CVSS), in board order. Nested children stay out of this list, matching the finding cards below.
+
+    The CWE/CVE columns + a KEV flag are #625's skimmable metadata (OWASP/EPSS stay chip-only, per #625 Q3,
+    to keep the index narrow). They appear ONLY when at least one rendered finding actually carries that
+    data — so an UNENRICHED report's index is BYTE-IDENTICAL to before #625 (the omit-when-empty invariant
+    the whole superset design protects, #625 Q4), while an enriched one gains the columns it needs."""
+    findings = [f for group in ctx.groups for f in group.findings]
+    if not findings:
+        return ""
+    show_cwe = any(f.cwe_ids for f in findings)
+    show_cve = any(f.cve_ids or (f.threat_intel and f.threat_intel.get("kev")) for f in findings)
     rows = []
-    for group in ctx.groups:
-        for f in group.findings:
-            host = f.target_host or ""
-            if host and f.target_port:
-                host = f"{host}:{f.target_port}"
-            if not host and f.target_url:
-                host = f.target_url
-            cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
-            sev, sev_label = _esc(f.severity), _esc(f.severity.title())
+    for f in findings:
+        host = f.target_host or ""
+        if host and f.target_port:
+            host = f"{host}:{f.target_port}"
+        if not host and f.target_url:
+            host = f.target_url
+        cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
+        sev, sev_label = _esc(f.severity), _esc(f.severity.title())
+        cells = [
+            f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>',
+            f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>',
+            f'<td class="ix-host">{_esc(host) or "—"}</td>',
+        ]
+        if show_cwe:
+            cells.append(f'<td class="ix-cwe">{_index_ids_cell(f.cwe_ids)}</td>')
+        if show_cve:
             kev_flag = ' <span class="ix-kev" title="CISA KEV-listed">KEV</span>' \
                 if (f.threat_intel and f.threat_intel.get("kev")) else ""
-            rows.append(
-                "<tr>"
-                f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>'
-                f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>'
-                f'<td class="ix-host">{_esc(host) or "—"}</td>'
-                f'<td class="ix-cwe">{_index_ids_cell(f.cwe_ids)}</td>'
-                f'<td class="ix-cve">{_index_ids_cell(f.cve_ids)}{kev_flag}</td>'
-                f'<td class="ix-cvss">{_esc(cvss)}</td></tr>'
-            )
-    if not rows:
-        return ""
+            cells.append(f'<td class="ix-cve">{_index_ids_cell(f.cve_ids)}{kev_flag}</td>')
+        cells.append(f'<td class="ix-cvss">{_esc(cvss)}</td>')
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    headers = "<th>Severity</th><th>Finding</th><th>Host</th>"
+    if show_cwe:
+        headers += "<th>CWE</th>"
+    if show_cve:
+        headers += "<th>CVE</th>"
+    headers += '<th style="text-align:right">CVSS</th>'
     return (
         '<div class="index-wrap"><div class="cap">Findings at a glance</div>'
-        '<table class="index"><thead><tr><th>Severity</th><th>Finding</th>'
-        '<th>Host</th><th>CWE</th><th>CVE</th><th style="text-align:right">CVSS</th></tr></thead>'
+        f'<table class="index"><thead><tr>{headers}</tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 

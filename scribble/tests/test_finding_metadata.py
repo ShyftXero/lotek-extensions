@@ -98,6 +98,14 @@ def test_visible_references_filters_suppressed():
     assert m.visible_references([]) == []
 
 
+def test_merge_references_is_bounded():
+    # a degenerate scan references list (attacker-influenceable, unbounded) must not build an unbounded
+    # column — the merge stops at MAX_REFERENCES.
+    huge = [f"https://ex/{i}" for i in range(m.MAX_REFERENCES + 50)]
+    merged = m.merge_references(huge, sources=(m.REF_SOURCE_SCAN,))
+    assert len(merged) == m.MAX_REFERENCES
+
+
 # ── threat intelligence (dated snapshot) ─────────────────────────────────────────────────────────────
 
 def _feed() -> dict:
