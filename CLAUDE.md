@@ -141,6 +141,36 @@ python3 .claude/hooks/rails_gate.py --ack-transcripts
 gh pr create --base main --head <branch>              # ALL applicable markers present + current
 ```
 
+### 🔴 This repo's PR gate STAYS a gate, even though core's went advisory (2026-09-04)
+
+lotek core moved its hard gate from `gh pr create` to **cutting a release**: its PR markers now report
+and pass, and `scripts/cut-release-tag.sh` refuses to tag a commit without `--ack-tests` +
+`--ack-invariants` bound to that exact sha (core `docs/RAILS.md` §5c). **Do not mirror that here**, for
+one structural reason:
+
+**Extensions have no release step of their own.** They reach production only when core pins a new
+extension tag and someone cuts a *core* release — and the evidence that core release demands is
+**core's** suite and **core's** invariant contract. Neither runs `scribble/tests`, `cream/tests` or any
+sibling. So if this repo's PR gate went advisory too, an extension's own tests would be gated
+**nowhere**: advisory at the PR, absent at the release. Core could loosen its PR gate precisely
+*because* it has a release gate to hand the requirement to; this repo has nothing to hand it to.
+
+Consequences to keep straight:
+
+- **`gh pr create` here still DENIES** on a missing applicable marker. That is deliberate, not lag.
+- **An extension change can reach prod without its own tests ever running in a gate** — if someone
+  overrides this gate, nothing downstream re-checks. That is the honest reason to earn the markers
+  rather than override them.
+- **A cross-repo PR needs care about WHICH hook runs.** The executing PreToolUse hook belongs to the
+  session's project directory, not to the repo you are editing: a session rooted in lotek that opens a
+  PR from an extensions worktree gets *core's* gate, which demands core's `--ack-invariants` — a marker
+  no extension diff can earn. Core's gate drops its lotek-specific markers only when
+  `R.is_submodule(cwd)` is true (it uses `git rev-parse --show-superproject-working-tree`), which is
+  **false** for a standalone `lotek-extensions` clone. Until core's advisory change lands, that
+  combination legitimately needs `RAILS_OVERRIDE=1` — say so in the PR when you use it.
+- If this ever *should* follow core, the missing piece is a release-time gate that runs the extensions'
+  own suites — not a matching loosening.
+
 Both `--ack-review` and `--ack-adversarial` also accept `--staged` (ack the staged tree before your
 final commit — the marker binds to `git write-tree` and survives the commit). Every marker is keyed
 to `git rev-parse HEAD` (or the staged tree for `--staged`); a further commit invalidates it and it
