@@ -1818,6 +1818,7 @@ def _machine_artifact_dict(a: Artifact) -> dict:
         "filename": a.filename,
         "content_type": a.content_type,
         "byte_size": a.byte_size,
+        "sha256": a.sha256,  # #626: evidence-integrity hash (feeds #627)
         "caption": a.caption or "",
         "include_in_report": a.include_in_report,
         "created_by": a.created_by,
@@ -1998,6 +1999,7 @@ def _artifact_summary(artifact: Artifact) -> dict:
         "caption": artifact.caption,
         "order_index": artifact.order_index,
         "include_in_report": artifact.include_in_report,
+        "sha256": artifact.sha256,  # #626: evidence-integrity hash (feeds #627)
         "url": artifact_url(artifact.id),
     }
 

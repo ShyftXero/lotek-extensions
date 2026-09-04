@@ -897,12 +897,24 @@ def _append_evidence_appendix(doc, ctx: ReportContext, *, artifact_bytes: Artifa
             try:
                 doc.add_picture(io.BytesIO(data), width=_EVIDENCE_IMAGE_WIDTH)
                 doc.add_paragraph(caption)
+                _append_sha256_line(doc, a)  # #626
                 continue
             except Exception:
                 pass  # fall through to the caption-only path below
         p = doc.add_paragraph()
         p.add_run(f"{caption} ").italic = True
         p.add_run(f"({a.filename} -- not embedded)").italic = True
+        _append_sha256_line(doc, a)  # #626
+
+
+def _append_sha256_line(doc, a: ArtifactCtx) -> None:
+    """Print the artifact's recorded content hash under its caption (#626), the docx half of the HTML
+    evidence-integrity manifest, so both deliverables let a client verify a delivered file against its
+    SHA-256. Silent for a legacy row that never got a hash — nothing to attest."""
+    if not a.sha256:
+        return
+    p = doc.add_paragraph()
+    p.add_run(f"SHA-256: {a.sha256}").italic = True
 
 
 def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:

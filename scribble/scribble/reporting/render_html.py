@@ -1331,6 +1331,31 @@ def _render_diagrams(ctx: ReportContext) -> str:
     )
 
 
+def _render_integrity_manifest(artifacts: list[ArtifactCtx]) -> str:
+    """A filename → SHA-256 table for engagement-level evidence (#626), so a recipient can verify the
+    delivered files were not altered in transit. Rendered INSIDE the Evidence appendix section (no
+    anchor of its own — the "Evidence" contents entry already covers it).
+
+    Lists only rows that actually carry a hash (``sha256`` stamped at upload); a legacy row without one
+    is silently absent rather than shown as a blank digest. Renders nothing when no row has a hash, so an
+    engagement whose evidence predates hashing is byte-identical to before this table existed."""
+    hashed = [a for a in artifacts if a.sha256]
+    if not hashed:
+        return ""
+    rows = "".join(
+        f'<tr><td class="im-file">{_esc(a.filename)}</td>'
+        f'<td class="im-hash"><code>{_esc(a.sha256)}</code></td></tr>'
+        for a in hashed
+    )
+    return (
+        '<div class="integrity"><h3 class="im-h">Evidence integrity (SHA-256)</h3>'
+        '<p class="muted">Verify a delivered file against its recorded hash: '
+        '<code>sha256sum &lt;file&gt;</code>.</p>'
+        '<table class="integrity-table"><thead><tr><th>File</th><th>SHA-256</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
+    )
+
+
 def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
     with no ``finding_id``.
@@ -1373,7 +1398,7 @@ def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> s
         f'item{"s" if total != 1 else ""}</span></h2>'
         '<div class="sec-body"><p class="muted evidence-intro">Evidence recorded against this engagement '
         'as a whole rather than against one finding.</p>'
-        f"{gallery}{note}</div></section>"
+        f"{gallery}{note}{_render_integrity_manifest(shown)}</div></section>"
     )
 
 
