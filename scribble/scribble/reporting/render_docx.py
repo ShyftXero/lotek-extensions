@@ -261,6 +261,11 @@ def _finding_ctx(
         "title": f.title,
         "severity": sev,
         "severity_label": sev.title(),
+        # lotek#618: the same client-facing label the HTML badge shows, from the same predicate.
+        # Empty for a `new` finding, and the template's paragraph-level `{% if %}` then drops the
+        # whole line — the DOCX is a peer deliverable, not a lossy copy of the HTML.
+        "status_label": f.status_label,
+        "disposition": f.disposition,
         "cvss_score": f"{f.cvss_score:.1f}" if f.cvss_score is not None else "",
         "cvss_vector": f.cvss_vector or "",
         "target": _target_text(f),

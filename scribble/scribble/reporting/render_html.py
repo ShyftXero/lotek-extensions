@@ -535,6 +535,14 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     sev = f.severity
     rank = SEVERITY_ORDER.index(sev) if sev in SEVERITY_ORDER else len(SEVERITY_ORDER)
     badges = f'<span class="sev-badge sev-{_esc(sev)}">{_esc(sev.title())}</span>'
+    # The status badge (lotek#618) renders ONLY when the label is non-empty, which is exactly when the
+    # status is not `new` -- a badge on every untriaged finding is noise, and reads to a client as
+    # "draft". `disposition` classes the chip so a remediated finding is visually distinct from one
+    # awaiting retest without the renderer re-deriving anything.
+    if f.status_label:
+        badges += (
+            f'<span class="status-badge st-{_esc(f.disposition)}">{_esc(f.status_label)}</span>'
+        )
     if f.cvss_score is not None:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
@@ -930,6 +938,10 @@ def _sev_bar(rollup) -> str:
 def _findings_index(ctx: ReportContext) -> str:
     """A scan-then-jump index of every top-level finding (severity · title→its card · host · CVSS),
     in board order. Nested children stay out of this list, matching the finding cards below."""
+    # A Status column only when SOMETHING has a status worth printing (lotek#618). An engagement whose
+    # findings are all `new` renders byte-identically to before this column existed -- the same
+    # additive discipline `context.py` keeps for `diagrams`/`artifacts`, applied to markup.
+    show_status = any(f.status_label for group in ctx.groups for f in group.findings)
     rows = []
     for group in ctx.groups:
         for f in group.findings:
@@ -940,19 +952,26 @@ def _findings_index(ctx: ReportContext) -> str:
                 host = f.target_url
             cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
             sev, sev_label = _esc(f.severity), _esc(f.severity.title())
+            status_cell = ""
+            if show_status:
+                label = _esc(f.status_label) or "—"
+                status_cell = f'<td class="ix-status st-{_esc(f.disposition)}">{label}</td>'
             rows.append(
                 "<tr>"
                 f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>'
                 f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>'
                 f'<td class="ix-host">{_esc(host) or "—"}</td>'
+                f"{status_cell}"
                 f'<td class="ix-cvss">{_esc(cvss)}</td></tr>'
             )
     if not rows:
         return ""
+    status_head = "<th>Status</th>" if show_status else ""
     return (
         '<div class="index-wrap"><div class="cap">Findings at a glance</div>'
         '<table class="index"><thead><tr><th>Severity</th><th>Finding</th>'
-        '<th>Host</th><th style="text-align:right">CVSS</th></tr></thead>'
+        f"<th>Host</th>{status_head}"
+        '<th style="text-align:right">CVSS</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -1985,6 +2004,24 @@ table.index td.ix-cvss {
   background: color-mix(in srgb, var(--sev-info) 13%, transparent);
   border-color: color-mix(in srgb, var(--sev-info) 28%, transparent);
 }
+
+/* report disposition (lotek#618): the finding's status, as a quieter sibling of the severity badge.
+   Deliberately NOT severity-coloured -- a status is a statement about handling, not about risk, and
+   borrowing the severity palette would read as a second severity. Only `--muted`/`--sev-low` tokens,
+   so it inherits every theme rather than pinning a colour. */
+.status-badge {
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 650;
+  letter-spacing: .02em; padding: 2px 8px; border-radius: 5px;
+  color: var(--muted); background: color-mix(in srgb, var(--muted) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
+}
+.status-badge.st-remediated {
+  color: var(--sev-low);
+  background: color-mix(in srgb, var(--sev-low) 10%, transparent);
+  border-color: color-mix(in srgb, var(--sev-low) 24%, transparent);
+}
+table.index td.ix-status { color: var(--muted); white-space: nowrap; font-size: 13px; }
+table.index td.ix-status.st-remediated { color: var(--sev-low); font-weight: 600; }
 
 /* filters */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 18px; }

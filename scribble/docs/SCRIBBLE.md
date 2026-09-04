@@ -389,7 +389,32 @@ consume, so HTML and `.docx` cannot drift apart):
 What enters the report: groups in board order (a synthetic *Ungrouped* bucket last), findings ordered by
 the group's own mode, `include_in_report` respected at group, finding **and** artifact level, plus a
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
-into the report. Promoted per-host findings render **nested inside their parent's card** (one level), so the
+into the report.
+
+**A finding's `status` now decides how it lands in the deliverable** (lotek#618, 2026-09-04 — it was
+dropped entirely before, which meant a finding you had marked `false_positive` or `fixed` still drove the
+client's overall risk rating). One predicate, `scribble.enums.report_disposition`, maps status to a
+**disposition**, and every surface — the HTML, the .docx and the rollup — reads that one answer:
+
+| status | disposition | in the report? | drives the risk rating? | label shown |
+|---|---|---|---|---|
+| `new` | `live` | yes | yes | *(none — nothing to say)* |
+| `triaged` | `live` | yes | yes | Triaged |
+| `needs_retest` | `live` | yes | yes | Awaiting retest |
+| `fixed` | `remediated` | yes | **no** | Remediated |
+| `accepted_risk` | `accepted` | yes | **no** | Risk accepted |
+| `false_positive` | `excluded` | **no** | no | — |
+
+- **Inclusion is `include_in_report` AND a non-`excluded` disposition.** `include_in_report` remains your
+  explicit veto for anything else you want held back; marking a finding `false_positive` removes it from
+  the client deliverable on its own, and there is deliberately no "excluded findings" annex.
+- The severity rollup, the risk banner and the narrative count **live findings only**. The rollup also
+  carries `disposition_counts` (live / remediated / accepted / excluded) so you can see the shape of the
+  deliverable — "1 issue, 2 closed out" — rather than inferring it from what is missing.
+- The label appears as a chip on the finding and a **Status** column in *Findings at a glance*, and both
+  are omitted entirely when every finding is `new` — an untouched engagement's report is unchanged.
+- Labels are deliberately conservative: "Remediated", not "Fixed (verified)". Scribble records that you
+  set a status; it does not record that anyone verified a fix, and the report may not claim otherwise. Promoted per-host findings render **nested inside their parent's card** (one level), so the
 report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
 answers that number as `top_level_count`.
 

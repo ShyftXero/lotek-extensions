@@ -31,20 +31,44 @@ Graders, deterministic. The deliverable is the before/after on the same scope, n
 Each guard gets neutralised and watched go red (E1/E2 are red on `main` by construction — they *are*
 the defect).
 
+## Baseline (measured on unchanged `main`, throwaway probe, then deleted)
+
+Engagement: one `high`/`new`, one `critical`/`fixed`, one `critical`/`false_positive`.
+
+| | before | after |
+|---|---|---|
+| `rollup.overall` | `critical` | `high` |
+| `rollup.total` | 3 | 1 |
+| `counts.critical` | 2 | 0 |
+| `disposition_counts` | (field did not exist) | live 1 · remediated 1 · accepted 0 · excluded 1 |
+| narrative | "identified **3 findings** … most significant exposures were Domain admin over SMB; **Phantom RCE**; SMB signing not required" | "identified **1 finding** … SMB signing not required" |
+| `FindingCtx.status` | absent | raw + `disposition` + `status_label` |
+
+The narrative line is the sharpest part of the before: the executive summary named a **false positive**
+as a most-significant exposure, and a remediated finding alongside it.
+
 ## Done
 
 - [x] Plan + evals committed first
+- [x] Baseline measured and recorded (above) before any implementation
+- [x] `report_disposition()` / `finding_status_label()` / `counts_toward_risk()` + the disposition
+      constants in `scribble/enums.py` — the ONE home, beside `risk_rating`
+- [x] `FindingCtx.status` / `.disposition` / `.status_label`; `SeverityRollup.disposition_counts`
+      (all additive + defaulted)
+- [x] `report_visible()` — inclusion = `include_in_report AND disposition != excluded`, computed once
+- [x] `_tally` counts live only; `_tally_dispositions` counts all four; `_build_narrative` names live
+      findings only
+- [x] `render_html`: conditional `Status` column + finding-head badge + themed CSS (no severity palette)
+- [x] `render_docx`: `status_label`/`disposition` scalars + a paragraph-level guarded Status line;
+      `default.docx` regenerated via `build_default_docx.py`
+- [x] E1/E2/E3/E5 in `tests/test_report_finding_disposition.py` (23 cases)
+- [x] E4 drift guard in `tests/test_report_disposition_single_source.py`, with a planted positive
+      control and per-EXPRESSION allowlist
+- [x] `uvx ruff check scribble` clean; full scribble suite green
 
 ## Remaining
 
-- [ ] E1/E2 tests written and confirmed RED on unchanged code (the baseline)
-- [ ] `report_disposition()` + label map in `scribble/enums.py` (the ONE home, beside `risk_rating`)
-- [ ] `FindingCtx.status` / `.disposition` / `.status_label`; `SeverityRollup.disposition_counts`
-- [ ] inclusion + `_tally` gated on disposition in `build_report_context`; `_build_narrative` on the live total
-- [ ] `render_html`: conditional `Status` column in `_findings_index` + finding-head badge
-- [ ] `render_docx`: the equivalent
-- [ ] E3 byte-identity pin, E4 drift guard, E5 label assertions
-- [ ] ruff + the scribble suite green; PR body carries the E1–E5 before/after
+- [ ] PR opened with the before/after table in the body
 
 ## Notes / gotchas
 
@@ -61,3 +85,19 @@ the defect).
   `accepted` = accepted_risk (both render, leave the ladder) · `excluded` = false_positive (gone).
 - The board-side UX for an `excluded` finding is **out of this branch** — it is lotek#633.
 - `confidence` is the sibling field and is **not** in scope: lotek#634 decides it.
+
+## Corrections made while building (recorded, not hidden)
+
+- **E3 was overstated.** "The HTML is byte-identical for an all-`new` engagement" is false: the report
+  is one self-contained document, so its stylesheet is inlined whole and the `.status-badge` rules are
+  present either way. What the test actually pins — and what matters — is that **no status markup is
+  emitted**: no badge span, no `Status` column, no `ix-status` cell, and no Status line in the DOCX.
+- **An empty "Ungrouped" section became possible.** `if ungrouped:` used to imply "has visible
+  findings"; once `excluded` findings are filtered out, a bucket holding only false positives would
+  render an empty heading. The synthetic bucket is now appended only when it has visible findings.
+- **The DOCX needed a template change, not just a scalar.** The status line is authored in
+  `build_default_docx.py` with **paragraph-level** `{% if %}` tags so a finding with no label leaves no
+  blank line; `default.docx` is regenerated and committed.
+- **The drift guard's allowlist is per EXPRESSION, not per file** — its first run correctly flagged
+  `models.py`'s `default=FindingStatus.new` (a column default, not a derivation). Exempting the whole
+  module would have exempted the next real derivation added to it.
