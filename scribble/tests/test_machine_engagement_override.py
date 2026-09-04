@@ -58,6 +58,17 @@ def test_patch_blank_rationale_is_400(client, stub_host):
     assert resp.status_code == 400, resp.get_json()
 
 
+def test_patch_rationale_without_override_is_400(client, stub_host):
+    # A rationale with no override to attach it to is a confused request, not a silent 200 no-op that
+    # drops the text (symmetric with set-without-rationale).
+    eid = _make_engagement(client, stub_host)
+    resp = client.patch(f"{M}/engagements/{eid}", json={"risk_override_rationale": "orphan note"})
+    assert resp.status_code == 400, resp.get_json()
+    got = client.get(f"{M}/engagements/{eid}").get_json()
+    assert got["risk_override"] is None
+    assert got["risk_override_rationale"] is None
+
+
 def test_patch_clear_nulls_both(client, stub_host):
     eid = _make_engagement(client, stub_host)
     client.patch(

@@ -83,7 +83,9 @@ def _render_docx_text(session_factory, eng_id) -> str:
 def test_no_override_leaves_the_banner_computed(session_factory):
     eng_id = _engagement_with_worst(session_factory, Severity.critical)
     html = _render_html(session_factory, eng_id)
-    assert "risk-critical" in html  # computed band, unchanged
+    # the banner CONTAINER carries the computed band (asserting on the container class, not a bare
+    # `risk-critical` substring which the always-inlined stylesheet also contains):
+    assert 'class="risk risk-critical"' in html
     # markup-unique tokens (NOT the CSS class names, which the stylesheet always defines):
     assert "⚑ assessor-adjusted" not in html
     assert "computed: Critical" not in html
@@ -105,8 +107,8 @@ def test_html_override_shows_effective_marker_computed_and_rationale(session_fac
     _set_override(session_factory, eng_id, Severity.high, _RATIONALE)
     html = _render_html(session_factory, eng_id)
 
-    # effective band (High) is the headline; the computed Critical is NOT the banner class anymore
-    assert "risk-high" in html
+    # effective band (High) is the banner CONTAINER class; the computed Critical is NOT anymore
+    assert 'class="risk risk-high"' in html
     assert 'class="risk risk-critical"' not in html
     # the marker, the preserved computed band, and the authored rationale are all present
     assert "⚑ assessor-adjusted" in html
@@ -121,7 +123,7 @@ def test_html_override_without_rationale_omits_the_note(session_factory):
     eng_id = _engagement_with_worst(session_factory, Severity.critical)
     _set_override(session_factory, eng_id, Severity.low, None)
     html = _render_html(session_factory, eng_id)
-    assert "risk-low" in html
+    assert 'class="risk risk-low"' in html
     assert "⚑ assessor-adjusted" in html
     assert "Assessor&#39;s rationale" not in html
 
@@ -143,16 +145,20 @@ def test_docx_override_carries_marker_computed_and_rationale(session_factory):
 
 
 @pytest.mark.parametrize(
-    ("computed", "override", "expect_class", "expect_computed"),
+    ("computed", "override"),
     [
-        (Severity.critical, Severity.low, "risk-low", "computed: Critical"),   # down
-        (Severity.low, Severity.critical, "risk-critical", "computed: Low"),   # up
+        (Severity.critical, Severity.low),   # down
+        (Severity.low, Severity.critical),   # up
     ],
 )
-def test_override_direction_both_ways(session_factory, computed, override, expect_class, expect_computed):
+def test_override_direction_both_ways(session_factory, computed, override):
     eng_id = _engagement_with_worst(session_factory, computed)
     _set_override(session_factory, eng_id, override, _RATIONALE)
     html = _render_html(session_factory, eng_id)
-    assert expect_class in html
-    assert expect_computed in html
+    # the banner CONTAINER carries the EFFECTIVE band, and NOT the computed one — asserted on the
+    # container class (a bare `risk-<band>` substring is always in the inlined stylesheet, so it would
+    # be false-green, and would leave the up-shift case unverified).
+    assert f'class="risk risk-{override.value}"' in html
+    assert f'class="risk risk-{computed.value}"' not in html
+    assert f"computed: {computed.value.title()}" in html
     assert "⚑ assessor-adjusted" in html

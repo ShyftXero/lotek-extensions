@@ -13,8 +13,10 @@ rationale. Direction is unrestricted (up or down); the visible marker + shown co
 rationale are what keep a down-shift honest. See the #620 decision comment for the full spec.
 
 ## Evals (declared before the code — edd)
-1. **Regression:** `risk_override IS NULL` → rendered HTML **and** DOCX are byte-identical to pre-change
-   golden (the override code paths are dormant with a default of `None`).
+1. **Regression:** `risk_override IS NULL` → the render is unchanged (DOCX byte-identical; HTML
+   markup-token-identical — the banner CSS block is always inlined, so the test asserts on markup-unique
+   tokens, not on the always-present `.risk-<band>` stylesheet rules). The override code paths are
+   dormant with a default of `None`.
 2. **Override render (HTML):** banner shows effective band + `assessor-adjusted` marker + `computed: <orig>`
    + the rationale text.
 3. **Override render (DOCX):** `overall_label` carries the marker + `computed:`; the summary narrative

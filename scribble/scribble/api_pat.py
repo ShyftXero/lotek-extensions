@@ -1439,7 +1439,11 @@ def scribble_update_engagement(engagement_id: str):
         new_override = parsed_override if override_provided else engagement.risk_override
         new_rationale = parsed_rationale if rationale_provided else engagement.risk_override_rationale
         if new_override is None:
-            # No override => no dangling rationale. Clearing the band clears its reason.
+            # No override => no dangling rationale. Clearing the band clears its reason. And a rationale
+            # supplied with no override to attach it to is a confused request, not a silent no-op (400,
+            # symmetric with the set-without-rationale case below).
+            if rationale_provided and parsed_rationale:
+                return _bad_request("risk_override_rationale requires a risk_override")
             new_rationale = None
         elif not (new_rationale or "").strip():
             return _bad_request("risk_override requires a non-empty risk_override_rationale")
