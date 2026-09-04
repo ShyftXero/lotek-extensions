@@ -230,6 +230,20 @@ def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
     if error is not None:
         return error
 
+    # lotek#620: validate the manual overall-risk override BEFORE mutating the row (like the client
+    # above), so a bad override leaves the engagement untouched. Empty select = no override; a set
+    # override needs a non-empty rationale (the same rule the machine PATCH enforces).
+    raw_override = (form.get("risk_override") or "").strip()
+    rationale = (form.get("risk_override_rationale") or "").strip()
+    override_value = None
+    if raw_override:
+        try:
+            override_value = severity_enum()(raw_override.lower())
+        except ValueError:
+            return f"Invalid risk override: {raw_override}"
+        if not rationale:
+            return "A manual risk override needs a rationale (say why you adjusted it)."
+
     engagement.name = (form.get("name") or "").strip()
     engagement.scope_type = (form.get("scope_type") or "external").strip() or "external"
     engagement.company_name = (form.get("company_name") or "").strip() or None
@@ -237,6 +251,9 @@ def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
     engagement.start_date = _parse_date(form.get("start_date"))
     engagement.end_date = _parse_date(form.get("end_date"))
     engagement.client_id = client_id
+    # Clearing the override clears its reason — no dangling rationale.
+    engagement.risk_override = override_value
+    engagement.risk_override_rationale = rationale if override_value else None
     return None
 
 

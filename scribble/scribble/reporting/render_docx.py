@@ -285,8 +285,34 @@ def _group_ctx(g: GroupCtx, *, tpl: DocxTemplate, artifact_bytes: ArtifactBytes 
 def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: ArtifactBytes | None) -> dict:
     rollup = ctx.rollup
     counts = rollup.counts if rollup else {}
-    overall = rollup.overall if rollup else "info"
+    computed = rollup.overall if rollup else "info"
     total = rollup.total if rollup else 0
+    clean = total == 0
+    computed_label = "No Findings" if clean else computed.title()
+    # lotek#620: an operator override is an authored judgement layered on the COMPUTED band. Word has no
+    # banner CSS to restyle and the banner is authored into the binary template, so the marker + original
+    # computed band are baked into ``overall_label`` and the rationale is appended to the summary
+    # narrative as an attributed, present-tense sentence — parity with the HTML banner (marker, computed
+    # value, rationale) without regenerating ``default.docx``. ``overall`` (used for cell colour) follows
+    # the effective band so the verdict card colour matches the headline.
+    override = ctx.risk_override
+    effective = override or computed
+    if override:
+        overall = effective
+        overall_label = f"{effective.title()} — assessor-adjusted (computed: {computed_label})"
+    else:
+        overall = computed
+        overall_label = computed_label
+    narrative = ctx.narrative or ""
+    if override:
+        note = (
+            f"The overall risk rating shown is the assessor's adjustment of the computed "
+            f"{computed_label} rating to {effective.title()}."
+        )
+        rationale = (ctx.risk_override_rationale or "").strip()
+        if rationale:
+            note += f" Rationale: {rationale}"
+        narrative = f"{narrative} {note}".strip() if narrative else note
     return {
         "company_name": ctx.company_name or "",
         "engagement_name": ctx.engagement_name,
@@ -295,12 +321,12 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         "start_date": ctx.start_date or "",
         "end_date": ctx.end_date or "",
         "generated_date": datetime.now(UTC).strftime("%Y-%m-%d"),
-        "narrative": ctx.narrative or "",
+        "narrative": narrative,
         "rollup": {
             "counts": {s: counts.get(s, 0) for s in SEVERITY_ORDER},
             "total": total,
             "overall": overall,
-            "overall_label": "No Findings" if total == 0 else overall.title(),
+            "overall_label": overall_label,
         },
         "groups": [_group_ctx(g, tpl=tpl, artifact_bytes=artifact_bytes) for g in ctx.groups],
     }

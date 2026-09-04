@@ -108,6 +108,13 @@ class Engagement(Base, TimestampMixin):
     # docs/LOTEK_ADOPTION.md §4. ``SoftHostId``, not ``Integer`` -- same int-or-UUID host id shape as
     # ``client_id`` above.
     owner_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
+    # lotek#620: manual override of the report's COMPUTED overall risk band. NULL = no override (the
+    # computed ``risk_rating`` ladder stands). When set it is an AUTHORED judgement layered on top of the
+    # computed band — the renderers show it AS the headline with an "assessor-adjusted" marker plus the
+    # original computed band, never a silent replacement. ``risk_override_rationale`` is required non-empty
+    # whenever ``risk_override`` is set (enforced at the write seam, api_pat.py); both clear together.
+    risk_override: Mapped[Severity | None] = mapped_column(Enum(Severity), nullable=True)
+    risk_override_rationale: Mapped[str | None] = mapped_column(Text)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
@@ -304,6 +311,19 @@ class EngagementFinding(Base, TimestampMixin):
     # ADD COLUMN`` on an existing DB), so a row created before this column existed reads NULL -- every
     # read site uses ``finding.variables or {}``, never this column bare.
     variables: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
+
+    # The FULL source scan ``FindingDTO`` (``host_contract.FindingDTO``) captured VERBATIM at promote
+    # time -- what makes ``EngagementFinding`` a LOSSLESS SUPERSET of the scan finding (map #616 / #617).
+    # Every DTO field is representable here even when it has no typed column, and it preserves the source
+    # finding's own title/severity/prose on the TEMPLATE-MATCH path (where ``from_template`` builds the
+    # row from the library template and would otherwise discard them). Written by ``promote.py`` via
+    # ``scribble.dispositions.snapshot_source_facts``; the per-field contract (typed column vs
+    # snapshot-only vs reasoned drop, plus the origin/operator axes) lives in ``scribble/dispositions.py``
+    # and is pinned by ``tests/test_finding_dto_disposition_drift.py``. Refreshed on re-promote (source
+    # truth); typed columns are fill-NULL-only and never clobber an operator edit (#617 Q5). Additive,
+    # nullable (``scribble.db`` alembic revision f4c9a1b2e370): a row promoted before this column existed
+    # reads NULL -- every read uses ``finding.source_facts or {}``, never this column bare.
+    source_facts: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
 
     engagement: Mapped[Engagement] = relationship(back_populates="findings")
     group: Mapped[FindingGroup | None] = relationship(back_populates="findings")

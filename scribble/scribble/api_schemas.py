@@ -192,6 +192,29 @@ class PatchFindingRequest(BaseModel):
     )
 
 
+class PatchEngagementRequest(BaseModel):
+    """Body of ``PATCH /scribble/machine/engagements/{engagement_id}`` (write scope) — lotek#620.
+
+    Sets or clears the MANUAL override of the report's computed overall-risk band. Only fields present
+    change; an omitted field is left alone and an explicit ``null`` CLEARS. Setting ``risk_override``
+    REQUIRES a non-empty ``risk_override_rationale`` (400 otherwise) — an unreasoned override would read
+    as a computed fact, which the report must never do. Clearing the override clears its rationale. The
+    computed ``risk_rating`` ladder is never destroyed: the override is an authored judgement layered on
+    top and rendered with an "assessor-adjusted" marker beside the original computed band.
+    """
+
+    risk_override: str | None = Field(
+        None,
+        description="info | low | medium | high | critical — overrides the computed overall band; an "
+        "explicit null clears the override (and its rationale). Direction is unrestricted (up or down).",
+    )
+    risk_override_rationale: str | None = Field(
+        None,
+        description="Assessor's reason for the override — REQUIRED (non-empty) whenever risk_override is "
+        "set; rendered verbatim beside the adjusted rating. null/empty clears it.",
+    )
+
+
 class MoveFindingRequest(BaseModel):
     """Body of ``POST /scribble/machine/findings/{finding_id}/move`` (write scope).
 
