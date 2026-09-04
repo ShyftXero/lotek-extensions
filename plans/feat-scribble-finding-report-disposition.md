@@ -66,9 +66,40 @@ as a most-significant exposure, and a remediated finding alongside it.
       control and per-EXPRESSION allowlist
 - [x] `uvx ruff check scribble` clean; full scribble suite green
 
+## Integrating main (2026-09-04, after PR #167 + #168 landed mid-branch)
+
+`origin/main` moved while this branch was open: #617's superset build (`dispositions.py`,
+`source_facts`), #620's severity override, and a merge revision fixing the two alembic heads those two
+PRs created. GitHub called this branch "clean/mergeable", which says only that the *text* merges.
+
+- **First merge was one commit stale** and produced **983 errors**, every one
+  `alembic … Multiple heads are present`. Not this branch's doing and not a broken `main` — the
+  head-merge revision had landed minutes earlier and I had fetched before it. Re-merged; gone.
+  (Recorded because I briefly reported `main` as broken on the strength of a parser of mine that
+  cannot read a tuple `down_revision`. It reads one head.)
+- **The drift guard then earned its place.** With main merged, the suite had exactly ONE failure:
+  `test_no_second_computation_of_the_report_disposition` flagging `dispositions.py:149`
+  (`FindingStatus.new`). It was not a false positive — `status_from_dto` had re-implemented
+  "unknown status → safe default", the same rule `enums._as_status` implements for the report side.
+  Two copies of that rule mean promote can store one thing while the report interprets another, with
+  nothing raising. Fixed by making the coercion public (`enums.coerce_finding_status`) and having
+  `status_from_dto` delegate to it — so the guard now passes with **no allowlist entry**, which is the
+  outcome worth having.
+- **`CONTEXT.md` gained the disambiguation** these two changes made necessary: **Report Disposition**
+  (a finding's fate in the deliverable — this branch) vs **Field Disposition** (a DTO field's home,
+  origin and operator axes — #617). Same word, unrelated concepts, same package, landed a day apart.
+- **#620's override composes with this cleanly**: it renders an operator-chosen headline band and
+  leaves `rollup.overall` as the honest computed one. This branch makes that computed band honest-er
+  (live findings only), which if anything reduces the need to override.
+
+Targeted re-run after the fix: **48 tests, 0 failures** across the guard, this branch's disposition
+tests, and main's `test_finding_dto_disposition_drift` / `test_source_facts_promote` /
+`test_report_severity_override`.
+
 ## Remaining
 
-- [ ] PR opened with the before/after table in the body
+- [ ] Full suite green on the merged branch, then push
+- [ ] PR body/comment updated with the merged-main counts
 
 ## Notes / gotchas
 

@@ -170,30 +170,39 @@ _STATUS_LABEL = {
 }
 
 
-def _as_status(status: FindingStatus | str | None) -> FindingStatus:
-    """Coerce whatever a caller holds to a ``FindingStatus``; an unknown value reads as ``new``.
+def coerce_finding_status(
+    status: FindingStatus | str | None, default: FindingStatus | None = None
+) -> FindingStatus:
+    """Coerce whatever a caller holds to a ``FindingStatus``; an unknown value reads as ``default``.
 
     A row loaded through the ORM yields the enum, but a value that has crossed a JSON boundary (the
-    machine API, a host DTO) is a plain string. Unknown -> ``new`` keeps this fail-SAFE: an
+    machine API, a host ``FindingDTO``) is a plain string. Unknown -> ``new`` keeps this fail-SAFE: an
     unrecognised status leaves the finding live and counted, so a vocabulary the report does not
     understand can never quietly drop a real finding out of a client deliverable.
+
+    PUBLIC, and the single home for that rule, because there were briefly two: this function (read
+    side, deciding what a status means for the report) and ``dispositions.status_from_dto`` (write
+    side, promote). "Unknown status -> safe default" is a correctness rule, not a formatting detail —
+    two copies that disagree would have promote store one thing and the report interpret another, with
+    nothing raising. The drift guard in ``tests/test_report_disposition_single_source.py`` is what
+    caught the second copy when #617's `dispositions.py` landed.
     """
     if isinstance(status, FindingStatus):
         return status
     try:
         return FindingStatus(str(status))
     except ValueError:
-        return FindingStatus.new
+        return default if default is not None else FindingStatus.new
 
 
 def report_disposition(status: FindingStatus | str | None) -> str:
     """What ``status`` means for the deliverable: one of :data:`DISPOSITIONS`."""
-    return _DISPOSITION_BY_STATUS[_as_status(status)]
+    return _DISPOSITION_BY_STATUS[coerce_finding_status(status)]
 
 
 def finding_status_label(status: FindingStatus | str | None) -> str:
     """The client-facing label for ``status``; empty when nothing should be shown."""
-    return _STATUS_LABEL[_as_status(status)]
+    return _STATUS_LABEL[coerce_finding_status(status)]
 
 
 def counts_toward_risk(status: FindingStatus | str | None) -> bool:
