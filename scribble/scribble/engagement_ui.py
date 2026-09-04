@@ -91,6 +91,7 @@ from scribble.models import (
     EngagementFinding,
     FindingGroup,
     VulnerabilityTemplate,
+    normalize_strategic_recommendations,
 )
 from scribble.templating import known_variable_keys
 
@@ -254,6 +255,11 @@ def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
     # Clearing the override clears its reason — no dangling rationale.
     engagement.risk_override = override_value
     engagement.risk_override_rationale = rationale if override_value else None
+    # lotek#623: one recommendation per line in the textarea; the shared normalizer drops blank lines and
+    # trims, so an empty textarea clears the list.
+    engagement.strategic_recommendations = normalize_strategic_recommendations(
+        (form.get("strategic_recommendations") or "").splitlines()
+    )
     return None
 
 

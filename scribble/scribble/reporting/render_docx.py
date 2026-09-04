@@ -862,6 +862,26 @@ def _append_retest_closeout(doc, ctx: ReportContext) -> None:
         cells[4].text = str(r.rounds)
 
 
+def _append_strategic_recommendations(doc, ctx: ReportContext) -> None:
+    """Append the Strategic Recommendations section to the RENDERED document (#623), mirroring
+    ``render_html._render_strategic_recommendations``: a numbered list of authored, longer-horizon items.
+    Placed right after the retest closeout so the .docx section order matches the HTML layouts
+    (``retest`` -> ``strategic``).
+
+    Renders nothing when the engagement has no recommendation, so a report without one is byte-identical
+    to before this section existed. Every item is ``_xml_safe``-filtered — the text is
+    engagement-controlled prose."""
+    if not ctx.strategic_recommendations:
+        return
+    doc.add_heading("Strategic Recommendations", level=1)
+    doc.add_paragraph(
+        "Longer-horizon recommendations that address the systemic causes behind the findings above, "
+        "beyond each finding's tactical fix."
+    )
+    for r in ctx.strategic_recommendations:
+        doc.add_paragraph(f"{r.number}. {_xml_safe(r.text)}")
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -1006,6 +1026,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     _append_attack_paths(tpl.docx, ctx)  # ext#115
     _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
     _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
+    _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 

@@ -91,6 +91,7 @@ _NAV_LABELS = {
     "diagrams": "Attack Paths",
     "chains": "Attack Chains",
     "retest": "Retest Closeout",
+    "strategic": "Strategic Recommendations",
     "methodology": "Methodology",
     "evidence": "Evidence",
     "activity_log": "Activity Log",
@@ -1416,6 +1417,29 @@ def _render_retest_closeout(ctx: ReportContext) -> str:
     )
 
 
+def _render_strategic_recommendations(ctx: ReportContext) -> str:
+    """Strategic Recommendations block (#623): an authored, longer-horizon recommendation list, rendered as
+    a numbered list so a reader sees the engagement's forward-looking guidance in one place.
+
+    Returns ``""`` when the engagement has no recommendation — the load-bearing half of "a report with
+    none renders identically to before this block existed" (combined with ``_render_document``'s
+    empty-block filter; pinned by ``tests/test_strategic_recommendations.py``). Each item is
+    ``_esc``-escaped — the text is engagement-controlled prose."""
+    if not ctx.strategic_recommendations:
+        return ""
+    items = "".join(f"<li>{_esc(r.text)}</li>" for r in ctx.strategic_recommendations)
+    n = len(ctx.strategic_recommendations)
+    return (
+        '<section class="sec group" id="sec-strategic">'
+        '<h2 class="sec-h">Strategic Recommendations <span class="chev">▾</span>'
+        f'<span class="count">{n} '
+        f'recommendation{"s" if n != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Longer-horizon recommendations that '
+        "address the systemic causes behind the findings above, beyond each finding's tactical fix.</p>"
+        f"<ol class=\"strat-recs\">{items}</ol></div></section>"
+    )
+
+
 def _render_integrity_manifest(artifacts: list[ArtifactCtx]) -> str:
     """A filename → SHA-256 table for engagement-level evidence (#626), so a recipient can verify the
     delivered files were not altered in transit. Rendered INSIDE the Evidence appendix section (no
@@ -1564,6 +1588,9 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
         elif key == "retest":
             if ctx.retest_closeout:
                 entries.append((1, "sec-retest", "Retest Closeout", ""))
+        elif key == "strategic":
+            if ctx.strategic_recommendations:
+                entries.append((1, "sec-strategic", "Strategic Recommendations", ""))
         elif key == "evidence":
             if ctx.artifacts:
                 entries.append((1, "sec-evidence", "Evidence", ""))
@@ -1626,6 +1653,8 @@ def _render_block_by_key(
         return _render_chains(ctx)
     if key == "retest":
         return _render_retest_closeout(ctx)
+    if key == "strategic":
+        return _render_strategic_recommendations(ctx)
     if key == "methodology":
         return _render_methodology(ctx)
     if key == "evidence":
