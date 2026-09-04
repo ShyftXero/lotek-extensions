@@ -38,8 +38,12 @@ Source-jobs panel with TWO paths:
       button with preview/destroy data-urls), gated `scribble_can_write`. `board.js` handler for the
       preview→confirm→destroy path.
 - [x] Stub host extended: `remove_job_adoption` + `unadopt_calls`; wired into `_wire_stub_host`.
+- [x] Engagement-scoped un-adopt: `_is_source_job` gates BOTH paths on `host.list_jobs` so a writer
+      can't clear a job's link (or attempt a destroy) via the WRONG engagement's URL —
+      `host.remove_job_adoption` takes only a job id, so without this an un-adopt of engagement B's job
+      POSTed at engagement A would clear B's link. Silent no-op for a foreign/unknown job.
 - [x] Tests: `test_unadopt_job.py` (link-only keeps findings; preview lists right ids; destroy removes
-      exactly those + audit row + non-enriched survive; render additive) and
+      exactly those + audit row + non-enriched survive; render additive; cross-engagement no-op) and
       `test_unadopt_single_predicate.py` (single call path). Red before, green after.
 
 ## Remaining

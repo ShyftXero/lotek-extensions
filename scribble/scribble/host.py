@@ -138,3 +138,15 @@ def list_jobs(engagement, actor_obj) -> list:
     if hook is None:
         return []
     return list(hook(actor_obj, extension="scribble", ref_id=engagement.id))
+
+
+def remove_job_adoption(job_id, actor_obj) -> bool:
+    """Un-adopt LINK-ONLY (core #632): clear a job's promotion columns so it no longer feeds any
+    engagement's Source-jobs panel. The reverse of ``mark_job_promoted``, and the LINK only -- the host
+    contract touches no findings, so no promoted data is ever lost here (a destructive un-adopt deletes
+    findings on the SCRIBBLE side first, then calls this to drop the link). Idempotent: clearing an
+    already-unlinked job is a no-op ``True``. ``False`` when unmounted."""
+    hook = host_hook("remove_job_adoption")
+    if hook is None:
+        return False
+    return bool(hook(job_id, actor_obj))

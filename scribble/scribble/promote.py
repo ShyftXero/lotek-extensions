@@ -356,3 +356,27 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
             parent.variables = synthesize_parent_variables(children, declarations)
 
     return {"promoted": promoted, "skipped": skipped, "parents": parents_created}
+
+
+# ── un-adopt (#635): the inverse of promote_job — ONE home for "did job J enrich this finding" ──────
+
+
+def finding_is_enriched(finding: Any, job_finding_ids) -> bool:
+    """Is ``finding`` a row a scan job POURED onto the board — i.e. one this un-adopt should remove?
+
+    True iff it carries a ``source_finding_id`` (a synthesized parent write-up carries none, so it is
+    author-owned content that survives an un-adopt) AND that id is one of the job's own scan-finding ids.
+
+    THE single home for this predicate. A destructive un-adopt has two surfaces -- the PREVIEW that lists
+    what would go, and the DELETE that removes it -- and they must agree exactly or the preview lies.
+    Both reach this through :func:`enriched_findings` (its only caller), so "what preview lists" and "what
+    delete removes" are the SAME set by construction, never two inline copies that drift. Guarded by
+    ``scribble/tests/test_unadopt_single_predicate.py``.
+    """
+    return finding.source_finding_id is not None and finding.source_finding_id in job_finding_ids
+
+
+def enriched_findings(engagement: Any, job_finding_ids) -> list:
+    """Every ``EngagementFinding`` on ``engagement`` that :func:`finding_is_enriched` selects for a job.
+    The ONE caller of the predicate, shared by the un-adopt preview and the destructive delete."""
+    return [f for f in engagement.findings if finding_is_enriched(f, job_finding_ids)]

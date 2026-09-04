@@ -122,6 +122,21 @@
     <li>
       <span class="mono">{{ job.id }}</span>
       {% if job.promoted_at %}<span class="muted">promoted {{ job.promoted_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+      {% if scribble_can_write %}
+      {# Un-adopt (#635): two paths per source job. Link-only is a plain form POST (no JS). The
+         destructive path carries preview/destroy urls the board.js handler previews-then-confirms. #}
+      <span class="scribble-unadopt">
+        <form method="post" style="display:inline"
+              action="{{ url_for('scribble.unadopt_job', engagement_id=engagement.id, job_id=job.id) }}">
+          <button type="submit" class="btn btn-sm">Un-adopt (keep findings)</button>
+        </form>
+        <button type="button" class="btn btn-sm btn-danger scribble-unadopt-destroy"
+                data-preview-url="{{ url_for('scribble.unadopt_job_preview', engagement_id=engagement.id, job_id=job.id) }}"
+                data-destroy-url="{{ url_for('scribble.unadopt_job_destroy', engagement_id=engagement.id, job_id=job.id) }}">
+          Un-adopt + delete findings…
+        </button>
+      </span>
+      {% endif %}
     </li>
     {% else %}
     <li class="muted" id="scribble-source-jobs-empty">No scan jobs promoted into this engagement yet.</li>
