@@ -20,10 +20,12 @@ operator curates, not a Python branch.
 from __future__ import annotations
 
 import fnmatch
+import uuid
 from typing import Any
 
 from sqlalchemy import select
 
+from scribble.dispositions import confidence_from_dto, snapshot_source_facts, status_from_dto
 from scribble.facts import resolve_variables, synthesize_parent_variables
 from scribble.models import EngagementFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
 
@@ -154,6 +156,23 @@ def _target_overrides(
     return overrides
 
 
+def _source_overrides(dto: Any) -> dict[str, Any]:
+    """The DTO-derived fields promote stamps on EVERY promoted row, whether or not a template matched
+    (map #616 / #617): ``confidence``/``status`` mapped onto their typed columns (which previously sat
+    silently at ``medium``/``new`` because promote never mapped them), and the FULL DTO captured verbatim
+    in ``source_facts`` so ``EngagementFinding`` is a lossless superset of the scan finding.
+
+    Applied via the constructor ``overrides``, so it wins on BOTH paths -- ``from_template`` (which builds
+    the row from a library template and would otherwise leave these at defaults / drop the source values)
+    and ``from_lotek_finding``. Mapping is DEFENSIVE (unknown value -> default; ``scribble.dispositions``)
+    -- a scan must never break a promote."""
+    return {
+        "confidence": confidence_from_dto(dto),
+        "status": status_from_dto(dto),
+        "source_facts": snapshot_source_facts(dto),
+    }
+
+
 def _get_or_create_parent(
     db: Any, *, engagement_id: int, template: VulnerabilityTemplate, actor: str | None, order_index: int
 ) -> tuple[EngagementFinding, bool]:
@@ -220,6 +239,7 @@ def promote_one(
         "variables": variables,
     }
     overrides.update(_target_overrides(variables, declarations))
+    overrides.update(_source_overrides(dto))
 
     template = _matched_template(db, dto)
     finding = (
@@ -258,11 +278,17 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
     # precise dedup above can't see them -- guard those by title instead (scoped to null-source rows,
     # which is also where a PARENT row itself always lives).
     legacy_titles = {f.title for f in engagement.findings if f.source_finding_id is None}
+    # Pre-existing rows keyed by their source finding id, for the re-promote source_facts refresh below.
+    existing_by_source = {
+        f.source_finding_id: f for f in engagement.findings if f.source_finding_id is not None
+    }
     siblings = [f for f in engagement.findings if f.group_id is None]
 
     order_index = len(siblings)
-    parents_by_template: dict[int, EngagementFinding] = {}
-    parent_children: dict[int, list[Any]] = {}
+    # Keyed by ``template.id``, a UUIDv7 since the scribble UUID-PK migration — the annotations said
+    # ``int`` (leftover from the int-PK era), which typechecks as a real error against ``template.id``.
+    parents_by_template: dict[uuid.UUID, EngagementFinding] = {}
+    parent_children: dict[uuid.UUID, list[Any]] = {}
     promoted = 0
     skipped = 0
     parents_created = 0
@@ -271,6 +297,14 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
         title = getattr(dto, "title", None) or "Untitled"
         dto_id = getattr(dto, "id", None)
         if dto_id in promoted_source_ids or title in legacy_titles:
+            # Re-promote: refresh the verbatim snapshot on the already-promoted row (source truth), but
+            # touch NO typed column -- an operator edit is never clobbered (#617 Q5, fill-NULL-only). Only
+            # a precise source_finding_id match identifies the row; the legacy-title fallback cannot, so it
+            # just skips. `existing_by_source` holds pre-existing rows only, so a within-run duplicate id
+            # (not a real re-promote) correctly finds nothing to refresh.
+            existing = existing_by_source.get(dto_id) if dto_id is not None else None
+            if existing is not None:
+                existing.source_facts = snapshot_source_facts(dto)
             skipped += 1
             continue
 
@@ -284,6 +318,7 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
             "variables": variables,
         }
         overrides.update(_target_overrides(variables, declarations))
+        overrides.update(_source_overrides(dto))
 
         template = _matched_template(db, dto)
         if template is not None:
