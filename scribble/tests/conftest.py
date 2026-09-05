@@ -244,6 +244,8 @@ class StubHost:
         # already promoted elsewhere returns False, mirroring core #632 — and writes it on a fresh adopt
         # so `list_jobs` reflects the link a mark just made (one write feeds one read, like production).
         self._promotion_of: dict[str, tuple[str, Any]] = {}
+        # Every `remove_job_adoption` (un-adopt link-clear, #635) attempt, in order: `(job_id, actor)`.
+        self.unadopt_calls: list[tuple[str, Any]] = []
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
@@ -304,6 +306,18 @@ class StubHost:
         self._promoted_jobs.setdefault((extension, ref_id), []).append(job)
         self._promotion_of[job_ref] = (extension, ref_id)
         return job
+
+    def remove_job_adoption(self, job_id: str, actor: StubActor | None) -> bool:
+        """Core #632's link-clearer (un-adopt, #635): drop the job's promotion link -- the reverse of
+        `mark_job_promoted`, touching NO findings (the host contract loses no data; a destructive
+        un-adopt deletes findings on the scribble side FIRST, then calls this). Idempotent: clearing an
+        already-unlinked job is a no-op `True`. `unadopt_calls` logs every attempt."""
+        self.unadopt_calls.append((job_id, actor))
+        target = self._promotion_of.pop(job_id, None)
+        if target is not None:
+            remaining = [j for j in self._promoted_jobs.get(target, []) if j.id != job_id]
+            self._promoted_jobs[target] = remaining
+        return True
 
     def list_jobs(self, _actor, *, extension: str, ref_id) -> list:
         """Core #632's reverse-view host hook: jobs promoted into `(extension, ref_id)`. Tenancy
@@ -446,6 +460,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
     cfg.extras["list_jobs"] = stub.list_jobs
+    cfg.extras["remove_job_adoption"] = stub.remove_job_adoption
     cfg.extras["can_view_client"] = stub.can_view_client
     # `_inject_host` provides this and the stub did not, so any code path that consults it saw a
     # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims

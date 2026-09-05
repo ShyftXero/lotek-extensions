@@ -419,4 +419,36 @@
         .finally(function () { btn.disabled = false; });
     });
   })();
+
+  // --- destructive un-adopt (#635) ---------------------------------------------------------------
+  // The link-only un-adopt is a plain form POST (no JS). The DESTRUCTIVE path must show the operator
+  // EXACTLY which findings it will delete before it acts, so it previews first (the server's preview
+  // route returns the same set the destroy route removes), confirms, then POSTs the destroy.
+  (function initDestructiveUnadopt() {
+    document.querySelectorAll(".scribble-unadopt-destroy").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        fetch(btn.dataset.previewUrl)
+          .then(function (r) { if (!r.ok) throw new Error("preview failed"); return r.json(); })
+          .then(function (data) {
+            var findings = data.findings || [];
+            if (!findings.length) {
+              alert("This job enriched no findings still on the board — nothing to delete. Use "
+                + "“Un-adopt (keep findings)” to drop the link.");
+              return;
+            }
+            var titles = findings.map(function (f) { return "  • " + f.title; }).join("\n");
+            if (!window.confirm("Delete " + findings.length + " finding(s) this job enriched?\n\n"
+                + titles + "\n\nThis cannot be undone.")) return;
+            var form = document.createElement("form");
+            form.method = "post";
+            form.action = btn.dataset.destroyUrl;
+            document.body.appendChild(form);
+            form.submit();
+          })
+          .catch(function () { alert("Could not preview which findings would be removed."); })
+          .finally(function () { btn.disabled = false; });
+      });
+    });
+  })();
 })();

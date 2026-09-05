@@ -642,6 +642,103 @@ def register(api_bp, bp) -> None:
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
+    # =============================================================================== UI: un-adopt (#635)
+
+    def _is_source_job(engagement, job_id, actor) -> bool:
+        """Is ``job_id`` actually adopted into THIS engagement (and viewable to ``actor``)? The reverse
+        index (`host.list_jobs`) is the single source of that fact -- the SAME one the panel renders from.
+        Un-adopt is scoped to it so a writer can't clear a job's link via the WRONG engagement's URL:
+        `host.remove_job_adoption` takes only the job id, so without this guard an un-adopt of a job
+        belonging to engagement B, POSTed at engagement A's route, would clear B's link. (The destructive
+        delete is already engagement-scoped -- `enriched_findings` reads THIS engagement's rows -- so this
+        guard is specifically about not touching another engagement's adoption.)"""
+        return str(job_id) in {str(j.id) for j in host.list_jobs(engagement, actor)}
+
+    def _job_finding_ids(job_id, actor) -> set:
+        """The set of host scan-finding ids job ``job_id`` produced, via the read-only findings seam --
+        the CORE contract that answers "which findings did this job enrich". Empty when unmounted or the
+        job is not viewable to ``actor`` (indistinguishable, no existence leak), which safely selects
+        nothing to remove."""
+        ns = host.findings()
+        if ns is None:
+            return set()
+        # Drop any None id: a synthesized parent finding also carries source_finding_id None, so a None
+        # in this set would make `finding_is_enriched` select author-owned parents by accident.
+        return {i for i in (getattr(dto, "id", None) for dto in ns.list_findings(job_id, actor))
+                if i is not None}
+
+    @bp.post("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>", endpoint="unadopt_job")
+    def unadopt_job(engagement_id: uuid.UUID, job_id: str):
+        """Un-adopt LINK-ONLY (#635 path a): clear the job's promotion link, keep every promoted finding.
+        The reverse of ``adopt_job``'s ``mark_job_promoted``. Nothing is deleted -- the poured findings
+        stay exactly as the operator has since edited them -- so there is no preview and no
+        deletion-audit; ``host.remove_job_adoption`` touches the link only (core #632). WRITE-gated;
+        an unknown engagement 404s, same tenancy posture as its adopt twin."""
+        if not host_can_write():
+            abort(403)
+        actor = current_actor()
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            act = _is_source_job(engagement, job_id, actor)
+        if act:  # only clear a job actually adopted HERE; a foreign/unknown job is a silent no-op
+            host.remove_job_adoption(job_id, actor)
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @bp.get("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>/preview",
+            endpoint="unadopt_job_preview")
+    def unadopt_job_preview(engagement_id: uuid.UUID, job_id: str):
+        """Destructive un-adopt PREVIEW (#635 path b, step 1): the JSON list of the EXACT findings a
+        destructive un-adopt would remove -- ``promote.enriched_findings``, the SAME set the destroy route
+        deletes, so a confirmed destroy can never surprise the operator. A GET, so it is NOT write-gated
+        (the tenancy contract treats every GET as a view; a viewer already sees these findings and their
+        source jobs on the board -- correlating them is not a new leak). The destructive ACT is gated at
+        the destroy POST, not here. Unknown engagement 404s."""
+        from scribble.promote import enriched_findings  # lazy: promote.py is Track D's file
+        actor = current_actor()
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
+            return jsonify({
+                "job_id": str(job_id),
+                "findings": [{"id": str(f.id), "title": f.title} for f in doomed],
+            })
+
+    @bp.post("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>/destroy",
+             endpoint="unadopt_job_destroy")
+    def unadopt_job_destroy(engagement_id: uuid.UUID, job_id: str):
+        """Destructive un-adopt (#635 path b, step 2): remove EXACTLY the findings this job enriched
+        (``enriched_findings`` -- the same set the preview listed), write ONE audit row naming the ids
+        that went, then clear the link. ``findings_service.delete_finding`` takes each row's artifacts
+        with it and detaches any children; files unlink only AFTER the commit, so a rolled-back delete
+        can't leave bytes gone. WRITE-gated; unknown engagement 404s."""
+        if not host_can_write():
+            abort(403)
+        from scribble.api_pat import _audit  # lazy: _audit + the host audit seam live in api_pat.py
+        from scribble.promote import enriched_findings  # lazy: promote.py is Track D's file
+        actor = current_actor()
+        storage_paths: list = []
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            if not _is_source_job(engagement, job_id, actor):
+                return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
+            removed_ids = [str(f.id) for f in doomed]
+            for finding in doomed:
+                storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
+            _audit(db, "unadopt_job_destructive", subject_type="engagement", subject_id=engagement.id,
+                   before={"job_id": str(job_id), "removed_finding_ids": removed_ids})
+            db.commit()
+        host.remove_job_adoption(job_id, actor)
+        for storage_path in storage_paths:
+            delete_file(storage_path)
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
     # =============================================================================== UI: delete finding
 
     @bp.post(

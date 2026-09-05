@@ -114,4 +114,7 @@ verbs = [
     "update_override_theme",
     "delete_override_theme",
     "set_default_theme",
+    # Destructive un-adopt (#635): removing the findings a scan job enriched is an outward, irreversible
+    # act, so /admin/audit must be able to filter to it. Emitted by engagement_ui.py::unadopt_job_destroy.
+    "unadopt_job_destructive",
 ]
