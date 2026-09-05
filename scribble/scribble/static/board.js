@@ -387,4 +387,36 @@
         .catch(function () { setMsg("Could not link that diagram."); linkBtn.disabled = false; });
     });
   })();
+
+  // --- adopt a scan job (#630) ---------------------------------------------------------------------
+  // The Source-jobs panel picker: POST the entered job id to the adopt route, which LINKS it into this
+  // engagement (refuse-on-conflict) and pours its findings onto the board. A 409 means the job is
+  // already adopted elsewhere — surface it, never swallow it. No host hook lists promotable jobs, so
+  // the operator supplies the id (the panel's follow-on `<select>` waits on such a hook).
+  (function initAdoptJob() {
+    var panel = document.querySelector(".scribble-source-jobs[data-adopt-url]");
+    if (!panel) return;
+    var input = document.getElementById("scribble-adopt-job-id");
+    var btn = document.getElementById("scribble-adopt-job-btn");
+    var msg = document.getElementById("scribble-adopt-job-msg");
+    if (!input || !btn) return;
+
+    function setMsg(t) { if (msg) msg.textContent = t || ""; }
+
+    btn.addEventListener("click", function () {
+      var jobId = (input.value || "").trim();
+      if (!jobId) { setMsg("Enter a scan job id first."); return; }
+      btn.disabled = true;
+      setMsg("Adopting…");
+      fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)), { method: "POST" })
+        .then(function (r) {
+          if (r.status === 409) { setMsg("That job is already adopted by another engagement."); return; }
+          if (r.status === 404) { setMsg("No such scan job, or you can't see it."); return; }
+          if (!r.ok && r.status !== 302) { throw new Error("adopt failed"); }
+          window.location.reload();
+        })
+        .catch(function () { setMsg("Could not adopt that job."); })
+        .finally(function () { btn.disabled = false; });
+    });
+  })();
 })();

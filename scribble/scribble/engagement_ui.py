@@ -608,6 +608,40 @@ def register(api_bp, bp) -> None:
             host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=promoted_ref)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
+    @bp.post("/engagements/<uuid:engagement_id>/adopt-job/<job_id>", endpoint="adopt_job")
+    def adopt_job(engagement_id: uuid.UUID, job_id: str):
+        """Adopt a scan job into THIS engagement — the Source-jobs picker (#630) posts here with the
+        chosen job id in the path. Adopting both LINKS the job (`host.mark_job_promoted`) and pours its
+        findings onto the board (`promote_job`), the two halves of `promote_job_ui` above.
+
+        The one behaviour that route lacks and this one adds: the link is REFUSE-ON-CONFLICT (core #632).
+        `promote_job_ui` marks best-effort and ignores the result, so a job already promoted into another
+        engagement is silently re-poured; here the mark is the GATE — a refusal (`False`) surfaces as 409
+        and NOTHING is poured, so a conflicting job is never re-pointed and never double-linked. Same
+        tenancy posture as its twin: WRITE-gated at the route, and an unknown/forbidden job (host
+        `get_job` -> None) is a silent no-op redirect — not-found and not-viewable are indistinguishable,
+        no existence leak.
+        """
+        if not host_can_write():
+            abort(403)
+        actor = current_actor()
+        with open_session() as db:
+            engagement = db.get(Engagement, engagement_id)
+            if engagement is None:
+                abort(404)
+            findings_ns = host.findings()
+            job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
+            if job is not None:  # unknown/not-viewable -> silent no-op + redirect, exactly like the twin
+                # Link FIRST so it can gate: refuse-on-conflict returns False -> 409, pour nothing.
+                if not host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement.id):
+                    abort(409, "This scan job is already adopted by another engagement.")
+                from scribble.promote import promote_job  # lazy: promote.py is Track D's file
+                dtos = findings_ns.list_findings(job_id, actor)
+                promote_job(db, engagement=engagement, findings=dtos,
+                            actor_username=current_actor_username())
+                db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
     # =============================================================================== UI: delete finding
 
     @bp.post(

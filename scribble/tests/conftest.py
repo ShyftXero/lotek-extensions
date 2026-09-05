@@ -239,6 +239,11 @@ class StubHost:
         # keyed by `(extension, ref_id)`. Tests register via `add_promoted_job(ref_id, job_ref, ...)`;
         # the real host derives this from `Job.promoted_extension`/`.promoted_ref_id`.
         self._promoted_jobs: dict[tuple[str, Any], list] = {}
+        # Forward index: which `(extension, ref_id)` each job is CURRENTLY promoted into (the
+        # `Job.promoted_*` cols themselves). `mark_job_promoted` reads it to REFUSE-ON-CONFLICT — a job
+        # already promoted elsewhere returns False, mirroring core #632 — and writes it on a fresh adopt
+        # so `list_jobs` reflects the link a mark just made (one write feeds one read, like production).
+        self._promotion_of: dict[str, tuple[str, Any]] = {}
         self.actor: StubActor | None = StubActor(id=1, username="admin", role="admin")
         self.current_user: StubUser | None = StubUser(id=1, username="admin")
         self.can_write_value = True
@@ -277,16 +282,27 @@ class StubHost:
         self.audit_calls.append((action, kwargs))
 
     def mark_job_promoted(self, job_id: str, actor: StubActor | None, *, extension: str, ref_id: int) -> bool:
+        """Core #632's writer, faithfully: REFUSE-ON-CONFLICT (a job already promoted into a DIFFERENT
+        target returns False, no write) but IDEMPOTENT re-affirm of the SAME target (True, no-op). On a
+        fresh adopt it records the link so `list_jobs` returns it, exactly as the real `Job.promoted_*`
+        cols feed the reverse view. `promoted_calls` still logs EVERY attempt (incl. the refused one)."""
         self.promoted_calls.append((job_id, actor, extension, ref_id))
+        current = self._promotion_of.get(job_id)
+        if current is not None and current != (extension, ref_id):
+            return False  # promoted elsewhere -> refuse, never silently re-point
+        if current is None:
+            self.add_promoted_job(ref_id, job_id, extension=extension)  # write the link
         return True
 
     def add_promoted_job(self, ref_id, job_ref: str, *, extension: str = "scribble", promoted_at=None):
         """Register a job as already promoted INTO `ref_id`, so `list_jobs` returns it (the reverse
-        of `mark_job_promoted`). `promoted_at` defaults to now; a test that asserts on the rendered
-        timestamp should pass a fixed value. Returns the job-shaped object (`.id`, `.promoted_at`)."""
+        of `mark_job_promoted`) AND `mark_job_promoted` sees it as promoted (refuse-on-conflict).
+        `promoted_at` defaults to now; a test that asserts on the rendered timestamp should pass a fixed
+        value. Returns the job-shaped object (`.id`, `.promoted_at`)."""
         from datetime import UTC, datetime
         job = SimpleNamespace(id=job_ref, promoted_at=promoted_at or datetime.now(UTC))
         self._promoted_jobs.setdefault((extension, ref_id), []).append(job)
+        self._promotion_of[job_ref] = (extension, ref_id)
         return job
 
     def list_jobs(self, _actor, *, extension: str, ref_id) -> list:

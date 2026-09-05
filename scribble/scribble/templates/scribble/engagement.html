@@ -113,7 +113,8 @@
 {# Source jobs (#629): the reverse of promotion -- the host scan jobs whose findings were promoted INTO
    this engagement, driven by `host.list_jobs`. This panel is the insertion point #630/#631/#635 build
    richer content (source-job links, un-adopt, fuller empty-state copy) onto -- keep it additive. #}
-<div class="scribble-source-jobs card" id="scribble-source-jobs">
+<div class="scribble-source-jobs card" id="scribble-source-jobs"
+     data-adopt-url="{{ url_for('scribble.adopt_job', engagement_id=engagement.id, job_id='__JOBID__') }}">
   <h2 style="margin-top:0">Source jobs</h2>
   <p class="muted">Scan jobs whose findings were promoted into this engagement.</p>
   <ul class="scribble-source-jobs-list">
@@ -126,6 +127,15 @@
     <li class="muted" id="scribble-source-jobs-empty">No scan jobs promoted into this engagement yet.</li>
     {% endfor %}
   </ul>
+  {% if scribble_can_write %}
+  {# Adopt-a-job picker (#630): enter an unadopted scan job's id and link it into this engagement. The
+     link is refuse-on-conflict server-side, so a job already adopted elsewhere surfaces a 409 here. #}
+  <div class="scribble-adopt-job">
+    <input type="text" id="scribble-adopt-job-id" placeholder="Scan job id to adopt" />
+    <button type="button" class="btn" id="scribble-adopt-job-btn">Adopt job</button>
+    <span id="scribble-adopt-job-msg" class="muted"></span>
+  </div>
+  {% endif %}
 </div>
 
 {% if scribble_can_write %}
