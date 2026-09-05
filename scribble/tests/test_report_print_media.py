@@ -490,3 +490,151 @@ def test_ctrl_p_opens_the_child_findings_so_the_figure_sequence_starts_at_one(
         assert first.startswith("Figure 1 —"), first
     finally:
         page.close()
+
+
+# ── #622: the Retest Closeout section (finding -> most-recent retest outcome) ──────────────────────────
+#
+# NON-browser structural cases: the closeout is a text table, so a real render + string/docx assertion is
+# the right instrument (the pixel cases above are for colour on paper). The backward-compat guarantee is
+# the same one every additive report block carries — an engagement with no retest renders identically to
+# before this section existed — pinned here with a real red-then-green short-circuit test, not a green
+# assertion that could pass for the wrong reason.
+
+
+def _closeout_engagement(session_factory, *, with_retest: bool, outcome=None):
+    """One engagement, one finding, optionally one recorded retest round on it. Returns the engagement id."""
+    import uuid
+    from datetime import date
+
+    from scribble.enums import RetestOutcome
+    from scribble.findings_service import record_retest
+
+    with session_factory() as db:
+        # Client.name is UNIQUE — keep it distinct, but with NO outcome/status token in it, or the raw
+        # value would render in "Prepared for <client>" and defeat the label-vs-raw-value assertions below.
+        client = Client(name=f"Closeout {uuid.uuid4()}")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="Closeout Assessment", client_id=client.id, company_name="Acme Corp")
+        grp = FindingGroup(engagement=eng, name="External", order_index=0)
+        finding = EngagementFinding(
+            engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
+            content_json={"description": _block("Reflected XSS on /search.")},
+        )
+        db.add(eng)
+        db.flush()
+        if with_retest:
+            record_retest(
+                db, finding, outcome or RetestOutcome.remediated,
+                tested_by="alice", tested_on=date(2026, 9, 4),
+            )
+        db.commit()
+        return eng.id
+
+
+def _closeout_html(session_factory, eid: str) -> str:
+    with session_factory() as db:
+        return render_report_html(build_report_context(db.get(Engagement, eid)))
+
+
+def test_no_retest_renders_no_closeout_section(session_factory):
+    """Backward-compat: a report whose findings have no recorded retest has no closeout section, anchor,
+    or table — byte-identical to before this block existed."""
+    html = _closeout_html(session_factory, _closeout_engagement(session_factory, with_retest=False))
+    assert "sec-retest" not in html
+    assert "Retest Closeout" not in html
+    assert 'class="rc-table"' not in html
+
+
+def test_recorded_retest_renders_the_closeout_table(session_factory):
+    from scribble.enums import RetestOutcome
+
+    eid = _closeout_engagement(
+        session_factory, with_retest=True, outcome=RetestOutcome.partially_remediated
+    )
+    html = _closeout_html(session_factory, eid)
+    assert "sec-retest" in html
+    assert "Retest Closeout" in html
+    assert 'class="rc-table"' in html
+    # the finding's most-recent outcome, client-facing label (not the raw enum value)
+    assert "Partially remediated" in html
+    assert "partially_remediated" not in html
+    # the row links back to the finding's own anchor, which the findings block really emits
+    with session_factory() as db:
+        eng = db.get(Engagement, eid)
+        fid = eng.findings[0].id
+    assert f'href="#finding-{fid}"' in html
+    assert f'id="finding-{fid}"' in html  # target exists -> no dangling anchor
+
+
+def test_removing_the_empty_short_circuit_breaks_backward_compat(session_factory, monkeypatch):
+    """The red half: neuter ``_render_retest_closeout``'s empty short-circuit and a no-retest report grows
+    a bogus empty closeout section — proving the short-circuit is what keeps backward-compat, not luck."""
+    from scribble.reporting import render_html as rh
+
+    eid = _closeout_engagement(session_factory, with_retest=False)
+    # A no-retest engagement: the real function short-circuits to "" -> no section.
+    assert "sec-retest" not in _closeout_html(session_factory, eid)  # GREEN baseline
+
+    # Drop the empty short-circuit: a version that emits the anchor unconditionally now leaks a section
+    # into a report that has no retest at all.
+    monkeypatch.setattr(
+        rh, "_render_retest_closeout", lambda ctx: '<section id="sec-retest"></section>'
+    )
+    assert "sec-retest" in _closeout_html(session_factory, eid)  # RED: the guard is what suppressed it
+
+    monkeypatch.undo()
+    assert "sec-retest" not in _closeout_html(session_factory, eid)  # GREEN again once restored
+
+
+def test_closeout_consumes_report_disposition_when_it_is_importable(session_factory, monkeypatch):
+    """The ext#166 seam: inclusion is one helper call, so when ``report_disposition`` exists a finding it
+    calls EXCLUDED drops out of the closeout even though it has a retest. Simulated by patching the (still
+    unmerged) symbols onto ``scribble.enums`` — the single integration point imports them from there."""
+    import scribble.enums as en
+
+    monkeypatch.setattr(en, "DISPOSITION_EXCLUDED", "excluded", raising=False)
+    monkeypatch.setattr(en, "report_disposition", lambda status: "excluded", raising=False)
+
+    eid = _closeout_engagement(session_factory, with_retest=True)
+    html = _closeout_html(session_factory, eid)
+    assert "sec-retest" not in html  # disposition EXCLUDED -> not in the closeout
+
+    monkeypatch.setattr(en, "report_disposition", lambda status: "live")
+    html_live = _closeout_html(session_factory, eid)
+    assert "sec-retest" in html_live  # disposition non-excluded -> back in
+
+
+def test_docx_mirrors_the_closeout_table(session_factory):
+    import io
+
+    import docx
+    from docx.oxml.ns import qn
+
+    from scribble.enums import RetestOutcome
+    from scribble.reporting.render_docx import render_report_docx
+
+    eid = _closeout_engagement(session_factory, with_retest=True, outcome=RetestOutcome.not_remediated)
+    with session_factory() as db:
+        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+    doc = docx.Document(io.BytesIO(payload))
+    text = "".join(t.text or "" for t in doc.element.body.iter(qn("w:t")))
+    assert "Retest Closeout" in text
+    assert "Reflected XSS" in text
+    assert "Not remediated" in text
+
+
+def test_docx_without_a_retest_has_no_closeout_heading(session_factory):
+    import io
+
+    import docx
+    from docx.oxml.ns import qn
+
+    from scribble.reporting.render_docx import render_report_docx
+
+    eid = _closeout_engagement(session_factory, with_retest=False)
+    with session_factory() as db:
+        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+    doc = docx.Document(io.BytesIO(payload))
+    text = "".join(t.text or "" for t in doc.element.body.iter(qn("w:t")))
+    assert "Retest Closeout" not in text

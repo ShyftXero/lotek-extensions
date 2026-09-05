@@ -14,6 +14,7 @@ from scribble.reporting.context import (  # noqa: F401
     FindingCtx,
     GroupCtx,
     ReportContext,
+    RetestCloseoutRow,
     SeverityRollup,
     build_report_context,
     figure_anchor,

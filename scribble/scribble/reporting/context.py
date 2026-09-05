@@ -16,7 +16,7 @@ from sqlalchemy.orm import object_session
 
 from scribble import findings_service, metadata
 from scribble.content import render_html
-from scribble.enums import OrderMode, Severity, risk_rating, severity_rank
+from scribble.enums import OrderMode, RetestOutcome, Severity, risk_rating, severity_rank
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
 
@@ -125,6 +125,24 @@ class ChainCtx:
 
 
 @dataclass
+class RetestCloseoutRow:
+    """One row of the Retest Closeout table (#622): a report-visible finding and its MOST-RECENT retest
+    outcome. Built only for findings that have a recorded retest, so a report with none carries an empty
+    list and renders identically to before this view existed. ``finding_id`` is the same id the findings
+    block anchors on (``id="finding-<id>"``), so the closeout links back to the finding without a second
+    id scheme; the builder only emits rows for findings that actually render at top level, so the link
+    never dangles."""
+
+    finding_id: int
+    finding_title: str
+    severity: str        # Severity value string, e.g. "high"
+    outcome: str         # RetestOutcome value of the latest round, e.g. "partially_remediated"
+    outcome_label: str   # client-facing label for ``outcome``
+    tested_on: str       # ISO date the round was performed, or "" when the author left it blank
+    rounds: int          # how many retest rounds are recorded against the finding
+
+
+@dataclass
 class GroupCtx:
     id: int | None
     name: str
@@ -204,6 +222,11 @@ class ReportContext:
     # identically to before this field existed (see ``render_html._render_chains``'s empty short-circuit,
     # pinned by ``tests/test_report_attack_path.py``).
     chains: list[ChainCtx] = field(default_factory=list)
+    # ADDITIVE (#622): the retest closeout — report-visible findings that carry a recorded retest, each
+    # with its most-recent outcome. Defaults empty, so an engagement with no retest renders identically to
+    # before this field existed (see ``render_html._render_retest_closeout``'s empty short-circuit, pinned
+    # by ``tests/test_report_print_media.py``).
+    retest_closeout: list[RetestCloseoutRow] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -319,6 +342,79 @@ def _chain_ctxs(chains) -> list[ChainCtx]:
         for c in sorted(chains, key=lambda c: (c.order_index, c.id))
         if c.include_in_report
     ]
+
+
+# Client-facing label per retest outcome. Deliberately weaker than the enum value — "Remediated", not
+# "Fixed (verified)" — for the same reason ``test_report_standing_prose.py`` pins: the deliverable must
+# not assert stronger work than was recorded. Single-sourced here, on the contract both renderers consume,
+# so the .docx and HTML print the same words for the same outcome.
+_RETEST_OUTCOME_LABEL: dict[RetestOutcome, str] = {
+    RetestOutcome.remediated: "Remediated",
+    RetestOutcome.partially_remediated: "Partially remediated",
+    RetestOutcome.not_remediated: "Not remediated",
+    RetestOutcome.accepted_risk: "Risk accepted",
+    RetestOutcome.not_tested: "Not tested",
+}
+
+
+def _closeout_disposition_included(finding) -> bool:
+    """Whether ``finding`` belongs in the retest closeout — the SINGLE inclusion decision, so ext#166's
+    ``report_disposition`` becomes the one source of truth when it lands, rather than a re-derived copy at
+    every call site (the "one derived-state predicate, one home" rule).
+
+    ext#166 (unmerged) adds ``report_disposition(status) -> str`` + ``DISPOSITION_EXCLUDED`` to
+    ``scribble.enums``; when present, a finding whose status maps to EXCLUDED (e.g. a false positive)
+    drops out of the closeout even if it carries a retest. Until it merges the fallback below is the whole
+    decision — every finding reaching here is already report-visible, so the closeout shows each one that
+    has a recorded retest.
+    """
+    try:
+        from scribble.enums import DISPOSITION_EXCLUDED, report_disposition  # ext#166 (unmerged)
+    except ImportError:
+        # TODO(ext#166): when report_disposition() merges, delete this fallback — the import above becomes
+        # the whole decision. ONE integration point on purpose; do not inline-re-derive disposition. The
+        # current signal is the finding's own report-inclusion flag (already true for everything reaching
+        # here, since the closeout is keyed to findings that render at top level).
+        return bool(getattr(finding, "include_in_report", True))
+    return report_disposition(getattr(finding, "status", None)) != DISPOSITION_EXCLUDED
+
+
+def _retest_closeout_rows(engagement, rendered_ids: set) -> list[RetestCloseoutRow]:
+    """``RetestCloseoutRow``\\s for every report-visible finding that carries a recorded retest (#622),
+    worst-severity-first then by title.
+
+    ``rendered_ids`` is the set of finding ids that actually render at TOP LEVEL in this report (the
+    ``FindingCtx.id``\\s in ``groups_out``). Restricting to it does two things at once: it keeps the
+    closeout in step with what the report shows (a finding in an excluded group, or a per-host child folded
+    into its parent, is not a separate closeout line), and it guarantees every row's ``finding_id`` has a
+    matching ``id="finding-<id>"`` anchor to link to. Inclusion beyond that is the single
+    ``_closeout_disposition_included`` decision."""
+    by_id = {f.id: f for f in engagement.findings}
+    included = [
+        by_id[fid]
+        for fid in rendered_ids
+        if by_id.get(fid) is not None
+        and by_id[fid].retests
+        and _closeout_disposition_included(by_id[fid])
+    ]
+    included.sort(key=lambda f: (severity_rank(f.severity), f.title))
+    rows: list[RetestCloseoutRow] = []
+    for f in included:
+        latest = f.retests[-1]  # relationship is order_by=Retest.created_at, so [-1] is the most recent
+        rows.append(
+            RetestCloseoutRow(
+                finding_id=f.id,
+                finding_title=f.title,
+                severity=f.severity.value,
+                outcome=latest.outcome.value,
+                outcome_label=_RETEST_OUTCOME_LABEL.get(
+                    latest.outcome, latest.outcome.value.replace("_", " ").capitalize()
+                ),
+                tested_on=latest.tested_on.isoformat() if latest.tested_on else "",
+                rounds=len(f.retests),
+            )
+        )
+    return rows
 
 
 FIGURE_SEPARATOR = " — "  # "Figure 3 — Payload firing in the browser"
@@ -669,6 +765,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     diagrams = _diagram_ctxs(engagement.diagrams)
     # ext#117: assigned HERE, once, so both renderers read the same numbers off the same context.
     number_figures(groups_out, diagrams, engagement_artifacts)
+    # #622: the retest closeout is keyed to the findings that actually render at top level (so its
+    # links never dangle and a per-host child is not a separate line) — collect those ids from the
+    # assembled groups rather than re-deriving the nesting rule.
+    rendered_finding_ids = {f.id for g in groups_out for f in g.findings}
     return ReportContext(
         engagement_id=engagement.id,
         engagement_name=engagement.name,
@@ -682,6 +782,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         artifacts=engagement_artifacts,
         diagrams=diagrams,
         chains=_chain_ctxs(engagement.chains),
+        retest_closeout=_retest_closeout_rows(engagement, rendered_finding_ids),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),
