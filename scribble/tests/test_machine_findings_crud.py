@@ -1130,7 +1130,9 @@ def test_every_column_referencing_a_finding_has_a_declared_delete_disposition():
         for fk in column.foreign_keys
         if fk.column.table.name == "scribble_findings" and fk.column.name == "id"
     }
-    assert len(referrers) == 6, referrers  # pinned: a change here is a schema change, read it
+    assert len(referrers) == 7, referrers  # pinned: a change here is a schema change, read it
+    # (7th: scribble_retests.finding_id, lotek#621 — retests die with the finding via the
+    #  EngagementFinding.retests delete-orphan cascade; classified in _FINDING_FK_HANDLED_ELSEWHERE.)
 
     declared = (
         {(m.__tablename__, "finding_id") for m in svc._FINDING_OWNED_STATE}
