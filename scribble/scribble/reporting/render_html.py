@@ -47,6 +47,7 @@ from scribble.metadata import cve_url, cwe_url, owasp_label
 from scribble.reporting.context import (
     DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
+    ChainCtx,
     DiagramCtx,
     FindingCtx,
     GroupCtx,
@@ -89,6 +90,9 @@ _NAV_LABELS = {
     "summary": "Summary",
     "findings": "Findings",
     "diagrams": "Attack Paths",
+    "chains": "Attack Chains",
+    "retest": "Retest Closeout",
+    "strategic": "Strategic Recommendations",
     "methodology": "Methodology",
     "evidence": "Evidence",
     "activity_log": "Activity Log",
@@ -1449,6 +1453,136 @@ def _render_diagrams(ctx: ReportContext) -> str:
     )
 
 
+def _render_chain_item(c: ChainCtx) -> str:
+    """One attack-chain narrative (#628): title, optional summary, an ordered step list, and — when the
+    chain carries its own ``embed_html`` snapshot — the visual, drawn through the SAME
+    ``_render_diagram_item`` the Attack Paths block uses (a chain embed is un-numbered: ``figure_number``
+    stays None so it renders caption-only and does not disturb the report-wide figure sequence)."""
+    summary = f'<p class="chain-summary">{_esc(c.summary)}</p>' if c.summary else ""
+    steps = "".join(
+        f'<li class="chain-step"><span class="chain-step-title">{_esc(s.title)}</span>'
+        + (f'<span class="chain-step-desc">{_esc(s.description)}</span>' if s.description else "")
+        + "</li>"
+        for s in c.steps
+    )
+    steps_html = f'<ol class="chain-steps">{steps}</ol>' if steps else ""
+    embed = (
+        _render_diagram_item(
+            DiagramCtx(id=c.id, diagram_ref=c.diagram_ref, caption=c.title, embed_html=c.embed_html)
+        )
+        if c.embed_html
+        else ""
+    )
+    return (
+        f'<article class="attack-chain"><h3 class="chain-h">{_esc(c.title)}</h3>'
+        f"{summary}{steps_html}{embed}</article>"
+    )
+
+
+def _render_chains(ctx: ReportContext) -> str:
+    """Attack Chains block (#628): authored narratives of how findings chain into a broader compromise.
+
+    Returns ``""`` when the engagement has no chain — the load-bearing half of "a report with no chain
+    renders identically to before this block existed" (combined with ``_render_document``'s empty-block
+    filter; pinned by ``tests/test_report_attack_path.py``)."""
+    if not ctx.chains:
+        return ""
+    items = "".join(_render_chain_item(c) for c in ctx.chains)
+    return (
+        '<section class="sec group" id="sec-chains">'
+        '<h2 class="sec-h">Attack Chains <span class="chev">▾</span>'
+        f'<span class="count">{len(ctx.chains)} '
+        f'chain{"s" if len(ctx.chains) != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Narrative walk-throughs of how the '
+        "findings above chain together into a broader compromise.</p>"
+        f"{items}</div></section>"
+    )
+
+
+def _render_retest_closeout(ctx: ReportContext) -> str:
+    """Retest Closeout block (#622): a finding → most-recent retest outcome table, so a reader sees the
+    remediation state of the engagement in one place.
+
+    Returns ``""`` when no report-visible finding carries a retest — the load-bearing half of "a report
+    with no retest renders identically to before this block existed" (combined with ``_render_document``'s
+    empty-block filter; pinned by ``tests/test_report_print_media.py``). Every cell is ``_esc``-escaped —
+    finding titles are engagement-controlled text — and each finding links back to its own
+    ``id="finding-<id>"`` anchor, which ``build_report_context`` guarantees exists for every row."""
+    if not ctx.retest_closeout:
+        return ""
+    rows = "".join(
+        "<tr>"
+        f'<td class="rc-finding"><a href="#finding-{r.finding_id}">{_esc(r.finding_title)}</a></td>'
+        f'<td class="rc-sev"><span class="toc-sev sev-{_esc(r.severity)}">'
+        f"{_esc(_SEV_LABELS.get(r.severity, r.severity))}</span></td>"
+        f'<td class="rc-outcome">{_esc(r.outcome_label)}</td>'
+        f'<td class="rc-tested">{_esc(r.tested_on)}</td>'
+        f'<td class="rc-rounds">{r.rounds}</td>'
+        "</tr>"
+        for r in ctx.retest_closeout
+    )
+    n = len(ctx.retest_closeout)
+    return (
+        '<section class="sec group" id="sec-retest">'
+        '<h2 class="sec-h">Retest Closeout <span class="chev">▾</span>'
+        f'<span class="count">{n} finding{"s" if n != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Remediation status from the verify-the-fix '
+        "retests recorded against these findings. Each row shows the finding's most recent retest "
+        'outcome.</p>'
+        '<table class="rc-table"><thead><tr><th>Finding</th><th>Severity</th>'
+        "<th>Retest outcome</th><th>Tested</th><th>Rounds</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></div></section>"
+    )
+
+
+def _render_strategic_recommendations(ctx: ReportContext) -> str:
+    """Strategic Recommendations block (#623): an authored, longer-horizon recommendation list, rendered as
+    a numbered list so a reader sees the engagement's forward-looking guidance in one place.
+
+    Returns ``""`` when the engagement has no recommendation — the load-bearing half of "a report with
+    none renders identically to before this block existed" (combined with ``_render_document``'s
+    empty-block filter; pinned by ``tests/test_strategic_recommendations.py``). Each item is
+    ``_esc``-escaped — the text is engagement-controlled prose."""
+    if not ctx.strategic_recommendations:
+        return ""
+    items = "".join(f"<li>{_esc(r.text)}</li>" for r in ctx.strategic_recommendations)
+    n = len(ctx.strategic_recommendations)
+    return (
+        '<section class="sec group" id="sec-strategic">'
+        '<h2 class="sec-h">Strategic Recommendations <span class="chev">▾</span>'
+        f'<span class="count">{n} '
+        f'recommendation{"s" if n != 1 else ""}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">Longer-horizon recommendations that '
+        "address the systemic causes behind the findings above, beyond each finding's tactical fix.</p>"
+        f"<ol class=\"strat-recs\">{items}</ol></div></section>"
+    )
+
+
+def _render_integrity_manifest(artifacts: list[ArtifactCtx]) -> str:
+    """A filename → SHA-256 table for engagement-level evidence (#626), so a recipient can verify the
+    delivered files were not altered in transit. Rendered INSIDE the Evidence appendix section (no
+    anchor of its own — the "Evidence" contents entry already covers it).
+
+    Lists only rows that actually carry a hash (``sha256`` stamped at upload); a legacy row without one
+    is silently absent rather than shown as a blank digest. Renders nothing when no row has a hash, so an
+    engagement whose evidence predates hashing is byte-identical to before this table existed."""
+    hashed = [a for a in artifacts if a.sha256]
+    if not hashed:
+        return ""
+    rows = "".join(
+        f'<tr><td class="im-file">{_esc(a.filename)}</td>'
+        f'<td class="im-hash"><code>{_esc(a.sha256)}</code></td></tr>'
+        for a in hashed
+    )
+    return (
+        '<div class="integrity"><h3 class="im-h">Evidence integrity (SHA-256)</h3>'
+        '<p class="muted">Verify a delivered file against its recorded hash: '
+        '<code>sha256sum &lt;file&gt;</code>.</p>'
+        '<table class="integrity-table"><thead><tr><th>File</th><th>SHA-256</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>"
+    )
+
+
 def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
     with no ``finding_id``.
@@ -1491,7 +1625,7 @@ def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> s
         f'item{"s" if total != 1 else ""}</span></h2>'
         '<div class="sec-body"><p class="muted evidence-intro">Evidence recorded against this engagement '
         'as a whole rather than against one finding.</p>'
-        f"{gallery}{note}</div></section>"
+        f"{gallery}{note}{_render_integrity_manifest(shown)}</div></section>"
     )
 
 
@@ -1566,6 +1700,15 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
         elif key == "diagrams":
             if ctx.diagrams:
                 entries.append((1, "sec-diagrams", "Attack Paths", ""))
+        elif key == "chains":
+            if ctx.chains:
+                entries.append((1, "sec-chains", "Attack Chains", ""))
+        elif key == "retest":
+            if ctx.retest_closeout:
+                entries.append((1, "sec-retest", "Retest Closeout", ""))
+        elif key == "strategic":
+            if ctx.strategic_recommendations:
+                entries.append((1, "sec-strategic", "Strategic Recommendations", ""))
         elif key == "evidence":
             if ctx.artifacts:
                 entries.append((1, "sec-evidence", "Evidence", ""))
@@ -1624,6 +1767,12 @@ def _render_block_by_key(
         )
     if key == "diagrams":
         return _render_diagrams(ctx)
+    if key == "chains":
+        return _render_chains(ctx)
+    if key == "retest":
+        return _render_retest_closeout(ctx)
+    if key == "strategic":
+        return _render_strategic_recommendations(ctx)
     if key == "methodology":
         return _render_methodology(ctx)
     if key == "evidence":

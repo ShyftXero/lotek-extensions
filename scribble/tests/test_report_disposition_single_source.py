@@ -49,6 +49,17 @@ WHOLE_FILE_ALLOWLIST = {
 EXPRESSION_ALLOWLIST = {
     # The ORM column default — declaring the initial value of a new row, not interpreting a status.
     ("models.py", "FindingStatus.new"),
+
+    # ── WRITE side. ``findings_service._RETEST_OUTCOME_STATUS`` (lotek#621) maps a retest OUTCOME to
+    # the status to STORE. That is the opposite direction from this sweep's subject: it decides what a
+    # status BECOMES, not what an existing one MEANS for the deliverable, so it cannot disagree with
+    # `report_disposition` — whatever it writes, `report_disposition` then interprets. Same class as the
+    # ORM default above. It is already single-homed in its own direction (`record_retest` is the one
+    # writer), and the two directions meet in ``test_report_finding_disposition.py``, which asserts a
+    # `remediated` retest lands a finding in the `remediated` disposition rather than asserting the map.
+    ("findings_service.py", "FindingStatus.fixed"),
+    ("findings_service.py", "FindingStatus.needs_retest"),
+    ("findings_service.py", "FindingStatus.accepted_risk"),
 }
 
 STATUS_VALUES = {s.value for s in FindingStatus}
@@ -150,6 +161,9 @@ INCLUSION_ALLOWLIST = {
     # ── ARTIFACT / DIAGRAM / CHECKLIST level. Same: no `status` column, so nothing to AND with. ───
     ("reporting/context.py", "_artifact_ctxs", "a.include_in_report"),
     ("reporting/context.py", "_diagram_ctxs", "d.include_in_report"),
+    # An attack chain (#628) is a report SECTION assembled from steps; ``AttackChain`` carries
+    # ``include_in_report`` but no ``status`` column, so there is no disposition to AND in.
+    ("reporting/context.py", "_chain_ctxs", "c.include_in_report"),
     ("reporting/context.py", "_build_checklists", "ec.include_in_report"),
     ("reporting/context.py", "_build_activity_log", "getattr(a, 'include_in_report', True)"),
     ("reporting/context.py", "_build_activity_log", "getattr(d, 'include_in_report', True)"),

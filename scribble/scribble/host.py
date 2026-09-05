@@ -128,3 +128,25 @@ def mark_job_promoted(job_id, actor_obj, *, extension: str, ref_id: int) -> bool
     if hook is None:
         return False
     return bool(hook(job_id, actor_obj, extension=extension, ref_id=ref_id))
+
+
+def list_jobs(engagement, actor_obj) -> list:
+    """Reverse of ``mark_job_promoted``: the host scan jobs promoted INTO this engagement, each carrying
+    ``.id`` (the job ref) and ``.promoted_at``. The host applies its own ``user_can_view_job`` to
+    ``actor_obj``. Empty list when unmounted -- standalone Scribble has no jobs to reverse-index."""
+    hook = host_hook("list_jobs")
+    if hook is None:
+        return []
+    return list(hook(actor_obj, extension="scribble", ref_id=engagement.id))
+
+
+def remove_job_adoption(job_id, actor_obj) -> bool:
+    """Un-adopt LINK-ONLY (core #632): clear a job's promotion columns so it no longer feeds any
+    engagement's Source-jobs panel. The reverse of ``mark_job_promoted``, and the LINK only -- the host
+    contract touches no findings, so no promoted data is ever lost here (a destructive un-adopt deletes
+    findings on the SCRIBBLE side first, then calls this to drop the link). Idempotent: clearing an
+    already-unlinked job is a no-op ``True``. ``False`` when unmounted."""
+    hook = host_hook("remove_job_adoption")
+    if hook is None:
+        return False
+    return bool(hook(job_id, actor_obj))

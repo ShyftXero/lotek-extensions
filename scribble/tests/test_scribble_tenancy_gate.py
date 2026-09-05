@@ -210,6 +210,11 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
             "diagram_id": diagram.id,
             "cid": checklist.id,
             "iid": item.id,
+            # A secondary path arg on `adopt_job` (#630): NOT an engagement-scoping key, just a value so
+            # the sweep can build the URL. Left unregistered in the stub host's findings on purpose —
+            # `adopt_job` then no-ops (redirect), which is the correct posture for an unknown job and is
+            # NOT the gate's 404 denial signal the member/non-member sweeps key on.
+            "job_id": "gate-job",
         }
 
 

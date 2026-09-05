@@ -110,6 +110,59 @@
   {% endif %}
 </div>
 
+{# Source jobs (#629): the reverse of promotion -- the host scan jobs whose findings were promoted INTO
+   this engagement, driven by `host.list_jobs`. This panel is the insertion point #630/#631/#635 build
+   richer content (source-job links, un-adopt, fuller empty-state copy) onto -- keep it additive. #}
+<div class="scribble-source-jobs card" id="scribble-source-jobs"
+     data-adopt-url="{{ url_for('scribble.adopt_job', engagement_id=engagement.id, job_id='__JOBID__') }}">
+  <h2 style="margin-top:0">Source jobs</h2>
+  <p class="muted">Scan jobs whose findings were promoted into this engagement.</p>
+  <ul class="scribble-source-jobs-list">
+    {% for job in source_jobs %}
+    <li>
+      <span class="mono">{{ job.id }}</span>
+      {% if job.promoted_at %}<span class="muted">promoted {{ job.promoted_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+      {% if scribble_can_write %}
+      {# Un-adopt (#635): two paths per source job. Link-only is a plain form POST (no JS). The
+         destructive path carries preview/destroy urls the board.js handler previews-then-confirms. #}
+      <span class="scribble-unadopt">
+        <form method="post" style="display:inline"
+              action="{{ url_for('scribble.unadopt_job', engagement_id=engagement.id, job_id=job.id) }}">
+          <button type="submit" class="btn btn-sm">Un-adopt (keep findings)</button>
+        </form>
+        <button type="button" class="btn btn-sm btn-danger scribble-unadopt-destroy"
+                data-preview-url="{{ url_for('scribble.unadopt_job_preview', engagement_id=engagement.id, job_id=job.id) }}"
+                data-destroy-url="{{ url_for('scribble.unadopt_job_destroy', engagement_id=engagement.id, job_id=job.id) }}">
+          Un-adopt + delete findings…
+        </button>
+      </span>
+      {% endif %}
+    </li>
+    {% else %}
+    <li class="muted" id="scribble-source-jobs-empty">No scan jobs promoted into this engagement yet.</li>
+    {% endfor %}
+  </ul>
+  {% if not source_jobs and scribble_host_mounted and scribble_can_write %}
+  {# First-job empty-state CTA (#631): nothing has fed this engagement yet, so deep-link to the host's
+     job-create page to run the first scan. `/assessments/new` is a host URL contract (root-relative, so
+     it resolves regardless of scribble's mount prefix), the same way the manifest paths are. Gated on a
+     mounted host — standalone Scribble has no core scan surface to link to. #}
+  <p class="scribble-source-jobs-cta">
+    <a class="btn btn-primary" href="/assessments/new">Create the first scan job</a>
+    <span class="muted">No scan has fed this engagement yet — run one in lotek, then adopt it here.</span>
+  </p>
+  {% endif %}
+  {% if scribble_can_write %}
+  {# Adopt-a-job picker (#630): enter an unadopted scan job's id and link it into this engagement. The
+     link is refuse-on-conflict server-side, so a job already adopted elsewhere surfaces a 409 here. #}
+  <div class="scribble-adopt-job">
+    <input type="text" id="scribble-adopt-job-id" placeholder="Scan job id to adopt" />
+    <button type="button" class="btn" id="scribble-adopt-job-btn">Adopt job</button>
+    <span id="scribble-adopt-job-msg" class="muted"></span>
+  </div>
+  {% endif %}
+</div>
+
 {% if scribble_can_write %}
 <div class="scribble-bulk-bar" id="scribble-bulk-bar" hidden>
   <span class="scribble-bulk-count"><strong id="scribble-bulk-n">0</strong> selected</span>

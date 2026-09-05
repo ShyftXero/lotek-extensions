@@ -21,6 +21,7 @@ from scribble.enums import (
     DISPOSITION_LIVE,
     DISPOSITIONS,
     OrderMode,
+    RetestOutcome,
     Severity,
     counts_toward_risk,
     finding_status_label,
@@ -29,6 +30,7 @@ from scribble.enums import (
     risk_rating,
     severity_rank,
 )
+from scribble.models import normalize_strategic_recommendations
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
 
@@ -51,6 +53,10 @@ class ArtifactCtx:
     # ADDITIVE (ext#117): the report-wide figure number, assigned by :func:`number_figures` in document
     # order. ``None`` only for a context assembled by hand in a test that never called it.
     figure_number: int | None = None
+    # ADDITIVE (#626): the content hash recorded at upload (``Artifact.sha256``, hex, or None for a row
+    # persisted before hashing existed). Carried verbatim so the renderers can publish an evidence
+    # integrity manifest without re-reading the bytes; a plain copy of the column, not a second opinion.
+    sha256: str | None = None
 
 
 @dataclass
@@ -119,6 +125,59 @@ class DiagramCtx:
     # ADDITIVE (ext#117): see ``ArtifactCtx.figure_number``. A diagram is a figure like any other — it
     # is numbered in the same continuous sequence so "Figure 4" means one thing across the report.
     figure_number: int | None = None
+
+
+@dataclass
+class ChainStepCtx:
+    """One ordered stage of an attack-chain narrative (#628). ``number`` is the 1-based position assigned
+    in ``_chain_ctxs`` (document order), so a renderer prints "1. …/2. …" without keeping its own counter."""
+
+    number: int
+    title: str
+    description: str
+
+
+@dataclass
+class ChainCtx:
+    """A report-included attack-chain narrative (#628): the authored walk-through of how findings chain
+    into a broader compromise. ``embed_html`` is an OPTIONAL self-contained snapshot (same shape as
+    ``DiagramCtx.embed_html``) so the HTML renderer can reuse ``render_html._render_diagram_item`` to draw
+    the chain's visual beside its prose; empty for a pure-narrative chain."""
+
+    id: int
+    title: str
+    summary: str
+    steps: list[ChainStepCtx]
+    diagram_ref: str = ""
+    embed_html: str = ""
+
+
+@dataclass
+class RetestCloseoutRow:
+    """One row of the Retest Closeout table (#622): a report-visible finding and its MOST-RECENT retest
+    outcome. Built only for findings that have a recorded retest, so a report with none carries an empty
+    list and renders identically to before this view existed. ``finding_id`` is the same id the findings
+    block anchors on (``id="finding-<id>"``), so the closeout links back to the finding without a second
+    id scheme; the builder only emits rows for findings that actually render at top level, so the link
+    never dangles."""
+
+    finding_id: int
+    finding_title: str
+    severity: str        # Severity value string, e.g. "high"
+    outcome: str         # RetestOutcome value of the latest round, e.g. "partially_remediated"
+    outcome_label: str   # client-facing label for ``outcome``
+    tested_on: str       # ISO date the round was performed, or "" when the author left it blank
+    rounds: int          # how many retest rounds are recorded against the finding
+
+
+@dataclass
+class StrategicRecCtx:
+    """One authored Strategic Recommendation (#623): a longer-horizon, engagement-level item. ``number``
+    is precomputed once in the builder (1..N in authored order) so both renderers print the same sequence
+    off one context, exactly as ``ChainStepCtx`` does."""
+
+    number: int
+    text: str
 
 
 @dataclass
@@ -203,6 +262,20 @@ class ReportContext:
     # ``render_html._render_diagrams``/``_render_document``'s empty-block filter, and
     # ``tests/test_report_attack_path.py`` which pins that guarantee).
     diagrams: list[DiagramCtx] = field(default_factory=list)
+    # ADDITIVE (#628): authored attack-chain narratives. Defaults empty — an engagement with none renders
+    # identically to before this field existed (see ``render_html._render_chains``'s empty short-circuit,
+    # pinned by ``tests/test_report_attack_path.py``).
+    chains: list[ChainCtx] = field(default_factory=list)
+    # ADDITIVE (#622): the retest closeout — report-visible findings that carry a recorded retest, each
+    # with its most-recent outcome. Defaults empty, so an engagement with no retest renders identically to
+    # before this field existed (see ``render_html._render_retest_closeout``'s empty short-circuit, pinned
+    # by ``tests/test_report_print_media.py``).
+    retest_closeout: list[RetestCloseoutRow] = field(default_factory=list)
+    # ADDITIVE (#623): authored strategic (longer-horizon) recommendations. Defaults empty — an engagement
+    # with none renders identically to before this field existed (see
+    # ``render_html._render_strategic_recommendations``'s empty short-circuit, pinned by
+    # ``tests/test_strategic_recommendations.py``).
+    strategic_recommendations: list[StrategicRecCtx] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -271,6 +344,7 @@ def _artifact_ctxs(artifacts, *, engagement_id=None) -> list[ArtifactCtx]:
             content_type=a.content_type,
             storage_path=a.storage_path,
             byte_size=a.byte_size,
+            sha256=a.sha256,
         )
         for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))
         if a.include_in_report
@@ -293,6 +367,93 @@ def _diagram_ctxs(diagrams) -> list[DiagramCtx]:
         for d in sorted(diagrams, key=lambda d: (d.order_index, d.id))
         if d.include_in_report and d.embed_html
     ]
+
+
+def _chain_ctxs(chains) -> list[ChainCtx]:
+    """``ChainCtx``\\s for the report's Attack Chains block (#628), in board order, honoring
+    ``include_in_report``. Steps are ordered the same way and numbered 1..N here so both renderers print
+    the same sequence off one context. Unlike a diagram, a narrative chain with no ``embed_html`` is still
+    shown — its prose IS the content — so this filters only on ``include_in_report``."""
+    return [
+        ChainCtx(
+            id=c.id,
+            title=c.title,
+            summary=c.summary or "",
+            steps=[
+                ChainStepCtx(number=i, title=s.title, description=s.description or "")
+                for i, s in enumerate(
+                    sorted(c.steps, key=lambda s: (s.order_index, s.id)), start=1
+                )
+            ],
+            diagram_ref=c.diagram_ref or "",
+            embed_html=c.embed_html or "",
+        )
+        for c in sorted(chains, key=lambda c: (c.order_index, c.id))
+        if c.include_in_report
+    ]
+
+
+def _strategic_rec_ctxs(engagement) -> list[StrategicRecCtx]:
+    """``StrategicRecCtx``\\s for the report's Strategic Recommendations block (#623), in authored order,
+    numbered 1..N. Reads through the shared ``normalize_strategic_recommendations`` so a legacy NULL row,
+    a stray blank line, or a non-string entry can never reach the renderers."""
+    recs = normalize_strategic_recommendations(engagement.strategic_recommendations)
+    return [StrategicRecCtx(number=i, text=text) for i, text in enumerate(recs, start=1)]
+
+
+# Client-facing label per retest outcome. Deliberately weaker than the enum value — "Remediated", not
+# "Fixed (verified)" — for the same reason ``test_report_standing_prose.py`` pins: the deliverable must
+# not assert stronger work than was recorded. Single-sourced here, on the contract both renderers consume,
+# so the .docx and HTML print the same words for the same outcome.
+_RETEST_OUTCOME_LABEL: dict[RetestOutcome, str] = {
+    RetestOutcome.remediated: "Remediated",
+    RetestOutcome.partially_remediated: "Partially remediated",
+    RetestOutcome.not_remediated: "Not remediated",
+    RetestOutcome.accepted_risk: "Risk accepted",
+    RetestOutcome.not_tested: "Not tested",
+}
+
+
+def _retest_closeout_rows(engagement, rendered_ids: set) -> list[RetestCloseoutRow]:
+    """``RetestCloseoutRow``\\s for every report-visible finding that carries a recorded retest (#622),
+    worst-severity-first then by title.
+
+    ``rendered_ids`` is the set of finding ids that actually render at TOP LEVEL in this report (the
+    ``FindingCtx.id``\\s in ``groups_out``). Restricting to it does two things at once: it keeps the
+    closeout in step with what the report shows (a finding in an excluded group, or a per-host child folded
+    into its parent, is not a separate closeout line), and it guarantees every row's ``finding_id`` has a
+    matching ``id="finding-<id>"`` anchor to link to. Inclusion beyond that is ``enums.report_visible``
+    — the SAME predicate that built ``rendered_ids``, not a second one. #622 landed a private
+    ``_closeout_disposition_included`` here because ext#166's ``report_disposition`` was unmerged and left
+    a TODO to collapse it on merge; this is that collapse. Re-stating half the rule in a section-local
+    helper is the exact fork ``tests/test_report_disposition_single_source.py`` sweeps for, so the call is
+    redundant-by-construction on purpose rather than a cheaper local check."""
+    by_id = {f.id: f for f in engagement.findings}
+    included = [
+        by_id[fid]
+        for fid in rendered_ids
+        if by_id.get(fid) is not None
+        and by_id[fid].retests
+        and report_visible(by_id[fid])
+    ]
+    included.sort(key=lambda f: (severity_rank(f.severity), f.title))
+    rows: list[RetestCloseoutRow] = []
+    for f in included:
+        latest = f.retests[-1]  # relationship is order_by=Retest.created_at, so [-1] is the most recent
+        rows.append(
+            RetestCloseoutRow(
+                finding_id=f.id,
+                finding_title=f.title,
+                severity=f.severity.value,
+                outcome=latest.outcome.value,
+                outcome_label=_RETEST_OUTCOME_LABEL.get(
+                    latest.outcome, latest.outcome.value.replace("_", " ").capitalize()
+                ),
+                tested_on=latest.tested_on.isoformat() if latest.tested_on else "",
+                rounds=len(f.retests),
+            )
+        )
+    return rows
 
 
 FIGURE_SEPARATOR = " — "  # "Figure 3 — Payload firing in the browser"
@@ -676,6 +837,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     diagrams = _diagram_ctxs(engagement.diagrams)
     # ext#117: assigned HERE, once, so both renderers read the same numbers off the same context.
     number_figures(groups_out, diagrams, engagement_artifacts)
+    # #622: the retest closeout is keyed to the findings that actually render at top level (so its
+    # links never dangle and a per-host child is not a separate line) — collect those ids from the
+    # assembled groups rather than re-deriving the nesting rule.
+    rendered_finding_ids = {f.id for g in groups_out for f in g.findings}
     return ReportContext(
         engagement_id=engagement.id,
         engagement_name=engagement.name,
@@ -688,6 +853,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         rollup=rollup,
         artifacts=engagement_artifacts,
         diagrams=diagrams,
+        chains=_chain_ctxs(engagement.chains),
+        retest_closeout=_retest_closeout_rows(engagement, rendered_finding_ids),
+        strategic_recommendations=_strategic_rec_ctxs(engagement),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),

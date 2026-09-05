@@ -239,6 +239,12 @@ class PatchEngagementRequest(BaseModel):
         description="Assessor's reason for the override — REQUIRED (non-empty) whenever risk_override is "
         "set; rendered verbatim beside the adjusted rating. null/empty clears it.",
     )
+    strategic_recommendations: list[str] | None = Field(
+        None,
+        description="lotek#623: authored strategic (longer-horizon) recommendations, rendered as the "
+        "report's Strategic Recommendations section. Blanks/non-strings are dropped; null or [] clears "
+        "the list. Omitted = unchanged.",
+    )
 
 
 class MoveFindingRequest(BaseModel):

@@ -41,15 +41,24 @@ def test_create_edit_delete_engagement(client, stub_host, session_factory):
         assert eng.created_by == stub_host.current_user.username
         assert eng.scope_type == "physical"
 
-    # edit — rename + change status
+    # edit — rename + change status + set strategic recommendations (one per textarea line, blanks dropped)
     resp = client.post(
         f"{UI}/engagements/{eid}/edit",
-        data={"name": "Physical Pentest", "status": "review", "client_id": str(cid)},
+        data={
+            "name": "Physical Pentest",
+            "status": "review",
+            "client_id": str(cid),
+            "strategic_recommendations": "Adopt MFA\n\n  Patch program  \n",
+        },
     )
     assert resp.status_code == 302
     with session_factory() as db:
         eng = db.get(fm.Engagement, eid)
         assert eng.name == "Physical Pentest" and eng.status == "review"
+        assert eng.strategic_recommendations == ["Adopt MFA", "Patch program"]
+    # the edit page GET renders the recs back into the textarea (one per line)
+    edit_body = client.get(f"{UI}/engagements/{eid}/edit").get_data(as_text=True)
+    assert "Adopt MFA\nPatch program" in edit_body
 
     # list shows it + links to the board
     body = client.get(f"{UI}/engagements").get_data(as_text=True)

@@ -240,8 +240,10 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
     "scribble_engagement_report": (200, {
         "type": "string",
         "format": "binary",
-        "description": "The rendered deliverable itself: `text/html` for `?format=html` (the default), "
-        "or a `.docx` attachment for `?format=docx`. Do NOT JSON-decode it.",
+        "description": "The report in the requested `?format=`: `text/html` (the default), a `.docx` "
+        "attachment for `?format=docx`, or the #627 structured-data exports `application/json` "
+        "(`?format=json`) and `text/csv` (`?format=csv`). The content type follows the format — do NOT "
+        "JSON-decode the html/docx default.",
     }),
     # templates + vuln map
     "scribble_list_templates": (200, _obj({"count": _COUNT, "items": {"type": "array", "items": _obj({

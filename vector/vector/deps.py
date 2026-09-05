@@ -104,7 +104,9 @@ def current_actor_is_admin() -> bool:
             val = getattr(role, "value", role)
             if isinstance(val, str) and val.lower() == "admin":
                 return True
-        return bool(getattr(actor, "is_admin", False))
+        # Identity compare, NOT bool(): a host User that grows an `is_admin()` METHOD would make
+        # `getattr(...)` a truthy bound method and `bool(...)` promote every user to admin (ext#120).
+        return getattr(actor, "is_admin", False) is True
     except Exception:  # noqa: BLE001
         return False
 

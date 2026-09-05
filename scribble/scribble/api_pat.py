@@ -97,6 +97,7 @@ from scribble.models import (
     FindingGroup,
     ScribbleVulnMap,
     VulnerabilityTemplate,
+    normalize_strategic_recommendations,
 )
 from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.reporting.context import build_report_context
@@ -251,6 +252,39 @@ def _resolve_engagement(db, raw_id, actor):
     if eng is None or not can_view_engagement(eng, actor):
         return None
     return eng
+
+
+def _forbidden_write():
+    """403 for a caller who MAY view this engagement but holds no live OPERATOR capability on it —
+    INV-TENANCY-05.
+
+    Distinct from :func:`_engagement_not_found` (404) on purpose: reaching this means the caller already
+    passed the ``can_view_engagement`` gate above, so the engagement's existence is not a secret to
+    protect here (it can read the whole thing over the GET routes). This is the machine-surface twin of
+    ``scribble.authz._gate``'s cookie write axis — view => 404-shaped, view-but-not-operate => 403 — and
+    the shape the extension docs' ``g.principal`` note describes ("not an operator on this engagement").
+    """
+    return jsonify({"error": "forbidden", "detail": "not an operator on this engagement"}), 403
+
+
+def _deny_write(engagement: Engagement):
+    """The WRITE axis every engagement-scoped machine route shares — INV-TENANCY-05.
+
+    Returns a 403 response when the PAT actor does NOT hold an operator capability on this engagement's
+    CORE engagement, else ``None``. The object gate is the host's ONE per-engagement predicate,
+    ``host.can_operate_on`` (via ``g.principal``) — NEVER ``can_view_client``/``can_write``, which are
+    client-coarse / global and let an operator on engagement E1 mutate a sibling E2 under the same
+    client. ``can_operate_on`` fails closed when the host exposes no such hook, so an older host bundle
+    refuses rather than falling back to view.
+
+    Called AFTER the caller has passed the ``can_view_engagement`` gate (``_resolve_engagement`` /
+    ``_visible_engagement`` / ``_visible_finding``), so a total non-member is already a 404 and never
+    reaches this; this only separates a viewer/observer/operator-on-a-sibling (403) from an operator on
+    THIS engagement (allowed).
+    """
+    if host.can_operate_on(engagement.core_engagement_id):
+        return None
+    return _forbidden_write()
 
 
 def _client_not_found():
@@ -978,6 +1012,8 @@ def scribble_add_finding(engagement_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         data = request.get_json(silent=True) or {}
@@ -1319,6 +1355,8 @@ def scribble_promote_job(engagement_id: str, job_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         findings_ns = host.findings()
@@ -1368,6 +1406,11 @@ def _engagement_summary(engagement: Engagement) -> dict:
         # no override (the computed risk_rating ladder stands). Set via PATCH /engagements/<id>.
         "risk_override": engagement.risk_override.value if engagement.risk_override else None,
         "risk_override_rationale": engagement.risk_override_rationale,
+        # lotek#623: authored strategic recommendations (list of strings), normalized. Set via
+        # PATCH /engagements/<id>; [] when unset.
+        "strategic_recommendations": normalize_strategic_recommendations(
+            engagement.strategic_recommendations
+        ),
     }
 
 
@@ -1421,6 +1464,9 @@ def scribble_update_engagement(engagement_id: str):
     ``risk_override_rationale`` — an unreasoned override would read as a computed fact, exactly what the
     report must not do — and clearing the override clears its rationale. Only supplied fields change
     (an omitted field is ``_ABSENT`` = unchanged).
+
+    Also carries the authored ``strategic_recommendations`` list (lotek#623): a list of strings (blanks
+    and non-strings dropped), or ``null``/``[]`` to clear. A non-list body is a 400.
     """
     actor = host.actor()
     data = request.get_json(silent=True) or {}
@@ -1451,12 +1497,25 @@ def scribble_update_engagement(engagement_id: str):
             return _bad_request("risk_override_rationale must be a string or null")
         parsed_rationale = raw_rationale.strip() or None
 
+    # lotek#623: the authored strategic-recommendations list. Absent -> unchanged; null or [] -> clear;
+    # a list -> normalized (blanks/non-strings dropped) and stored. A non-list (and non-null) body is a
+    # confused request, not a silent drop. Parsed BEFORE the session so a bad body never touches the row.
+    raw_recs = data.get("strategic_recommendations", _ABSENT)
+    recs_provided = raw_recs is not _ABSENT
+    parsed_recs: list[str] = []
+    if recs_provided and raw_recs is not None:
+        if not isinstance(raw_recs, list):
+            return _bad_request("strategic_recommendations must be a list of strings or null")
+        parsed_recs = normalize_strategic_recommendations(raw_recs)
+
     # Tenancy + write in one session (mirrors the sibling write routes: require_scope('write') gate +
     # _resolve_engagement visibility; engagements are team-shared, so no per-row operator gate here).
     with open_session() as db:
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
         new_override = parsed_override if override_provided else engagement.risk_override
         new_rationale = parsed_rationale if rationale_provided else engagement.risk_override_rationale
@@ -1473,12 +1532,21 @@ def scribble_update_engagement(engagement_id: str):
         before = {
             "risk_override": _enum_value(engagement.risk_override),
             "risk_override_rationale": engagement.risk_override_rationale,
+            "strategic_recommendations": normalize_strategic_recommendations(
+                engagement.strategic_recommendations
+            ),
         }
         engagement.risk_override = new_override
         engagement.risk_override_rationale = new_rationale
+        # Absent -> unchanged; provided (list or null) -> the normalized list (null/[] both clear to []).
+        if recs_provided:
+            engagement.strategic_recommendations = parsed_recs
         after = {
             "risk_override": _enum_value(engagement.risk_override),
             "risk_override_rationale": engagement.risk_override_rationale,
+            "strategic_recommendations": normalize_strategic_recommendations(
+                engagement.strategic_recommendations
+            ),
         }
         _audit(
             db, "update_engagement", subject_type="engagement", subject_id=engagement.id,
@@ -1495,9 +1563,10 @@ def scribble_update_engagement(engagement_id: str):
 @machine_bp.get("/engagements/<uuid:engagement_id>/report")
 @host.require_scope("read")
 def scribble_engagement_report(engagement_id: str):
-    """Stream the fully-rendered report over a PAT — ``?format=html`` (default) or ``?format=docx``. NO
-    pdf. Reuses the SAME ``build_report_context`` + renderers the cookie report routes use (artifact bytes
-    embedded), so the machine deliverable is byte-identical to the browser one.
+    """Stream the report over a PAT — ``?format=html`` (default), ``?format=docx``, or the #627
+    structured-data exports ``?format=json`` / ``?format=csv``. NO pdf. Every format reuses the SAME
+    ``build_report_context`` the cookie report routes use, so an export can never disagree with the
+    rendered deliverable; html/docx embed artifact bytes, json/csv carry the finding DTO + #626 hashes.
 
     Reading the whole deliverable — every client finding + evidence image — is a DISCLOSURE event, so it
     EMITS an ``ext:scribble:report_read`` audit row (who/what/format) even though it mutates no report
@@ -1505,8 +1574,8 @@ def scribble_engagement_report(engagement_id: str):
     missing and not-visible are the same 404."""
     actor = host.actor()
     fmt = (request.args.get("format") or "html").strip().lower()
-    if fmt not in ("html", "docx"):
-        return jsonify({"error": "bad_request", "detail": "format must be html or docx"}), 400
+    if fmt not in ("html", "docx", "json", "csv"):
+        return jsonify({"error": "bad_request", "detail": "format must be html, docx, json, or csv"}), 400
 
     reader = artifact_bytes
     with open_session() as db:
@@ -1515,13 +1584,25 @@ def scribble_engagement_report(engagement_id: str):
             return _engagement_not_found()
         engagement_id = engagement.id  # normalize to the integer PK for the audit row below
 
-        if fmt == "docx":
+        # #627: json/csv are STRUCTURED-DATA exports of the same ReportContext — no artifact bytes to
+        # embed (the #626 sha256 already lives on the context), so they skip the inline-url factory.
+        if fmt == "json":
+            from scribble.reporting.render_json import render_report_json
+
+            payload: bytes | str = render_report_json(build_report_context(engagement))
+            mimetype = "application/json"
+        elif fmt == "csv":
+            from scribble.reporting.render_csv import render_report_csv
+
+            payload = render_report_csv(build_report_context(engagement))
+            mimetype = "text/csv"
+        elif fmt == "docx":
             from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
 
             ctx = build_report_context(
                 engagement, artifact_url=_inline_url_factory(engagement, make_inline_artifact_url)
             )
-            payload: bytes | str = render_report_docx(ctx, artifact_bytes=reader)
+            payload = render_report_docx(ctx, artifact_bytes=reader)
             mimetype = _DOCX_MIME
         else:
             from scribble.reporting.render_html import make_inline_artifact_url, render_report_html
@@ -1624,6 +1705,8 @@ def scribble_upload_artifact(engagement_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
     upload = request.files.get("file")
@@ -1840,6 +1923,7 @@ def _machine_artifact_dict(a: Artifact) -> dict:
         "filename": a.filename,
         "content_type": a.content_type,
         "byte_size": a.byte_size,
+        "sha256": a.sha256,  # #626: evidence-integrity hash (feeds #627)
         "caption": a.caption or "",
         "include_in_report": a.include_in_report,
         "created_by": a.created_by,
@@ -1899,6 +1983,8 @@ def scribble_update_artifact(engagement_id: int, artifact_id: int):
         engagement = db.get(Engagement, engagement_id)
         if engagement is None or not can_view_engagement(engagement, actor):
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         # Parsed AFTER the tenancy gate, deliberately: a caller with no grant on this engagement gets the
         # one answer this module ever gives it (404) and never a 400 about its own body, which would be the
         # same reply whether or not the engagement exists and reads as "the id is fine, fix your body".
@@ -2020,6 +2106,7 @@ def _artifact_summary(artifact: Artifact) -> dict:
         "caption": artifact.caption,
         "order_index": artifact.order_index,
         "include_in_report": artifact.include_in_report,
+        "sha256": artifact.sha256,  # #626: evidence-integrity hash (feeds #627)
         "url": artifact_url(artifact.id),
     }
 
@@ -2458,6 +2545,8 @@ def scribble_update_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         authorized_engagement_id = finding.engagement_id
 
     data = request.get_json(silent=True) or {}
@@ -2523,6 +2612,8 @@ def scribble_delete_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         authorized_engagement_id = finding.engagement_id
 
     removed_paths: list[str] = []
@@ -2617,6 +2708,8 @@ def scribble_move_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         engagement_id = finding.engagement_id
 
         data = request.get_json(silent=True) or {}
@@ -2681,6 +2774,8 @@ def scribble_move_findings(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
         data = request.get_json(silent=True) or {}
         raw_ids = data.get("finding_ids")
@@ -2769,6 +2864,8 @@ def scribble_create_group(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -2824,6 +2921,8 @@ def scribble_update_group(engagement_id: int, group_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
@@ -2890,6 +2989,8 @@ def scribble_delete_group(engagement_id: int, group_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
@@ -2929,6 +3030,8 @@ def scribble_reorder_groups(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     order = data.get("order")
@@ -3015,6 +3118,8 @@ def scribble_link_attack_path(engagement_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     embed_html, err = _opt_str(data, "embed_html")
@@ -3137,6 +3242,8 @@ def scribble_update_attack_path(engagement_id, attack_path_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _diagram_of(db, engagement_id, attack_path_id) is None:
             return _attack_path_not_found()
 
@@ -3205,6 +3312,8 @@ def scribble_delete_attack_path(engagement_id, attack_path_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _diagram_of(db, engagement_id, attack_path_id) is None:
             return _attack_path_not_found()
 

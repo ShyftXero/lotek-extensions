@@ -28,7 +28,15 @@ from docx.oxml.ns import qn
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Client, Engagement, EngagementDiagram, EngagementFinding, FindingGroup
+from scribble.models import (
+    AttackChain,
+    AttackChainStep,
+    Client,
+    Engagement,
+    EngagementDiagram,
+    EngagementFinding,
+    FindingGroup,
+)
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 
@@ -537,3 +545,57 @@ def test_the_status_chip_matches_what_the_viewer_prints(session_factory):
     assert "[IMPACT]" in text and "[TARGET]" not in text     # 2
     assert "[PWNED]" not in text                              # 3
     assert "[C2]" in text                                     # 4
+
+
+# ── #628: the attack-chain NARRATIVE mirrors into the .docx ───────────────────────────────────────────
+
+
+def _chain_engagement(session_factory, *, embed: bool = False) -> str:
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
+        grp = FindingGroup(engagement=eng, name="External", order_index=0)
+        EngagementFinding(
+            engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
+            order_index=0, content_json={"description": _block("Reflected XSS on /search.")},
+        )
+        db.add(eng)
+        db.flush()
+        chain = AttackChain(
+            engagement_id=eng.id, title="Foothold to Domain Admin",
+            summary="Chained the edge XSS into a full domain compromise.",
+            order_index=0, embed_html=(snapshot() if embed else None),
+        )
+        db.add(chain)
+        db.flush()
+        for oi, title in ((1, "Pivot to the DMZ web host"), (0, "Initial access via reflected XSS")):
+            db.add(AttackChainStep(chain_id=chain.id, order_index=oi, title=title))
+        db.commit()
+        return eng.id
+
+
+def test_docx_carries_the_attack_chain_narrative(session_factory):
+    """A "renders fine, content missing" guard like the diagram one: the .docx must actually contain the
+    chain's title, summary and every step title, read back out of ``word/document.xml`` — and the steps
+    must be numbered in ``order_index`` order, not insertion order."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory)))
+    assert "Attack Chains" in text
+    assert "Foothold to Domain Admin" in text
+    assert "Chained the edge XSS into a full domain compromise." in text
+    assert "1. Initial access via reflected XSS" in text
+    assert "2. Pivot to the DMZ web host" in text
+
+
+def test_docx_notes_a_chain_embed_lives_in_the_html_report(session_factory):
+    """A chain's OPTIONAL ``embed_html`` visual is HTML-only in the .docx; the Word deliverable carries an
+    explicit pointer so nothing is SILENTLY dropped (the ext#115 defect class, applied to chains)."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory, embed=True)))
+    assert "interactive figure in the HTML" in text
+
+
+def test_docx_without_a_chain_has_no_attack_chains_section(session_factory):
+    """Backward-compat: an engagement with no chain is byte-identical to before this section existed."""
+    text = _text(_render(session_factory, _engagement(session_factory)))
+    assert "Attack Chains" not in text

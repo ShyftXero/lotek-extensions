@@ -873,6 +873,92 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         caption.add_run(figure_caption(d.figure_number, caption_text)).italic = True
 
 
+def _append_attack_chains(doc, ctx: ReportContext) -> None:
+    """Append the Attack Chains section to the RENDERED document (#628), mirroring ``_append_attack_paths``:
+    programmatic and post-render, placed right after it so the .docx section order matches the HTML
+    layouts (``diagrams`` -> ``chains``).
+
+    The narrative — title, summary, numbered steps — is the substance and mirrors the HTML in full. A
+    chain's OPTIONAL ``embed_html`` visual is HTML-only here: Word has no browser and reconstructing the
+    vector grid belongs to the linked-diagram path, so the .docx carries an explicit italic pointer to
+    the HTML report rather than silently dropping it (the same honest-degradation convention
+    ``_append_attack_paths`` uses for a snapshot it cannot draw).
+
+    Renders nothing when the engagement has no chain, so a report without one is byte-identical to before
+    this section existed (the same backward-compat guarantee ``render_html._render_chains`` makes)."""
+    if not ctx.chains:
+        return
+    doc.add_heading("Attack Chains", level=1)
+    doc.add_paragraph(
+        "Narrative walk-throughs of how the findings above chain together into a broader compromise."
+    )
+    for index, c in enumerate(ctx.chains, start=1):
+        doc.add_heading(_xml_safe(c.title) or f"Attack chain {index}", level=2)
+        if c.summary:
+            doc.add_paragraph(_xml_safe(c.summary))
+        for s in c.steps:
+            para = doc.add_paragraph()
+            para.add_run(f"{s.number}. {_xml_safe(s.title)}").bold = True
+            if s.description:
+                para.add_run(f" — {_xml_safe(s.description)}")
+        if c.embed_html:
+            note = doc.add_paragraph()
+            note.add_run(
+                "This chain's attack-path diagram is delivered as an interactive figure in the HTML "
+                "report."
+            ).italic = True
+
+
+def _append_retest_closeout(doc, ctx: ReportContext) -> None:
+    """Append the Retest Closeout section to the RENDERED document (#622), mirroring the HTML
+    ``render_html._render_retest_closeout``: a finding → most-recent retest outcome table. Placed right
+    after the attack chains so the .docx section order matches the HTML layouts
+    (``chains`` -> ``retest``).
+
+    Renders nothing when no report-visible finding carries a retest, so a report without one is
+    byte-identical to before this section existed (the same backward-compat guarantee the HTML side
+    makes). Every cell is ``_xml_safe``-filtered — finding titles are engagement-controlled text."""
+    if not ctx.retest_closeout:
+        return
+    doc.add_heading("Retest Closeout", level=1)
+    doc.add_paragraph(
+        "Remediation status from the verify-the-fix retests recorded against these findings. Each row "
+        "shows the finding's most recent retest outcome."
+    )
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text, hdr[4].text = (
+        "Finding", "Severity", "Retest outcome", "Tested", "Rounds")
+    for r in ctx.retest_closeout:
+        cells = table.add_row().cells
+        cells[0].text = _xml_safe(r.finding_title)
+        cells[1].text = _xml_safe(r.severity.title())
+        cells[2].text = _xml_safe(r.outcome_label)
+        cells[3].text = _xml_safe(r.tested_on)
+        cells[4].text = str(r.rounds)
+
+
+def _append_strategic_recommendations(doc, ctx: ReportContext) -> None:
+    """Append the Strategic Recommendations section to the RENDERED document (#623), mirroring
+    ``render_html._render_strategic_recommendations``: a numbered list of authored, longer-horizon items.
+    Placed right after the retest closeout so the .docx section order matches the HTML layouts
+    (``retest`` -> ``strategic``).
+
+    Renders nothing when the engagement has no recommendation, so a report without one is byte-identical
+    to before this section existed. Every item is ``_xml_safe``-filtered — the text is
+    engagement-controlled prose."""
+    if not ctx.strategic_recommendations:
+        return
+    doc.add_heading("Strategic Recommendations", level=1)
+    doc.add_paragraph(
+        "Longer-horizon recommendations that address the systemic causes behind the findings above, "
+        "beyond each finding's tactical fix."
+    )
+    for r in ctx.strategic_recommendations:
+        doc.add_paragraph(f"{r.number}. {_xml_safe(r.text)}")
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -974,12 +1060,24 @@ def _append_evidence_appendix(doc, ctx: ReportContext, *, artifact_bytes: Artifa
             try:
                 doc.add_picture(io.BytesIO(data), width=_EVIDENCE_IMAGE_WIDTH)
                 doc.add_paragraph(caption)
+                _append_sha256_line(doc, a)  # #626
                 continue
             except Exception:
                 pass  # fall through to the caption-only path below
         p = doc.add_paragraph()
         p.add_run(f"{caption} ").italic = True
         p.add_run(f"({a.filename} -- not embedded)").italic = True
+        _append_sha256_line(doc, a)  # #626
+
+
+def _append_sha256_line(doc, a: ArtifactCtx) -> None:
+    """Print the artifact's recorded content hash under its caption (#626), the docx half of the HTML
+    evidence-integrity manifest, so both deliverables let a client verify a delivered file against its
+    SHA-256. Silent for a legacy row that never got a hash — nothing to attest."""
+    if not a.sha256:
+        return
+    p = doc.add_paragraph()
+    p.add_run(f"SHA-256: {a.sha256}").italic = True
 
 
 def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:
@@ -1003,6 +1101,9 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     # evidence, reporting/layouts.py), which is what makes context.number_figures' single figure
     # sequence come out the same in both deliverables.
     _append_attack_paths(tpl.docx, ctx)  # ext#115
+    _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
+    _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
+    _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 

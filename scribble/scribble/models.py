@@ -36,6 +36,7 @@ from scribble.enums import (
     FindingStatus,
     OrderMode,
     ReportFormat,
+    RetestOutcome,
     Severity,
     VariableScope,
     VariableType,
@@ -115,6 +116,13 @@ class Engagement(Base, TimestampMixin):
     # whenever ``risk_override`` is set (enforced at the write seam, api_pat.py); both clear together.
     risk_override: Mapped[Severity | None] = mapped_column(Enum(Severity), nullable=True)
     risk_override_rationale: Mapped[str | None] = mapped_column(Text)
+    # lotek#623: AUTHORED strategic (longer-horizon) recommendations — an ordered JSON list of plain-text
+    # items, each rendered as one entry in the report's Strategic Recommendations section. NULL/[] => no
+    # section (byte-identical to before this field existed). Unlike a finding these are engagement-level
+    # prose with NO per-item report-disposition; the whole list IS the deliverable. Nullable so the
+    # additive migration needs no cross-DB server_default — every read coerces None via
+    # ``normalize_strategic_recommendations``.
+    strategic_recommendations: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
@@ -136,6 +144,11 @@ class Engagement(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="EngagementDiagram.order_index",
     )
+    chains: Mapped[list[AttackChain]] = relationship(
+        back_populates="engagement",
+        cascade="all, delete-orphan",
+        order_by="AttackChain.order_index",
+    )
 
     def resolve_client(self, session):
         """Load this engagement's client through the currently-mounted client model, or ``None``.
@@ -151,6 +164,21 @@ class Engagement(Base, TimestampMixin):
         from scribble.deps import client_model  # local import: avoids a models.py <-> deps.py cycle
 
         return session.get(client_model(), self.client_id)
+
+
+def normalize_strategic_recommendations(value) -> list[str]:
+    """Coerce a raw ``strategic_recommendations`` value (a stored JSON column, a PATCH body list, or the
+    None of a legacy row) into a clean ``list[str]``: whitespace-stripped, blanks and non-strings dropped,
+    order preserved. The SINGLE home for this rule (lotek#623) — every write seam (``api_pat``,
+    ``engagement_ui``) stores through it and every read seam (``reporting.context``) reads through it, so
+    the stored shape and the rendered shape can never drift. Idempotent."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
 
 
 # --------------------------------------------------------------------------- grouping (report sections)
@@ -364,6 +392,14 @@ class EngagementFinding(Base, TimestampMixin):
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="finding", order_by="Artifact.order_index"
     )
+    # Retest rounds recorded against this finding (lotek#621), oldest-first — the order the deliverable's
+    # remediation history reads. ``delete-orphan``: a retest is the finding's own state and dies with it,
+    # which is ALSO its delete disposition in ``findings_service`` (``_FINDING_FK_HANDLED_ELSEWHERE`` —
+    # this ORM cascade is what clears the FK, so deleting a finding, or the engagement above it, never
+    # 500s on a dangling ``scribble_retests.finding_id``).
+    retests: Mapped[list[Retest]] = relationship(
+        back_populates="finding", cascade="all, delete-orphan", order_by="Retest.created_at"
+    )
     tags: Mapped[list[Tag]] = relationship(secondary="scribble_finding_tags")
 
     @classmethod
@@ -454,6 +490,15 @@ class Artifact(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
     finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
+    # Which retest round this evidence belongs to (lotek#621), or NULL for original-assessment evidence.
+    # A SOFT reference (``ScribbleUuid``, no ``ForeignKey``) — deliberately, like ``EngagementChecklist.
+    # template_id``: a retest dies with its finding (``EngagementFinding.retests`` cascade), and a hard FK
+    # here would make that cascade an FK-ordering hazard in the shared finding/engagement delete paths
+    # (``findings_service``) for a retest-only artifact. Retest evidence is finding-scoped anyway — it
+    # carries ``finding_id`` and is removed by ``delete_finding`` with the rest of the finding's evidence
+    # — so ``retest_id`` is a provenance link, and a dangling one after the round is deleted is harmless
+    # (read as "no round", same tolerance as ``template_id``'s soft ref).
+    retest_id: Mapped[uuid.UUID | None] = mapped_column(ScribbleUuid, nullable=True, index=True)
 
     kind: Mapped[ArtifactKind] = mapped_column(Enum(ArtifactKind), default=ArtifactKind.screenshot)
     placement: Mapped[ArtifactPlacement] = mapped_column(
@@ -497,6 +542,34 @@ class Artifact(Base, TimestampMixin):
     finding: Mapped[EngagementFinding | None] = relationship(back_populates="artifacts")
 
 
+# --------------------------------------------------------------------------- retests (verify-the-fix)
+
+
+class Retest(Base, TimestampMixin):
+    """One retest round recorded against a finding after remediation — the verify-the-fix pass a
+    deliverable reports (lotek#621). ``outcome`` (a :class:`RetestOutcome`) is the verdict;
+    ``findings_service.record_retest`` is the ONE writer that both the UI (#622) and the machine API call,
+    so appending a round and transitioning ``EngagementFinding.status`` happen together in a single place.
+
+    Finding-owned: a retest of a finding is meaningless without it, so it dies with the finding via
+    ``EngagementFinding.retests``'s ``delete-orphan`` cascade (also its delete disposition in
+    ``findings_service._FINDING_FK_HANDLED_ELSEWHERE``). ``finding_id`` is a REAL FK (an intra-scribble
+    reference to a table that always exists); there is no ``engagement_id`` column — a retest reaches its
+    engagement through its finding, so denormalising it would be a second copy of that link to keep true.
+    """
+
+    __tablename__ = "scribble_retests"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    finding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_findings.id"), index=True)
+    outcome: Mapped[RetestOutcome] = mapped_column(Enum(RetestOutcome))
+    tested_on: Mapped[date | None] = mapped_column(Date)  # when the retest was performed (author-supplied)
+    notes: Mapped[str | None] = mapped_column(Text)
+    tested_by: Mapped[str | None] = mapped_column(String(128))  # soft attribution, like created_by elsewhere
+
+    finding: Mapped[EngagementFinding] = relationship(back_populates="retests")
+
+
 # --------------------------------------------------------------------------- attack-path diagrams
 
 
@@ -525,6 +598,59 @@ class EngagementDiagram(Base, TimestampMixin):
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
 
     engagement: Mapped[Engagement] = relationship(back_populates="diagrams")
+
+
+# --------------------------------------------------------------------------- attack-chain narratives
+
+
+class AttackChain(Base, TimestampMixin):
+    """An attack-chain NARRATIVE (#628): the authored story of how discovered findings chain into a
+    broader compromise, ordered ``steps`` under a ``title`` + ``summary``.
+
+    Distinct from ``EngagementDiagram`` (which stores a vector *picture* of a path): this is the prose
+    an operator writes to walk a reader through the same path. A chain MAY additionally carry its own
+    self-contained ``embed_html`` snapshot (same shape as ``EngagementDiagram`` — vector's ``export.html``
+    stored verbatim, ``diagram_ref`` kept for provenance only), so the HTML report can embed the visual
+    beside the narrative via the shared ``render_html._render_diagram_item``. It is OPTIONAL: a chain with
+    no embed renders as pure narrative, byte-identically in both deliverables.
+
+    Engagement-owned, dies with the engagement (``Engagement.chains`` ``delete-orphan``). ``engagement_id``
+    is a real intra-scribble FK (UUIDv7 PK, like every scribble surrogate key since ext#36/lotek#335)."""
+
+    __tablename__ = "scribble_attack_chains"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # OPTIONAL visual, mirroring EngagementDiagram's soft-snapshot fields (see the class docstring).
+    diagram_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    engagement: Mapped[Engagement] = relationship(back_populates="chains")
+    steps: Mapped[list[AttackChainStep]] = relationship(
+        back_populates="chain",
+        cascade="all, delete-orphan",
+        order_by="AttackChainStep.order_index",
+    )
+
+
+class AttackChainStep(Base, TimestampMixin):
+    """One ordered stage of an :class:`AttackChain` — a ``title`` (e.g. "Initial access via reflected
+    XSS") and optional ``description`` prose. Chain-owned; dies with its chain. No ``finding_id`` link:
+    a step names its evidence in prose, the same soft convention the diagram walkthrough uses."""
+
+    __tablename__ = "scribble_attack_chain_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    chain_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_attack_chains.id"), index=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    chain: Mapped[AttackChain] = relationship(back_populates="steps")
 
 
 # --------------------------------------------------------------------------- template variables
@@ -879,6 +1005,7 @@ __all__ = [
     "ScribbleVulnMap",
     "EngagementFinding",
     "Artifact",
+    "Retest",
     "EngagementDiagram",
     "TemplateVariable",
     "VariableValue",

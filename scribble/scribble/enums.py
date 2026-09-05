@@ -34,6 +34,20 @@ class FindingStatus(enum.StrEnum):
     needs_retest = "needs_retest"
 
 
+class RetestOutcome(enum.StrEnum):
+    """The result of one retest round on a finding (lotek#621). Each value maps to the finding's
+    ``FindingStatus`` in exactly one place — ``findings_service.record_retest`` — so the outcome→status
+    policy never gets re-decided at a call site: a verified fix closes the finding, an unresolved one
+    reopens it for another round, an accepted risk records the client's decision, and an untested
+    finding leaves the status untouched (recording the attempt is not a verdict on the fix)."""
+
+    remediated = "remediated"                      # fix verified -> FindingStatus.fixed
+    partially_remediated = "partially_remediated"  # some risk remains -> FindingStatus.needs_retest
+    not_remediated = "not_remediated"              # still exploitable -> FindingStatus.needs_retest
+    accepted_risk = "accepted_risk"                # client accepted -> FindingStatus.accepted_risk
+    not_tested = "not_tested"                      # could not retest -> status unchanged
+
+
 class ChecklistKind(enum.StrEnum):
     """Engagement-checklist kind. Fixed set: the report layout and the recommended item-status
     vocabulary are keyed to it. A checklist's kind is reassignable; adding a NEW kind is a code change
@@ -66,6 +80,8 @@ class ArtifactPlacement(enum.StrEnum):
 class ReportFormat(enum.StrEnum):
     html = "html"
     docx = "docx"
+    json = "json"  # #627: machine-readable findings export (structured data, not a rendered deliverable)
+    csv = "csv"    # #627: one row per finding, for a spreadsheet / SIEM import
 
 
 class VariableScope(enum.StrEnum):

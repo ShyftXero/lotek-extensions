@@ -345,12 +345,19 @@ def _gate() -> None:
     # `require_pat_scope("write")`. 403, not 404: the caller demonstrably can view the row, so its
     # existence is not a secret to protect here.
     #
-    # LIMIT (honest): `host_can_write()` is the GLOBAL write flag the host injects; scribble has no
-    # per-engagement operate hook (the host gives it `can_view_client` + `can_write`, not
-    # `can_operate_on`), so this cannot distinguish a global operator's operator- vs observer-membership
-    # on THIS engagement the way lotek core's `is_operator_on` does. It shuts the viewer-writes hole; a
-    # global operator with only an observer membership here is still (narrowly) able to write until a
-    # host `can_operate_on` hook exists for scribble. Tracked as a follow-on.
+    # LIMIT (honest): `host_can_write()` is the GLOBAL write flag the host injects, so this COOKIE gate
+    # cannot distinguish a global operator's operator- vs observer-membership on THIS engagement the way
+    # lotek core's `is_operator_on` does. It shuts the viewer-writes hole; a global operator with only an
+    # observer membership here is still (narrowly) able to write.
+    #
+    # A per-engagement `can_operate_on` hook DOES exist (see `scribble/host.py::can_operate_on`,
+    # INV-TENANCY-05) — the MACHINE surface now gates every write on it (`api_pat._deny_write`), fixing
+    # the identical hole there where a token could VIEW a whole client and write a sibling engagement.
+    # This cookie gate is NOT yet switched to it: `can_operate_on` resolves the caller from `g.principal`,
+    # which is the host's own concern on a cookie request, so switching here needs a MOUNTED test in lotek
+    # core (`tests/test_scribble_extension.py`) that a stub host cannot stand in for — this repo's suite
+    # would prove logic, never the mount. Tracked as a follow-on; it is a hook swap, no longer a missing
+    # hook.
     if request.method not in _SAFE_METHODS and not host_can_write():
         abort(403)
 

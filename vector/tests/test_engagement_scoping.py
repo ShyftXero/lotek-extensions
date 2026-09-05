@@ -111,6 +111,27 @@ def test_revoked_member_loses_access_on_cookie_surface_too(app, client):
     assert did not in [d["id"] for d in client.get(f"{API}/diagrams").get_json()["diagrams"]]
 
 
+def test_revoked_member_loses_cookie_export_downloads(app, client):
+    """The cookie-surface EXPORT downloads (``blueprint.py`` ``export.html`` / ``export.json``) route
+    through the same ``vector.access`` gate as get/edit, so a revoked former member must not be able to
+    download the client's attack-path deliverable. This pins the exact route BusyBody's ``export_diagram``
+    oracle fingered (#589 class 5a / ext#165); the sibling cookie test above covers get/edit/list but not
+    these two dedicated download endpoints."""
+    login(app, FakeUser(uid=uuid.UUID(int=7), username="op", role="operator"))
+    _grant(app, ENG)
+    did = client.post(f"{API}/diagrams",
+                      json={"name": "deliverable", "model": _MODEL,
+                            "engagement_id": str(ENG)}).get_json()["id"]
+    # While a member: both download routes render the deliverable.
+    assert client.get(f"/vector/diagrams/{did}/export.html").status_code == 200
+    assert client.get(f"/vector/diagrams/{did}/export.json").status_code == 200
+
+    _revoke(app, ENG)  # membership revoked — same session user, still the diagram's owner_id
+
+    assert client.get(f"/vector/diagrams/{did}/export.html").status_code == 404
+    assert client.get(f"/vector/diagrams/{did}/export.json").status_code == 404
+
+
 def test_non_member_never_sees_a_bound_diagram(app, pat_client):
     did = _insert_bound(app, ENG)  # nobody is a member (eng_view empty)
     assert pat_client.get(f"{MACHINE}/diagrams/{did}").status_code == 404
