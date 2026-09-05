@@ -210,6 +210,12 @@ def test_top_level_count_matches_what_the_renderer_produces(client, token, sessi
     cluster, an excluded child, an excluded parent whose child therefore renders top-level, an excluded
     group, and a flat finding. Any future change to the nesting/filtering rules that this route did not
     follow makes the two numbers differ.
+
+    STATUSES ARE PART OF THE BOARD ON PURPOSE (lotek#618). Inclusion is `include_in_report AND the
+    status' disposition is not "excluded"` -- a `false_positive` leaves the deliverable even though the
+    operator never unticked it. A board carrying no statuses is a board where the second half of the
+    rule is unobservable, which is exactly how this assertion stayed green while `top_level_count`
+    filtered on `include_in_report` alone and over-reported every false positive to the client.
     """
     from scribble.reporting import build_report_context
 
@@ -224,7 +230,20 @@ def test_top_level_count_matches_what_the_renderer_produces(client, token, sessi
                                order_index=3, include_in_report=False)
     _finding(session_factory, eid, title="— FS01", group_id=shown, parent_id=orphaned_parent,
              order_index=4)
+    # Ticked for the report, but dispositioned OUT of it: the renderer drops it, so the count must too.
+    _finding(session_factory, eid, title="Anonymous FTP", group_id=shown, order_index=5,
+             status=fm.FindingStatus.false_positive)
+    # Remediated: still a finding the client should see, so it stays in BOTH numbers.
+    _finding(session_factory, eid, title="Default credentials", group_id=shown, order_index=6,
+             status=fm.FindingStatus.fixed)
+    # A false-positive PARENT: its live child loses its nesting anchor and renders top-level.
+    fp_parent = _finding(session_factory, eid, title="Legacy TLS", group_id=shown, order_index=7,
+                         status=fm.FindingStatus.false_positive)
+    _finding(session_factory, eid, title="— WEB01", group_id=shown, parent_id=fp_parent,
+             order_index=8)
     _finding(session_factory, eid, title="Banner disclosure")
+    _finding(session_factory, eid, title="Self-signed certificate", order_index=1,
+             status=fm.FindingStatus.false_positive)
     _finding(session_factory, eid, title="Hidden section finding", group_id=hidden)
     with session_factory() as db:
         db.get(fm.FindingGroup, hidden).include_in_report = False

@@ -234,7 +234,7 @@ a route is ever added with an unbounded integer converter. 🔴 The **cookie** b
 
 | Method · path | Scope | Purpose |
 |---|---|---|
-| `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order** — the flat board list (`groups[]` each with their `findings[]`, plus `ungrouped[]`). `count` is board rows; `top_level_count` is how many findings the **report** renders, which is the smaller number whenever promotion nested per-host children (see below). |
+| `GET /scribble/machine/engagements/<engagement_id>/findings` | read | Every finding **in board order** — the flat board list (`groups[]` each with their `findings[]`, plus `ungrouped[]`). `count` is board rows; `top_level_count` is how many findings the **report** renders, which is the smaller number whenever promotion nested per-host children, a group or finding is excluded from the report, or a finding's status dispositions it out (a `false_positive` — see below). |
 | `GET /scribble/machine/findings/<finding_id>` | read | One finding in full: content blocks, evidence artifacts, and its promoted per-host `children`. |
 | `PATCH /scribble/machine/findings/<finding_id>` | write | Partial edit: `title`, `severity`, `confidence`, `status`, `category`, `cvss_score`, `cvss_vector`, `target_host`/`target_port`/`target_url`, `analyst_notes`, `include_in_report`, and prose (`description`/`remediation`/`references` as text, or `content_json` per block — always sanitized; each value must be a real ProseMirror doc (`{"type": "doc", …}`), and a value that is not one is a **400**, never a silently emptied block). Omitted = unchanged, explicit `null` = cleared, and an **empty** `description`/`remediation`/`references` (`""` / `[]`) **clears that prose block**. An **unknown field is a 400**, not a silent no-op. |
 | `DELETE /scribble/machine/findings/<finding_id>` | write | Delete the finding **and its evidence** (artifact rows + files), its co-editing CRDT state and its per-finding variable values. Nested per-host **children are detached, not deleted** — their ids come back in `detached_children` and they become top-level findings — and a checklist item that linked to it keeps its place with `finding_id` cleared. |
@@ -389,9 +389,38 @@ consume, so HTML and `.docx` cannot drift apart):
 What enters the report: groups in board order (a synthetic *Ungrouped* bucket last), findings ordered by
 the group's own mode, `include_in_report` respected at group, finding **and** artifact level, plus a
 severity rollup, a generated executive-summary narrative paragraph, and any assigned checklists that opt
-into the report. Promoted per-host findings render **nested inside their parent's card** (one level), so the
-report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
-answers that number as `top_level_count`.
+into the report.
+
+**A finding's `status` now decides how it lands in the deliverable** (lotek#618, 2026-09-04 — it was
+dropped entirely before, which meant a finding you had marked `false_positive` or `fixed` still drove the
+client's overall risk rating). One predicate, `scribble.enums.report_disposition`, maps status to a
+**disposition**, and every surface — the HTML, the .docx and the rollup — reads that one answer:
+
+| status | disposition | in the report? | drives the risk rating? | label shown |
+|---|---|---|---|---|
+| `new` | `live` | yes | yes | *(none — nothing to say)* |
+| `triaged` | `live` | yes | yes | Triaged |
+| `needs_retest` | `live` | yes | yes | Awaiting retest |
+| `fixed` | `remediated` | yes | **no** | Remediated |
+| `accepted_risk` | `accepted` | yes | **no** | Risk accepted |
+| `false_positive` | `excluded` | **no** | no | — |
+
+- **Inclusion is `include_in_report` AND a non-`excluded` disposition.** `include_in_report` remains your
+  explicit veto for anything else you want held back; marking a finding `false_positive` removes it from
+  the client deliverable on its own, and there is deliberately no "excluded findings" annex.
+- The severity rollup, the risk banner and the narrative count **live findings only**. The rollup also
+  carries `disposition_counts` (live / remediated / accepted / excluded) so you can see the shape of the
+  deliverable — "1 issue, 2 closed out" — rather than inferring it from what is missing.
+- The label appears as a chip on the finding and a **Status** column in *Findings at a glance*, and both
+  are omitted entirely when every finding is `new` — an untouched engagement's report is unchanged.
+- Labels are deliberately conservative: "Remediated", not "Fixed (verified)". Scribble records that you
+  set a status; it does not record that anyone verified a fix, and the report may not claim otherwise.
+  Promoted per-host findings render **nested inside their parent's card** (one level), so the report
+  shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
+  answers that number as `top_level_count`. It applies the report's own inclusion predicate
+  (`enums.report_visible`), so a `false_positive` is absent from it as well as from the document: the
+  two numbers cannot disagree, and a drift guard in
+  `tests/test_report_disposition_single_source.py` fails if a second copy of the rule appears.
 
 **Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before), in
 **both** deliverables (the `.docx` half followed in issue #54; the table below used to record it as an

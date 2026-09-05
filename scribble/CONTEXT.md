@@ -113,3 +113,22 @@ _Avoid_: template, docx template (unqualified)
 Reusable finding boilerplate in the Vuln Library — title, description, remediation — that an author
 copies into an Engagement. Unrelated to Reports entirely.
 _Avoid_: template (unqualified)
+
+**Report Disposition**:
+What one Finding's `status` means for the deliverable: `live` (renders **and** drives the overall risk
+rating), `remediated` / `accepted` (render, but leave the risk ladder), `excluded` (a false positive —
+absent from the deliverable entirely). Derived by the single predicate
+`scribble.enums.report_disposition`, which the report context, both renderers and the board all read
+rather than re-deriving. A property of a **finding**, at report time.
+_Avoid_: disposition (unqualified), status (when you mean its report consequence)
+
+**Field Disposition**:
+Where a `FindingDTO` field lives on an `EngagementFinding` — a typed `column`, the verbatim
+`source_facts` snapshot, or a reasoned `drop` — plus its `origin` (promote / author / enrichment) and
+`operator` (locked / editable) axes. Declared per DTO field in `scribble/dispositions.py` and held in
+place by a drift guard. A property of a **schema field**, at promote time.
+_Avoid_: disposition (unqualified)
+
+> These two arrived a day apart (lotek#618 and lotek#617) and share nothing but the word. One is a
+> finding's fate in a document; the other is a column's provenance. If you write "disposition"
+> unqualified in this package, a reader has to guess which — so don't.

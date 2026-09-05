@@ -607,6 +607,14 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     sev = f.severity
     rank = SEVERITY_ORDER.index(sev) if sev in SEVERITY_ORDER else len(SEVERITY_ORDER)
     badges = f'<span class="sev-badge sev-{_esc(sev)}">{_esc(sev.title())}</span>'
+    # The status badge (lotek#618) renders ONLY when the label is non-empty, which is exactly when the
+    # status is not `new` -- a badge on every untriaged finding is noise, and reads to a client as
+    # "draft". `disposition` classes the chip so a remediated finding is visually distinct from one
+    # awaiting retest without the renderer re-deriving anything.
+    if f.status_label:
+        badges += (
+            f'<span class="status-badge st-{_esc(f.disposition)}">{_esc(f.status_label)}</span>'
+        )
     if f.cvss_score is not None:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
@@ -1015,16 +1023,20 @@ def _index_ids_cell(ids: list) -> str:
 
 
 def _findings_index(ctx: ReportContext) -> str:
-    """A scan-then-jump index of every top-level finding (severity · title→its card · host · [CWE] · [CVE] ·
-    CVSS), in board order. Nested children stay out of this list, matching the finding cards below.
+    """A scan-then-jump index of every top-level finding (severity · title→its card · host · [status] ·
+    [CWE] · [CVE] · CVSS), in board order. Nested children stay out of this list, matching the finding
+    cards below.
 
-    The CWE/CVE columns + a KEV flag are #625's skimmable metadata (OWASP/EPSS stay chip-only, per #625 Q3,
-    to keep the index narrow). They appear ONLY when at least one rendered finding actually carries that
-    data — so an UNENRICHED report's index is BYTE-IDENTICAL to before #625 (the omit-when-empty invariant
-    the whole superset design protects, #625 Q4), while an enriched one gains the columns it needs."""
+    Every optional column is omit-when-empty and independent of the others: the Status column (lotek#618)
+    appears only when SOMETHING has a status worth printing, and the CWE/CVE columns + KEV flag (#625's
+    skimmable metadata — OWASP/EPSS stay chip-only per #625 Q3, to keep the index narrow) only when at
+    least one rendered finding carries that data. So an untriaged, unenriched report's index is
+    BYTE-IDENTICAL to before either feature existed (the omit-when-empty invariant, #625 Q4), while a
+    report that has the data gains exactly the columns it needs."""
     findings = [f for group in ctx.groups for f in group.findings]
     if not findings:
         return ""
+    show_status = any(f.status_label for f in findings)
     show_cwe = any(f.cwe_ids for f in findings)
     show_cve = any(f.cve_ids or (f.threat_intel and f.threat_intel.get("kev")) for f in findings)
     rows = []
@@ -1041,6 +1053,9 @@ def _findings_index(ctx: ReportContext) -> str:
             f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>',
             f'<td class="ix-host">{_esc(host) or "—"}</td>',
         ]
+        if show_status:
+            label = _esc(f.status_label) or "—"
+            cells.append(f'<td class="ix-status st-{_esc(f.disposition)}">{label}</td>')
         if show_cwe:
             cells.append(f'<td class="ix-cwe">{_index_ids_cell(f.cwe_ids)}</td>')
         if show_cve:
@@ -1050,6 +1065,8 @@ def _findings_index(ctx: ReportContext) -> str:
         cells.append(f'<td class="ix-cvss">{_esc(cvss)}</td>')
         rows.append("<tr>" + "".join(cells) + "</tr>")
     headers = "<th>Severity</th><th>Finding</th><th>Host</th>"
+    if show_status:
+        headers += "<th>Status</th>"
     if show_cwe:
         headers += "<th>CWE</th>"
     if show_cve:
@@ -2271,6 +2288,24 @@ table.index td.ix-cvss {
   background: color-mix(in srgb, var(--sev-info) 13%, transparent);
   border-color: color-mix(in srgb, var(--sev-info) 28%, transparent);
 }
+
+/* report disposition (lotek#618): the finding's status, as a quieter sibling of the severity badge.
+   Deliberately NOT severity-coloured -- a status is a statement about handling, not about risk, and
+   borrowing the severity palette would read as a second severity. Only `--muted`/`--sev-low` tokens,
+   so it inherits every theme rather than pinning a colour. */
+.status-badge {
+  display: inline-flex; align-items: center; font-size: 11px; font-weight: 650;
+  letter-spacing: .02em; padding: 2px 8px; border-radius: 5px;
+  color: var(--muted); background: color-mix(in srgb, var(--muted) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
+}
+.status-badge.st-remediated {
+  color: var(--sev-low);
+  background: color-mix(in srgb, var(--sev-low) 10%, transparent);
+  border-color: color-mix(in srgb, var(--sev-low) 24%, transparent);
+}
+table.index td.ix-status { color: var(--muted); white-space: nowrap; font-size: 13px; }
+table.index td.ix-status.st-remediated { color: var(--sev-low); font-weight: 600; }
 
 /* filters */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 18px; }

@@ -5,7 +5,8 @@ Ordering rules (PLAN.md §4 "Grouping & ordering UX"):
   have no group) renders last.
 - Within a group: ``auto_severity`` sorts worst-first then by ``order_index``; ``manual`` sorts by
   ``order_index`` only.
-- ``include_in_report`` on group / finding / artifact filters what enters the context.
+- ``include_in_report`` on group / artifact filters what enters the context; a FINDING is filtered
+  by ``enums.report_visible`` (that veto ANDed with its status' disposition -- lotek#618).
 """
 
 from __future__ import annotations
@@ -16,7 +17,19 @@ from sqlalchemy.orm import object_session
 
 from scribble import findings_service, metadata
 from scribble.content import render_html
-from scribble.enums import OrderMode, RetestOutcome, Severity, risk_rating, severity_rank
+from scribble.enums import (
+    DISPOSITION_LIVE,
+    DISPOSITIONS,
+    OrderMode,
+    RetestOutcome,
+    Severity,
+    counts_toward_risk,
+    finding_status_label,
+    report_disposition,
+    report_visible,
+    risk_rating,
+    severity_rank,
+)
 from scribble.models import normalize_strategic_recommendations
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
@@ -69,6 +82,20 @@ class FindingCtx:
     # see ``render_html._child_summary_text``/``render_docx`` equivalent).
     variables: dict = field(default_factory=dict)
     facts_line: str = ""
+    # ADDITIVE (lotek#618): the finding's STATUS, as the same raw/derived/display triple
+    # ``ChecklistItemCtx`` already carries (``status`` / ``bucket`` / ``bucket_label``) -- the shape is
+    # reused rather than reinvented because it is the same problem: an internal vocabulary a
+    # deliverable must not print verbatim.
+    #
+    #   ``status``        the raw ``FindingStatus`` value -- internal, what the operator set;
+    #   ``disposition``   what it means for the report (``scribble.enums.report_disposition``);
+    #   ``status_label``  the client-facing string, EMPTY when nothing should render.
+    #
+    # Defaults describe a plain untriaged finding, so a ``FindingCtx`` built by an older caller (or a
+    # test constructing one directly) behaves exactly as it did before these fields existed.
+    status: str = ""
+    disposition: str = DISPOSITION_LIVE
+    status_label: str = ""
     # Structured references (#624): the NON-suppressed ``{label, url, source}`` value objects, in stored
     # order — what the renderers show as an omit-when-empty labeled-link block. Empty => the block is
     # omitted (a finding with no non-suppressed refs renders exactly as before this field existed).
@@ -167,6 +194,12 @@ class SeverityRollup:
     counts: dict[str, int]
     total: int
     overall: str
+    # ADDITIVE (lotek#618): how many findings sit in each report disposition -- live / remediated /
+    # accepted / excluded. ``counts``/``total``/``overall`` describe the LIVE set only (a remediated
+    # or false-positive finding must not drive the client's headline risk), so without this a reader
+    # could not tell "we found one issue" from "we found four and three are closed out". Defaults
+    # empty: a caller that builds a rollup directly is unaffected.
+    disposition_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -262,7 +295,7 @@ class ReportContext:
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
-    included = [f for f in group_findings if f.include_in_report]
+    included = [f for f in group_findings if report_visible(f)]
     if order_mode == OrderMode.auto_severity:
         return sorted(included, key=lambda f: (severity_rank(f.severity), f.order_index))
     return sorted(included, key=lambda f: f.order_index)
@@ -381,28 +414,6 @@ _RETEST_OUTCOME_LABEL: dict[RetestOutcome, str] = {
 }
 
 
-def _closeout_disposition_included(finding) -> bool:
-    """Whether ``finding`` belongs in the retest closeout — the SINGLE inclusion decision, so ext#166's
-    ``report_disposition`` becomes the one source of truth when it lands, rather than a re-derived copy at
-    every call site (the "one derived-state predicate, one home" rule).
-
-    ext#166 (unmerged) adds ``report_disposition(status) -> str`` + ``DISPOSITION_EXCLUDED`` to
-    ``scribble.enums``; when present, a finding whose status maps to EXCLUDED (e.g. a false positive)
-    drops out of the closeout even if it carries a retest. Until it merges the fallback below is the whole
-    decision — every finding reaching here is already report-visible, so the closeout shows each one that
-    has a recorded retest.
-    """
-    try:
-        from scribble.enums import DISPOSITION_EXCLUDED, report_disposition  # ext#166 (unmerged)
-    except ImportError:
-        # TODO(ext#166): when report_disposition() merges, delete this fallback — the import above becomes
-        # the whole decision. ONE integration point on purpose; do not inline-re-derive disposition. The
-        # current signal is the finding's own report-inclusion flag (already true for everything reaching
-        # here, since the closeout is keyed to findings that render at top level).
-        return bool(getattr(finding, "include_in_report", True))
-    return report_disposition(getattr(finding, "status", None)) != DISPOSITION_EXCLUDED
-
-
 def _retest_closeout_rows(engagement, rendered_ids: set) -> list[RetestCloseoutRow]:
     """``RetestCloseoutRow``\\s for every report-visible finding that carries a recorded retest (#622),
     worst-severity-first then by title.
@@ -411,15 +422,19 @@ def _retest_closeout_rows(engagement, rendered_ids: set) -> list[RetestCloseoutR
     ``FindingCtx.id``\\s in ``groups_out``). Restricting to it does two things at once: it keeps the
     closeout in step with what the report shows (a finding in an excluded group, or a per-host child folded
     into its parent, is not a separate closeout line), and it guarantees every row's ``finding_id`` has a
-    matching ``id="finding-<id>"`` anchor to link to. Inclusion beyond that is the single
-    ``_closeout_disposition_included`` decision."""
+    matching ``id="finding-<id>"`` anchor to link to. Inclusion beyond that is ``enums.report_visible``
+    — the SAME predicate that built ``rendered_ids``, not a second one. #622 landed a private
+    ``_closeout_disposition_included`` here because ext#166's ``report_disposition`` was unmerged and left
+    a TODO to collapse it on merge; this is that collapse. Re-stating half the rule in a section-local
+    helper is the exact fork ``tests/test_report_disposition_single_source.py`` sweeps for, so the call is
+    redundant-by-construction on purpose rather than a cheaper local check."""
     by_id = {f.id: f for f in engagement.findings}
     included = [
         by_id[fid]
         for fid in rendered_ids
         if by_id.get(fid) is not None
         and by_id[fid].retests
-        and _closeout_disposition_included(by_id[fid])
+        and report_visible(by_id[fid])
     ]
     included.sort(key=lambda f: (severity_rank(f.severity), f.title))
     rows: list[RetestCloseoutRow] = []
@@ -559,6 +574,9 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         artifacts=artifacts,
         variables=variables,
         facts_line=_facts_line(variables),
+        status=finding.status.value if hasattr(finding.status, "value") else str(finding.status or ""),
+        disposition=report_disposition(finding.status),
+        status_label=finding_status_label(finding.status),
         # #624/#625: structured references (non-suppressed only) + metadata for the renderers. All read
         # through ``scribble.metadata`` so "which refs are visible" / "what the threat-intel chips show"
         # is computed in ONE place both renderers consume (one-predicate-one-home).
@@ -631,6 +649,11 @@ def _build_narrative(company_name: str, rollup: SeverityRollup, groups: list[Gro
     seen: set[str] = set()
     for group in groups:
         for finding in group.findings:
+            # LIVE only (lotek#618). A remediated or risk-accepted finding still renders its card,
+            # but naming it here would have the executive summary present a closed-out issue -- or a
+            # false positive, before they were excluded outright -- as a "most significant exposure".
+            if finding.disposition != DISPOSITION_LIVE:
+                continue
             if finding.severity in ("critical", "high") and finding.title not in seen:
                 seen.add(finding.title)
                 top_titles.append(finding.title)
@@ -691,7 +714,8 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
     """Chronological engagement activity trail from scribble's OWN timestamps (TimestampMixin) — no
     cross-seam sourcing. Rows: engagement creation, each report-included finding added, each evidence
     upload, each attack-path diagram. Oldest-first; a row with no ``created_at`` sorts last. Filtered by
-    ``include_in_report`` so the appendix never leaks an excluded draft into the deliverable."""
+    ``report_visible`` so the appendix never leaks an excluded draft -- or a false positive -- into the
+    deliverable. (Artifacts and diagrams have no disposition, so they stay on plain ``include_in_report``.)"""
     def _fmt(dt) -> str:
         return dt.strftime("%Y-%m-%d %H:%M UTC") if dt is not None else ""
 
@@ -701,7 +725,7 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
         events.append((created, ActivityEntry(_fmt(created), "engagement",
                                                f"Engagement created: {engagement.name}")))
     for f in engagement.findings:
-        if not getattr(f, "include_in_report", True):
+        if not report_visible(f):
             continue
         events.append((f.created_at, ActivityEntry(_fmt(f.created_at), "finding",
                                                     f"Finding added: {f.title}")))
@@ -733,15 +757,30 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     groups_out: list[GroupCtx] = []
     counts: dict[Severity, int] = {}
 
+    disposition_counts: dict[str, int] = {d: 0 for d in DISPOSITIONS}
+
     def _tally(findings):
+        # Only a LIVE finding drives the severity ladder (lotek#618). A remediated or risk-accepted
+        # finding still renders -- the client should see it -- but counting it here is what made the
+        # risk banner and the generated narrative overstate present risk.
         for f in findings:
-            counts[f.severity] = counts.get(f.severity, 0) + 1
+            if counts_toward_risk(f.status):
+                counts[f.severity] = counts.get(f.severity, 0) + 1
+
+    def _tally_dispositions(group_findings):
+        # Counted over the findings that pass the operator's veto, INCLUDING the excluded ones --
+        # they are gone from the deliverable, but "3 excluded" is exactly what an operator needs to
+        # see to know the report's shape (and it is the number lotek#633 surfaces on the board).
+        for f in group_findings:
+            if f.include_in_report:
+                disposition_counts[report_disposition(f.status)] += 1
 
     for group in sorted(engagement.groups, key=lambda g: g.order_index):
         if not group.include_in_report:
             continue
         ordered = _order_findings(group.findings, group.order_mode)
         _tally(ordered)
+        _tally_dispositions(group.findings)
         at = group.assessment_type
         groups_out.append(
             GroupCtx(
@@ -753,24 +792,33 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
             )
         )
 
-    ungrouped = [f for f in engagement.findings if f.group_id is None and f.include_in_report]
+    # No ``include_in_report`` filter here: ``_tally_dispositions`` applies the operator's veto itself
+    # and ``_order_findings`` applies the full ``report_visible`` predicate, so filtering here would be
+    # a third statement of a rule that already has exactly one home.
+    ungrouped = [f for f in engagement.findings if f.group_id is None]
     if ungrouped:
+        _tally_dispositions(ungrouped)
         ordered = _order_findings(ungrouped, OrderMode.auto_severity)
-        _tally(ordered)
-        groups_out.append(
-            GroupCtx(
-                id=None,
-                name="Ungrouped",
-                type_slug=None,
-                color=None,
-                findings=_nest_findings(ordered, artifact_url=artifact_url),
+        # The synthetic bucket appears only when it has something VISIBLE in it. Before dispositions
+        # existed, ``ungrouped`` being non-empty implied that; now a bucket holding nothing but
+        # false positives would render an empty "Ungrouped" heading in a client deliverable.
+        if ordered:
+            _tally(ordered)
+            groups_out.append(
+                GroupCtx(
+                    id=None,
+                    name="Ungrouped",
+                    type_slug=None,
+                    color=None,
+                    findings=_nest_findings(ordered, artifact_url=artifact_url),
+                )
             )
-        )
 
     rollup = SeverityRollup(
         counts={s.value: counts.get(s, 0) for s in Severity},
         total=sum(counts.values()),
         overall=risk_rating(counts).value,
+        disposition_counts=disposition_counts,
     )
     # ``Engagement.client`` no longer exists (soft reference, no static relationship -- see
     # docs/LOTEK_ADOPTION.md §3.1 / scribble.models.Engagement.resolve_client). Resolve through the

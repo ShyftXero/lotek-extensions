@@ -587,22 +587,35 @@ def test_removing_the_empty_short_circuit_breaks_backward_compat(session_factory
     assert "sec-retest" not in _closeout_html(session_factory, eid)  # GREEN again once restored
 
 
-def test_closeout_consumes_report_disposition_when_it_is_importable(session_factory, monkeypatch):
-    """The ext#166 seam: inclusion is one helper call, so when ``report_disposition`` exists a finding it
-    calls EXCLUDED drops out of the closeout even though it has a retest. Simulated by patching the (still
-    unmerged) symbols onto ``scribble.enums`` — the single integration point imports them from there."""
-    import scribble.enums as en
+def test_closeout_excludes_a_finding_whose_disposition_is_excluded(session_factory):
+    """ext#166 is MERGED, so the closeout's inclusion is ``enums.report_visible`` and this asserts the
+    real thing: a finding whose status maps to the EXCLUDED disposition leaves the closeout even though
+    it carries a recorded retest.
 
-    monkeypatch.setattr(en, "DISPOSITION_EXCLUDED", "excluded", raising=False)
-    monkeypatch.setattr(en, "report_disposition", lambda status: "excluded", raising=False)
+    #622 wrote this by monkeypatching ``report_disposition``/``DISPOSITION_EXCLUDED`` onto
+    ``scribble.enums`` because the symbols did not exist yet; patched, EVERY finding read as excluded, so
+    the empty closeout was only weak evidence. Driving a real ``FindingStatus`` instead exercises the one
+    predicate end to end, and the green baseline above the mutation is what stops it passing vacuously.
+
+    Measured, not assumed: reverting EITHER `report_visible` call to the #618 `include_in_report` shape
+    leaves this GREEN, because the two are redundant — `_order_findings` keeps an excluded finding out of
+    `rendered_ids`, and `_retest_closeout_rows` re-checks whatever reaches it. Reverting BOTH turns it red
+    (`assert 'sec-retest' not in ...`). So this pins the BEHAVIOUR, not either line; the drift guard in
+    `test_report_disposition_single_source.py` is what pins the call sites.
+    """
+    from scribble.enums import FindingStatus
 
     eid = _closeout_engagement(session_factory, with_retest=True)
-    html = _closeout_html(session_factory, eid)
-    assert "sec-retest" not in html  # disposition EXCLUDED -> not in the closeout
+    assert "sec-retest" in _closeout_html(session_factory, eid)  # GREEN: `remediated` renders
 
-    monkeypatch.setattr(en, "report_disposition", lambda status: "live")
-    html_live = _closeout_html(session_factory, eid)
-    assert "sec-retest" in html_live  # disposition non-excluded -> back in
+    with session_factory() as db:
+        eng = db.get(Engagement, eid)
+        eng.findings[0].status = FindingStatus.false_positive
+        db.commit()
+
+    # A false positive is not a finding: it leaves the deliverable entirely, closeout included, so the
+    # section short-circuits away rather than printing a row for something the report never showed.
+    assert "sec-retest" not in _closeout_html(session_factory, eid)
 
 
 def test_docx_mirrors_the_closeout_table(session_factory):

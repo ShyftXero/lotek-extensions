@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from scribble.enums import Confidence, FindingStatus
+from scribble.enums import Confidence, FindingStatus, coerce_finding_status
 
 
 class Home(enum.StrEnum):
@@ -149,12 +149,16 @@ def confidence_from_dto(dto: Any, default: Confidence = Confidence.medium) -> Co
         return default
 
 
-def status_from_dto(dto: Any, default: FindingStatus = FindingStatus.new) -> FindingStatus:
-    """Map ``DTO.status`` to scribble's ``FindingStatus``; unknown/absent -> ``default``. Defensive for
-    the same reason as ``confidence_from_dto``."""
+def status_from_dto(dto: Any, default: FindingStatus | None = None) -> FindingStatus:
+    """Map ``DTO.status`` to scribble's ``FindingStatus``; unknown/absent -> ``default`` (``new``).
+
+    The coercion itself lives in ``enums.coerce_finding_status`` — the same function the REPORT side
+    uses to decide what a status means (lotek#618). This function is only the DTO-shaped wrapper:
+    reach into the DTO, unwrap an enum-ish value, delegate. It used to re-implement the try/except,
+    which made "unknown status -> safe default" a rule with two homes: promote could store one thing
+    while the report interpreted another, and nothing would raise. The drift guard in
+    ``tests/test_report_disposition_single_source.py`` flagged it the moment both existed.
+    """
     raw = getattr(dto, "status", None)
     raw = getattr(raw, "value", raw)
-    try:
-        return FindingStatus(raw)
-    except (ValueError, TypeError):
-        return default
+    return coerce_finding_status(raw, default)

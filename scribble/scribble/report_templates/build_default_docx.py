@@ -202,6 +202,15 @@ def _add_findings_body(doc: Document) -> None:
     _tag_paragraph(doc, "{% for f in group.findings %}")
     doc.add_paragraph("{{ f.title }}", style="Heading 2")
     _add_finding_meta_table(doc)
+    # Report disposition (lotek#618). PARAGRAPH-level tags, not runs inside one paragraph: docxtpl
+    # drops a paragraph whose whole content is a tag, so a finding with no label to show (every
+    # `new` finding) leaves no empty line behind — the docx of an all-`new` engagement is unchanged
+    # by this feature, which is what `test_report_finding_disposition` pins.
+    _tag_paragraph(doc, "{% if f.status_label %}")
+    status_p = doc.add_paragraph()
+    status_p.add_run("Status: ").italic = True
+    status_p.add_run("{{ f.status_label }}").bold = True
+    _tag_paragraph(doc, "{% endif %}")
     body_p = doc.add_paragraph()
     body_p.add_run("{{r f.body }}")
     _add_evidence_section(doc)

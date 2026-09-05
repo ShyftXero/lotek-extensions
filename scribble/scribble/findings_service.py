@@ -30,7 +30,13 @@ from typing import NamedTuple
 from sqlalchemy import delete, select, update
 
 from scribble.artifacts_api import _as_uuid  # noqa: E402 -- one shared body-id parser (lotek#335)
-from scribble.enums import FindingStatus, OrderMode, RetestOutcome, severity_rank
+from scribble.enums import (
+    FindingStatus,
+    OrderMode,
+    RetestOutcome,
+    report_visible,
+    severity_rank,
+)
 from scribble.models import (
     CollabDoc,
     Engagement,
@@ -160,19 +166,23 @@ def rendered_top_level_count(engagement: Engagement) -> int:
     A flat count of ``engagement.findings`` is NOT that number: promotion produces a parent per vuln type
     with the per-host instances as CHILDREN, and the renderer nests those inside their parent's card, so a
     caller counting board rows over-reports (a 1-parent/2-child cluster is one finding in the deliverable,
-    three on the board). Excluded groups and ``include_in_report=False`` findings drop out too, exactly as
-    ``reporting/context.py::build_report_context`` drops them.
+    three on the board). Excluded groups drop out too, and so does any finding ``enums.report_visible``
+    rejects — the operator's ``include_in_report`` veto AND a status whose disposition is ``excluded`` —
+    exactly as ``reporting/context.py::build_report_context`` drops them.
 
-    Mirrors that function's bucket walk rather than re-deriving the rule — and
-    ``test_top_level_count_matches_what_the_renderer_produces`` asserts equality against the renderer's own
-    output, so the two cannot drift silently.
+    Mirrors that function's bucket walk and CALLS its inclusion predicate rather than re-deriving it.
+    Re-deriving is not hypothetical: this function filtered on ``include_in_report`` alone until
+    lotek#618's follow-up, so the ``top_level_count`` the machine API publishes as "what the client
+    sees" over-reported the deliverable by exactly the number of false positives. The parity test
+    ``test_top_level_count_matches_what_the_renderer_produces`` asserts equality against the renderer's
+    own output over a board that CARRIES statuses (it did not, which is how the bug stayed green).
     """
     buckets = [
-        [f for f in group.findings if f.include_in_report]
+        [f for f in group.findings if report_visible(f)]
         for group in engagement.groups
         if group.include_in_report
     ]
-    buckets.append([f for f in engagement.findings if f.group_id is None and f.include_in_report])
+    buckets.append([f for f in engagement.findings if f.group_id is None and report_visible(f)])
     return sum(len(bucket) - len(nested_child_ids(bucket)) for bucket in buckets)
 
 
