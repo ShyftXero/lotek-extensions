@@ -1,7 +1,7 @@
 # Plan: docs/rails-release-gate-note
 
 - **Branch:** `docs/rails-release-gate-note`  (worktree: `.claude/worktrees/rails-note`, off `main`)
-- **PR:** not opened yet
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/170
 - **Status:** 🟢 ready to merge
 
 ## Purpose
@@ -21,10 +21,11 @@ because the obvious next move (mirror core, loosen this gate too) would be wrong
       dir, and core's gate only drops its lotek-specific markers when `R.is_submodule(cwd)` is true —
       false for a standalone `lotek-extensions` clone, which is why an extensions PR opened from a
       lotek-rooted session legitimately needs `RAILS_OVERRIDE=1` until core's advisory change lands.
+- [x] Opened PR #170.
 
 ## Remaining
 
-- [ ] Open the PR.
+- Nothing.
 
 ## Notes / gotchas
 
