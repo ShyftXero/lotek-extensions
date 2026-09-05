@@ -253,6 +253,39 @@ def _resolve_engagement(db, raw_id, actor):
     return eng
 
 
+def _forbidden_write():
+    """403 for a caller who MAY view this engagement but holds no live OPERATOR capability on it —
+    INV-TENANCY-05.
+
+    Distinct from :func:`_engagement_not_found` (404) on purpose: reaching this means the caller already
+    passed the ``can_view_engagement`` gate above, so the engagement's existence is not a secret to
+    protect here (it can read the whole thing over the GET routes). This is the machine-surface twin of
+    ``scribble.authz._gate``'s cookie write axis — view => 404-shaped, view-but-not-operate => 403 — and
+    the shape the extension docs' ``g.principal`` note describes ("not an operator on this engagement").
+    """
+    return jsonify({"error": "forbidden", "detail": "not an operator on this engagement"}), 403
+
+
+def _deny_write(engagement: Engagement):
+    """The WRITE axis every engagement-scoped machine route shares — INV-TENANCY-05.
+
+    Returns a 403 response when the PAT actor does NOT hold an operator capability on this engagement's
+    CORE engagement, else ``None``. The object gate is the host's ONE per-engagement predicate,
+    ``host.can_operate_on`` (via ``g.principal``) — NEVER ``can_view_client``/``can_write``, which are
+    client-coarse / global and let an operator on engagement E1 mutate a sibling E2 under the same
+    client. ``can_operate_on`` fails closed when the host exposes no such hook, so an older host bundle
+    refuses rather than falling back to view.
+
+    Called AFTER the caller has passed the ``can_view_engagement`` gate (``_resolve_engagement`` /
+    ``_visible_engagement`` / ``_visible_finding``), so a total non-member is already a 404 and never
+    reaches this; this only separates a viewer/observer/operator-on-a-sibling (403) from an operator on
+    THIS engagement (allowed).
+    """
+    if host.can_operate_on(engagement.core_engagement_id):
+        return None
+    return _forbidden_write()
+
+
 def _client_not_found():
     """The ONE refusal for a client the caller may not create an engagement under — and the STATIC
     next-step hint that keeps it from being a dead end.
@@ -978,6 +1011,8 @@ def scribble_add_finding(engagement_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         data = request.get_json(silent=True) or {}
@@ -1319,6 +1354,8 @@ def scribble_promote_job(engagement_id: str, job_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
         findings_ns = host.findings()
@@ -1457,6 +1494,8 @@ def scribble_update_engagement(engagement_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
         new_override = parsed_override if override_provided else engagement.risk_override
         new_rationale = parsed_rationale if rationale_provided else engagement.risk_override_rationale
@@ -1624,6 +1663,8 @@ def scribble_upload_artifact(engagement_id: str):
         engagement = _resolve_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         engagement_id = engagement.id  # normalize to the integer PK for every downstream use below
 
     upload = request.files.get("file")
@@ -1899,6 +1940,8 @@ def scribble_update_artifact(engagement_id: int, artifact_id: int):
         engagement = db.get(Engagement, engagement_id)
         if engagement is None or not can_view_engagement(engagement, actor):
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         # Parsed AFTER the tenancy gate, deliberately: a caller with no grant on this engagement gets the
         # one answer this module ever gives it (404) and never a 400 about its own body, which would be the
         # same reply whether or not the engagement exists and reads as "the id is fine, fix your body".
@@ -2457,6 +2500,8 @@ def scribble_update_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         authorized_engagement_id = finding.engagement_id
 
     data = request.get_json(silent=True) or {}
@@ -2522,6 +2567,8 @@ def scribble_delete_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         authorized_engagement_id = finding.engagement_id
 
     removed_paths: list[str] = []
@@ -2616,6 +2663,8 @@ def scribble_move_finding(finding_id: int):
         finding = _visible_finding(db, finding_id, actor)
         if finding is None:
             return _finding_not_found()
+        if (denied := _deny_write(finding.engagement)) is not None:
+            return denied
         engagement_id = finding.engagement_id
 
         data = request.get_json(silent=True) or {}
@@ -2680,6 +2729,8 @@ def scribble_move_findings(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
         data = request.get_json(silent=True) or {}
         raw_ids = data.get("finding_ids")
@@ -2768,6 +2819,8 @@ def scribble_create_group(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     name, err = _opt_str(data, "name")
@@ -2823,6 +2876,8 @@ def scribble_update_group(engagement_id: int, group_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
@@ -2889,6 +2944,8 @@ def scribble_delete_group(engagement_id: int, group_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _group_of(db, engagement_id, group_id) is None:
             return _group_not_found()
 
@@ -2928,6 +2985,8 @@ def scribble_reorder_groups(engagement_id: int):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     order = data.get("order")
@@ -3014,6 +3073,8 @@ def scribble_link_attack_path(engagement_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
 
     data = request.get_json(silent=True) or {}
     embed_html, err = _opt_str(data, "embed_html")
@@ -3136,6 +3197,8 @@ def scribble_update_attack_path(engagement_id, attack_path_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _diagram_of(db, engagement_id, attack_path_id) is None:
             return _attack_path_not_found()
 
@@ -3204,6 +3267,8 @@ def scribble_delete_attack_path(engagement_id, attack_path_id):
         engagement = _visible_engagement(db, engagement_id, actor)
         if engagement is None:
             return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
         if _diagram_of(db, engagement_id, attack_path_id) is None:
             return _attack_path_not_found()
 
