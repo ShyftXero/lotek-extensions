@@ -9,7 +9,8 @@ Whoever wires up routes (the driver, or ``scribble/__init__.py`` in a later spri
 
 Two routes:
 - ``GET /engagements/<id>/report``          — live render, assets embedded (self-contained page).
-- ``GET /engagements/<id>/report/export``   — download; ``?format=html`` (default) or ``?format=zip``.
+- ``GET /engagements/<id>/report/export``   — download; ``?format=html`` (default), ``zip``, or the
+  #627 structured-data exports ``json`` / ``csv``.
 """
 
 from __future__ import annotations
@@ -146,6 +147,24 @@ def register(api_bp, bp) -> None:
             _override_lookup, _override_names, _install_default = _override_theme_sources(db)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
             slug = _slugify(engagement.name)
+
+            # #627: structured-data exports of the SAME ctx — a download, not a rendered page.
+            if fmt == "json":
+                from scribble.reporting.render_json import render_report_json
+
+                return Response(
+                    render_report_json(ctx),
+                    mimetype="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{slug}-report.json"'},
+                )
+            if fmt == "csv":
+                from scribble.reporting.render_csv import render_report_csv
+
+                return Response(
+                    render_report_csv(ctx),
+                    mimetype="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{slug}-report.csv"'},
+                )
 
             if fmt == "zip":
                 payload = export_zip(
