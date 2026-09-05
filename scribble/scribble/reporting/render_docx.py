@@ -153,16 +153,66 @@ def _children_html(children: list[FindingCtx]) -> str:
     return f"<h4>Affected Hosts ({len(children)})</h4><ul>{''.join(items)}</ul>"
 
 
+def _metadata_line_html(f: FindingCtx) -> str:
+    """A DOCX-side "Classification" line mirroring render_html's header chips (#625). Word's binary
+    finding template has no place to add header cells, so — exactly as #620's risk-override note did —
+    the metadata is folded into the finding BODY as an omit-when-empty leading line rather than
+    regenerating ``default.docx``. KEV/EPSS carry the snapshot ``as_of`` so they never assert a stale
+    fact as current."""
+    parts: list[str] = []
+    if f.cwe_ids:
+        parts.append("CWE: " + ", ".join(f.cwe_ids))
+    if f.cve_ids:
+        parts.append("CVE: " + ", ".join(f.cve_ids))
+    if f.owasp_categories:
+        parts.append("OWASP: " + ", ".join(f.owasp_categories))
+    ti = f.threat_intel
+    if ti:
+        as_of = ti.get("as_of")
+        suffix = f" (as of {as_of})" if as_of else ""
+        if ti.get("kev"):
+            parts.append(f"KEV{suffix}")
+        epss = ti.get("epss")
+        if isinstance(epss, (int, float)):
+            parts.append(f"EPSS {epss:.2f}{suffix}")
+    if not parts:
+        return ""
+    return f"<p><strong>Classification:</strong> {_html_escape(' · '.join(parts))}</p>"
+
+
+def _references_html(f: FindingCtx) -> str:
+    """The DOCX References list (#624): non-suppressed refs as labeled hyperlinks (``html_to_richtext``
+    renders ``<a href>`` as a real Word hyperlink for a safe http(s)/mailto scheme), OMITTED when there
+    are none. Mirror of ``render_html._render_references``; ``source`` is not shown (#624 Q4)."""
+    items: list[str] = []
+    for r in f.references:  # already filtered to non-suppressed in context._finding_ctx
+        label = str(r.get("label") or r.get("url") or "").strip()
+        if not label:
+            continue
+        url = str(r.get("url") or "").strip()
+        if url:
+            items.append(f'<li><a href="{_html_escape(url)}">{_html_escape(label)}</a></li>')
+        else:
+            items.append(f"<li>{_html_escape(label)}</li>")
+    if not items:
+        return ""
+    return f"<h4>References</h4><ul>{''.join(items)}</ul>"
+
+
 def _finding_body_richtext(
     tpl: DocxTemplate,
     blocks_html: dict[str, str],
     image_resolver: Callable[[str], bytes | None],
     *,
     children: list[FindingCtx] | None = None,
+    metadata_html: str = "",
+    references_html: str = "",
 ) -> RichText:
     """Combine a finding's content blocks into one RichText, each under a "Heading 3" label —
     mirrors ``render_html._render_blocks``'s label + ordering behavior. ``children`` (a nested
-    finding's per-host instances) render as an "Affected Hosts" list appended to the same body."""
+    finding's per-host instances) render as an "Affected Hosts" list appended to the same body.
+    ``metadata_html`` (a leading Classification line, #625) and ``references_html`` (a trailing
+    References list, #624) are omit-when-empty HTML fragments fed through the same richtext walker."""
     parts: list[str] = []
     any_open = False
 
@@ -173,7 +223,17 @@ def _finding_body_richtext(
         parts.append(prefix + ppr)
         any_open = True
 
-    seen: set[str] = set()
+    if metadata_html:
+        _open()
+        meta_rt = html_to_richtext(metadata_html, tpl=tpl, image_resolver=image_resolver)
+        if meta_rt.xml:
+            parts.append(meta_rt.xml)
+
+    # ``references`` render via the structured block below (references_html). Suppress a legacy prose
+    # ``references`` content block ONLY when there ARE structured refs (else double-render); when the
+    # column is empty, let the legacy block render as before -- an existing finding that stored refs as a
+    # prose block (pre-#624) must not silently lose them from the DOCX (no migration backfills). (#624)
+    seen: set[str] = {"references"} if references_html else set()
     ordered_keys = [k for k in _BLOCK_ORDER] + [k for k in blocks_html if k not in _BLOCK_ORDER]
     rendered_any = False
     for key in ordered_keys:
@@ -204,6 +264,15 @@ def _finding_body_richtext(
         if children_rt.xml:
             parts.append("</w:p><w:p>")
             parts.append(children_rt.xml)
+            any_open = True
+
+    if references_html:
+        if not any_open:
+            _open()
+        refs_rt = html_to_richtext(references_html, tpl=tpl, image_resolver=image_resolver)
+        if refs_rt.xml:
+            parts.append("</w:p><w:p>")
+            parts.append(refs_rt.xml)
             any_open = True
 
     rt = RichText()
@@ -264,7 +333,10 @@ def _finding_ctx(
         "cvss_score": f"{f.cvss_score:.1f}" if f.cvss_score is not None else "",
         "cvss_vector": f.cvss_vector or "",
         "target": _target_text(f),
-        "body": _finding_body_richtext(tpl, f.blocks_html, image_resolver, children=f.children),
+        "body": _finding_body_richtext(
+            tpl, f.blocks_html, image_resolver, children=f.children,
+            metadata_html=_metadata_line_html(f), references_html=_references_html(f),
+        ),
         "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in f.artifacts],
     }
 

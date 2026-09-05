@@ -352,11 +352,11 @@ def test_patch_merges_content_blocks_and_sanitizes_them(client, token, session_f
 
 @pytest.mark.parametrize(
     "block,payload",
+    # NOTE: ``references`` is NO LONGER a prose block (#624 moved it to a typed column), so it is not
+    # parametrized here — its clearing is exercised by test_patch_references_column below.
     [("description", {"description": ""}),
      ("description", {"description": "   "}),
-     ("remediation", {"remediation": ""}),
-     ("references", {"references": []}),
-     ("references", {"references": ["", "  "]})],
+     ("remediation", {"remediation": ""})],
 )
 def test_patch_clears_a_prose_block_when_the_value_is_empty(
     client, token, session_factory, block, payload
@@ -812,8 +812,10 @@ def test_every_content_writer_bounds_the_REFERENCES_LIST(client, token, session_
     """The same, for `references` — the other input whose length costs per-element work that persists.
 
     Measured before the cap: `PATCH {"references": [<200,000 urls>]}` answered **200** and stored
-    **22.2 MB** of joined text into ONE finding's `content_json`. `references` is `str()`-coerced per
-    element and then wrapped into a doc, so the count has to be refused before the list is walked.
+    **22.2 MB** into ONE finding. `references` is `str()`-coerced/coerced-to-a-value-object per element,
+    so the count has to be refused before the list is walked. (#624 moved a finding's references to a
+    typed column; the FINDING-template `references` list on POST /templates is still a column too — both
+    still bounded by ``_REFERENCE_LIST_MAX``.)
     """
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid)
@@ -857,13 +859,50 @@ def test_a_body_AT_the_content_caps_is_ACCEPTED_and_stored(client, token, sessio
     resp = client.patch(f"{M}/findings/{fid}", json={"content_json": at_cap})
     assert resp.status_code == 200, resp.get_json()
 
+    # 500 references AT the cap is accepted (a boundary that refuses exactly-500 would drop a legitimate
+    # deliverable). #624: references land on the typed column, NOT a content block.
     resp = client.patch(f"{M}/findings/{fid}", json={"references": ["http://x/cve"] * 500})
     assert resp.status_code == 200, resp.get_json()
 
     with session_factory() as db:
-        stored = db.get(fm.EngagementFinding, fid).content_json
-    assert len(stored) == 66  # 64 authored + the seeded "description" + the "references" block
+        finding = db.get(fm.EngagementFinding, fid)
+        stored = finding.content_json
+        assert "references" not in stored  # references are a typed column now, not a prose block
+        assert finding.references  # the column was written
+    assert len(stored) == 65  # 64 authored + the seeded "description" (references is a column, not a block)
     assert schema.plain_text(stored["b63"]) == "block 63"
+
+
+def test_patch_authors_structured_references_and_metadata(client, token, session_factory):
+    """PATCH authors the #624/#625 typed columns: references (add/edit/SUPPRESS), cve_ids/cwe_ids/
+    owasp_categories (normalized), and threat_intel (CLEAR-only). The response echoes them back."""
+    eid = _engagement(session_factory)
+    fid = _finding(session_factory, eid, cve_ids=["CVE-2020-0001"], threat_intel={"as_of": "x",
+                   "source": "s", "cves": {"CVE-2020-0001": {"kev": True}}})
+
+    resp = client.patch(f"{M}/findings/{fid}", json={
+        "references": ["https://vendor/adv",
+                       {"label": "noisy", "url": "https://noisy/1", "suppressed": True}],
+        "cve_ids": ["cve-2021-44228", "CVE-2021-44228"],   # normalized + deduped
+        "cwe_ids": ["79"],                                  # bare number -> CWE-79
+        "owasp_categories": ["A03:2021", "A99:2021"],       # unknown id dropped
+    })
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()
+    assert [r["label"] for r in body["references"]] == ["https://vendor/adv", "noisy"]
+    assert body["references"][0]["source"] == "author"
+    assert body["references"][1]["suppressed"] is True
+    assert body["cve_ids"] == ["CVE-2021-44228"]
+    assert body["cwe_ids"] == ["CWE-79"]
+    assert body["owasp_categories"] == ["A03:2021"]        # A99 dropped
+
+    # threat_intel is enrichment-managed: a non-null value is refused, null clears it.
+    bad = client.patch(f"{M}/findings/{fid}", json={"threat_intel": {"as_of": "y", "cves": {}}})
+    assert bad.status_code == 400 and "enrichment-managed" in bad.get_json()["detail"]
+    cleared = client.patch(f"{M}/findings/{fid}", json={"threat_intel": None})
+    assert cleared.status_code == 200
+    with session_factory() as db:
+        assert db.get(fm.EngagementFinding, fid).threat_intel is None
 
 
 @pytest.mark.parametrize("field", ["title", "analyst_notes", "target_host"])

@@ -27,6 +27,14 @@ from sqlalchemy import select
 
 from scribble.dispositions import confidence_from_dto, snapshot_source_facts, status_from_dto
 from scribble.facts import resolve_variables, synthesize_parent_variables
+from scribble.metadata import (
+    REF_SOURCE_SCAN,
+    REF_SOURCE_TEMPLATE,
+    derive_owasp,
+    merge_references,
+    normalize_cve_ids,
+    normalize_cwe_ids,
+)
 from scribble.models import EngagementFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
 
 # Columns a declaration may ALSO write directly onto the created row (besides ``variables``). Mirrors
@@ -159,18 +167,39 @@ def _target_overrides(
 def _source_overrides(dto: Any) -> dict[str, Any]:
     """The DTO-derived fields promote stamps on EVERY promoted row, whether or not a template matched
     (map #616 / #617): ``confidence``/``status`` mapped onto their typed columns (which previously sat
-    silently at ``medium``/``new`` because promote never mapped them), and the FULL DTO captured verbatim
-    in ``source_facts`` so ``EngagementFinding`` is a lossless superset of the scan finding.
+    silently at ``medium``/``new`` because promote never mapped them), the structured metadata
+    ``cve_ids``/``cwe_ids``/``owasp_categories`` (#625 -- ``cve_ids`` from the scalar ``DTO.cve``,
+    ``cwe_ids`` from ``DTO.facts["cwe"]`` with NO DTO widening, ``owasp_categories`` DERIVED from the CWEs
+    via the offline map), and the FULL DTO captured verbatim in ``source_facts`` so ``EngagementFinding``
+    is a lossless superset of the scan finding. ``references`` is stamped separately (it needs the matched
+    template too -- see ``_reference_override``).
 
     Applied via the constructor ``overrides``, so it wins on BOTH paths -- ``from_template`` (which builds
     the row from a library template and would otherwise leave these at defaults / drop the source values)
-    and ``from_lotek_finding``. Mapping is DEFENSIVE (unknown value -> default; ``scribble.dispositions``)
-    -- a scan must never break a promote."""
+    and ``from_lotek_finding``. Every derivation is DEFENSIVE (unknown value -> empty/default;
+    ``scribble.metadata``/``scribble.dispositions``) -- a scan must never break a promote."""
+    cwe_ids = normalize_cwe_ids((getattr(dto, "facts", None) or {}).get("cwe"))
     return {
         "confidence": confidence_from_dto(dto),
         "status": status_from_dto(dto),
+        "cve_ids": normalize_cve_ids(getattr(dto, "cve", None)),
+        "cwe_ids": cwe_ids,
+        "owasp_categories": derive_owasp(cwe_ids),
         "source_facts": snapshot_source_facts(dto),
     }
+
+
+def _reference_override(dto: Any, template: VulnerabilityTemplate | None) -> list[dict]:
+    """The structured ``references`` for a promoted row (#624): the UNION of the matched library
+    template's ``references`` (source ``template``) and the scan ``DTO.references`` (source ``scan``),
+    deduped by normalized url with the template winning a collision. No template -> scan refs only. An
+    operator's later edits (source ``author``) are never merged here -- re-promote is fill-NULL-only and
+    skips an existing row, so an operator suppress/edit is never clobbered (#617 Q5 / #624 operator-wins)."""
+    template_refs = template.references if template is not None else []
+    return merge_references(
+        template_refs, getattr(dto, "references", None),
+        sources=(REF_SOURCE_TEMPLATE, REF_SOURCE_SCAN),
+    )
 
 
 def _get_or_create_parent(
@@ -242,6 +271,7 @@ def promote_one(
     overrides.update(_source_overrides(dto))
 
     template = _matched_template(db, dto)
+    overrides["references"] = _reference_override(dto, template)
     finding = (
         EngagementFinding.from_template(template, **overrides)
         if template is not None
@@ -321,6 +351,7 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
         overrides.update(_source_overrides(dto))
 
         template = _matched_template(db, dto)
+        overrides["references"] = _reference_override(dto, template)
         if template is not None:
             parent = parents_by_template.get(template.id)
             if parent is None:
