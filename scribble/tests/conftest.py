@@ -197,8 +197,25 @@ class StubFindings:
     def __init__(self) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
 
-    def add_job(self, job_id: str, *, owner_id: int | None = None, dtos: Any = ()) -> None:
-        self._jobs[job_id] = {"owner_id": owner_id, "dtos": list(dtos)}
+    def add_job(
+        self,
+        job_id: str,
+        *,
+        owner_id: int | None = None,
+        dtos: Any = (),
+        assessed: bool | None = None,
+        unassessed_modules: tuple[str, ...] = (),
+    ) -> None:
+        # `assessed`/`unassessed_modules` mirror the real `host_contract.JobDTO` (lotek #648) so the
+        # harness is no kinder than the host: a promote-gate test (#656) can register a job the scan could
+        # not run. Default `assessed=None` = "coverage unmeasured", which the gate never refuses, so every
+        # existing test that omits these keeps its behaviour.
+        self._jobs[job_id] = {
+            "owner_id": owner_id,
+            "dtos": list(dtos),
+            "assessed": assessed,
+            "unassessed_modules": tuple(unassessed_modules),
+        }
 
     def _visible(self, owner_id: int | None, actor: StubActor | None) -> bool:
         if actor is None:
@@ -211,7 +228,13 @@ class StubFindings:
         job = self._jobs.get(job_id)
         if job is None or not self._visible(job["owner_id"], actor):
             return None
-        return SimpleNamespace(id=job_id, promoted_extension=None, promoted_ref_id=None)
+        return SimpleNamespace(
+            id=job_id,
+            promoted_extension=None,
+            promoted_ref_id=None,
+            assessed=job["assessed"],
+            unassessed_modules=job["unassessed_modules"],
+        )
 
     def list_findings(self, job_id: str, actor: StubActor | None) -> list:
         job = self._jobs.get(job_id)

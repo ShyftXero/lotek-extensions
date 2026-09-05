@@ -538,6 +538,13 @@ def _audit(db, verb: str, *, subject_type: str, subject_id=None, before=None, af
     )
 
 
+def _truthy(v: Any) -> bool:
+    """Lenient boolean parse for an opt-in flag arriving as JSON ``true`` OR a query string ``"true"``."""
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _idempotency_key(data: Any) -> str | None:
     """The retry key for a mutating request: the ``Idempotency-Key`` header, else a body ``idempotency_key``
     field. Empty/absent -> None (idempotency is opt-in per request)."""
@@ -1363,11 +1370,59 @@ def scribble_promote_job(engagement_id: str, job_id: str):
         job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
         if job is None:
             return jsonify({"error": "not_found", "detail": "job not found"}), 404
+
+        # #656 (scan-outcome honesty): a job we KNOW ran nothing must not be promoted silently — its zero
+        # findings would reach a client deliverable as "No issues identified" when the truth is "could not
+        # run" (absence of evidence rendered as evidence of absence). Only `assessed is False` is refused;
+        # `assessed is None` (a legacy job predating `job_module_runs.evidence_bytes`, coverage unmeasured)
+        # is NOT refused — the report must not assert what it cannot measure. `getattr(..., None)` keeps
+        # this dormant against a core that predates JobDTO.assessed (lotek #648), so it fails safe until
+        # that contract lands. An operator overrides with `acknowledge_inconclusive=true` (recorded).
+        assessed = getattr(job, "assessed", None)
+        unassessed = tuple(getattr(job, "unassessed_modules", ()) or ())
+        _body = request.get_json(silent=True) or {}
+        acknowledge = _truthy(_body.get("acknowledge_inconclusive")) or _truthy(
+            request.args.get("acknowledge_inconclusive")
+        )
+        if assessed is False and not acknowledge:
+            return (
+                jsonify(
+                    {
+                        "error": "inconclusive_job",
+                        "detail": (
+                            "This job produced no evidence and may have been unable to run; promoting it "
+                            "would report absence of evidence as evidence of absence. Re-run the scan, or "
+                            "resend with acknowledge_inconclusive=true to promote anyway (recorded)."
+                        ),
+                        "unassessed_modules": list(unassessed),
+                    }
+                ),
+                409,
+            )
+
         dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
 
         from scribble.promote import promote_job  # lazy: scribble/promote.py is Track D's file
 
         result = promote_job(db, engagement=engagement, findings=dtos, actor_username=actor_username)
+
+        # #656: record the coverage gap into the engagement's audit trail whenever modules produced no
+        # evidence — whether the job was outright inconclusive (acknowledged above) or ran but left some
+        # modules unassessed. This is the durable "which modules didn't run" note; the report-rendered
+        # coverage section is tracked separately (needs a schema sink + migration).
+        if unassessed:
+            _audit(
+                db,
+                "promote_coverage_gap",
+                subject_type="engagement",
+                subject_id=engagement_id,
+                after={
+                    "job_id": str(job_id),
+                    "assessed": assessed,
+                    "acknowledged_inconclusive": bool(acknowledge),
+                    "unassessed_modules": list(unassessed),
+                },
+            )
         db.commit()
 
     # Record the assignment on the host's own generic Job.promoted_* columns (separate session/engine —
@@ -1376,14 +1431,17 @@ def scribble_promote_job(engagement_id: str, job_id: str):
     # the promotion itself already succeeded and the job existence/tenancy was already checked above.
     host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement_id)
 
-    return jsonify(
-        {
-            "engagement_id": engagement_id,
-            "promoted": result.get("promoted", 0),
-            "skipped": result.get("skipped", 0),
-            "parents": result.get("parents", 0),
-        }
-    )
+    payload = {
+        "engagement_id": engagement_id,
+        "promoted": result.get("promoted", 0),
+        "skipped": result.get("skipped", 0),
+        "parents": result.get("parents", 0),
+    }
+    # Only surfaced when there is a gap to report, so a fully-assessed promote's response is unchanged.
+    if unassessed:
+        payload["unassessed_modules"] = list(unassessed)
+        payload["coverage_acknowledged"] = bool(acknowledge)
+    return jsonify(payload)
 
 
 # ── 8b. GET /engagements — list the engagements this token may see ───────────────────────────────────

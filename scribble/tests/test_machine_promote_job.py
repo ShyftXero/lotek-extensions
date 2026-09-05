@@ -108,3 +108,95 @@ def test_promote_unknown_job_and_engagement_404(client, stub_host):
     eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/nope").status_code == 404
     assert client.post(f"{M}/engagements/{_MISSING_ID}/promote-job/job-1").status_code == 404
+
+
+# ── #656 scan-outcome honesty: refuse promoting an unassessed job into a client deliverable ──────────
+
+
+def test_unassessed_job_is_refused_without_acknowledge(client, stub_host, session_factory):
+    # A job the scan could not run (assessed=False) has zero findings for the WRONG reason. Promoting it
+    # would render "No issues identified" — absence of evidence as evidence of absence. Refuse it.
+    stub_host.findings.add_job(
+        "job-1", owner_id=7, dtos=[], assessed=False, unassessed_modules=("bloodhound_python", "netexec_smb")
+    )
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["error"] == "inconclusive_job"
+    assert body["unassessed_modules"] == ["bloodhound_python", "netexec_smb"]
+
+    with session_factory() as db:  # nothing promoted, nothing recorded on the host
+        assert db.get(fm.Engagement, eid).findings == []
+    assert stub_host.promoted_calls == []
+
+
+def test_acknowledge_inconclusive_allows_promote_and_records_coverage(client, stub_host, session_factory):
+    stub_host.findings.add_job(
+        "job-1",
+        owner_id=7,
+        dtos=[FakeFindingDTO(id=1, title="SQLi")],
+        assessed=False,
+        unassessed_modules=("netexec_smb",),
+    )
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+
+    r = client.post(
+        f"{M}/engagements/{eid}/promote-job/job-1", json={"acknowledge_inconclusive": True}
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["promoted"] == 1
+    assert body["unassessed_modules"] == ["netexec_smb"]
+    assert body["coverage_acknowledged"] is True
+
+    with session_factory() as db:
+        assert {f.title for f in db.get(fm.Engagement, eid).findings} == {"SQLi"}
+    gaps = [c for c in stub_host.audit_calls if c[0] == "ext:scribble:promote_coverage_gap"]
+    assert len(gaps) == 1
+    after = gaps[0][1]["after"]
+    assert after["acknowledged_inconclusive"] is True
+    assert after["unassessed_modules"] == ["netexec_smb"]
+
+
+def test_acknowledge_via_query_param_also_works(client, stub_host):
+    stub_host.findings.add_job(
+        "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")], assessed=False
+    )
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1?acknowledge_inconclusive=true")
+    assert r.status_code == 200
+
+
+def test_legacy_unmeasured_job_is_not_refused(client, stub_host):
+    # assessed=None means coverage was never measured (a job predating evidence_bytes). The gate must NOT
+    # refuse it — the report must not assert what it cannot measure — and the response stays unchanged.
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")], assessed=None)
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
+    assert r.status_code == 200
+    assert "unassessed_modules" not in r.get_json()  # no gap to report → response unchanged
+
+
+def test_assessed_job_with_partial_gaps_records_coverage_without_acknowledge(client, stub_host):
+    # assessed=True (it ran and produced evidence) but some modules were still unassessed. Not refused,
+    # but the coverage gap is recorded and surfaced so the deliverable can be honest about it.
+    stub_host.findings.add_job(
+        "job-1",
+        owner_id=7,
+        dtos=[FakeFindingDTO(id=1, title="SQLi")],
+        assessed=True,
+        unassessed_modules=("azurehound",),
+    )
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid = _engagement(client, stub_host)
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
+    assert r.status_code == 200
+    assert r.get_json()["unassessed_modules"] == ["azurehound"]
+    assert r.get_json()["coverage_acknowledged"] is False
+    assert any(c[0] == "ext:scribble:promote_coverage_gap" for c in stub_host.audit_calls)
