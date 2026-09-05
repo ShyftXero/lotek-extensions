@@ -2385,9 +2385,10 @@ def scribble_list_findings(engagement_id: int):
         indices refer to a list the caller could no longer see.
       * The RENDERED report nests those children inside their parent's card, so ``count`` (board rows) is
         not the number of findings a client sees. ``top_level_count`` is that number — the renderer's own
-        rule (``findings_service.rendered_top_level_count``), excluded groups and excluded findings
-        dropped. Quote that one; a 1-parent/2-child promotion is ONE finding in the deliverable and three
-        rows here.
+        rule (``findings_service.rendered_top_level_count``), excluded groups dropped and every finding
+        ``enums.report_visible`` rejects dropped -- the operator's ``include_in_report`` veto AND a status
+        whose disposition is ``excluded``, so a ``false_positive`` is not in this number either (lotek#618).
+        Quote that one; a 1-parent/2-child promotion is ONE finding in the deliverable and three rows here.
     """
     actor = host.actor()
     with open_session() as db:

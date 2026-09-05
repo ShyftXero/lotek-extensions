@@ -118,7 +118,7 @@ def risk_rating(counts: dict[Severity, int]) -> Severity:
 # is the shared vocabulary every one of those callers already imports, so no new import edge is needed.
 #
 # It sits BESIDE ``include_in_report``, which stays the operator's explicit veto. Inclusion is
-# ``include_in_report AND disposition != "excluded"``, ANDed once in ``build_report_context``.
+# ``include_in_report AND disposition != "excluded"``, ANDed once in :func:`report_visible` below.
 
 #: A finding still stands: it renders AND counts toward the severity ladder.
 DISPOSITION_LIVE = "live"
@@ -208,3 +208,26 @@ def finding_status_label(status: FindingStatus | str | None) -> str:
 def counts_toward_risk(status: FindingStatus | str | None) -> bool:
     """Does a finding with this status drive the overall risk rating? Only a live one does."""
     return report_disposition(status) == DISPOSITION_LIVE
+
+
+def report_visible(finding) -> bool:
+    """Does this finding reach the deliverable at all? Decided HERE, once, and nowhere else.
+
+    Two independent reasons a finding is out, ANDed (lotek#618):
+      * ``include_in_report`` -- the operator's EXPLICIT veto, unchanged;
+      * a disposition of ``excluded`` -- derived from ``status`` (a ``false_positive`` is not a
+        finding, so it leaves the client deliverable entirely).
+
+    Every finding-level filter site calls this rather than re-deriving either half, and
+    ``tests/test_report_disposition_single_source.py`` sweeps the package's AST to keep it that way.
+    It is not a hypothetical: this predicate was born in ``reporting/context.py`` claiming to be the
+    only home while ``findings_service.rendered_top_level_count`` -- the ``top_level_count`` the
+    machine API publishes as "what the client sees" -- still filtered on ``include_in_report`` alone
+    and over-reported the deliverable by exactly the number of false positives.
+
+    It lives in ``enums.py`` rather than in ``reporting/context.py`` for an import-direction reason:
+    ``context`` imports ``findings_service`` (for the nesting rule), so ``findings_service`` cannot
+    import back without a cycle. ``enums`` is the shared vocabulary BOTH already import, so the one
+    copy needs no new edge -- the same argument ``report_disposition`` above is here on.
+    """
+    return bool(finding.include_in_report) and report_disposition(finding.status) != DISPOSITION_EXCLUDED

@@ -56,6 +56,8 @@ as a most-significant exposure, and a remediated finding alongside it.
 - [x] `FindingCtx.status` / `.disposition` / `.status_label`; `SeverityRollup.disposition_counts`
       (all additive + defaulted)
 - [x] `report_visible()` — inclusion = `include_in_report AND disposition != excluded`, computed once
+      (it lives in `scribble/enums.py`; see the correction below — it did NOT start there, and the
+      claim that it had one home was false when first written)
 - [x] `_tally` counts live only; `_tally_dispositions` counts all four; `_build_narrative` names live
       findings only
 - [x] `render_html`: conditional `Status` column + finding-head badge + themed CSS (no severity palette)
@@ -98,8 +100,9 @@ tests, and main's `test_finding_dto_disposition_drift` / `test_source_facts_prom
 
 ## Remaining
 
-- [ ] Full suite green on the merged branch, then push
-- [ ] PR body/comment updated with the merged-main counts
+- [x] Full suite green on the merged branch, then push — **1472 tests, 0 failures, 0 errors, 11 skipped**
+      (junit XML, 2026-09-05, after the inclusion-fork fix below)
+- [x] PR body/comment updated with the merged-main counts + the `report_visible` correction
 
 ## Notes / gotchas
 
@@ -110,8 +113,11 @@ tests, and main's `test_finding_dto_disposition_drift` / `test_source_facts_prom
   `checklists.status_bucket()`. `FindingCtx` mirrors that shape.
 - `include_in_report` stays the operator's explicit **veto**; `disposition` is the derived half.
   Inclusion = `include_in_report AND disposition != excluded`, computed **once** in
-  `build_report_context` — never re-derived at a call site (repo directive: one derived predicate, one
-  home).
+  `enums.report_visible` — never re-derived at a call site (repo directive: one derived predicate, one
+  home). It sits in `enums.py` and not in `reporting/context.py` because of the import direction:
+  `context` imports `findings_service` for the nesting rule, so `findings_service` cannot import back
+  without a cycle; `enums` is the shared vocabulary both already import. Enforced by rule 3 of
+  `tests/test_report_disposition_single_source.py`, not by convention.
 - Disposition map: `live` = new/triaged/needs_retest (renders, counts) · `remediated` = fixed ·
   `accepted` = accepted_risk (both render, leave the ladder) · `excluded` = false_positive (gone).
 - The board-side UX for an `excluded` finding is **out of this branch** — it is lotek#633.
@@ -129,6 +135,29 @@ tests, and main's `test_finding_dto_disposition_drift` / `test_source_facts_prom
 - **The DOCX needed a template change, not just a scalar.** The status line is authored in
   `build_default_docx.py` with **paragraph-level** `{% if %}` tags so a finding with no label leaves no
   blank line; `default.docx` is regenerated and committed.
+- **The "one home" claim was FALSE when it was written, and an adversarial re-check caught it.**
+  `report_visible()` landed in `reporting/context.py` with a docstring saying inclusion was "decided
+  HERE, once, and nowhere else". The second home was
+  `findings_service.rendered_top_level_count()` — which still filtered on `include_in_report` **alone**
+  while its own docstring claimed to mirror `build_report_context`'s bucket walk "rather than
+  re-deriving the rule". `api_pat` publishes that number as `top_level_count`, the field the machine-API
+  docs tell an agent to quote as what the client sees. Reproduced: an engagement with one live `high`
+  and one `critical` marked `false_positive` (both ticked for the report) **renders 1 card and reported
+  2** — the same "wrong number in a client deliverable" defect this branch exists to fix, relocated to a
+  sibling consumer.
+  - The existing parity test `test_top_level_count_matches_what_the_renderer_produces` asserts exactly
+    that equality and **stayed green over the bug**, because its board carried no statuses: the second
+    half of the rule was unobservable. Fixed first, watched fail (`assert 7 == 5`), then fixed the code.
+  - Two more finding-level filters were re-derived and are now the predicate: the `ungrouped` bucket
+    pre-filter in `build_report_context`, and `_build_activity_log`, which would have listed a false
+    positive's title in the activity appendix of a deliverable it is otherwise absent from.
+  - `_tally_dispositions` keeps its bare `include_in_report` read on purpose (allowlisted with a
+    reason): "how do the operator's kept findings split across dispositions" needs the veto WITHOUT the
+    disposition half, or the `excluded` count would be structurally zero.
+  - **What enforces it now:** rule 3 of the drift guard sweeps the package AST for any read of
+    `.include_in_report` (attribute or `getattr`) outside a reasoned allowlist keyed by
+    (file, enclosing function, expression). Planting the original bug back makes it fail with
+    `findings_service.py:172 in rendered_top_level_count(): f.include_in_report`.
 - **The drift guard's allowlist is per EXPRESSION, not per file** — its first run correctly flagged
   `models.py`'s `default=FindingStatus.new` (a column default, not a derivation). Exempting the whole
   module would have exempted the next real derivation added to it.

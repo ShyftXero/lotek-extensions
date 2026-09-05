@@ -270,7 +270,9 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
             "engagement_id": _UUID,
             "count": {"type": "integer", "description": "BOARD rows, including promoted children."},
             "top_level_count": {"type": "integer", "description": "How many findings the RENDERED "
-                                "report shows — the smaller number whenever promotion nested children. "
+                                "report shows — smaller than `count` whenever promotion nested children, "
+                                "a group is excluded, or a finding is (un-ticked for the report, or "
+                                "dispositioned out of it by its status, e.g. false_positive). "
                                 "Quote this one to a client."},
             "groups": {"type": "array", "items": {"allOf": [
                 _ref("Group"), _obj({"findings": _array("FindingSummary")})]}},

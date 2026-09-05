@@ -5,7 +5,8 @@ Ordering rules (PLAN.md §4 "Grouping & ordering UX"):
   have no group) renders last.
 - Within a group: ``auto_severity`` sorts worst-first then by ``order_index``; ``manual`` sorts by
   ``order_index`` only.
-- ``include_in_report`` on group / finding / artifact filters what enters the context.
+- ``include_in_report`` on group / artifact filters what enters the context; a FINDING is filtered
+  by ``enums.report_visible`` (that veto ANDed with its status' disposition -- lotek#618).
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from sqlalchemy.orm import object_session
 from scribble import findings_service, metadata
 from scribble.content import render_html
 from scribble.enums import (
-    DISPOSITION_EXCLUDED,
     DISPOSITION_LIVE,
     DISPOSITIONS,
     OrderMode,
@@ -25,6 +25,7 @@ from scribble.enums import (
     counts_toward_risk,
     finding_status_label,
     report_disposition,
+    report_visible,
     risk_rating,
     severity_rank,
 )
@@ -218,20 +219,6 @@ class ReportContext:
     # authored judgement, never a silent replacement (see render_html._render_summary / render_docx).
     risk_override: str | None = None
     risk_override_rationale: str | None = None
-
-
-def report_visible(finding) -> bool:
-    """Does this finding reach the deliverable at all? Decided HERE, once, and nowhere else.
-
-    Two independent reasons a finding is out, ANDed (lotek#618):
-      * ``include_in_report`` -- the operator's EXPLICIT veto, unchanged;
-      * a disposition of ``excluded`` -- derived from ``status`` (a ``false_positive`` is not a
-        finding, so it leaves the client deliverable entirely).
-
-    Every filter site calls this rather than re-deriving either half: an inclusion rule that lives in
-    two places is one screenshot away from a report that disagrees with its own board.
-    """
-    return bool(finding.include_in_report) and report_disposition(finding.status) != DISPOSITION_EXCLUDED
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -566,7 +553,8 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
     """Chronological engagement activity trail from scribble's OWN timestamps (TimestampMixin) — no
     cross-seam sourcing. Rows: engagement creation, each report-included finding added, each evidence
     upload, each attack-path diagram. Oldest-first; a row with no ``created_at`` sorts last. Filtered by
-    ``include_in_report`` so the appendix never leaks an excluded draft into the deliverable."""
+    ``report_visible`` so the appendix never leaks an excluded draft -- or a false positive -- into the
+    deliverable. (Artifacts and diagrams have no disposition, so they stay on plain ``include_in_report``.)"""
     def _fmt(dt) -> str:
         return dt.strftime("%Y-%m-%d %H:%M UTC") if dt is not None else ""
 
@@ -576,7 +564,7 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
         events.append((created, ActivityEntry(_fmt(created), "engagement",
                                                f"Engagement created: {engagement.name}")))
     for f in engagement.findings:
-        if not getattr(f, "include_in_report", True):
+        if not report_visible(f):
             continue
         events.append((f.created_at, ActivityEntry(_fmt(f.created_at), "finding",
                                                     f"Finding added: {f.title}")))
@@ -643,7 +631,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
             )
         )
 
-    ungrouped = [f for f in engagement.findings if f.group_id is None and f.include_in_report]
+    # No ``include_in_report`` filter here: ``_tally_dispositions`` applies the operator's veto itself
+    # and ``_order_findings`` applies the full ``report_visible`` predicate, so filtering here would be
+    # a third statement of a rule that already has exactly one home.
+    ungrouped = [f for f in engagement.findings if f.group_id is None]
     if ungrouped:
         _tally_dispositions(ungrouped)
         ordered = _order_findings(ungrouped, OrderMode.auto_severity)
