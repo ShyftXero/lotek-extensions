@@ -161,3 +161,46 @@ tests, and main's `test_finding_dto_disposition_drift` / `test_source_facts_prom
 - **The drift guard's allowlist is per EXPRESSION, not per file** — its first run correctly flagged
   `models.py`'s `default=FindingStatus.new` (a column default, not a derivation). Exempting the whole
   module would have exempted the next real derivation added to it.
+
+## Merge of `origin/main` @ `be78c99` (2026-09-05)
+
+Two conflicts, both the `from scribble.enums import …` block, resolved as unions — main's enums
+additions (`RetestOutcome` #621, `ReportFormat.json/csv` #627) are disjoint from the disposition block,
+and nothing was moved or redefined on both sides.
+
+- **`_closeout_disposition_included` deleted, not merged.** #622 landed it in `reporting/context.py` as
+  a private half of `report_visible` — a `try: from scribble.enums import DISPOSITION_EXCLUDED,
+  report_disposition / except ImportError:` probe for THIS branch, with a `TODO(ext#166)` to collapse it
+  on merge. `_retest_closeout_rows` now calls `enums.report_visible`, the same predicate that built the
+  `rendered_ids` it walks.
+- **Drift-guard allowlist grew by 4, each verified non-finding-level.** `_chain_ctxs`
+  `c.include_in_report` (#628 — `AttackChain` has no `status` column, so no disposition to AND in), and
+  `findings_service`'s `FindingStatus.fixed/needs_retest/accepted_risk` from `_RETEST_OUTCOME_STATUS`
+  (#621), which is the WRITE direction: what a status BECOMES, not what one MEANS. It cannot disagree
+  with `report_disposition`, which interprets whatever it writes. Same class as the ORM column default.
+- **Re-asserted by reading the merged tree:** the finding-level filters are `_order_findings`,
+  `_build_activity_log`, `_retest_closeout_rows` and both buckets of `rendered_top_level_count` — all
+  four call `report_visible`. main's new exporters (`render_json`/`render_csv`, #627) consume
+  `ctx.groups`, so they inherit it rather than re-filtering.
+- **No retest outcome can reach the `excluded` disposition** (`remediated`→`fixed`→`remediated`,
+  `partially/not_remediated`→`needs_retest`→`live`, `accepted_risk`→`accepted`, `not_tested`→unchanged),
+  so a retest can never silently drop a finding out of the deliverable.
+- **#622's `test_closeout_consumes_report_disposition_when_it_is_importable` rewritten**, since its
+  premise ("still unmerged") is now false and its monkeypatch made EVERY finding read as excluded. It
+  drives a real `FindingStatus.false_positive` instead. Mutation-checked: reverting EITHER
+  `report_visible` call to the `include_in_report` shape leaves it green — the two are redundant —
+  reverting BOTH turns it red. It pins the behaviour; the AST drift guard pins the call sites.
+
+### 🔴 The suite result is only meaningful over a SCRATCH alembic merge head
+
+`origin/main` @ `be78c99` has forked into **two** heads on its own — `a7d2c4e6f810` (#171 refs/metadata)
+and `e5a1c3d7b920` (#621→#628→#623) — both cut off `a7f3b9c1d2e4`. This branch adds **no** migration.
+Verified directly against main's files: `ScriptDirectory(...).get_heads()` on a `git archive` of
+`be78c99` returns both. The conftest does `upgrade head`, which alembic refuses on a multi-head chain,
+so the run over the merge as committed was **1534 tests / 11 failures / 1047 errors — every single one
+`CommandError: Multiple heads are present`, zero from any other cause**, i.e. no signal at all.
+
+Re-run with a throwaway merge revision (`down_revision = ("a7d2c4e6f810", "e5a1c3d7b920")`, **not
+committed**, deleted after): **1534 tests, 0 failures, 0 errors, 11 skipped** (698s). That is the honest
+result for this branch. `tests/test_migration_single_head.py` stays RED until whoever forked main rejoins
+it — fixing someone else's migration fork does not belong on this branch.
