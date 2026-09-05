@@ -141,19 +141,20 @@ python3 .claude/hooks/rails_gate.py --ack-transcripts
 gh pr create --base main --head <branch>              # ALL applicable markers present + current
 ```
 
-### 🔴 This repo's PR gate STAYS a gate, even though core's went advisory (2026-09-04)
+### 🔴 This repo's PR gate STAYS a gate, even as core's goes advisory (2026-09-04)
 
-lotek core moved its hard gate from `gh pr create` to **cutting a release**: its PR markers now report
-and pass, and `scripts/cut-release-tag.sh` refuses to tag a commit without `--ack-tests` +
-`--ack-invariants` bound to that exact sha (core `docs/RAILS.md` §5c). **Do not mirror that here**, for
-one structural reason:
+lotek core is **moving** its hard gate from `gh pr create` to **cutting a release** —
+**ShyftXero/lotek#638**, still open (draft) as of 2026-09-05. Once it lands, core's PR markers report
+and pass, while `scripts/cut-release-tag.sh` refuses to tag a commit without `--ack-tests` +
+`--ack-invariants` bound to that exact sha. **Do not mirror that here**, and the reason holds whether or
+not #638 has merged — it is structural, not a matter of timing:
 
 **Extensions have no release step of their own.** They reach production only when core pins a new
 extension tag and someone cuts a *core* release — and the evidence that core release demands is
 **core's** suite and **core's** invariant contract. Neither runs `scribble/tests`, `cream/tests` or any
 sibling. So if this repo's PR gate went advisory too, an extension's own tests would be gated
-**nowhere**: advisory at the PR, absent at the release. Core could loosen its PR gate precisely
-*because* it has a release gate to hand the requirement to; this repo has nothing to hand it to.
+**nowhere**: advisory at the PR, absent at the release. Core can afford to loosen its PR gate precisely
+*because* #638 gives it a release gate to hand the requirement to; this repo has nothing to hand it to.
 
 Consequences to keep straight:
 
@@ -163,11 +164,19 @@ Consequences to keep straight:
   rather than override them.
 - **A cross-repo PR needs care about WHICH hook runs.** The executing PreToolUse hook belongs to the
   session's project directory, not to the repo you are editing: a session rooted in lotek that opens a
-  PR from an extensions worktree gets *core's* gate, which demands core's `--ack-invariants` — a marker
-  no extension diff can earn. Core's gate drops its lotek-specific markers only when
-  `R.is_submodule(cwd)` is true (it uses `git rev-parse --show-superproject-working-tree`), which is
-  **false** for a standalone `lotek-extensions` clone. Until core's advisory change lands, that
-  combination legitimately needs `RAILS_OVERRIDE=1` — say so in the PR when you use it.
+  PR from an extensions worktree gets *core's* gate. **An earlier revision of this section claimed that
+  gate demands core's `--ack-invariants`, "a marker no extension diff can earn". That overstated it and
+  is corrected here.** Core's `_g_pre_pr_review` runs `_branch_is_docs_only` first, which drops BOTH
+  `--ack-tests` and `--ack-invariants` on a branch whose every changed path is `.md` — this branch's own
+  audit trail records exactly that (`pre-pr-review warn "docs-only branch: --ack-tests /
+  --ack-invariants not required"`). What core's gate still demands is `--ack-review` +
+  `--ack-adversarial`, which are repo-agnostic and **fully earnable from an extensions worktree**. So on
+  a docs-only branch `RAILS_OVERRIDE=1` is a *choice, not a necessity* — earn the two reviews instead.
+  The genuinely stuck case is a **non-docs** extension branch opened from a lotek-rooted session: core's
+  gate then does demand `--ack-invariants`, and it drops its lotek-specific markers only when
+  `R.is_submodule(cwd)` is true (via `git rev-parse --show-superproject-working-tree`), which is
+  **false** for a standalone `lotek-extensions` clone. That combination needs the override until #638
+  lands — say so in the PR when you use it.
 - If this ever *should* follow core, the missing piece is a release-time gate that runs the extensions'
   own suites — not a matching loosening.
 
