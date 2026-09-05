@@ -110,6 +110,24 @@
   {% endif %}
 </div>
 
+{# Source jobs (#629): the reverse of promotion -- the host scan jobs whose findings were promoted INTO
+   this engagement, driven by `host.list_jobs`. This panel is the insertion point #630/#631/#635 build
+   richer content (source-job links, un-adopt, fuller empty-state copy) onto -- keep it additive. #}
+<div class="scribble-source-jobs card" id="scribble-source-jobs">
+  <h2 style="margin-top:0">Source jobs</h2>
+  <p class="muted">Scan jobs whose findings were promoted into this engagement.</p>
+  <ul class="scribble-source-jobs-list">
+    {% for job in source_jobs %}
+    <li>
+      <span class="mono">{{ job.id }}</span>
+      {% if job.promoted_at %}<span class="muted">promoted {{ job.promoted_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+    </li>
+    {% else %}
+    <li class="muted" id="scribble-source-jobs-empty">No scan jobs promoted into this engagement yet.</li>
+    {% endfor %}
+  </ul>
+</div>
+
 {% if scribble_can_write %}
 <div class="scribble-bulk-bar" id="scribble-bulk-bar" hidden>
   <span class="scribble-bulk-count"><strong id="scribble-bulk-n">0</strong> selected</span>

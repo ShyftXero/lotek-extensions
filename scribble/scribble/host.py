@@ -128,3 +128,13 @@ def mark_job_promoted(job_id, actor_obj, *, extension: str, ref_id: int) -> bool
     if hook is None:
         return False
     return bool(hook(job_id, actor_obj, extension=extension, ref_id=ref_id))
+
+
+def list_jobs(engagement, actor_obj) -> list:
+    """Reverse of ``mark_job_promoted``: the host scan jobs promoted INTO this engagement, each carrying
+    ``.id`` (the job ref) and ``.promoted_at``. The host applies its own ``user_can_view_job`` to
+    ``actor_obj``. Empty list when unmounted -- standalone Scribble has no jobs to reverse-index."""
+    hook = host_hook("list_jobs")
+    if hook is None:
+        return []
+    return list(hook(actor_obj, extension="scribble", ref_id=engagement.id))
