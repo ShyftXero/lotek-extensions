@@ -97,6 +97,7 @@ from scribble.models import (
     FindingGroup,
     ScribbleVulnMap,
     VulnerabilityTemplate,
+    normalize_strategic_recommendations,
 )
 from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.reporting.context import build_report_context
@@ -1405,6 +1406,11 @@ def _engagement_summary(engagement: Engagement) -> dict:
         # no override (the computed risk_rating ladder stands). Set via PATCH /engagements/<id>.
         "risk_override": engagement.risk_override.value if engagement.risk_override else None,
         "risk_override_rationale": engagement.risk_override_rationale,
+        # lotek#623: authored strategic recommendations (list of strings), normalized. Set via
+        # PATCH /engagements/<id>; [] when unset.
+        "strategic_recommendations": normalize_strategic_recommendations(
+            engagement.strategic_recommendations
+        ),
     }
 
 
@@ -1458,6 +1464,9 @@ def scribble_update_engagement(engagement_id: str):
     ``risk_override_rationale`` — an unreasoned override would read as a computed fact, exactly what the
     report must not do — and clearing the override clears its rationale. Only supplied fields change
     (an omitted field is ``_ABSENT`` = unchanged).
+
+    Also carries the authored ``strategic_recommendations`` list (lotek#623): a list of strings (blanks
+    and non-strings dropped), or ``null``/``[]`` to clear. A non-list body is a 400.
     """
     actor = host.actor()
     data = request.get_json(silent=True) or {}
@@ -1488,6 +1497,17 @@ def scribble_update_engagement(engagement_id: str):
             return _bad_request("risk_override_rationale must be a string or null")
         parsed_rationale = raw_rationale.strip() or None
 
+    # lotek#623: the authored strategic-recommendations list. Absent -> unchanged; null or [] -> clear;
+    # a list -> normalized (blanks/non-strings dropped) and stored. A non-list (and non-null) body is a
+    # confused request, not a silent drop. Parsed BEFORE the session so a bad body never touches the row.
+    raw_recs = data.get("strategic_recommendations", _ABSENT)
+    recs_provided = raw_recs is not _ABSENT
+    parsed_recs: list[str] = []
+    if recs_provided and raw_recs is not None:
+        if not isinstance(raw_recs, list):
+            return _bad_request("strategic_recommendations must be a list of strings or null")
+        parsed_recs = normalize_strategic_recommendations(raw_recs)
+
     # Tenancy + write in one session (mirrors the sibling write routes: require_scope('write') gate +
     # _resolve_engagement visibility; engagements are team-shared, so no per-row operator gate here).
     with open_session() as db:
@@ -1512,12 +1532,21 @@ def scribble_update_engagement(engagement_id: str):
         before = {
             "risk_override": _enum_value(engagement.risk_override),
             "risk_override_rationale": engagement.risk_override_rationale,
+            "strategic_recommendations": normalize_strategic_recommendations(
+                engagement.strategic_recommendations
+            ),
         }
         engagement.risk_override = new_override
         engagement.risk_override_rationale = new_rationale
+        # Absent -> unchanged; provided (list or null) -> the normalized list (null/[] both clear to []).
+        if recs_provided:
+            engagement.strategic_recommendations = parsed_recs
         after = {
             "risk_override": _enum_value(engagement.risk_override),
             "risk_override_rationale": engagement.risk_override_rationale,
+            "strategic_recommendations": normalize_strategic_recommendations(
+                engagement.strategic_recommendations
+            ),
         }
         _audit(
             db, "update_engagement", subject_type="engagement", subject_id=engagement.id,

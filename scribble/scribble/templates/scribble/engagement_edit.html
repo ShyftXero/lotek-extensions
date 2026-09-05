@@ -66,6 +66,15 @@
       </label>
     </div>
 
+    {# lotek#623: authored strategic recommendations — one per line, rendered as the report's Strategic
+       Recommendations section. Blank lines are ignored; an empty box clears the list. #}
+    <div class="scribble-form-row">
+      <label>Strategic recommendations <span class="muted">(one per line — longer-horizon guidance)</span>
+        <textarea name="strategic_recommendations" rows="4"
+                  placeholder="Establish a patch-management program&#10;Adopt org-wide MFA">{{ (engagement.strategic_recommendations or []) | join('\n') }}</textarea>
+      </label>
+    </div>
+
     <div class="scribble-form-row">
       <label>Start date
         <input type="date" name="start_date" value="{{ engagement.start_date.isoformat() if engagement.start_date else '' }}" />

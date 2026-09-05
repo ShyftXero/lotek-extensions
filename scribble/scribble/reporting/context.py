@@ -17,6 +17,7 @@ from sqlalchemy.orm import object_session
 from scribble import findings_service, metadata
 from scribble.content import render_html
 from scribble.enums import OrderMode, RetestOutcome, Severity, risk_rating, severity_rank
+from scribble.models import normalize_strategic_recommendations
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
 
@@ -143,6 +144,16 @@ class RetestCloseoutRow:
 
 
 @dataclass
+class StrategicRecCtx:
+    """One authored Strategic Recommendation (#623): a longer-horizon, engagement-level item. ``number``
+    is precomputed once in the builder (1..N in authored order) so both renderers print the same sequence
+    off one context, exactly as ``ChainStepCtx`` does."""
+
+    number: int
+    text: str
+
+
+@dataclass
 class GroupCtx:
     id: int | None
     name: str
@@ -227,6 +238,11 @@ class ReportContext:
     # before this field existed (see ``render_html._render_retest_closeout``'s empty short-circuit, pinned
     # by ``tests/test_report_print_media.py``).
     retest_closeout: list[RetestCloseoutRow] = field(default_factory=list)
+    # ADDITIVE (#623): authored strategic (longer-horizon) recommendations. Defaults empty — an engagement
+    # with none renders identically to before this field existed (see
+    # ``render_html._render_strategic_recommendations``'s empty short-circuit, pinned by
+    # ``tests/test_strategic_recommendations.py``).
+    strategic_recommendations: list[StrategicRecCtx] = field(default_factory=list)
     # Generated executive-summary narrative paragraph (see ``_build_narrative``) -- synthesized from
     # ``rollup`` + the worst top-level finding titles, not authored by hand.
     narrative: str = ""
@@ -342,6 +358,14 @@ def _chain_ctxs(chains) -> list[ChainCtx]:
         for c in sorted(chains, key=lambda c: (c.order_index, c.id))
         if c.include_in_report
     ]
+
+
+def _strategic_rec_ctxs(engagement) -> list[StrategicRecCtx]:
+    """``StrategicRecCtx``\\s for the report's Strategic Recommendations block (#623), in authored order,
+    numbered 1..N. Reads through the shared ``normalize_strategic_recommendations`` so a legacy NULL row,
+    a stray blank line, or a non-string entry can never reach the renderers."""
+    recs = normalize_strategic_recommendations(engagement.strategic_recommendations)
+    return [StrategicRecCtx(number=i, text=text) for i, text in enumerate(recs, start=1)]
 
 
 # Client-facing label per retest outcome. Deliberately weaker than the enum value — "Remediated", not
@@ -783,6 +807,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         diagrams=diagrams,
         chains=_chain_ctxs(engagement.chains),
         retest_closeout=_retest_closeout_rows(engagement, rendered_finding_ids),
+        strategic_recommendations=_strategic_rec_ctxs(engagement),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
         narrative=_build_narrative(company_name, rollup, groups_out),

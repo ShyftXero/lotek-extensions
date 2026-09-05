@@ -112,6 +112,36 @@ def test_patch_missing_engagement_is_404(client, stub_host):
     assert resp.status_code == 404, resp.get_json()
 
 
+def test_patch_sets_and_clears_strategic_recommendations(client, stub_host):
+    # lotek#623: the same PATCH also carries the authored strategic-recommendations list. A list of
+    # strings round-trips (blanks/whitespace dropped); an explicit [] or null clears it.
+    eid = _make_engagement(client, stub_host, name="strat")
+    resp = client.patch(
+        f"{M}/engagements/{eid}",
+        json={"strategic_recommendations": ["  Adopt MFA  ", "", "Patch program"]},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["strategic_recommendations"] == ["Adopt MFA", "Patch program"]
+    # persisted
+    assert client.get(f"{M}/engagements/{eid}").get_json()["strategic_recommendations"] == [
+        "Adopt MFA",
+        "Patch program",
+    ]
+    # clear
+    resp = client.patch(f"{M}/engagements/{eid}", json={"strategic_recommendations": []})
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["strategic_recommendations"] == []
+
+
+def test_patch_rejects_non_list_strategic_recommendations(client, stub_host):
+    eid = _make_engagement(client, stub_host, name="strat-bad")
+    resp = client.patch(
+        f"{M}/engagements/{eid}", json={"strategic_recommendations": "not a list"}
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert resp.get_json()["error"] == "bad_request"
+
+
 def test_patch_requires_write_scope(app, client, stub_host):
     # Create with the default (read+write) actor, then swap to a read-only token and prove the WRITE
     # scope decorator refuses the PATCH — the harness's no-op gate would otherwise hide a mis-scoped route.

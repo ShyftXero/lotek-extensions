@@ -116,6 +116,13 @@ class Engagement(Base, TimestampMixin):
     # whenever ``risk_override`` is set (enforced at the write seam, api_pat.py); both clear together.
     risk_override: Mapped[Severity | None] = mapped_column(Enum(Severity), nullable=True)
     risk_override_rationale: Mapped[str | None] = mapped_column(Text)
+    # lotek#623: AUTHORED strategic (longer-horizon) recommendations — an ordered JSON list of plain-text
+    # items, each rendered as one entry in the report's Strategic Recommendations section. NULL/[] => no
+    # section (byte-identical to before this field existed). Unlike a finding these are engagement-level
+    # prose with NO per-item report-disposition; the whole list IS the deliverable. Nullable so the
+    # additive migration needs no cross-DB server_default — every read coerces None via
+    # ``normalize_strategic_recommendations``.
+    strategic_recommendations: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
@@ -157,6 +164,21 @@ class Engagement(Base, TimestampMixin):
         from scribble.deps import client_model  # local import: avoids a models.py <-> deps.py cycle
 
         return session.get(client_model(), self.client_id)
+
+
+def normalize_strategic_recommendations(value) -> list[str]:
+    """Coerce a raw ``strategic_recommendations`` value (a stored JSON column, a PATCH body list, or the
+    None of a legacy row) into a clean ``list[str]``: whitespace-stripped, blanks and non-strings dropped,
+    order preserved. The SINGLE home for this rule (lotek#623) — every write seam (``api_pat``,
+    ``engagement_ui``) stores through it and every read seam (``reporting.context``) reads through it, so
+    the stored shape and the rendered shape can never drift. Idempotent."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
 
 
 # --------------------------------------------------------------------------- grouping (report sections)
