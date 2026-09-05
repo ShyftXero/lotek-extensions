@@ -127,6 +127,16 @@
     <li class="muted" id="scribble-source-jobs-empty">No scan jobs promoted into this engagement yet.</li>
     {% endfor %}
   </ul>
+  {% if not source_jobs and scribble_host_mounted and scribble_can_write %}
+  {# First-job empty-state CTA (#631): nothing has fed this engagement yet, so deep-link to the host's
+     job-create page to run the first scan. `/assessments/new` is a host URL contract (root-relative, so
+     it resolves regardless of scribble's mount prefix), the same way the manifest paths are. Gated on a
+     mounted host — standalone Scribble has no core scan surface to link to. #}
+  <p class="scribble-source-jobs-cta">
+    <a class="btn btn-primary" href="/assessments/new">Create the first scan job</a>
+    <span class="muted">No scan has fed this engagement yet — run one in lotek, then adopt it here.</span>
+  </p>
+  {% endif %}
   {% if scribble_can_write %}
   {# Adopt-a-job picker (#630): enter an unadopted scan job's id and link it into this engagement. The
      link is refuse-on-conflict server-side, so a job already adopted elsewhere surfaces a 409 here. #}
