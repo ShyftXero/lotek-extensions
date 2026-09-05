@@ -39,6 +39,10 @@ class ArtifactCtx:
     # ADDITIVE (ext#117): the report-wide figure number, assigned by :func:`number_figures` in document
     # order. ``None`` only for a context assembled by hand in a test that never called it.
     figure_number: int | None = None
+    # ADDITIVE (#626): the content hash recorded at upload (``Artifact.sha256``, hex, or None for a row
+    # persisted before hashing existed). Carried verbatim so the renderers can publish an evidence
+    # integrity manifest without re-reading the bytes; a plain copy of the column, not a second opinion.
+    sha256: str | None = None
 
 
 @dataclass
@@ -239,6 +243,7 @@ def _artifact_ctxs(artifacts, *, engagement_id=None) -> list[ArtifactCtx]:
             content_type=a.content_type,
             storage_path=a.storage_path,
             byte_size=a.byte_size,
+            sha256=a.sha256,
         )
         for a in sorted(artifacts, key=lambda a: (a.order_index, a.id))
         if a.include_in_report
