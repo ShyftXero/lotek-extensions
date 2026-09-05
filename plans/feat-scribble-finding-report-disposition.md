@@ -204,3 +204,21 @@ Re-run with a throwaway merge revision (`down_revision = ("a7d2c4e6f810", "e5a1c
 committed**, deleted after): **1534 tests, 0 failures, 0 errors, 11 skipped** (698s). That is the honest
 result for this branch. `tests/test_migration_single_head.py` stays RED until whoever forked main rejoins
 it — fixing someone else's migration fork does not belong on this branch.
+
+## Merge of `origin/main` @ `c1306c8` — the honest full-suite run (2026-09-05)
+
+The caveat above is discharged. `main` rejoined its own alembic fork in ext#186
+(`b8e4d2f6a130`, `down_revision = ("a7d2c4e6f810", "e5a1c3d7b920")`), so the conftest's
+`upgrade head` works again and the suite gives real signal for the first time on this branch.
+
+- **Merge was clean** — no conflicts, two additive files from `main`
+  (`plans/fix-scribble-refork-alembic-heads.md`, the merge revision). Nothing in this branch's
+  diff moved.
+- **Full suite over the merge as committed, no scratch revision:**
+  **1534 tests · 0 failures · 0 errors · 11 skipped** (701s, junit XML, `-p no:randomly`).
+  Same 1534 as the scratch-head run, which is the expected equality: ext#186's revision is a
+  no-op merge node, so it changes what alembic will *do*, not what any test asserts.
+- **`test_migration_single_head::test_migration_chain_has_a_single_head` PASSES.** It was the
+  branch's one standing RED and it was never this branch's to fix — the head it wanted rejoined
+  belonged to `main`.
+- `uvx ruff check scribble` clean; `pyrefly check` clean (0 errors) on all 13 changed `.py` files.
