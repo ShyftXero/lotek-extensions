@@ -414,9 +414,10 @@ client's overall risk rating). One predicate, `scribble.enums.report_disposition
 - The label appears as a chip on the finding and a **Status** column in *Findings at a glance*, and both
   are omitted entirely when every finding is `new` — an untouched engagement's report is unchanged.
 - Labels are deliberately conservative: "Remediated", not "Fixed (verified)". Scribble records that you
-  set a status; it does not record that anyone verified a fix, and the report may not claim otherwise. Promoted per-host findings render **nested inside their parent's card** (one level), so the
-report shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
-answers that number as `top_level_count`.
+  set a status; it does not record that anyone verified a fix, and the report may not claim otherwise.
+  Promoted per-host findings render **nested inside their parent's card** (one level), so the report
+  shows fewer top-level findings than the board has rows — `GET …/machine/engagements/<id>/findings`
+  answers that number as `top_level_count`.
 
 **Evidence reaches the document wherever it is attached** (ext#40, 2026-08-17 — it did not before), in
 **both** deliverables (the `.docx` half followed in issue #54; the table below used to record it as an
