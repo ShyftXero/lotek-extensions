@@ -868,6 +868,42 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         caption.add_run(figure_caption(d.figure_number, caption_text)).italic = True
 
 
+def _append_attack_chains(doc, ctx: ReportContext) -> None:
+    """Append the Attack Chains section to the RENDERED document (#628), mirroring ``_append_attack_paths``:
+    programmatic and post-render, placed right after it so the .docx section order matches the HTML
+    layouts (``diagrams`` -> ``chains``).
+
+    The narrative — title, summary, numbered steps — is the substance and mirrors the HTML in full. A
+    chain's OPTIONAL ``embed_html`` visual is HTML-only here: Word has no browser and reconstructing the
+    vector grid belongs to the linked-diagram path, so the .docx carries an explicit italic pointer to
+    the HTML report rather than silently dropping it (the same honest-degradation convention
+    ``_append_attack_paths`` uses for a snapshot it cannot draw).
+
+    Renders nothing when the engagement has no chain, so a report without one is byte-identical to before
+    this section existed (the same backward-compat guarantee ``render_html._render_chains`` makes)."""
+    if not ctx.chains:
+        return
+    doc.add_heading("Attack Chains", level=1)
+    doc.add_paragraph(
+        "Narrative walk-throughs of how the findings above chain together into a broader compromise."
+    )
+    for index, c in enumerate(ctx.chains, start=1):
+        doc.add_heading(_xml_safe(c.title) or f"Attack chain {index}", level=2)
+        if c.summary:
+            doc.add_paragraph(_xml_safe(c.summary))
+        for s in c.steps:
+            para = doc.add_paragraph()
+            para.add_run(f"{s.number}. {_xml_safe(s.title)}").bold = True
+            if s.description:
+                para.add_run(f" — {_xml_safe(s.description)}")
+        if c.embed_html:
+            note = doc.add_paragraph()
+            note.add_run(
+                "This chain's attack-path diagram is delivered as an interactive figure in the HTML "
+                "report."
+            ).italic = True
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -1010,6 +1046,7 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     # evidence, reporting/layouts.py), which is what makes context.number_figures' single figure
     # sequence come out the same in both deliverables.
     _append_attack_paths(tpl.docx, ctx)  # ext#115
+    _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 

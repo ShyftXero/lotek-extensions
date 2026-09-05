@@ -19,7 +19,15 @@ from __future__ import annotations
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Client, Engagement, EngagementDiagram, EngagementFinding, FindingGroup
+from scribble.models import (
+    AttackChain,
+    AttackChainStep,
+    Client,
+    Engagement,
+    EngagementDiagram,
+    EngagementFinding,
+    FindingGroup,
+)
 from scribble.reporting import build_report_context
 from scribble.reporting.render_html import render_report_html
 from tests.conftest import StubActor
@@ -480,3 +488,150 @@ def test_a_non_object_json_body_is_a_400_on_every_patch_route(client, stub_host)
             resp = client.patch(url, json=body)
             assert resp.status_code == 400, (url, body, resp.status_code)
             assert resp.get_json()["error"] == "bad_request"
+
+
+# ── 5. #628: attack-chain NARRATIVE block ─────────────────────────────────────────────────────────────
+#
+# Same backward-compat contract as the diagrams block above, for the same three-part reason
+# (``ReportContext.chains`` defaults empty, ``_render_chains`` short-circuits on empty,
+# ``_render_document`` drops empty blocks). A chain is a NARRATIVE (title + summary + ordered steps),
+# optionally carrying its own ``embed_html`` snapshot that reuses ``_render_diagram_item``.
+
+
+def _build_chain_engagement(
+    session_factory, *, with_chain: bool, embed: bool = False, include: bool = True
+) -> str:
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = Engagement(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
+        grp = FindingGroup(engagement=eng, name="External", order_index=0)
+        EngagementFinding(
+            engagement=eng,
+            group=grp,
+            title="Reflected XSS",
+            severity=Severity.high,
+            order_index=0,
+            content_json={"description": _block("Reflected XSS on /search.")},
+        )
+        db.add(eng)
+        db.flush()
+        if with_chain:
+            chain = AttackChain(
+                engagement_id=eng.id,
+                title='Foothold to "Domain Admin"',
+                summary="Chained the edge XSS into a full domain compromise.",
+                order_index=0,
+                include_in_report=include,
+                embed_html=SNAPSHOT_HTML if embed else None,
+                diagram_ref="99999999-9999-9999-9999-999999999999" if embed else None,
+            )
+            db.add(chain)
+            db.flush()
+            # Inserted OUT of order to prove ``_chain_ctxs`` sorts + numbers by ``order_index``.
+            for oi, title in (
+                (2, "Kerberoast to a service account"),
+                (1, "Pivot to the DMZ web host"),
+                (0, "Initial access via reflected XSS"),
+            ):
+                db.add(AttackChainStep(chain_id=chain.id, order_index=oi, title=title))
+        db.commit()
+        return eng.id
+
+
+def test_no_chain_renders_no_attack_chains_section(session_factory):
+    eng_id = _build_chain_engagement(session_factory, with_chain=False)
+    html = _render(session_factory, eng_id)
+    assert "sec-chains" not in html
+    assert "Attack Chains" not in html
+    assert '<article class="attack-chain"' not in html
+    # Existing structure untouched, in the usual order.
+    assert "sec-findings" in html
+    assert "sec-methodology" in html
+    assert html.index("sec-findings") < html.index("sec-methodology")
+
+
+def test_context_chains_defaults_empty(session_factory):
+    eng_id = _build_chain_engagement(session_factory, with_chain=False)
+    with session_factory() as db:
+        eng = db.get(Engagement, eng_id)
+        ctx = build_report_context(eng)
+    assert ctx.chains == []
+
+
+def test_removing_the_chains_short_circuit_breaks_backward_compat(session_factory, monkeypatch):
+    """The red-then-green guard, mirroring the diagrams one above: neuter ``_render_chains``'s empty
+    short-circuit so it always emits a section, watch the no-chain backward-compat assertion go RED, then
+    confirm the restored behaviour is clean."""
+    from scribble.reporting import render_html as rh
+
+    real = rh._render_chains
+    monkeypatch.setattr(
+        rh, "_render_chains",
+        lambda ctx: '<section class="sec group" id="sec-chains">FORCED</section>',
+    )
+    eng_id = _build_chain_engagement(session_factory, with_chain=False)
+    assert "sec-chains" in _render(session_factory, eng_id)  # RED: the short-circuit is what keeps it clean
+
+    monkeypatch.setattr(rh, "_render_chains", real)
+    assert "sec-chains" not in _render(session_factory, eng_id)  # GREEN: restored
+
+
+def test_linked_chain_renders_narrative(session_factory):
+    eng_id = _build_chain_engagement(session_factory, with_chain=True)
+    html = _render(session_factory, eng_id)
+    assert "sec-chains" in html
+    assert "Attack Chains" in html
+    # Title + summary rendered and HTML-escaped (the embedded quote does not break markup).
+    assert "Foothold to &quot;Domain Admin&quot;" in html
+    assert "Chained the edge XSS into a full domain compromise." in html
+    # All three step titles present, and IN order_index order (not insertion order).
+    first = html.index("Initial access via reflected XSS")
+    second = html.index("Pivot to the DMZ web host")
+    third = html.index("Kerberoast to a service account")
+    assert first < second < third
+    # Positioned after Findings, before Methodology.
+    assert html.index("sec-findings") < html.index("sec-chains") < html.index("sec-methodology")
+
+
+def test_context_chains_populated_and_numbered(session_factory):
+    eng_id = _build_chain_engagement(session_factory, with_chain=True)
+    with session_factory() as db:
+        eng = db.get(Engagement, eng_id)
+        ctx = build_report_context(eng)
+    assert len(ctx.chains) == 1
+    c = ctx.chains[0]
+    assert [s.number for s in c.steps] == [1, 2, 3]
+    assert [s.title for s in c.steps] == [
+        "Initial access via reflected XSS",
+        "Pivot to the DMZ web host",
+        "Kerberoast to a service account",
+    ]
+
+
+def test_excluded_chain_does_not_render(session_factory):
+    """``include_in_report=False`` withholds a chain, same convention as diagrams/findings/artifacts."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, include=False)
+    html = _render(session_factory, eng_id)
+    assert "sec-chains" not in html
+    with session_factory() as db:
+        ctx = build_report_context(db.get(Engagement, eng_id))
+    assert ctx.chains == []
+
+
+def test_chain_with_embed_html_reuses_the_diagram_item(session_factory):
+    """A chain carrying an ``embed_html`` snapshot draws it through the SAME ``_render_diagram_item`` the
+    Attack Paths block uses — a sandboxed iframe with the snapshot ESCAPED into ``srcdoc``, inside the
+    chains section."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, embed=True)
+    html = _render(session_factory, eng_id)
+    assert "sec-chains" in html
+    assert '<iframe class="attack-path-frame"' in html
+    assert 'sandbox="allow-scripts"' in html
+    assert "allow-same-origin" not in html
+    # The raw script must NOT appear unescaped in the report document.
+    assert "<script>document.title" not in html
+    assert "srcdoc=" in html
+    # The iframe belongs to the chains section (it appears after the section anchor).
+    assert html.index("sec-chains") < html.index('<iframe class="attack-path-frame"')

@@ -21,6 +21,7 @@ Blocks (keys dispatched in ``render_html._render_block_by_key``):
 - ``summary``      — Executive Summary (risk banner, narrative, severity bar, metrics, findings index).
 - ``findings``     — the filter bar + the finding groups.
 - ``diagrams``     — embedded attack-path diagrams.
+- ``chains``       — authored attack-chain narratives (#628).
 - ``methodology``  — the standing methodology description + coverage / compliance checklists.
 - ``evidence``     — appendix of ENGAGEMENT-level evidence (artifacts with no ``finding_id``).
 - ``activity_log`` — optional activity appendix.
@@ -48,6 +49,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "summary",
     "findings",
     "diagrams",
+    "chains",
     "methodology",
     "evidence",
     "activity_log",
@@ -72,7 +74,9 @@ class ReportLayout:
 # ``findings`` (attack-path diagrams are a visual extension of the findings they connect), and
 # ``evidence`` sits LAST: it is an appendix of engagement-level material, so it belongs after everything
 # else rather than interrupting it.
-_STANDARD_BLOCKS = ("cover", "toc", "summary", "findings", "diagrams", "methodology", "evidence")
+_STANDARD_BLOCKS = (
+    "cover", "toc", "summary", "findings", "diagrams", "chains", "methodology", "evidence",
+)
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
 _LAYOUTS: tuple[ReportLayout, ...] = (
@@ -83,7 +87,7 @@ _LAYOUTS: tuple[ReportLayout, ...] = (
     ReportLayout(
         "compliance",
         "Compliance-first",
-        ("cover", "toc", "summary", "methodology", "findings", "diagrams", "evidence"),
+        ("cover", "toc", "summary", "methodology", "findings", "diagrams", "chains", "evidence"),
     ),
 )
 

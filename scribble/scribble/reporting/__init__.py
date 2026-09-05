@@ -8,6 +8,8 @@ order.
 from scribble.reporting.context import (  # noqa: F401
     DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
+    ChainCtx,
+    ChainStepCtx,
     DiagramCtx,
     FindingCtx,
     GroupCtx,

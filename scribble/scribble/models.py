@@ -137,6 +137,11 @@ class Engagement(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="EngagementDiagram.order_index",
     )
+    chains: Mapped[list[AttackChain]] = relationship(
+        back_populates="engagement",
+        cascade="all, delete-orphan",
+        order_by="AttackChain.order_index",
+    )
 
     def resolve_client(self, session):
         """Load this engagement's client through the currently-mounted client model, or ``None``.
@@ -571,6 +576,59 @@ class EngagementDiagram(Base, TimestampMixin):
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
 
     engagement: Mapped[Engagement] = relationship(back_populates="diagrams")
+
+
+# --------------------------------------------------------------------------- attack-chain narratives
+
+
+class AttackChain(Base, TimestampMixin):
+    """An attack-chain NARRATIVE (#628): the authored story of how discovered findings chain into a
+    broader compromise, ordered ``steps`` under a ``title`` + ``summary``.
+
+    Distinct from ``EngagementDiagram`` (which stores a vector *picture* of a path): this is the prose
+    an operator writes to walk a reader through the same path. A chain MAY additionally carry its own
+    self-contained ``embed_html`` snapshot (same shape as ``EngagementDiagram`` — vector's ``export.html``
+    stored verbatim, ``diagram_ref`` kept for provenance only), so the HTML report can embed the visual
+    beside the narrative via the shared ``render_html._render_diagram_item``. It is OPTIONAL: a chain with
+    no embed renders as pure narrative, byte-identically in both deliverables.
+
+    Engagement-owned, dies with the engagement (``Engagement.chains`` ``delete-orphan``). ``engagement_id``
+    is a real intra-scribble FK (UUIDv7 PK, like every scribble surrogate key since ext#36/lotek#335)."""
+
+    __tablename__ = "scribble_attack_chains"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # OPTIONAL visual, mirroring EngagementDiagram's soft-snapshot fields (see the class docstring).
+    diagram_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    engagement: Mapped[Engagement] = relationship(back_populates="chains")
+    steps: Mapped[list[AttackChainStep]] = relationship(
+        back_populates="chain",
+        cascade="all, delete-orphan",
+        order_by="AttackChainStep.order_index",
+    )
+
+
+class AttackChainStep(Base, TimestampMixin):
+    """One ordered stage of an :class:`AttackChain` — a ``title`` (e.g. "Initial access via reflected
+    XSS") and optional ``description`` prose. Chain-owned; dies with its chain. No ``finding_id`` link:
+    a step names its evidence in prose, the same soft convention the diagram walkthrough uses."""
+
+    __tablename__ = "scribble_attack_chain_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    chain_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_attack_chains.id"), index=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    chain: Mapped[AttackChain] = relationship(back_populates="steps")
 
 
 # --------------------------------------------------------------------------- template variables
