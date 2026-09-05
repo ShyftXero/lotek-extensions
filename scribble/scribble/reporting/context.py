@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import object_session
 
-from scribble import findings_service
+from scribble import findings_service, metadata
 from scribble.content import render_html
 from scribble.enums import (
     DISPOSITION_EXCLUDED,
@@ -89,6 +89,19 @@ class FindingCtx:
     status: str = ""
     disposition: str = DISPOSITION_LIVE
     status_label: str = ""
+    # Structured references (#624): the NON-suppressed ``{label, url, source}`` value objects, in stored
+    # order — what the renderers show as an omit-when-empty labeled-link block. Empty => the block is
+    # omitted (a finding with no non-suppressed refs renders exactly as before this field existed).
+    references: list = field(default_factory=list)
+    # Structured metadata (#625): id lists for the finding-header chips + the CWE/CVE index columns.
+    # Empty => no chip, no index cell content — an unenriched finding is byte-identical to today.
+    cve_ids: list = field(default_factory=list)
+    cwe_ids: list = field(default_factory=list)
+    owasp_categories: list = field(default_factory=list)
+    # Threat-intel display (#625): ``{kev, epss, as_of, source}`` reduced from the dated ``threat_intel``
+    # snapshot (KEV if ANY CVE is listed; EPSS = the max across the finding's CVEs), or ``None`` when there
+    # is nothing to show — the KEV/EPSS chips carry ``as_of`` so they never assert a stale fact as current.
+    threat_intel: dict | None = None
 
 
 @dataclass
@@ -416,6 +429,14 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         status=finding.status.value if hasattr(finding.status, "value") else str(finding.status or ""),
         disposition=report_disposition(finding.status),
         status_label=finding_status_label(finding.status),
+        # #624/#625: structured references (non-suppressed only) + metadata for the renderers. All read
+        # through ``scribble.metadata`` so "which refs are visible" / "what the threat-intel chips show"
+        # is computed in ONE place both renderers consume (one-predicate-one-home).
+        references=metadata.visible_references(finding.references),
+        cve_ids=list(finding.cve_ids or []),
+        cwe_ids=list(finding.cwe_ids or []),
+        owasp_categories=list(finding.owasp_categories or []),
+        threat_intel=metadata.threat_intel_display(finding.threat_intel),
     )
 
 

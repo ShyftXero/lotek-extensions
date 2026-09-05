@@ -43,6 +43,7 @@ from urllib.parse import quote, unquote
 import nh3
 
 from scribble.enums import SEVERITY_ORDER as _ENUM_SEVERITY_ORDER
+from scribble.metadata import cve_url, cwe_url, owasp_label
 from scribble.reporting.context import (
     DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
@@ -454,7 +455,14 @@ def _render_blocks(f: FindingCtx, resolver: _AssetResolver) -> str:
     """The finding's descriptive content blocks (description, details, any custom blocks) -- NOT
     ``remediation``, which renders separately as the always-present Recommendations section."""
     parts: list[str] = []
-    seen: set[str] = {"remediation"}  # rendered separately by _render_recommendations
+    # ``remediation`` -> _render_recommendations. ``references`` -> the structured References block
+    # (_render_references, #624), which is the ONE home. Suppress a legacy prose ``references`` content
+    # block ONLY when the finding HAS structured references (so the two can't double-render); when the
+    # column is empty, render the legacy block as before -- an existing finding that stored refs as a
+    # prose block (pre-#624 authoring) must not silently lose them (no migration backfills the column).
+    seen: set[str] = {"remediation"}
+    if f.references:
+        seen.add("references")
     for key in _BLOCK_ORDER:
         if key in seen:
             continue
@@ -531,6 +539,66 @@ def _render_children(f: FindingCtx, resolver: _AssetResolver) -> str:
     )
 
 
+def _render_metadata_chips(f: FindingCtx) -> str:
+    """The structured-metadata chips (#625) that sit beside the CVSS chip in ``finding-badges``:
+    CWE / CVE / OWASP classification + a KEV flag and an EPSS score. Every chip is OMIT-WHEN-EMPTY, so an
+    unenriched finding adds no markup at all. A CWE/CVE chip links to MITRE/NVD; a KEV/EPSS chip carries
+    the snapshot ``as_of`` in its ``title`` so it never asserts a stale fact as current (#625 Q3)."""
+    chips: list[str] = []
+    for cwe in f.cwe_ids:
+        href = cwe_url(cwe)
+        chips.append(
+            f'<a class="chip cwe" href="{_esc(href)}" rel="noopener noreferrer">{_esc(cwe)}</a>'
+            if href else f'<span class="chip cwe">{_esc(cwe)}</span>'
+        )
+    for cve in f.cve_ids:
+        href = cve_url(cve)
+        chips.append(
+            f'<a class="chip cve" href="{_esc(href)}" rel="noopener noreferrer">{_esc(cve)}</a>'
+            if href else f'<span class="chip cve">{_esc(cve)}</span>'
+        )
+    for cat in f.owasp_categories:
+        chips.append(f'<span class="chip owasp" title="{_esc(owasp_label(cat))}">{_esc(cat)}</span>')
+    ti = f.threat_intel
+    if ti:
+        as_of = ti.get("as_of")
+        if ti.get("kev"):
+            title = f' title="KEV as of {_esc(as_of)}"' if as_of else ' title="CISA KEV-listed"'
+            chips.append(f'<span class="chip kev"{title}>KEV</span>')
+        epss = ti.get("epss")
+        if isinstance(epss, (int, float)):
+            title = f' title="EPSS as of {_esc(as_of)}"' if as_of else ""
+            chips.append(f'<span class="chip epss"{title}>EPSS {epss:.2f}</span>')
+    return "".join(chips)
+
+
+def _render_references(f: FindingCtx) -> str:
+    """The per-finding References block (#624): non-suppressed refs as labeled links, OMITTED when there
+    are none (optional supporting material, unlike the always-present Recommendations block). ``source`` is
+    carried on the context but hidden by default (#624 Q4). A ref with a safe http(s) url renders as a
+    link; one with none (a bare label like ``CWE-79``) renders as plain text."""
+    refs = f.references  # already filtered to non-suppressed in context._finding_ctx
+    if not refs:
+        return ""
+    lis: list[str] = []
+    for r in refs:
+        label = str(r.get("label") or r.get("url") or "").strip()
+        if not label:
+            continue
+        href = _safe_href(r.get("url"))
+        inner = (
+            f'<a href="{_esc(href)}" rel="noopener noreferrer">{_esc(label)}</a>'
+            if href else _esc(label)
+        )
+        lis.append(f"<li>{inner}</li>")
+    if not lis:
+        return ""
+    return (
+        '<div class="block references"><div class="block-label">References</div>'
+        f'<div class="block-body"><ul class="ref-list">{"".join(lis)}</ul></div></div>'
+    )
+
+
 def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     sev = f.severity
     rank = SEVERITY_ORDER.index(sev) if sev in SEVERITY_ORDER else len(SEVERITY_ORDER)
@@ -546,10 +614,12 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     if f.cvss_score is not None:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
+    badges += _render_metadata_chips(f)
     body = (
         _render_blocks(f, resolver)
         + _render_affected_assets(f)
         + _render_recommendations(f, resolver)
+        + _render_references(f)
     )
     return (
         f'<article class="finding sev-{_esc(sev)}" data-sev="{_esc(sev)}" data-sevrank="{rank}" '
@@ -935,43 +1005,72 @@ def _sev_bar(rollup) -> str:
     )
 
 
+_INDEX_IDS_MAX = 3  # ids shown per index cell before collapsing to "+N" — keeps the column skimmable
+
+
+def _index_ids_cell(ids: list) -> str:
+    """A compact index cell for a CWE/CVE id list (#625 Q3): the first few ids, then ``+N`` — never the
+    whole list, which would blow the column width. ``—`` when empty (omit-when-empty at the cell level)."""
+    if not ids:
+        return "—"
+    shown = ", ".join(_esc(str(i)) for i in ids[:_INDEX_IDS_MAX])
+    extra = len(ids) - _INDEX_IDS_MAX
+    return f"{shown} +{extra}" if extra > 0 else shown
+
+
 def _findings_index(ctx: ReportContext) -> str:
-    """A scan-then-jump index of every top-level finding (severity · title→its card · host · CVSS),
-    in board order. Nested children stay out of this list, matching the finding cards below."""
-    # A Status column only when SOMETHING has a status worth printing (lotek#618). An engagement whose
-    # findings are all `new` renders byte-identically to before this column existed -- the same
-    # additive discipline `context.py` keeps for `diagrams`/`artifacts`, applied to markup.
-    show_status = any(f.status_label for group in ctx.groups for f in group.findings)
-    rows = []
-    for group in ctx.groups:
-        for f in group.findings:
-            host = f.target_host or ""
-            if host and f.target_port:
-                host = f"{host}:{f.target_port}"
-            if not host and f.target_url:
-                host = f.target_url
-            cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
-            sev, sev_label = _esc(f.severity), _esc(f.severity.title())
-            status_cell = ""
-            if show_status:
-                label = _esc(f.status_label) or "—"
-                status_cell = f'<td class="ix-status st-{_esc(f.disposition)}">{label}</td>'
-            rows.append(
-                "<tr>"
-                f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>'
-                f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>'
-                f'<td class="ix-host">{_esc(host) or "—"}</td>'
-                f"{status_cell}"
-                f'<td class="ix-cvss">{_esc(cvss)}</td></tr>'
-            )
-    if not rows:
+    """A scan-then-jump index of every top-level finding (severity · title→its card · host · [status] ·
+    [CWE] · [CVE] · CVSS), in board order. Nested children stay out of this list, matching the finding
+    cards below.
+
+    Every optional column is omit-when-empty and independent of the others: the Status column (lotek#618)
+    appears only when SOMETHING has a status worth printing, and the CWE/CVE columns + KEV flag (#625's
+    skimmable metadata — OWASP/EPSS stay chip-only per #625 Q3, to keep the index narrow) only when at
+    least one rendered finding carries that data. So an untriaged, unenriched report's index is
+    BYTE-IDENTICAL to before either feature existed (the omit-when-empty invariant, #625 Q4), while a
+    report that has the data gains exactly the columns it needs."""
+    findings = [f for group in ctx.groups for f in group.findings]
+    if not findings:
         return ""
-    status_head = "<th>Status</th>" if show_status else ""
+    show_status = any(f.status_label for f in findings)
+    show_cwe = any(f.cwe_ids for f in findings)
+    show_cve = any(f.cve_ids or (f.threat_intel and f.threat_intel.get("kev")) for f in findings)
+    rows = []
+    for f in findings:
+        host = f.target_host or ""
+        if host and f.target_port:
+            host = f"{host}:{f.target_port}"
+        if not host and f.target_url:
+            host = f.target_url
+        cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
+        sev, sev_label = _esc(f.severity), _esc(f.severity.title())
+        cells = [
+            f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>',
+            f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>',
+            f'<td class="ix-host">{_esc(host) or "—"}</td>',
+        ]
+        if show_status:
+            label = _esc(f.status_label) or "—"
+            cells.append(f'<td class="ix-status st-{_esc(f.disposition)}">{label}</td>')
+        if show_cwe:
+            cells.append(f'<td class="ix-cwe">{_index_ids_cell(f.cwe_ids)}</td>')
+        if show_cve:
+            kev_flag = ' <span class="ix-kev" title="CISA KEV-listed">KEV</span>' \
+                if (f.threat_intel and f.threat_intel.get("kev")) else ""
+            cells.append(f'<td class="ix-cve">{_index_ids_cell(f.cve_ids)}{kev_flag}</td>')
+        cells.append(f'<td class="ix-cvss">{_esc(cvss)}</td>')
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    headers = "<th>Severity</th><th>Finding</th><th>Host</th>"
+    if show_status:
+        headers += "<th>Status</th>"
+    if show_cwe:
+        headers += "<th>CWE</th>"
+    if show_cve:
+        headers += "<th>CVE</th>"
+    headers += '<th style="text-align:right">CVSS</th>'
     return (
         '<div class="index-wrap"><div class="cap">Findings at a glance</div>'
-        '<table class="index"><thead><tr><th>Severity</th><th>Finding</th>'
-        f"<th>Host</th>{status_head}"
-        '<th style="text-align:right">CVSS</th></tr></thead>'
+        f'<table class="index"><thead><tr>{headers}</tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table></div>'
     )
 
@@ -2113,6 +2212,23 @@ table.index td.ix-status.st-remediated { color: var(--sev-low); font-weight: 600
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px;
 }
 .chip.cvss { color: var(--ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+/* #625 metadata chips + #624 references. a { } chip keeps the neutral .chip base; KEV is the one that
+   earns emphasis (a known-exploited flag is the point of the chip). */
+.chip.cwe a, .chip.cve a, a.chip.cwe, a.chip.cve { color: inherit; text-decoration: none; }
+a.chip.cwe:hover, a.chip.cve:hover { text-decoration: underline; }
+.chip.kev {
+  color: #fff; background: var(--sev-critical, #b42318); border-color: transparent; font-weight: 700;
+}
+.chip.epss { font-variant-numeric: tabular-nums; }
+.ref-list { margin: 0; padding-left: 18px; }
+.ref-list li { margin: 2px 0; }
+table.index td.ix-cwe, table.index td.ix-cve {
+  color: var(--muted); white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.ix-kev {
+  display: inline-block; margin-left: 4px; font-size: 10px; font-weight: 700; padding: 0 4px;
+  border-radius: 3px; color: #fff; background: var(--sev-critical, #b42318);
+}
 .finding-body { max-width: var(--measure); }
 .finding-body .block { margin-top: 14px; }
 .finding-body .block-label {

@@ -69,7 +69,9 @@ def _node_types(doc) -> set[str]:
 
 def test_author_finding_from_plain_text(client, stub_host, session_factory):
     """Neither ``template_id`` nor ``lotek_finding_id`` -> author directly. Plain-text description/
-    remediation/references are wrapped into content blocks; title + severity land on the row."""
+    remediation are wrapped into content blocks; title + severity land on the row; ``references`` now land
+    on the typed ``EngagementFinding.references`` column as structured value objects (#624), NOT a prose
+    block."""
     eid = _make_engagement(session_factory)
     resp = client.post(
         f"{M}/engagements/{eid}/findings",
@@ -94,8 +96,12 @@ def test_author_finding_from_plain_text(client, stub_host, session_factory):
         assert f.target_port == "443"  # coerced to str on the column
         assert "User input is reflected" in schema.plain_text(f.content_json["description"])
         assert "Context-encode" in schema.plain_text(f.content_json["remediation"])
-        refs_text = schema.plain_text(f.content_json["references"])
-        assert "https://owasp.org/xss" in refs_text and "CWE-79" in refs_text
+        # references are structured value objects on the column, author-sourced — NOT a content block.
+        assert "references" not in f.content_json
+        by_url = {r["label"]: r for r in f.references}
+        assert by_url["https://owasp.org/xss"]["url"] == "https://owasp.org/xss"
+        assert by_url["CWE-79"]["url"] == ""            # a bare label -> no link
+        assert all(r["source"] == "author" for r in f.references)
 
 
 def test_author_finding_requires_title_and_severity(client, stub_host, session_factory):

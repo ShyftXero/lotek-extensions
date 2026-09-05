@@ -30,6 +30,38 @@ _Avoid_: skin, style, palette (a palette is only the colour part of a Theme)
 
 Layout and Theme are orthogonal on purpose: any Layout renders under any Theme.
 
+**Reference (value object)**:
+A citation on an EngagementFinding — `{label, url, source, suppressed}` (#624). NOT a child entity: a
+reference has no lifecycle or evidence of its own, so it lives as a JSON value object in the finding's
+`references` column, not its own table. `label` is client-facing ("CWE-89", "Vendor advisory KB123"); a
+bare-URL reference uses the URL as its own label. Rendered as an omit-when-empty labeled-link block
+(non-suppressed only).
+_Avoid_: link, citation, source (the last is the reference's ORIGIN axis, below)
+
+**Reference source**:
+Where a reference came from — `template` (the matched library template's refs), `scan` (the scan
+finding's `DTO.references`), or `author` (a human added it in the editor). Promote UNIONS the template +
+scan refs, deduped by normalized URL; on collision the operator/`author` wins. Stored, but hidden in the
+report by default.
+
+**Reference suppress**:
+A per-reference `suppressed` flag an operator sets to drop one noisy reference from the report while
+keeping the others. Suppressing is per-reference on the finding, not deleting — the reference stays on
+the row and out of the deliverable.
+
+**Finding metadata (cve_ids / cwe_ids / owasp_categories)**:
+Structured vulnerability classification on an EngagementFinding (#625), typed JSON id lists. Promote
+seeds `cve_ids` from `DTO.cve` and `cwe_ids` from `DTO.facts["cwe"]`; `owasp_categories` is DERIVED from
+`cwe_ids` via a static offline CWE→OWASP-Top-10-2021 map. Distinct from the free-text `category` (a human
+label). Rendered as finding-header chips + compact CWE/CVE index columns, omit-when-empty.
+
+**Threat-intel snapshot (as_of / kev / epss)**:
+A DATED point-in-time KEV/EPSS lookup on a finding's CVEs — `{as_of, source, cves:{kev, epss, …}}` in the
+`threat_intel` column (#625). NOT bare `kev`/`epss` columns: KEV/EPSS change over time and their source
+(the exploiteer extension) is optional, so the `as_of` is mandatory and the report always says "KEV as of
+`<date>`" rather than asserting a stale fact as current. Enrichment-managed (computed by the enrichment
+driver from exploiteer's verdict feed, degrading to none when absent), never hand-typed.
+
 ## Themes
 
 **Token**:

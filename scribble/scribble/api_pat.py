@@ -53,7 +53,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, request
 from sqlalchemy import select
 
-from scribble import findings_service, host
+from scribble import findings_service, host, metadata
 from scribble.api_schemas import (
     AddFindingRequest,
     BulkMoveFindingsRequest,
@@ -639,11 +639,16 @@ def _content_bounds_error(data: dict):
 def _author_content_json(data: dict) -> dict:
     """Build a SANITIZED ``{block_name: prosemirror_doc}`` mapping for a directly-authored finding/template.
 
-    A supplied ``content_json`` dict wins per-block; plain-text ``description``/``remediation`` (and, for a
-    finding, ``references``) fill any block it does not provide. EVERY block — supplied JSON and
-    text-wrapped alike — passes through the ProseMirror sanitizer before it is returned, so no
-    write-scoped caller can persist markup that would execute when the report is opened. (Text wrapped by
-    ``schema.doc_from_text`` passes the sanitizer through unchanged.)"""
+    A supplied ``content_json`` dict wins per-block; plain-text ``description``/``remediation`` fill any
+    block it does not provide. EVERY block — supplied JSON and text-wrapped alike — passes through the
+    ProseMirror sanitizer before it is returned, so no write-scoped caller can persist markup that would
+    execute when the report is opened. (Text wrapped by ``schema.doc_from_text`` passes the sanitizer
+    through unchanged.)
+
+    ``references`` is NO LONGER folded into a content block (#624): a finding's references now live in the
+    typed ``EngagementFinding.references`` column as structured value objects (see ``_author_references``),
+    so they render as an omit-when-empty labeled-link block, not as prose. Handled by the caller, not here.
+    """
     raw: dict[str, Any] = {}
     supplied = data.get("content_json")
     if isinstance(supplied, dict):
@@ -653,13 +658,23 @@ def _author_content_json(data: dict) -> dict:
             text = data.get(block)
             if isinstance(text, str) and text.strip():
                 raw[block] = schema.doc_from_text(text)
-    if "references" not in raw:
-        refs = data.get("references")
-        if isinstance(refs, list):
-            refs_text = "\n".join(str(r).strip() for r in refs if str(r).strip())
-            if refs_text:
-                raw["references"] = schema.doc_from_text(refs_text)
     return sanitize_content_json(raw)
+
+
+def _author_references(data: dict, *, key: str = "references"):
+    """Structured ``EngagementFinding.references`` for a directly-authored/edited finding (#624), or
+    ``(None, None)`` when the field was not supplied (leave it unchanged). Accepts a list whose elements
+    are plain strings (a URL, or a bare label like ``CWE-79``) OR ``{label, url, source, suppressed}``
+    value objects — so an operator can add, edit, and per-reference SUPPRESS. Author-added refs default to
+    source ``author``. Deduped by normalized url (``metadata.merge_references``). Bounds are enforced by
+    the caller's ``_content_bounds_error`` (``_REFERENCE_LIST_MAX``). Returns ``(list[dict], None)`` or
+    ``(None, error_response)``."""
+    refs = data.get(key, _ABSENT)
+    if refs is _ABSENT:
+        return None, None
+    if not isinstance(refs, list):
+        return None, _bad_request(f"{key} must be a list")
+    return metadata.merge_references(refs, sources=(metadata.REF_SOURCE_AUTHOR,)), None
 
 
 # ── 1. POST /engagements ─────────────────────────────────────────────────────────────────────────────
@@ -1127,6 +1142,12 @@ def scribble_add_finding(engagement_id: str):
         if (err := _content_bounds_error(data)) is not None:
             return err
         author_content_json = _author_content_json(data)
+        # #624: references land on the typed column as structured value objects (author-sourced), not a
+        # prose block. Not supplied -> [] (a directly-authored finding starts with no references).
+        author_references, err = _author_references(data)
+        if err:
+            return err
+        author_references = author_references or []
         author_group_pk = group.id if group is not None else None
         author_order = len(siblings)
         author_target_host = target_fields.get("target_host")
@@ -1144,6 +1165,7 @@ def scribble_add_finding(engagement_id: str):
                 severity=author_severity,
                 cvss_vector=author_cvss_vector,
                 content_json=author_content_json,
+                references=author_references,
                 target_host=author_target_host,
                 target_port=author_target_port,
                 target_url=author_target_url,
@@ -2053,6 +2075,13 @@ def _finding_detail(db, finding: EngagementFinding) -> dict:
         "analyst_notes": finding.analyst_notes,
         "created_by": finding.created_by,
         "content_json": finding.content_json or {},
+        # Structured metadata (#624/#625) — the typed columns, read back for round-trip authoring. All
+        # empty-default so a pre-enrichment finding serializes exactly as before these columns existed.
+        "references": finding.references or [],
+        "cve_ids": finding.cve_ids or [],
+        "cwe_ids": finding.cwe_ids or [],
+        "owasp_categories": finding.owasp_categories or [],
+        "threat_intel": finding.threat_intel,
         "variables": finding.variables or {},
         "artifacts": [
             _artifact_summary(a) for a in sorted(finding.artifacts, key=lambda a: a.order_index)
@@ -2081,12 +2110,17 @@ def _group_summary(group: FindingGroup) -> dict:
 _ABSENT = object()
 
 _PATCH_TEXT_FIELDS = ("category", "cvss_vector", "target_host", "target_url", "analyst_notes")
-_PATCH_CONTENT_FIELDS = ("description", "remediation", "references", "content_json")
+_PATCH_CONTENT_FIELDS = ("description", "remediation", "content_json")
+# Structured metadata columns an operator may author/edit via PATCH (#624/#625). ``references`` is a list
+# of value objects (add/edit/suppress); ``cve_ids``/``cwe_ids``/``owasp_categories`` are id lists;
+# ``threat_intel`` is enrichment-managed and only CLEARABLE here (author does not hand-type KEV/EPSS).
+_PATCH_METADATA_FIELDS = ("references", "cve_ids", "cwe_ids", "owasp_categories", "threat_intel")
 _PATCH_ALLOWED = (
     {"title", "severity", "confidence", "status", "cvss_score", "target_port",
      "include_in_report", "idempotency_key"}
     | set(_PATCH_TEXT_FIELDS)
     | set(_PATCH_CONTENT_FIELDS)
+    | set(_PATCH_METADATA_FIELDS)
 )
 
 
@@ -2105,8 +2139,8 @@ def _patch_content_blocks(data: dict):
     ``if refs_text``), written for a CREATE where "nothing supplied" and "supplied nothing" are the same
     thing. On an edit they are not: ``{"description": ""}`` is the only way to say "delete this block's
     prose", and letting the guard swallow it meant a 200 for an edit that never happened — with no way at
-    all to clear a block through this API. So a supplied-but-empty ``description``/``remediation``/
-    ``references`` becomes an explicit empty ProseMirror doc, which is exactly what the cookie editor's
+    all to clear a block through this API. So a supplied-but-empty ``description``/``remediation``
+    becomes an explicit empty ProseMirror doc, which is exactly what the cookie editor's
     autosave stores for a cleared block (``autosave_api``) and what the renderer treats as an absent
     section. A block named in ``content_json`` still wins over its plain-text twin, unchanged.
 
@@ -2126,15 +2160,13 @@ def _patch_content_blocks(data: dict):
         value = data.get(key, _ABSENT)
         if value is not _ABSENT and not isinstance(value, str):
             return {}, _bad_request(f"{key} must be a string")
-    refs = data.get("references", _ABSENT)
-    if refs is not _ABSENT and not isinstance(refs, list):
-        return {}, _bad_request("references must be a list")
     blocks = _author_content_json({k: data[k] for k in _PATCH_CONTENT_FIELDS if k in data})
     # Whatever the caller named but ``_author_content_json`` produced no block for was empty — clear it.
     # Routed through the sanitizer too, so there is still exactly one path into ``content_json``.
+    # (``references`` is NOT here — #624 moved it to a typed column, authored in _parse_finding_patch.)
     cleared = {
         key: schema.empty_doc()
-        for key in ("description", "remediation", "references")
+        for key in ("description", "remediation")
         if key in data and key not in blocks
     }
     if cleared:
@@ -2240,6 +2272,62 @@ def _parse_finding_patch(data: dict):
         if not isinstance(flag, bool):
             return None, None, _bad_request("include_in_report must be true or false")
         updates["include_in_report"] = flag
+
+    # #624 references (structured value objects): add / edit / per-reference SUPPRESS. Elements may be
+    # plain strings (a url or a bare label) or {label, url, source, suppressed} objects; author-sourced.
+    refs_supplied = data.get("references", _ABSENT)
+    if refs_supplied is not _ABSENT:
+        if not isinstance(refs_supplied, list):
+            return None, None, _bad_request("references must be a list")
+        if len(refs_supplied) > _REFERENCE_LIST_MAX:
+            return None, None, _bad_request(
+                f"references may contain at most {_REFERENCE_LIST_MAX} entries"
+            )
+        refs, err = _author_references(data)
+        if err is not None:
+            return None, None, err
+        updates["references"] = refs
+
+    # #625 classification id lists — normalized + deduped through scribble.metadata (the ONE place these
+    # ids are canonicalized, so an author edit and a promote seed produce identical shapes).
+    for key, normalizer in (("cve_ids", metadata.normalize_cve_ids),
+                            ("cwe_ids", metadata.normalize_cwe_ids)):
+        raw = data.get(key, _ABSENT)
+        if raw is _ABSENT:
+            continue
+        if not isinstance(raw, list):
+            return None, None, _bad_request(f"{key} must be a list")
+        if len(raw) > _REFERENCE_LIST_MAX:
+            return None, None, _bad_request(f"{key} may contain at most {_REFERENCE_LIST_MAX} entries")
+        updates[key] = normalizer(raw)
+
+    owasp = data.get("owasp_categories", _ABSENT)
+    if owasp is not _ABSENT:
+        if not isinstance(owasp, list):
+            return None, None, _bad_request("owasp_categories must be a list")
+        if len(owasp) > _REFERENCE_LIST_MAX:
+            return None, None, _bad_request(
+                f"owasp_categories may contain at most {_REFERENCE_LIST_MAX} entries"
+            )
+        # Bounded to the known OWASP-Top-10-2021 ids; an unknown id is dropped (omit-when-empty), never
+        # stored as a category that renders a wrong label.
+        seen: set[str] = set()
+        updates["owasp_categories"] = [
+            c for c in (str(x).strip() for x in owasp)
+            if c in metadata.OWASP_2021 and not (c in seen or seen.add(c))
+        ]
+
+    # #625 threat_intel is a DATED enrichment-managed fact (KEV/EPSS), not an opinion: only CLEARABLE here
+    # (set null). It is refreshed by the enrichment pass keyed to the finding's CVEs, never hand-typed —
+    # a hand-typed kev/epss with no honest ``as_of`` is exactly the stale-fact lie #625 rejects.
+    ti = data.get("threat_intel", _ABSENT)
+    if ti is not _ABSENT:
+        if ti is not None:
+            return None, None, _bad_request(
+                "threat_intel is enrichment-managed (KEV/EPSS): send null to clear the snapshot; it is "
+                "refreshed by the enrichment pass, not hand-authored"
+            )
+        updates["threat_intel"] = None
 
     blocks, err = _patch_content_blocks(data)
     if err is not None:
@@ -2354,8 +2442,9 @@ def scribble_update_finding(finding_id: int):
     per-block autosave route, in one call.
 
     Only the fields the body supplies change; an explicit ``null`` clears a nullable column. Prose arrives
-    either as plain text (``description``/``remediation``/``references``) or as ProseMirror
-    ``content_json``, and either way it goes through the SAME sanitizer the create route uses.
+    either as plain text (``description``/``remediation``) or as ProseMirror ``content_json``, and either
+    way it goes through the SAME sanitizer the create route uses. ``references`` and the CVE/CWE/OWASP
+    metadata are STRUCTURED typed columns (#624/#625) — see ``_parse_finding_patch``.
 
     Fixing wording was the client's actual complaint: without this, the only recovery was delete and
     recreate — which the machine API could not do either, and which would have lost the finding's group
