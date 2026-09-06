@@ -123,6 +123,13 @@ class Engagement(Base, TimestampMixin):
     # additive migration needs no cross-DB server_default — every read coerces None via
     # ``normalize_strategic_recommendations``.
     strategic_recommendations: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
+    # lotek#642: per-engagement egress consent for threat_intel (KEV/EPSS) lookups. Default OFF — a
+    # finding's CVEs never leave the box to a third-party feed unless this is EXPLICITLY enabled for the
+    # engagement, and it is FORCED OFF for internal engagements (INV-EGRESS-02). Read ONLY through
+    # ``scribble.enrichment.egress_consented`` (the single consent predicate), never inline. Additive:
+    # the alembic migration backfills existing rows ``false`` via server_default; the create_all path
+    # adds a plain column (existing rows NULL, read as OFF).
+    threat_intel_egress_consent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
