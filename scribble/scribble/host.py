@@ -123,6 +123,17 @@ def findings():
     return host_hook("findings")
 
 
+def verdicts_for_cves():
+    """The host's threat_intel (KEV/EPSS) verdict hook (lotek#642): ``(cves: list[str]) -> (feed,
+    health)``, or None when exploiteer / the seam is unmounted.
+
+    None is a first-class answer: the enrichment driver then DEGRADES (no lookup, no snapshot) — an
+    unenriched finding renders byte-identically. See ``app.host_contract.make_verdicts_for_cves`` for
+    the contract; the core hook is currently a no-egress STUB.
+    """
+    return host_hook("verdicts_for_cves")
+
+
 def mark_job_promoted(job_id, actor_obj, *, extension: str, ref_id: int) -> bool:
     hook = host_hook("mark_job_promoted")
     if hook is None:

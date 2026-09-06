@@ -131,11 +131,16 @@ class MockCoreEngagements:
         return engagement_id
 
 
-def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None):
+def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None, verdicts_for_cves=None):
     """Fill ``cfg.extras`` with the minimum a host must provide for Scribble to accept a file.
 
     Deliberately ADDITIVE — it never clears keys another harness already set, so a richer stub host can
     wire its own authorization hooks and still get an object surface from here.
+
+    ``verdicts_for_cves`` (lotek#642): when given, inject the threat_intel (KEV/EPSS) verdict hook so a
+    test can simulate exploiteer MOUNTED (pass a stub ``(cves) -> (feed, health)`` callable); OMIT it to
+    simulate ABSENT (the driver then degrades — ``host.verdicts_for_cves()`` reads None). Not
+    manufactured when absent, so an unmounted test stays unmounted.
 
     Returns ``(objects, engagements)`` so a caller can assert against them.
     """
@@ -144,6 +149,8 @@ def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None):
     extras = cfg.extras
     extras["objects"] = objects
     extras["create_engagement"] = engagements.create_engagement
+    if verdicts_for_cves is not None:
+        extras["verdicts_for_cves"] = verdicts_for_cves
     # Deliberately NOT `extras["host"]`. That key is the truthy marker `authz.host_is_mounted()` reads
     # to mean "a lotek authorization model applies here", and setting it would make every standalone
     # test look mounted — then `can_view_client_id` finds no `can_view_client` hook, fails closed, and
