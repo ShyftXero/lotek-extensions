@@ -117,4 +117,8 @@ verbs = [
     # Destructive un-adopt (#635): removing the findings a scan job enriched is an outward, irreversible
     # act, so /admin/audit must be able to filter to it. Emitted by engagement_ui.py::unadopt_job_destroy.
     "unadopt_job_destructive",
+    # threat_intel enrichment (#642): one row per KEV/EPSS LOOKUP is the egress-consent disclosure
+    # record (INV-EGRESS-02 / INV-AUDIT-03), so /admin/audit must filter to it. Emitted by
+    # enrichment.py::ThreatIntelDriver.propose.
+    "threat_intel_lookup",
 ]
