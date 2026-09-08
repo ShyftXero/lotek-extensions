@@ -78,8 +78,18 @@ ArtifactBytes = Callable[[str], "bytes | None"]
 
 SEVERITY_ORDER: tuple[str, ...] = tuple(s.value for s in _ENUM_SEVERITY_ORDER)  # worst-first
 
-_BLOCK_LABELS = {"description": "Description", "remediation": "Remediation", "details": "Details"}
-_BLOCK_ORDER = ("description", "remediation", "details")
+_BLOCK_LABELS = {
+    "description": "Description",
+    "remediation": "Remediation",
+    "details": "Details",
+    "reproduction": "Reproduction",
+}
+# ``reproduction`` renders after ``details`` (the repro comes once the vuln is described). It is
+# omit-when-empty like every other block (``_render_blocks``' ``if fragment:``), so a finding without
+# repro steps simply drops the section. Its body is authored as a ``codeBlock`` (auto-fill on promotion
+# and the plain-text convenience arm both emit one) so it renders copy-pastable via
+# ``content.render_html`` (``<pre><code>``) with no special case here.
+_BLOCK_ORDER = ("description", "remediation", "details", "reproduction")
 
 # Toolbar label per top-level block key (``reporting.layouts.BLOCK_KEYS``). A key is linked only when
 # its block actually rendered its ``id="sec-<key>"`` anchor — see ``_render_document``/``_render_header``.

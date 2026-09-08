@@ -556,6 +556,14 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     from scribble.templating import resolve_doc  # local import avoids cycle at module import
 
     for block, doc in (finding.content_json or {}).items():
+        if block == "reproduction":
+            # The reproduction block is a VERBATIM code block — auto-filled from a scanner's curl PoC,
+            # which routinely carries `{{...}}` template-injection payloads (nuclei/dalfox SSTI checks).
+            # It must NOT pass through the report's Jinja variable resolver: `{{7*7}}` would render as
+            # `49` and stop reproducing the bug, breaking the block's verbatim contract. Render it raw,
+            # with NO variable substitution (doc- or inline-level).
+            blocks_html[block] = render_html.render_block(doc, artifact_url=artifact_url)
+            continue
         resolved = resolve_doc(doc, ctx)
         blocks_html[block] = render_html.render_block(
             resolved, resolve_var=resolve_var, artifact_url=artifact_url

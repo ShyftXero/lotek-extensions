@@ -38,8 +38,10 @@ FIGURE = "figure"
 
 CUSTOM_NODES = (VARIABLE, INLINE_IMAGE, FIGURE)
 
-# The default set of named blocks a finding/template carries.
-DEFAULT_BLOCKS = ("description", "remediation", "details")
+# The default set of named blocks a finding/template carries. ``reproduction`` (copy-pastable repro
+# steps, auto-filled from a scan finding's curl PoC on promotion) is offered on every finding/template
+# but, like the others, is omitted from the rendered report when empty.
+DEFAULT_BLOCKS = ("description", "remediation", "details", "reproduction")
 
 
 def empty_doc() -> dict[str, Any]:
@@ -57,6 +59,17 @@ def doc_from_text(text: str) -> dict[str, Any]:
     """Wrap plain text (splitting on blank lines into paragraphs) into a doc."""
     blocks = [b.strip() for b in text.replace("\r\n", "\n").split("\n\n")]
     return {"type": DOC, "content": [paragraph(b) for b in blocks if b]}
+
+
+def code_block_doc(text: str) -> dict[str, Any]:
+    """Wrap plain text as ONE copy-pastable code block — verbatim, newlines preserved, no paragraph
+    splitting — so pasted curl/commands round-trip exactly. Used for the ``reproduction`` block
+    (auto-filled from a scan finding's curl PoC, or authored via the plain-text convenience field).
+    Empty text yields an empty doc, which the report omits."""
+    text = text.strip("\n")
+    if not text:
+        return empty_doc()
+    return {"type": DOC, "content": [{"type": CODE_BLOCK, "content": [{"type": TEXT, "text": text}]}]}
 
 
 def iter_nodes(node: dict[str, Any] | None):
