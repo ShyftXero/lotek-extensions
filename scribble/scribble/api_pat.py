@@ -2250,7 +2250,7 @@ def _patch_content_blocks(data: dict):
         return {}, err
     if (err := _content_bounds_error(data)) is not None:
         return {}, err
-    for key in ("description", "remediation"):
+    for key in ("description", "remediation", "reproduction"):
         value = data.get(key, _ABSENT)
         if value is not _ABSENT and not isinstance(value, str):
             return {}, _bad_request(f"{key} must be a string")
@@ -2260,7 +2260,7 @@ def _patch_content_blocks(data: dict):
     # (``references`` is NOT here — #624 moved it to a typed column, authored in _parse_finding_patch.)
     cleared = {
         key: schema.empty_doc()
-        for key in ("description", "remediation")
+        for key in ("description", "remediation", "reproduction")
         if key in data and key not in blocks
     }
     if cleared:
