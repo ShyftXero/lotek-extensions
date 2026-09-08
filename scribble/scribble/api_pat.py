@@ -692,6 +692,13 @@ def _author_content_json(data: dict) -> dict:
             text = data.get(block)
             if isinstance(text, str) and text.strip():
                 raw[block] = schema.doc_from_text(text)
+    # ``reproduction`` plain text is wrapped as a copy-pastable CODE block (not prose paragraphs), so
+    # pasted curl/commands round-trip verbatim; empty/whitespace is dropped so the block stays absent
+    # and the report omits it.
+    if "reproduction" not in raw:
+        repro = data.get("reproduction")
+        if isinstance(repro, str) and repro.strip():
+            raw["reproduction"] = schema.code_block_doc(repro)
     return sanitize_content_json(raw)
 
 
@@ -2197,7 +2204,7 @@ def _group_summary(group: FindingGroup) -> dict:
 _ABSENT = object()
 
 _PATCH_TEXT_FIELDS = ("category", "cvss_vector", "target_host", "target_url", "analyst_notes")
-_PATCH_CONTENT_FIELDS = ("description", "remediation", "content_json")
+_PATCH_CONTENT_FIELDS = ("description", "remediation", "reproduction", "content_json")
 # Structured metadata columns an operator may author/edit via PATCH (#624/#625). ``references`` is a list
 # of value objects (add/edit/suppress); ``cve_ids``/``cwe_ids``/``owasp_categories`` are id lists;
 # ``threat_intel`` is enrichment-managed and only CLEARABLE here (author does not hand-type KEV/EPSS).

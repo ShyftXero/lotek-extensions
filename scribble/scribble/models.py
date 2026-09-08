@@ -449,8 +449,9 @@ class EngagementFinding(Base, TimestampMixin):
         accepts an enum-shaped ``severity``, e.g. the old lotek ORM ``Finding.severity``, for callers that
         haven't moved to the DTO), falling back to the raw value itself.
         """
-        from scribble.content.schema import doc_from_text
+        from scribble.content.schema import code_block_doc, doc_from_text
         from scribble.deps import severity_enum  # local import: avoids a models.py <-> deps.py cycle
+        from scribble.facts import reproduction_from_facts  # local import: avoids a models <-> facts cycle
 
         SeverityEnum = severity_enum()
         raw_severity = getattr(finding, "severity", None)
@@ -472,6 +473,12 @@ class EngagementFinding(Base, TimestampMixin):
             ev = str(ev).strip()
             if ev and ev[0] not in "{[":
                 content_json["details"] = doc_from_text(ev)
+        # Copy-pastable reproduction from the scanner's OWN PoC (nuclei curl / dalfox request), if the
+        # promoted finding's facts carry one. Added AFTER the details fallback so it never suppresses it
+        # (that branch keys off ``not content_json``). No PoC -> no block -> the report omits it.
+        repro_text = reproduction_from_facts(getattr(finding, "facts", None))
+        if repro_text:
+            content_json["reproduction"] = code_block_doc(repro_text)
         data = dict(
             title=getattr(finding, "title", "Untitled"),
             category=getattr(finding, "category", None),
