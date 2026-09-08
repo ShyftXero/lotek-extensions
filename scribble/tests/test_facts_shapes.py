@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scribble.facts import resolve_variables, synthesize_parent_variables
+from scribble.facts import reproduction_from_facts, resolve_variables, synthesize_parent_variables
 
 
 @dataclass
@@ -200,6 +200,39 @@ def test_parent_no_child_has_the_fact_yields_empty_not_omitted():
     children = [_Dto(facts={}), _Dto(facts={})]
     out = synthesize_parent_variables(children, _decl("K", [{"fact": "missing", "shape": "count"}]))
     assert out == {"K": ""}
+
+
+# ── reproduction_from_facts: PoC -> copy-pastable text, keyed on fact SHAPE (no tool name) ──────────
+
+
+def test_reproduction_uses_a_curl_fact_verbatim():
+    text = reproduction_from_facts({"curl": "curl -H 'x: 1' https://h/api"})
+    assert text == "curl -H 'x: 1' https://h/api"
+
+
+def test_reproduction_appends_extracted_evidence():
+    text = reproduction_from_facts({"curl": "curl https://h", "extracted": ["a-token", "b-token"]})
+    assert text.splitlines()[0] == "curl https://h"
+    assert "# extracted: a-token, b-token" in text
+
+
+def test_reproduction_reconstructs_an_injected_request_when_no_curl():
+    text = reproduction_from_facts(
+        {"url": "https://h/search", "param": "q", "method": "post", "payload": "<x>"}
+    )
+    assert "# POST https://h/search  (param: q)" in text
+    assert "# payload: <x>" in text
+
+
+def test_reproduction_is_empty_without_a_poc():
+    # No curl and no url+payload -> no reproduction (the block is omitted from the report).
+    assert reproduction_from_facts({"host": "h", "cwe": "CWE-79"}) == ""
+    assert reproduction_from_facts({"url": "https://h"}) == ""  # url without payload is not a PoC
+
+
+def test_reproduction_tolerates_non_dict_facts():
+    assert reproduction_from_facts(None) == ""
+    assert reproduction_from_facts("nope") == ""
 
 
 # ── CONTRACT-FACTS §7.3: this file names no tool/source ─────────────────────────────────────────

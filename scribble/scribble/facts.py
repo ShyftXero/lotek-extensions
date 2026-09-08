@@ -182,6 +182,37 @@ def _render_single(raw: Any, shape: str) -> str | None:
     return text or None
 
 
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def reproduction_from_facts(facts: Any) -> str:
+    """Deterministic copy-pastable reproduction text from a scan finding's ``facts`` — the PoC the
+    scanner ALREADY emitted, never a guess. Returns ``''`` when there is none (the reproduction block is
+    then omitted from the report). PURE: no I/O, no network, no clock. Keyed on fact SHAPE, never a tool
+    name (CONTRACT-FACTS §7.3): a ``curl`` fact (optionally with ``extracted`` evidence) becomes the
+    reproduction verbatim; failing that, an injected request (``method``/``url``/``param``/``payload``)
+    is reconstructed. Any scanner that emits those fact keys is picked up here with no change; a
+    genuinely new PoC shape is a small additive edit, same posture as the rest of this module."""
+    if not isinstance(facts, dict):
+        return ""
+    curl = _text(facts.get("curl"))
+    if curl:
+        lines = [curl]
+        extracted = _join_capped(_as_list(facts.get("extracted") or []))
+        if extracted:
+            lines.append(f"# extracted: {extracted}")
+        return "\n".join(lines)
+    url = _text(facts.get("url"))
+    payload = _text(facts.get("payload"))
+    if url and payload:
+        method = (_text(facts.get("method")) or "GET").upper()
+        param = _text(facts.get("param"))
+        header = f"# {method} {url}" + (f"  (param: {param})" if param else "")
+        return f"{header}\n# payload: {payload}"
+    return ""
+
+
 def resolve_variables(dto: Any, declarations: Any) -> dict[str, str]:
     """``{VARIABLE: value}`` for ONE finding, from the host's neutral ``dto.facts``/attributes + the
     DB-declared ``from_facts`` rules. Pure.
