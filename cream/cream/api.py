@@ -47,11 +47,14 @@ from cream.service import (
     accept,
     add_line_item,
     burn_rows,
+    clamp_limit,
+    clamp_offset,
     convert_to_invoice,
     get_brand,
     issue,
     mark_sent,
     replace_line_items,
+    scoped_documents,
     set_scope,
     suggest_line_items,
     totals,
@@ -304,13 +307,16 @@ def _brand_audit_snapshot(brand) -> dict:
 
 @api_bp.get("/documents")
 def list_documents():
+    """Documents for the actor's visible engagements, newest first — read-scoped AND bounded. `?limit=`
+    (default 200, max 500) + `?offset=` page the result; `has_more` says whether another page exists. It
+    used to return every visible row unbounded (a DoS lever)."""
     cfg = get_config()
+    limit = clamp_limit(request.args.get("limit"))
+    offset = clamp_offset(request.args.get("offset"))
     with cfg.session_factory() as db:
-        rows = db.scalars(select(Document).order_by(Document.created_at.desc())).all()
-        vis = _visible_or_none()
-        if vis is not None:
-            rows = [d for d in rows if d.engagement_id in vis]  # read-scope to the actor's engagements
-        return jsonify(documents=[_doc_json(d) for d in rows])
+        rows = scoped_documents(db, _visible_or_none(), limit=limit + 1, offset=offset)
+        return jsonify(documents=[_doc_json(d) for d in rows[:limit]],
+                       limit=limit, offset=offset, has_more=len(rows) > limit)
 
 
 @api_bp.post("/documents")

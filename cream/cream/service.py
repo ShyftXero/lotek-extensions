@@ -91,6 +91,55 @@ def totals(doc: Document) -> TotalsView:
     )
 
 
+# --- document queries --------------------------------------------------------------------------------
+#
+# The ONE scoped+ordered document list every surface routes through (the HTML dashboard and both JSON
+# list endpoints). It exists because those three had forked the same `select(Document)...all()` with a
+# post-query Python visibility filter and no bound — an unbounded, DoS-shaped read repeated in three
+# places. Read-scoping and the row bound now live here, once.
+
+LIST_DEFAULT_LIMIT = 200
+LIST_MAX_LIMIT = 500
+
+
+def clamp_limit(raw, *, default: int = LIST_DEFAULT_LIMIT, maximum: int = LIST_MAX_LIMIT) -> int:
+    """Parse a caller-supplied ``limit`` into ``[1, maximum]``; a missing/garbage value -> ``default``."""
+    try:
+        return max(1, min(int(raw), maximum))
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp_offset(raw) -> int:
+    """Parse a caller-supplied ``offset`` into ``>= 0``; a missing/garbage value -> ``0``."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def scoped_documents(db, vis, *, status=None, kind=None, limit=None, offset=0):
+    """Documents newest-first, read-scoped to ``vis`` (a set of engagement ids, or ``None`` = unscoped /
+    standalone), with optional ``status``/``kind`` filters and SQL ``limit``/``offset``. An EMPTY ``vis``
+    yields zero rows — SQL ``IN ()`` matches nothing — which is the fail-closed posture the host's
+    empty-set-on-error return relies on. All filtering/paging is in SQL, so a caller can bound the read
+    without materialising every row first."""
+    # id is the tiebreaker so offset paging is STABLE across rows sharing a created_at (uuid7 ids are
+    # themselves time-ordered, so this agrees with created_at and just disambiguates ties).
+    stmt = select(Document).order_by(Document.created_at.desc(), Document.id.desc())
+    if vis is not None:
+        stmt = stmt.where(Document.engagement_id.in_(vis))
+    if status is not None:
+        stmt = stmt.where(Document.status == status)
+    if kind is not None:
+        stmt = stmt.where(Document.kind == kind)
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.scalars(stmt).all())
+
+
 # --- branding ----------------------------------------------------------------------------------------
 
 
