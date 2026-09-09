@@ -139,3 +139,60 @@ def test_engagements_list_edit_delete_controls_gated_on_can_write(client, stub_h
     stub_host.can_write_value = False
     body = client.get(f"{UI}/engagements").get_data(as_text=True)
     assert f'href="{UI}/engagements/{eid}/edit"' not in body
+
+
+# ── threat-intel egress consent (lotek#642) ─────────────────────────────────────────────────────
+
+
+def test_edit_toggles_threat_intel_consent(client, stub_host, session_factory):
+    """The edit form is the only writer of `threat_intel_egress_consent`: a checked box opts the
+    engagement into KEV/EPSS enrichment, an absent box clears it. Default is off."""
+    with session_factory() as db:
+        c = fm.Client(name="TI Client")
+        db.add(c)
+        db.commit()
+        cid = c.id
+        eng = fm.Engagement(name="TI Co", scope_type="external", client_id=cid)
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+        assert eng.threat_intel_egress_consent is False  # off by default
+
+    base = {"name": "TI Co", "client_id": str(cid)}
+    # box checked -> consent on
+    resp = client.post(
+        f"{UI}/engagements/{eid}/edit", data={**base, "threat_intel_egress_consent": "on"}
+    )
+    assert resp.status_code == 302
+    with session_factory() as db:
+        assert db.get(fm.Engagement, eid).threat_intel_egress_consent is True
+
+    # box absent (unchecked HTML checkboxes send no key) -> consent cleared back off
+    resp = client.post(f"{UI}/engagements/{eid}/edit", data=base)
+    assert resp.status_code == 302
+    with session_factory() as db:
+        assert db.get(fm.Engagement, eid).threat_intel_egress_consent is False
+
+
+def test_edit_page_reflects_threat_intel_consent(client, stub_host, session_factory):
+    """A consenting engagement renders the box checked; a non-consenting one renders it unchecked —
+    the box is this page's only checkbox, so `checked` in the body tracks exactly this field."""
+    stub_host.can_write_value = True
+    with session_factory() as db:
+        c = fm.Client(name="TI Client 2")
+        db.add(c)
+        db.commit()
+        cid = c.id
+        on = fm.Engagement(name="On", scope_type="external", client_id=cid,
+                           threat_intel_egress_consent=True)
+        off = fm.Engagement(name="Off", scope_type="external", client_id=cid,
+                            threat_intel_egress_consent=False)
+        db.add_all([on, off])
+        db.commit()
+        on_id, off_id = on.id, off.id
+
+    on_body = client.get(f"{UI}/engagements/{on_id}/edit").get_data(as_text=True)
+    off_body = client.get(f"{UI}/engagements/{off_id}/edit").get_data(as_text=True)
+    assert 'name="threat_intel_egress_consent"' in on_body
+    assert 'name="threat_intel_egress_consent"' in off_body
+    assert "checked" in on_body and "checked" not in off_body
