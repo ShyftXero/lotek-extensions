@@ -96,20 +96,28 @@ def test_a_read_only_account_cannot_write(client, hooks):
     assert loaded(client, rid).title == "filed while writable"
 
 
-def test_empty_and_oversized_text_is_refused(client):
-    assert client.post("/bugreport/", data={"title": "   ", "body": "x"}).status_code == 400
-    assert client.post("/bugreport/",
-                       data={"title": "a" * (MAX_TITLE + 1), "body": ""}).status_code == 400
-    assert client.post("/bugreport/",
-                       data={"title": "ok", "body": "b" * (MAX_BODY + 1)}).status_code == 400
+def test_empty_and_oversized_text_shows_an_error_banner(client):
+    """Invalid INPUT now Post/Redirect/Gets back to the list with an inline error banner instead of a
+    bare 400 error page. (Authorization refusals stay hard 4xx — see the read-only + tombstone tests.)"""
+    for data in (
+        {"title": "   ", "body": "x"},
+        {"title": "a" * (MAX_TITLE + 1), "body": ""},
+        {"title": "ok", "body": "b" * (MAX_BODY + 1)},
+    ):
+        resp = client.post("/bugreport/", data=data)
+        assert resp.status_code == 302
+        assert "error=" in resp.headers["Location"]
+        assert '<p class="br-banner br-banner-err">' in client.get(
+            resp.headers["Location"]).get_data(as_text=True)
 
 
-def test_an_unknown_status_is_refused(client, hooks):
+def test_an_unknown_status_shows_an_error_banner(client, hooks):
     rid = file_report(client, title="status fuzz")
     hooks["actor"] = FakeUser(username="root", role="admin")
-    assert client.post(f"/bugreport/{rid}/respond",
-                       data={"status": "closed-wont-fix", "note": ""}).status_code == 400
-    assert loaded(client, rid).status is ReportStatus.open
+    resp = client.post(f"/bugreport/{rid}/respond", data={"status": "closed-wont-fix", "note": ""})
+    assert resp.status_code == 302
+    assert "error=" in resp.headers["Location"]
+    assert loaded(client, rid).status is ReportStatus.open  # unchanged
 
 
 def test_report_text_is_escaped_not_rendered(client):
@@ -209,3 +217,54 @@ def test_every_list_surface_is_bounded(client, session_factory, hooks):
         assert len(visible_reports(db, actor_id=reporter_id, is_admin=True)) == LIST_LIMIT
     # …and the rendered page shows no more than the cap either.
     assert _page(client).count('class="br-card') == LIST_LIMIT
+
+
+# ── UI polish: themed page, PRG banners, confirms, truncation notice ─────────────
+
+
+def test_a_successful_action_shows_a_notice_banner(client):
+    resp = client.post("/bugreport/", data={"title": "filed ok", "body": ""})
+    assert resp.status_code == 302
+    assert "notice=" in resp.headers["Location"]
+    # the rendered element, not the always-present `.br-banner-ok` CSS class
+    assert '<p class="br-banner br-banner-ok">' in client.get(resp.headers["Location"]).get_data(as_text=True)
+
+
+def test_list_page_is_themed_with_host_css_variables(client):
+    """It follows the host theme: styles reference host CSS vars, not the retired hardcoded dark hex."""
+    page = _page(client)
+    assert "var(--card)" in page and "var(--ink)" in page
+    # list.html's retired hardcoded palette is gone (base.html keeps its OWN standalone-chrome colors,
+    # since standalone has no host CSS variables to inherit — so assert only the list-only hexes).
+    assert "#9fb2c0" not in page and "#101d17" not in page
+
+
+def test_the_reporter_delete_form_asks_for_confirmation(client):
+    """A misclick on "Delete this report" is unrecoverable, so it is guarded by a native confirm() — and
+    the assertion pins THAT form's message, not just any confirm() on the page."""
+    file_report(client, title="deletable")
+    assert "confirm('Delete this report?" in _page(client)
+
+
+def test_a_crafted_banner_code_renders_no_banner(client):
+    """The banner text is mapped from a fixed code set server-side, so a hand-crafted query value can't
+    reflect attacker-chosen text into the trusted banner chrome."""
+    page = client.get("/bugreport/?error=Your%20session%20expired,%20re-auth%20at%20evil.example").get_data(
+        as_text=True
+    )
+    assert "evil.example" not in page
+    # no banner ELEMENT is rendered for an unknown code (the `.br-banner` CSS class always exists)
+    assert '<p class="br-banner' not in page
+    # a KNOWN code still renders its fixed message
+    known = client.get("/bugreport/?notice=filed").get_data(as_text=True)
+    assert '<p class="br-banner br-banner-ok">Report filed.' in known
+
+
+def test_the_list_announces_truncation_at_the_cap(client, session_factory, hooks):
+    """When the list hits LIST_LIMIT the page says so (and points at the machine API) rather than
+    silently dropping the rest."""
+    reporter_id = hooks["actor"].id
+    with session_factory() as db:
+        db.add_all(Report(reporter_id=reporter_id, title=f"r{i}", body="") for i in range(LIST_LIMIT + 5))
+        db.commit()
+    assert "br-trunc" in _page(client)
