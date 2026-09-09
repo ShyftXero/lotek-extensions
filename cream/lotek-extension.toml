@@ -39,6 +39,13 @@ machine_prefix = "/machine"
 docs = "docs/CREAM.md"
 docs_title = "CREAM (quoting & invoicing)"
 
+# The audit-verb vocabulary this extension emits, bare (the host namespaces each to `ext:cream:<verb>`).
+# Declaring them is INV-AUDIT-03's reader half: an emitted verb the host's /admin/audit filter does not
+# know about is written but not selectable — a trail nobody can read. Keep in step with the
+# host_audit(...) call sites in api.py (tests/test_audit.py exercises each).
+[audit]
+verbs = ["issue", "mark_sent", "accept", "convert", "void", "update_brand"]
+
 # Tables this extension OWNS: the host may carry them through a migration, attribute them for
 # drop/truncate, and never touch a table nobody claims. tests/test_extension_schema.py requires this.
 [db]

@@ -17,6 +17,30 @@
       {% endif %}
     </div>
   </div>
+  {% if documents or filter_status or filter_kind %}
+  <form method="get" class="cr-filters">
+    <label>Status
+      <select name="status" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for s in statuses %}
+        <option value="{{ s }}" {% if s == filter_status %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Kind
+      <select name="kind" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for k in kinds %}
+        <option value="{{ k }}" {% if k == filter_kind %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit" class="cr-btn">Filter</button></noscript>
+    {% if filter_status or filter_kind %}
+    <a class="cr-btn" href="{{ url_for('cream.dashboard') }}">Clear</a>
+    {% endif %}
+  </form>
+  {% endif %}
   <table class="cr-table">
     <thead><tr>
       <th>Number</th><th>Kind</th><th>Title</th><th>Bill to</th><th>Status</th>
@@ -46,9 +70,15 @@
         </td>
       </tr>
     {% else %}
-      <tr><td colspan="7" style="padding:16px 6px;color:#7f93a3">No documents yet.</td></tr>
+      <tr><td colspan="7" style="padding:16px 6px;color:#7f93a3">
+        {% if filter_status or filter_kind %}No documents match this filter.{% else %}No documents yet.{% endif %}
+      </td></tr>
     {% endfor %}
     </tbody>
   </table>
+  {% if truncated %}
+  <p class="cr-trunc">Showing the {{ cream_list_limit }} most recent. Narrow with the filters above, or
+     use the machine API for the full set.</p>
+  {% endif %}
 </div>
 {% endblock %}

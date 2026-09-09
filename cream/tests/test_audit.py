@@ -84,3 +84,30 @@ def test_a_failed_transition_leaves_no_audit_row(app, client, make_doc):
     app.audit_log.clear()
     assert client.post(f"/cream/api/documents/{doc['id']}/issue").status_code == 409
     assert _rows(app, "ext:cream:issue") == []
+
+
+def test_manifest_declares_every_emitted_audit_verb():
+    """INV-AUDIT-03 reader half: every verb passed to host_audit in api.py must be declared in the
+    manifest's [audit] verbs, or the host's /admin/audit filter can't select that trail. This greps the
+    real call sites, so adding a host_audit verb without declaring it turns this red."""
+    import pathlib
+    import re
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    manifest = tomllib.loads((root / "lotek-extension.toml").read_text())
+    declared = set(manifest["audit"]["verbs"])
+
+    api_src = (root / "cream" / "api.py").read_text()
+    # Session/doc arg names aren't hard-coded; a quoted literal verb is required, so the wrapper's
+    # `host_audit(db, verb, ...)` (verb is a variable, unquoted) is correctly not captured.
+    emitted = set(re.findall(r'host_audit\(\s*\w+,\s*"([a-z_]+)"', api_src))
+    emitted |= set(re.findall(r'_lifecycle_audit\(\s*\w+,\s*\w+,\s*"([a-z_]+)"', api_src))
+
+    assert emitted, "no audit verbs found in api.py — the drift-guard regex is stale"
+    # Set EQUALITY, both directions: an undeclared emit AND a stale declared-but-never-emitted verb fail.
+    assert emitted == declared, (
+        f"[audit] verbs and api.py host_audit calls disagree — "
+        f"emitted_not_declared={sorted(emitted - declared)}, "
+        f"declared_not_emitted={sorted(declared - emitted)}"
+    )

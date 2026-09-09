@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from flask import Blueprint, Response, abort, render_template
+from flask import Blueprint, Response, abort, render_template, request
 from sqlalchemy import select
 
 from cream._version import __version__
@@ -23,7 +23,7 @@ from cream.deps import (
     host_can_write,
     host_visible_engagement_ids,
 )
-from cream.enums import COMMON_UNITS, DocStatus
+from cream.enums import COMMON_UNITS, DocKind, DocStatus
 from cream.handles import document_handle, export_stem
 from cream.models import Document
 from cream.money import as_json, money, pct
@@ -130,15 +130,39 @@ def _editor_payload(doc: Document) -> dict:
     }
 
 
+# ponytail: a flat cap, not offset paging. The most-recent page plus the status/kind filters covers a
+# firm's day-to-day; add real pagination only if this ceiling is ever actually hit.
+_DASHBOARD_MAX = 200
+
+
+def _as_doc_enum(enum_cls, raw: str):
+    """A blank/unknown filter value -> None (no filter), never a 500 — same fail-open posture as the id
+    parsers. Enum-validating here is also what keeps the raw query-arg off the page as free text."""
+    try:
+        return enum_cls(raw)
+    except ValueError:
+        return None
+
+
 @bp.get("/")
 def dashboard():
     cfg = get_config()
     rows = []
     vis = host_visible_engagement_ids()
+    status = _as_doc_enum(DocStatus, (request.args.get("status") or "").strip())
+    kind = _as_doc_enum(DocKind, (request.args.get("kind") or "").strip())
     with cfg.session_factory() as db:
-        for d in db.scalars(select(Document).order_by(Document.created_at.desc())).all():
-            if vis is not None and d.engagement_id not in vis:
-                continue  # read-scope to the actor's engagements
+        stmt = select(Document).order_by(Document.created_at.desc())
+        if vis is not None:
+            # read-scope in SQL (was a post-query Python skip) so the row cap below is correct
+            stmt = stmt.where(Document.engagement_id.in_(vis))
+        if status is not None:
+            stmt = stmt.where(Document.status == status)
+        if kind is not None:
+            stmt = stmt.where(Document.kind == kind)
+        fetched = db.scalars(stmt.limit(_DASHBOARD_MAX + 1)).all()
+        truncated = len(fetched) > _DASHBOARD_MAX
+        for d in fetched[:_DASHBOARD_MAX]:
             rows.append({
                 "id": str(d.id), "kind": d.kind.value, "status": d.status.value,
                 # An unissued document has no number, and this cell is also the row's LINK — so a bare
@@ -159,7 +183,12 @@ def dashboard():
                 "editable": d.status is DocStatus.draft,
                 "total": totals(d).total, "currency": d.currency,
             })
-    return render_template("cream/list.html", documents=rows)
+    return render_template(
+        "cream/list.html", documents=rows, truncated=truncated, cream_list_limit=_DASHBOARD_MAX,
+        filter_status=(status.value if status is not None else ""),
+        filter_kind=(kind.value if kind is not None else ""),
+        statuses=[s.value for s in DocStatus], kinds=[k.value for k in DocKind],
+    )
 
 
 @bp.get("/documents/new")
