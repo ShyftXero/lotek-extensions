@@ -83,7 +83,7 @@ from scribble.deps import (
     open_session,
     severity_enum,
 )
-from scribble.enums import Confidence, FindingStatus, OrderMode
+from scribble.enums import Confidence, FindingStatus, OrderMode, RetestOutcome
 from scribble.models import (
     AssessmentType,
     Engagement,
@@ -260,6 +260,10 @@ def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
     engagement.strategic_recommendations = normalize_strategic_recommendations(
         (form.get("strategic_recommendations") or "").splitlines()
     )
+    # lotek#642: KEV/EPSS enrichment egresses each CVE to public feeds, so it stays OFF until an operator
+    # opts in per engagement. This checkbox is the ONLY writer of the flag the enrichment driver reads
+    # (enrichment.egress_consented); an unchecked box clears prior consent.
+    engagement.threat_intel_egress_consent = "threat_intel_egress_consent" in form
     return None
 
 
@@ -821,7 +825,42 @@ def register(api_bp, bp) -> None:
                 gallery_engagement_id=finding.engagement_id,
                 gallery_artifacts=gallery_artifacts,
                 scribble_variable_keys=variable_keys,
+                retests=sorted(finding.retests, key=lambda r: r.created_at),
+                retest_outcomes=list(RetestOutcome),
             )
+
+    # ============================================================================ POST: record a retest
+
+    @bp.route(
+        "/findings/<uuid:finding_id>/retest", methods=["POST"], endpoint="record_finding_retest"
+    )
+    def record_finding_retest(finding_id: int):
+        # The blueprint-wide gate (scribble/authz.py) already refuses a non-safe method without write,
+        # keyed on the same finding_id view arg it scopes tenancy by; the explicit check mirrors the
+        # sibling write routes (delete_finding, add_finding) as defence in depth.
+        if not host_can_write():
+            abort(403)
+        with open_session() as db:
+            finding = db.get(EngagementFinding, finding_id)
+            if finding is None:
+                abort(404)
+            try:
+                outcome = RetestOutcome((request.form.get("outcome") or "").strip())
+            except ValueError:
+                abort(400, "unknown retest outcome")
+            # Status transition (and a not_tested no-op) lives in the ONE writer, not here.
+            findings_service.record_retest(
+                db,
+                finding,
+                outcome,
+                notes=(request.form.get("notes") or "").strip() or None,
+                # Cap to the column width (models.Retest.tested_by is String(128)); an over-long value
+                # is a DataError -> 500 on Postgres (SQLite silently truncates), so bound it here.
+                tested_by=(request.form.get("tested_by") or "").strip()[:128] or None,
+                tested_on=_parse_date(request.form.get("tested_on")),
+            )
+            db.commit()
+            return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
 
     # =============================================================================== API: reorder groups
 

@@ -80,6 +80,55 @@
 </div>
 
 <div class="card">
+  <h3>Verify the fix</h3>
+  <p class="muted">Retest rounds recorded after remediation. The latest outcome moves this finding's
+    status — a remediated round marks it fixed; a partial or failed round sends it back to needs-retest.</p>
+  {% if retests %}
+  <table class="scribble-retest-table">
+    <thead>
+      <tr><th>Date</th><th>Outcome</th><th>Tested by</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      {% for r in retests %}
+      <tr>
+        <td>{{ r.tested_on.isoformat() if r.tested_on else r.created_at.strftime('%Y-%m-%d') }}</td>
+        <td>{{ r.outcome.value.replace('_', ' ') }}</td>
+        <td>{{ r.tested_by or '—' }}</td>
+        <td>{{ r.notes or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No retest recorded yet.</p>
+  {% endif %}
+  {% if scribble_can_write %}
+  <form method="post" class="scribble-retest-form"
+        action="{{ url_for('scribble.record_finding_retest', finding_id=finding.id) }}">
+    <div class="scribble-retest-grid">
+      <label>Outcome
+        <select name="outcome" required>
+          {% for o in retest_outcomes %}
+          <option value="{{ o.value }}">{{ o.value.replace('_', ' ') }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Date tested
+        <input type="date" name="tested_on" />
+      </label>
+      <label>Tested by
+        <input type="text" name="tested_by" maxlength="128" />
+      </label>
+    </div>
+    <label class="scribble-retest-notes">Notes
+      <textarea name="notes" rows="2"></textarea>
+    </label>
+    <button type="submit" class="btn btn-primary">Record retest</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
   <h3>Preview with variables resolved</h3>
   <p class="muted">Resolves {{ '{{VARIABLE}}' }} placeholders against this engagement/finding's values.</p>
   <button type="button" class="btn" id="scribble-finding-preview-btn"
@@ -119,6 +168,22 @@
   .scribble-finding-delete-form { margin-top: 10px; }
   .scribble-finding-delete { color: var(--danger); }
   .scribble-readonly-note { font-style: italic; }
+  .scribble-retest-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }
+  .scribble-retest-table th, .scribble-retest-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  .scribble-retest-table th { color: var(--muted); font-weight: 600; }
+  .scribble-retest-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 10px;
+  }
+  .scribble-retest-grid label, .scribble-retest-notes {
+    display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted);
+  }
+  .scribble-retest-notes { margin-bottom: 10px; }
+  .scribble-retest-grid input, .scribble-retest-grid select, .scribble-retest-notes textarea {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
+  }
   .scribble-finding-preview { margin-top: 10px; }
   .scribble-finding-preview h4 { margin: 12px 0 4px; text-transform: capitalize; }
   /* Viewer read-only nudge (docs/LOTEK_ADOPTION.md §4.1): the block editor has no explicit save
