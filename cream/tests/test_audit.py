@@ -99,8 +99,15 @@ def test_manifest_declares_every_emitted_audit_verb():
     declared = set(manifest["audit"]["verbs"])
 
     api_src = (root / "cream" / "api.py").read_text()
-    emitted = set(re.findall(r'host_audit\(\s*db,\s*"([a-z_]+)"', api_src))
-    emitted |= set(re.findall(r'_lifecycle_audit\(\s*db,\s*doc,\s*"([a-z_]+)"', api_src))
+    # Session/doc arg names aren't hard-coded; a quoted literal verb is required, so the wrapper's
+    # `host_audit(db, verb, ...)` (verb is a variable, unquoted) is correctly not captured.
+    emitted = set(re.findall(r'host_audit\(\s*\w+,\s*"([a-z_]+)"', api_src))
+    emitted |= set(re.findall(r'_lifecycle_audit\(\s*\w+,\s*\w+,\s*"([a-z_]+)"', api_src))
 
     assert emitted, "no audit verbs found in api.py — the drift-guard regex is stale"
-    assert emitted <= declared, f"emitted but undeclared in [audit] verbs: {sorted(emitted - declared)}"
+    # Set EQUALITY, both directions: an undeclared emit AND a stale declared-but-never-emitted verb fail.
+    assert emitted == declared, (
+        f"[audit] verbs and api.py host_audit calls disagree — "
+        f"emitted_not_declared={sorted(emitted - declared)}, "
+        f"declared_not_emitted={sorted(declared - emitted)}"
+    )

@@ -34,8 +34,25 @@ cream is already the most UI-complete extension; two gaps from the maturity surv
 
 ## Remaining
 
-- `/security-review` + `/adversarial-reviewer`; PR.
+- PR.
 - (Not done, out of scope) cross-page `url_for` hardening (Acid_Burn's small nit); client-name search.
+
+## Review (adversarial, on the committed diff)
+
+No blockers. Verified: the SQL `IN` scope is equivalent to the old Python skip (empty set → zero rows,
+fail-closed; no `engagement_id=None` leak; UUID types match), the cap is ANDed before `LIMIT`, filters
+are enum-validated (no reflected-arg analog to bugreport), verb match is exact, the monkeypatch is valid.
+Resolved:
+- **CONCERN 1 (fixed here):** the scoped-visibility rewrite had no *mounted* test (the suite ran
+  standalone, `vis=None`). Added `test_dashboard_read_scopes_to_visible_engagements` (empty scope →
+  hidden, foreign scope → hidden, own engagement → shown).
+- **NIT 3 (fixed here):** the drift guard now asserts set EQUALITY (catches a stale declared verb too)
+  and its regex no longer hard-codes the `db`/`doc` arg names.
+- **CONCERN 2 (follow-up, out of scope):** the two JSON list endpoints (`api.py` `/api/documents`,
+  `api_pat.py` `/machine/documents`) are still unbounded and still filter visibility in Python
+  post-query — the pattern this diff replaced on the HTML surface. A root-cause fix is a shared
+  scoped+capped query helper all three callers route through. Left for a follow-up (changing a JSON
+  contract to paginate needs its own tests + a page/next-cursor shape).
 
 ## Notes / gotchas
 

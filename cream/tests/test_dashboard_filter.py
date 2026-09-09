@@ -7,6 +7,7 @@ as free text; the cap makes the list bounded (it iterated every visible document
 from __future__ import annotations
 
 import re
+import uuid
 
 import cream.blueprint as bp
 
@@ -59,3 +60,19 @@ def test_dashboard_caps_and_announces_truncation(client, make_doc, monkeypatch):
     body = client.get(UI).get_data(as_text=True)
     assert "cr-trunc" in body            # the cap is announced, not silent
     assert len(_row_ids(body)) == 2      # …and no more than the cap is rendered
+
+
+def test_dashboard_read_scopes_to_visible_engagements(client, make_doc, hooks, engagement_id):
+    """Mounted, the list is scoped in SQL to the actor's visible engagements — the line this change
+    rewrote from a Python `continue` to `WHERE engagement_id IN (vis)`. Empty scope is fail-CLOSED
+    (nothing), a foreign scope hides the doc, and only the doc's own engagement shows it."""
+    doc = make_doc()
+
+    hooks["visible_engagement_ids"] = frozenset()  # no visible engagements -> nothing, not everything
+    assert doc["id"] not in _row_ids(client.get(UI).get_data(as_text=True))
+
+    hooks["visible_engagement_ids"] = frozenset({uuid.uuid7()})  # a foreign engagement only
+    assert doc["id"] not in _row_ids(client.get(UI).get_data(as_text=True))
+
+    hooks["visible_engagement_ids"] = frozenset({engagement_id})  # its own engagement
+    assert doc["id"] in _row_ids(client.get(UI).get_data(as_text=True))
