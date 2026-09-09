@@ -43,10 +43,19 @@
 
 {% block content %}
 <div class="br-wrap">
-  {#- Post/Redirect/Get feedback. Autoescaped: the text is a fixed success string or a service-authored
-      validation message, never raw user input rendered as HTML. -#}
-  {% if request.args.get('notice') %}<p class="br-banner br-banner-ok">{{ request.args.get('notice') }}</p>{% endif %}
-  {% if request.args.get('error') %}<p class="br-banner br-banner-err">{{ request.args.get('error') }}</p>{% endif %}
+  {#- Post/Redirect/Get feedback. `notice`/`error` are CODES mapped to fixed messages HERE, never the raw
+      query value — a crafted `?error=<anything>` link renders nothing, so it cannot reflect attacker text
+      into the trusted banner chrome. -#}
+  {% set _notices = {"filed": "Report filed.", "updated": "Report updated.", "deleted": "Report deleted.",
+      "responded": "Response saved.", "attached": "File attached.", "shared": "Public link updated.",
+      "unshared": "Sharing stopped.", "removed": "File deleted."} %}
+  {% set _errors = {"invalid": "Something in that form couldn’t be saved — check your input and try again.",
+      "no_file": "No file was supplied.",
+      "upload": "That file couldn’t be attached — it may be too large, or the report may have too many files."} %}
+  {% set _n = _notices.get(request.args.get('notice')) %}
+  {% set _e = _errors.get(request.args.get('error')) %}
+  {% if _n %}<p class="br-banner br-banner-ok">{{ _n }}</p>{% endif %}
+  {% if _e %}<p class="br-banner br-banner-err">{{ _e }}</p>{% endif %}
   <h1>Bug reports</h1>
   <p class="br-muted">
     Text-only capture. Nothing here is filed anywhere else — it lands in this list, an admin responds,

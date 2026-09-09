@@ -37,7 +37,20 @@ fixes, all in the one `list.html` page + its blueprint:
 - **BusyBody persona** (Null_Pointer's item 3) — a lotek CORE-repo file
   (`tests/busybody/corpus/bugreport-browser.yaml` + a lotek-side test). Tracked separately; NOT in this
   extension PR.
-- `/security-review` + `/adversarial-reviewer` on the diff; PR.
+- PR.
+
+## Review (adversarial, on the committed diff)
+
+No blockers. Verified: no XSS (autoescaped), no open redirect (`_back` targets a fixed internal
+endpoint), authz preserved (every `Denied`/write→403, `_load_or_404`→404, `_blobs`→503 unchanged; only
+input-`Invalid` became a banner), no partial writes on the error path, CSRF unchanged. Resolved:
+- **CONCERN (fixed here):** the banner rendered `request.args.get('notice'|'error')` verbatim, so a
+  crafted `?error=<text>` link reflected attacker-chosen plain text into the trusted banner chrome (a
+  phishing aid — not XSS). Now `notice`/`error` are short CODES mapped to fixed messages server-side in
+  the template; an unknown code renders nothing. `test_a_crafted_banner_code_renders_no_banner` pins it.
+- **NIT (fixed here):** the delete-confirm test asserted any `confirm(` on the page; now it pins the
+  delete-report form's own message. Two banner tests tightened from the always-present `.br-banner-*` CSS
+  class to the rendered `<p class="br-banner ...">` element.
 
 ## Notes / gotchas
 

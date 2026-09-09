@@ -107,7 +107,8 @@ def test_empty_and_oversized_text_shows_an_error_banner(client):
         resp = client.post("/bugreport/", data=data)
         assert resp.status_code == 302
         assert "error=" in resp.headers["Location"]
-        assert "br-banner-err" in client.get(resp.headers["Location"]).get_data(as_text=True)
+        assert '<p class="br-banner br-banner-err">' in client.get(
+            resp.headers["Location"]).get_data(as_text=True)
 
 
 def test_an_unknown_status_shows_an_error_banner(client, hooks):
@@ -225,7 +226,8 @@ def test_a_successful_action_shows_a_notice_banner(client):
     resp = client.post("/bugreport/", data={"title": "filed ok", "body": ""})
     assert resp.status_code == 302
     assert "notice=" in resp.headers["Location"]
-    assert "br-banner-ok" in client.get(resp.headers["Location"]).get_data(as_text=True)
+    # the rendered element, not the always-present `.br-banner-ok` CSS class
+    assert '<p class="br-banner br-banner-ok">' in client.get(resp.headers["Location"]).get_data(as_text=True)
 
 
 def test_list_page_is_themed_with_host_css_variables(client):
@@ -238,9 +240,24 @@ def test_list_page_is_themed_with_host_css_variables(client):
 
 
 def test_the_reporter_delete_form_asks_for_confirmation(client):
-    """A misclick on "Delete this report" is unrecoverable, so it is guarded by a native confirm()."""
+    """A misclick on "Delete this report" is unrecoverable, so it is guarded by a native confirm() — and
+    the assertion pins THAT form's message, not just any confirm() on the page."""
     file_report(client, title="deletable")
-    assert 'onsubmit="return confirm(' in _page(client)
+    assert "confirm('Delete this report?" in _page(client)
+
+
+def test_a_crafted_banner_code_renders_no_banner(client):
+    """The banner text is mapped from a fixed code set server-side, so a hand-crafted query value can't
+    reflect attacker-chosen text into the trusted banner chrome."""
+    page = client.get("/bugreport/?error=Your%20session%20expired,%20re-auth%20at%20evil.example").get_data(
+        as_text=True
+    )
+    assert "evil.example" not in page
+    # no banner ELEMENT is rendered for an unknown code (the `.br-banner` CSS class always exists)
+    assert '<p class="br-banner' not in page
+    # a KNOWN code still renders its fixed message
+    known = client.get("/bugreport/?notice=filed").get_data(as_text=True)
+    assert '<p class="br-banner br-banner-ok">Report filed.' in known
 
 
 def test_the_list_announces_truncation_at_the_cap(client, session_factory, hooks):
