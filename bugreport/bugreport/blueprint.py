@@ -24,6 +24,8 @@ from bugreport.deps import (
     host_blobs,
     host_can_write,
     is_standalone,
+    max_attachment_bytes,
+    share_ttl_days,
 )
 from bugreport.downloads import send_attachment
 from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
@@ -224,6 +226,7 @@ def upload_attachment(report_id: uuid.UUID):
                 db, blobs, report_id,
                 actor_id=current_actor_id(), is_admin=current_actor_is_admin(),
                 filename=upload.filename, claimed_type=upload.mimetype, stream=upload.stream,
+                max_bytes=max_attachment_bytes(),
             )
         except Denied as exc:
             abort(403, str(exc))
@@ -289,7 +292,7 @@ def share(attachment_id: uuid.UUID):
         try:
             share_attachment(
                 db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin(),
-                host_audit=host_audit(),
+                host_audit=host_audit(), ttl_days=share_ttl_days(),
             )
         except Denied as exc:
             abort(403, str(exc))

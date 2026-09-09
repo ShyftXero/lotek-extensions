@@ -21,6 +21,12 @@ import uuid
 from flask import current_app
 
 from bugreport.config import BugreportConfig
+from bugreport.models import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_MB_BOUNDS,
+    SHARE_TTL_DAYS,
+    SHARE_TTL_DAYS_BOUNDS,
+)
 
 
 def get_config() -> BugreportConfig:
@@ -124,6 +130,75 @@ def host_can_write() -> bool:
         return bool(hook())
     except Exception:  # noqa: BLE001
         return True
+
+
+def host_setting(key: str, default=None):
+    """One ADMIN-scope setting the host holds for Bugreport, via ``extras['extension_setting']``.
+
+    These are the ``[[settings]]`` this extension declares in ``lotek-extension.toml`` (lotek#485). The
+    HOST owns the form, the admin gate, the storage and the audit row — Bugreport only reads. Standalone
+    (no host) resolves to ``default``, and so does any error: a settings lookup must never be the thing
+    that breaks the request it configures.
+
+    **A caller consuming a security bound must still clamp the result.** This returns whatever the host
+    hands back; it is not a validator. See :func:`share_ttl_days` / :func:`max_attachment_bytes` below,
+    which re-apply the manifest's own ``min``/``max`` so a bad value degrades to the shipped default
+    instead of widening a cap. (An earlier version of this line pointed at
+    ``bugreport.service._share_ttl_days`` / ``_max_attachment_bytes`` — neither exists: ``service`` is
+    deliberately Flask-free and reads no setting at all, so it was directing the reader at the one
+    module where the clamp is NOT.)
+
+    NOT for a per-USER preference — that crosses no privilege boundary, so the host has no business
+    holding it.
+    """
+    hook = _extras().get("extension_setting")
+    if hook is None:
+        return default
+    try:
+        value = hook(key, default)
+    except Exception:  # noqa: BLE001 - a throwing host hook must not break the request it configures
+        return default
+    return default if value is None else value
+
+
+def _clamped_int(key: str, default: int, bounds: tuple[int, int]) -> int:
+    """One int ``[[settings]]`` knob, coerced and clamped to ``bounds``, or ``default``.
+
+    The host already validates against the manifest's own ``min``/``max``, so on a healthy install this
+    is a no-op. It runs anyway because both callers size a **security** bound (an upload ceiling, the
+    lifetime of an unauthenticated capability URL) and this module must not be the place where one gets
+    widened by something it merely relayed — a stale row written before the bounds tightened, a hook
+    handing back a string, a ``bool`` (which is an ``int`` in Python and would silently mean 0 or 1).
+    Anything unusable degrades to the shipped default rather than to "no limit".
+    """
+    raw = host_setting(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return default
+    try:
+        value = int(raw)
+    # OverflowError is NOT a ValueError subclass, and `int(float("inf"))` raises it — so `inf` (or a
+    # float built from an over-large literal) escaped this guard and propagated out of a resolver whose
+    # whole contract is "never raise, degrade to the default". A test written for this file found it.
+    except (TypeError, ValueError, OverflowError):
+        return default
+    lo, hi = bounds
+    # NaN is checked by identity, not by comparison: `nan < lo` and `nan > hi` are BOTH False, so
+    # `min(max(nan, lo), hi)` returns nan and every ordered bound silently passes it.
+    if value != value:  # noqa: PLR0124 — isnan without importing math
+        return default
+    return min(max(value, lo), hi)
+
+
+def share_ttl_days() -> int:
+    """Lifetime of a newly minted public share link, in days (``share_ttl_days``, clamped)."""
+    return _clamped_int("share_ttl_days", SHARE_TTL_DAYS, SHARE_TTL_DAYS_BOUNDS)
+
+
+def max_attachment_bytes() -> int:
+    """Per-file upload ceiling in BYTES (``max_attachment_mb``, clamped, converted from MB)."""
+    lo, hi = MAX_ATTACHMENT_MB_BOUNDS
+    default_mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+    return _clamped_int("max_attachment_mb", default_mb, (lo, hi)) * 1024 * 1024
 
 
 def host_audit():

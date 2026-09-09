@@ -118,6 +118,15 @@ The issuer identity every document is rendered with: company name, address, emai
 ID, logo (data URI), accent colour, font stack, default currency / tax label / tax rate, payment
 instructions, footer terms, default RoE terms. **Writing branding is admin-only** — see Security.
 
+**Also reachable from lotek's admin Extensions page.** CREAM declares `[host] config_path = "/brand"`
+in its manifest, so **Settings → Extensions** renders a *Configure* link straight to this page — it
+used to be findable only through the CREAM nav or by typing the URL.
+
+It stays a CREAM-owned page rather than becoming host `[[settings]]` on purpose: `Brand` carries a
+logo data-URI, a `Decimal` tax percentage and multi-line terms, none of which survive the host's flat
+`ext:<name>:<key>` string store, and flattening it would trade this editor and its validation for a
+set of text boxes.
+
 ---
 
 ## Data model

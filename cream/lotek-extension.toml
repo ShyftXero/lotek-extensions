@@ -35,6 +35,16 @@ icon = "*"
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
 
+# This extension's OWN per-install configuration page, relative to url_prefix. The host links it from
+# the admin Extensions page (/settings/extensions) so an operator finds CREAM's branding where they go
+# looking for extension config, instead of having to know it sits behind the CREAM nav.
+#
+# It is deliberately a LINK and not a `[[settings]]` declaration: `Brand` is a singleton table carrying
+# a logo data-URI, a Decimal tax percentage and multi-line payment/footer terms, none of which survive
+# the host's flat `ext:<name>:<key>` string seam. The page keeps its own admin gate; the host only
+# points at it.
+config_path = "/brand"
+
 # Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
 docs = "docs/CREAM.md"
 docs_title = "CREAM (quoting & invoicing)"

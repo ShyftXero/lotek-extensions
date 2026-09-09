@@ -155,6 +155,36 @@ def client_names(session, engagements) -> dict[int, str]:
     return {e.id: names_by_id.get(e.client_id, "—") for e in engagements if e.client_id is not None}
 
 
+def host_user_setting(key: str, default=None):
+    """One PER-USER preference the host holds for Scribble, via ``extras['extension_user_setting']``.
+
+    These are the ``[[user_settings]]`` Scribble declares in ``lotek-extension.toml``. The HOST owns
+    the form, the identity and the storage (``user_extension_settings``, keyed on the session user);
+    Scribble only reads. **There is no admin gate** — that is the difference from
+    ``[[settings]]``/``host_setting``: a preferred report Theme is the reader's own choice about their
+    own view, and needing an administrator to change it was the defect this seam fixes.
+
+    Resolves to ``default`` when: standalone (no host), no host hook, no signed-in user, on a PAT or
+    share-link path, or on any error. The last case matters most — a preference lookup must never be
+    the thing that breaks the report it decorates.
+
+    NOT for an install-wide value. That is ``ScribbleSettings.default_report_theme``, set on the
+    admin-gated Themes page, and it is what a caller falls back to when this returns nothing.
+    """
+    try:
+        cfg = get_config()
+    except RuntimeError:  # pragma: no cover - defensive; no app context
+        return default
+    hook = cfg.extras.get("extension_user_setting")
+    if hook is None:
+        return default
+    try:
+        value = hook(key, default)
+    except Exception:  # noqa: BLE001 - a throwing host hook must not break the request it decorates
+        return default
+    return default if value is None else value
+
+
 def host_can_write() -> bool:
     """Whether the current user may mutate, per the optional ``extras['can_write']`` hook (``() ->
     bool``) the host injects on the mounted config.

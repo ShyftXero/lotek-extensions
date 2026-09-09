@@ -76,7 +76,31 @@ class Report(Base, UuidPk, TimestampMixin):
 #: Bound one upload. 25 MiB is generous for a screenshot or a log and small enough that a single
 #: request cannot be used to fill the bucket. Enforced server-side while STREAMING, never by trusting
 #: `Content-Length`, which the client also controls.
+#:
+#: This is the DEFAULT and the standalone value. Mounted, an admin may retune it through the
+#: `max_attachment_mb` `[[settings]]` knob — resolved and re-clamped by `deps.max_attachment_bytes()`,
+#: which is what every caller passes to `service.attach`.
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+#: Inclusive bounds the `max_attachment_mb` setting is clamped to, in MB. They MUST match the `min`/`max`
+#: declared for that key in `lotek-extension.toml`: the host validates against the manifest, and this
+#: re-validates the value the host hands back, so a cap this security-relevant cannot be widened past
+#: this range (or set to 0, which would refuse every upload) by anything upstream of here.
+MAX_ATTACHMENT_MB_BOUNDS = (1, 200)
+
+#: How long a minted public share link stays valid (lotek#585). A default, not a policy engine: an
+#: unauthenticated bearer link should not live forever, and 7 days covers "send a repro to a vendor"
+#: while bounding the leak window.
+#:
+#: Lives here rather than in `service` (where it was defined until the settings knob landed) so that
+#: both bounds an operator can retune sit with the other row/upload bounds, and `deps` can read them
+#: without importing domain logic. `service` re-exports it, so `service.SHARE_TTL_DAYS` still resolves.
+SHARE_TTL_DAYS = 7
+
+#: Inclusive bounds the `share_ttl_days` setting is clamped to, in days — same contract as
+#: `MAX_ATTACHMENT_MB_BOUNDS`, and for the sharper reason: this one sizes the window in which an
+#: unauthenticated capability URL keeps working.
+SHARE_TTL_DAYS_BOUNDS = (1, 365)
 
 #: Bound how many a single report can carry, so the per-file cap cannot be sidestepped by volume.
 MAX_ATTACHMENTS_PER_REPORT = 20
