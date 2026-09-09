@@ -64,6 +64,14 @@ features = ["nested_findings", "vuln_template"]
 # lotek's own /api/v1. MUST be a proper sub-path of url_prefix, and MUST NOT overlap the
 # cookie-authed browser JSON api at <url_prefix>/api.
 machine_prefix = "/machine"
+# This extension's OWN per-install configuration page, relative to url_prefix — linked by the host from
+# the admin Extensions page (/settings/extensions). Themes is where the install-wide default report
+# Theme is set (`ScribbleSettings`, ext#105), sitting next to the Theme overrides that default must be
+# valid against — which is exactly why this is a link and not a `[[settings]]` key. The host's generic
+# form cannot cross-check a chosen Theme name against `scribble_theme_overrides` rows, so moving the
+# knob there would trade a validated picker for a free-text field that happily accepts a Theme this
+# install does not have.
+config_path = "/themes"
 # Table in the shared DB whose rows soft-reference a host Client (client_id). The host's client-delete
 # guard counts these generically so deleting a client can't orphan them.
 client_ref_table = "scribble_engagements"
@@ -122,3 +130,27 @@ verbs = [
     # enrichment.py::ThreatIntelDriver.propose.
     "threat_intel_lookup",
 ]
+
+# PER-USER preferences the host renders on /settings/account, with NO admin gate. The HOST owns the
+# form, the identity and the storage (`user_extension_settings`, keyed on the session user); Scribble
+# only reads, through `deps.host_user_setting`.
+#
+# This is the OTHER class of setting from `[[settings]]`, and the distinction is a privilege boundary:
+# an install-wide default Theme changes every future deliverable and lives on the admin-gated Themes
+# page (`ScribbleSettings.default_report_theme`, reachable via `config_path` above), while the entry
+# below is one reader's own view and must not need an administrator to change.
+[[user_settings]]
+key = "preferred_report_theme"
+label = "Preferred report Theme"
+type = "str"
+default = ""
+max_length = 64
+group = "Reports"
+help = """The Theme YOUR report views render with, overriding this install's default. Leave blank to \
+follow the install default. Enter a bundled Theme name or one of this install's own Theme overrides \
+(the names are listed on the Report Themes page) — an unrecognised name simply falls back, the same \
+way an unrecognised `?theme=` in a URL does.
+
+It is deliberately below `?theme=` in precedence, so a report link you SEND renders the Theme that \
+link names rather than the recipient's preference, and it is not consulted at all on a share link or \
+a PAT request — there is no signed-in reader to have a preference."""

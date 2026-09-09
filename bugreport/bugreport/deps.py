@@ -21,6 +21,12 @@ import uuid
 from flask import current_app
 
 from bugreport.config import BugreportConfig
+from bugreport.models import (
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENT_MB_BOUNDS,
+    SHARE_TTL_DAYS,
+    SHARE_TTL_DAYS_BOUNDS,
+)
 
 
 def get_config() -> BugreportConfig:
@@ -124,6 +130,65 @@ def host_can_write() -> bool:
         return bool(hook())
     except Exception:  # noqa: BLE001
         return True
+
+
+def host_setting(key: str, default=None):
+    """One ADMIN-scope setting the host holds for Bugreport, via ``extras['extension_setting']``.
+
+    These are the ``[[settings]]`` this extension declares in ``lotek-extension.toml`` (lotek#485). The
+    HOST owns the form, the admin gate, the storage and the audit row — Bugreport only reads. Standalone
+    (no host) resolves to ``default``, and so does any error: a settings lookup must never be the thing
+    that breaks the request it configures.
+
+    **A caller consuming a security bound must still clamp the result.** This returns whatever the host
+    hands back; it is not a validator. See ``bugreport.service._share_ttl_days`` /
+    ``_max_attachment_bytes``, which re-apply the manifest's own ``min``/``max``, so a bad value
+    degrades to the shipped default instead of widening a cap.
+
+    NOT for a per-USER preference — that crosses no privilege boundary, so the host has no business
+    holding it.
+    """
+    hook = _extras().get("extension_setting")
+    if hook is None:
+        return default
+    try:
+        value = hook(key, default)
+    except Exception:  # noqa: BLE001 - a throwing host hook must not break the request it configures
+        return default
+    return default if value is None else value
+
+
+def _clamped_int(key: str, default: int, bounds: tuple[int, int]) -> int:
+    """One int ``[[settings]]`` knob, coerced and clamped to ``bounds``, or ``default``.
+
+    The host already validates against the manifest's own ``min``/``max``, so on a healthy install this
+    is a no-op. It runs anyway because both callers size a **security** bound (an upload ceiling, the
+    lifetime of an unauthenticated capability URL) and this module must not be the place where one gets
+    widened by something it merely relayed — a stale row written before the bounds tightened, a hook
+    handing back a string, a ``bool`` (which is an ``int`` in Python and would silently mean 0 or 1).
+    Anything unusable degrades to the shipped default rather than to "no limit".
+    """
+    raw = host_setting(key, default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    lo, hi = bounds
+    return min(max(value, lo), hi)
+
+
+def share_ttl_days() -> int:
+    """Lifetime of a newly minted public share link, in days (``share_ttl_days``, clamped)."""
+    return _clamped_int("share_ttl_days", SHARE_TTL_DAYS, SHARE_TTL_DAYS_BOUNDS)
+
+
+def max_attachment_bytes() -> int:
+    """Per-file upload ceiling in BYTES (``max_attachment_mb``, clamped, converted from MB)."""
+    lo, hi = MAX_ATTACHMENT_MB_BOUNDS
+    default_mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+    return _clamped_int("max_attachment_mb", default_mb, (lo, hi)) * 1024 * 1024
 
 
 def host_audit():

@@ -46,6 +46,38 @@ docs_title = "Bug reports (capture)"
 # kind of thing a human needs to be able to find in the audit log afterwards.
 verbs = ["admin_update", "share_file", "unshare_file"]
 
+# ADMIN-scope, per-install knobs (lotek#485). The HOST owns the form, the admin gate, the storage
+# (`settings` row `ext:bugreport:<key>`) and the audit row — this extension only READS them, through
+# `deps.host_setting`. Both are promotions of constants that previously could only be changed by
+# editing source; each `bugreport.service` resolver re-clamps the value to the same bounds declared
+# here, because a setting that reaches a security cap must not be able to widen it past this range
+# even if the host seam returns something unexpected.
+[[settings]]
+key = "share_ttl_days"
+label = "Share link lifetime (days)"
+type = "int"
+default = 7
+min = 1
+max = 365
+group = "Sharing"
+help = """How long a minted public share link stays valid before it stops resolving (lotek#585). A \
+share link is an UNAUTHENTICATED bearer capability, so this is the leak window: lower is safer, and \
+re-sharing an attachment restarts the clock. Existing links keep the expiry they were minted with — \
+changing this affects new and re-rotated links only."""
+
+[[settings]]
+key = "max_attachment_mb"
+label = "Max attachment size (MB)"
+type = "int"
+default = 25
+min = 1
+max = 200
+group = "Attachments"
+help = """Per-file ceiling on an upload, enforced server-side while STREAMING the body (never by \
+trusting `Content-Length`, which the uploader also controls). Raise it for screen recordings; lower \
+it on a small object store. This bounds ONE file — a report also carries at most 20 attachments, \
+which is not tunable, so that the per-file cap cannot be sidestepped by volume."""
+
 # Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
 [db]
 base = "bugreport.models:Base"   # the module whose IMPORT registers the tables

@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
-from scribble.deps import open_session
+from scribble.deps import host_user_setting, open_session
 from scribble.models import Engagement, ScribbleSettings, ScribbleThemeOverride
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
@@ -96,14 +96,34 @@ def _override_theme_sources(db):
 
 
 def _selected_theme(install_default: str | None) -> str | None:
-    """The Theme name to render with: an explicit `?theme=` wins, else this install's default.
+    """The Theme name to render with: an explicit `?theme=` wins, then the READER'S OWN preference,
+    then this install's default.
 
     Without this the per-install default was settable, validated and audited but had NO READER -- an
     admin could pick the Theme every report inherits and nothing inherited it. An explicit query value
     still wins, so the switcher keeps working and a shared report URL keeps meaning what it says.
+
+    The middle rung is the per-user preference (`[[user_settings]]`, `deps.host_user_setting`), and its
+    position is the whole design:
+
+    * BELOW `?theme=`, so a URL someone was sent renders the Theme that URL names, not the recipient's
+      taste -- a shared link has to mean the same thing to everybody who opens it.
+    * ABOVE the install default, so choosing a Theme actually takes effect for the person who chose it.
+    * Invisible on a SHARE or PAT path by construction, not by a check here: the host's reader resolves
+      the session user and answers `default` when there isn't one, so an unauthenticated share link
+      falls through to the install default. A client opening a report never sees an operator's
+      preference, and no code here has to remember that.
+
+    An unknown/removed Theme name degrades the same way an untrusted `?theme=` does -- the caller
+    resolves it and falls back -- which is why the preference is stored as free text rather than a
+    `choice`: the valid set is bundled Themes plus this install's `scribble_theme_overrides` rows, so it
+    is not knowable when the manifest is written.
     """
     requested = (request.args.get("theme") or "").strip()
-    return requested or install_default
+    if requested:
+        return requested
+    preferred = str(host_user_setting("preferred_report_theme", "") or "").strip()
+    return preferred or install_default
 
 
 def register(api_bp, bp) -> None:

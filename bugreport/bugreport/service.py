@@ -31,6 +31,7 @@ from bugreport.models import (
     MAX_ATTACHMENTS_PER_REPORT,
     MAX_BODY,
     MAX_TITLE,
+    SHARE_TTL_DAYS,
     Attachment,
     Report,
     ReportStatus,
@@ -47,11 +48,12 @@ LIST_LIMIT = 500
 #: the place for 20k of it.
 _AUDIT_NOTE_CHARS = 200
 
-#: How long a minted public share link stays valid (lotek#585). A default, not a policy engine: an
-#: unauthenticated bearer link should not live forever, and 7 days covers "send a repro to a vendor" while
-#: bounding the leak window. ponytail: a module constant, not a per-install setting — promote it to a
-#: `[[settings]]` knob if an operator actually needs to tune it.
-SHARE_TTL_DAYS = 7
+# `SHARE_TTL_DAYS` was defined HERE, carrying a `ponytail:` note offering to promote it to a
+# `[[settings]]` knob "if an operator actually needs to tune it" — which is what happened. It now lives
+# in `bugreport.models` beside the other operator-retunable bound and is imported above, so
+# `service.SHARE_TTL_DAYS` still resolves for existing callers and tests. This module stays Flask-free
+# and never reads the setting itself: the resolved value arrives as `share_attachment(..., ttl_days=...)`,
+# and the constant is the DEFAULT a standalone caller gets.
 
 
 class Denied(PermissionError):
@@ -311,9 +313,16 @@ def _clean_filename(raw: object) -> str:
 
 def attach(
     db: Session, blobs, report_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
-    filename: object, claimed_type: object, stream,
+    filename: object, claimed_type: object, stream, max_bytes: int = MAX_ATTACHMENT_BYTES,
 ) -> Attachment:
-    """Store one uploaded file against a report the caller may see."""
+    """Store one uploaded file against a report the caller may see.
+
+    ``max_bytes`` is the per-file ceiling. It is a PARAMETER rather than a module read because this
+    module is deliberately Flask-free (see the module docstring): a mounted caller passes
+    ``deps.max_attachment_bytes()``, which resolves the `max_attachment_mb` `[[settings]]` knob and
+    clamps it; standalone and every existing test get :data:`~bugreport.models.MAX_ATTACHMENT_BYTES`.
+    Whatever the value, it is enforced while STREAMING — never against `Content-Length`.
+    """
     report = load_visible(db, report_id, actor_id=actor_id, is_admin=is_admin)
     if report is None:
         raise Denied("no such report")
@@ -335,7 +344,7 @@ def attach(
     )
     db.add(row)
     db.flush()  # assign the PK; the object key is derived from it
-    ref = blobs.put(row.id, _CappedHeadReader(head, stream, MAX_ATTACHMENT_BYTES), content_type=serve_as)
+    ref = blobs.put(row.id, _CappedHeadReader(head, stream, max_bytes), content_type=serve_as)
     row.size = ref.size
     row.sha256 = ref.sha256
     try:
@@ -444,7 +453,7 @@ def _attachment_for_write(
 
 def share_attachment(
     db: Session, attachment_id: uuid.UUID, *, actor_id: uuid.UUID | None, is_admin: bool,
-    host_audit=None,
+    host_audit=None, ttl_days: int = SHARE_TTL_DAYS,
 ) -> str:
     """Mint (or ROTATE) the bearer capability for one attachment and return it.
 
@@ -466,7 +475,11 @@ def share_attachment(
     row.share_token = token
     # The link now EXPIRES (lotek#585): an unauthenticated bearer capability that lives forever is a
     # standing leak. Rotating (re-sharing) restarts the clock, which is also the revoke-a-leak story.
-    row.share_expires_at = utcnow() + timedelta(days=SHARE_TTL_DAYS)
+    # `ttl_days` is passed by the caller (a mounted one passes `deps.share_ttl_days()`, which resolves
+    # the admin knob and clamps it) so this module stays Flask-free. Retuning the setting does NOT
+    # re-date links already minted — each carries the expiry it was issued with, and re-sharing is what
+    # moves it.
+    row.share_expires_at = utcnow() + timedelta(days=ttl_days)
     if host_audit is not None:
         host_audit(
             db,

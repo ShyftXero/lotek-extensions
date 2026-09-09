@@ -20,7 +20,13 @@ from flask import Blueprint, jsonify, request
 
 from bugreport import host
 from bugreport.api_schemas import CreateReportRequest, UpdateReportRequest, request_body
-from bugreport.deps import get_config, host_audit, host_blobs
+from bugreport.deps import (
+    get_config,
+    host_audit,
+    host_blobs,
+    max_attachment_bytes,
+    share_ttl_days,
+)
 from bugreport.service import (
     Denied,
     Invalid,
@@ -237,6 +243,7 @@ def upload_attachment_api(report_id: uuid.UUID):
             row = attach(
                 db, blobs, report_id, actor_id=actor_id, is_admin=is_admin,
                 filename=upload.filename, claimed_type=upload.mimetype, stream=upload.stream,
+                max_bytes=max_attachment_bytes(),
             )
         except Denied as exc:
             return _denied(exc)
@@ -266,7 +273,8 @@ def share_attachment_api(attachment_id: uuid.UUID):
     with get_config().session_factory() as db:
         try:
             token = share_attachment(
-                db, attachment_id, actor_id=actor_id, is_admin=is_admin, host_audit=host_audit()
+                db, attachment_id, actor_id=actor_id, is_admin=is_admin, host_audit=host_audit(),
+                ttl_days=share_ttl_days(),
             )
         except Denied as exc:
             return _denied(exc)
