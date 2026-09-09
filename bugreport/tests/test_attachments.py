@@ -249,14 +249,17 @@ def test_an_oversize_upload_is_refused_while_streaming(client, report_id):
     same client as the body, so trusting it would make the limit advisory."""
     big = b"\x00" * (MAX_ATTACHMENT_BYTES + 1024)
     resp = _upload(client, report_id, big, "big.bin", "application/octet-stream")
-    assert resp.status_code == 400
+    # Invalid input now Post/Redirect/Gets back with an inline error banner (was a bare 400).
+    assert resp.status_code == 302 and "error=" in resp.headers["Location"]
 
 
 def test_the_per_report_count_is_bounded(client, report_id):
     """So the per-file cap cannot be sidestepped by volume."""
     for _ in range(MAX_ATTACHMENTS_PER_REPORT):
         assert _upload(client, report_id, PNG, "s.png", "image/png").status_code in (200, 302)
-    assert _upload(client, report_id, PNG, "one-too-many.png", "image/png").status_code == 400
+    # over the cap -> Invalid -> redirect back with an error banner (was a bare 400).
+    resp = _upload(client, report_id, PNG, "one-too-many.png", "image/png")
+    assert resp.status_code == 302 and "error=" in resp.headers["Location"]
 
 
 # --------------------------------------------------------------------------- helpers

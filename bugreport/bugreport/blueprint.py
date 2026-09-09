@@ -28,6 +28,7 @@ from bugreport.deps import (
 from bugreport.downloads import send_attachment
 from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
 from bugreport.service import (
+    LIST_LIMIT,
     Denied,
     Invalid,
     admin_act,
@@ -60,12 +61,20 @@ def _inject_base():
         "bugreport_statuses": [s.value for s in ReportStatus],
         "bugreport_max_title": MAX_TITLE,
         "bugreport_max_body": MAX_BODY,
+        "bugreport_list_limit": LIST_LIMIT,
     }
 
 
 def _require_write():
     if not host_can_write():
         abort(403)
+
+
+def _back(*, notice: str | None = None, error: str | None = None):
+    """Post/Redirect/Get back to the list, carrying an inline banner. `url_for` drops the None arg, so a
+    plain success has no query string. Validation failures (`Invalid`) land here as `?error=`; an
+    authorization refusal (`Denied`) stays a hard 403, never a reflected banner."""
+    return redirect(url_for("bugreport.index", notice=notice, error=error))
 
 
 def _load_or_404(db, report_id: uuid.UUID):
@@ -111,13 +120,13 @@ def file_report():
         except Denied as exc:
             abort(403, str(exc))
         except Invalid as exc:
-            abort(400, str(exc))
+            return _back(error=str(exc))
         except ValueError:
             # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
             # internals, so it is logged and never rendered (CodeQL: information exposure).
             _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
-            abort(400, "invalid request")
-    return redirect(url_for("bugreport.index"))
+            return _back(error="invalid request")
+    return _back(notice="Report filed.")
 
 
 @bp.post("/<uuid:report_id>/update")
@@ -138,13 +147,13 @@ def update(report_id: uuid.UUID):
         except Denied as exc:
             abort(403, str(exc))
         except Invalid as exc:
-            abort(400, str(exc))
+            return _back(error=str(exc))
         except ValueError:
             # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
             # internals, so it is logged and never rendered (CodeQL: information exposure).
             _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
-            abort(400, "invalid request")
-    return redirect(url_for("bugreport.index"))
+            return _back(error="invalid request")
+    return _back(notice="Report updated.")
 
 
 @bp.post("/<uuid:report_id>/delete")
@@ -157,7 +166,7 @@ def delete(report_id: uuid.UUID):
             delete_own(db, report, actor_id=current_actor_id(), standalone=is_standalone())
         except Denied as exc:
             abort(403, str(exc))
-    return redirect(url_for("bugreport.index"))
+    return _back(notice="Report deleted.")
 
 
 @bp.post("/<uuid:report_id>/respond")
@@ -178,13 +187,13 @@ def respond(report_id: uuid.UUID):
         except Denied as exc:
             abort(403, str(exc))
         except Invalid as exc:
-            abort(400, str(exc))
+            return _back(error=str(exc))
         except ValueError:
             # Not ours: a uuid/int parse, SQLAlchemy, the JSON decoder. The message describes
             # internals, so it is logged and never rendered (CodeQL: information exposure).
             _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
-            abort(400, "invalid request")
-    return redirect(url_for("bugreport.index"))
+            return _back(error="invalid request")
+    return _back(notice="Response saved.")
 
 
 # --------------------------------------------------------------------------- attachments
@@ -206,7 +215,7 @@ def upload_attachment(report_id: uuid.UUID):
     blobs = _blobs_or_503()
     upload = request.files.get("file")
     if upload is None or not upload.filename:
-        abort(400, "no file was supplied")
+        return _back(error="no file was supplied")
     with get_config().session_factory() as db:
         try:
             attach(
@@ -217,11 +226,11 @@ def upload_attachment(report_id: uuid.UUID):
         except Denied as exc:
             abort(403, str(exc))
         except Invalid as exc:
-            abort(400, str(exc))
+            return _back(error=str(exc))
         except ValueError:
             _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
-            abort(400, "invalid request")
-    return redirect(url_for("bugreport.index"))
+            return _back(error="invalid request")
+    return _back(notice="File attached.")
 
 
 @bp.get("/attachments/<uuid:attachment_id>/download")
@@ -282,7 +291,7 @@ def share(attachment_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
-    return redirect(url_for("bugreport.index"))
+    return _back(notice="Public link updated.")
 
 
 @bp.post("/attachments/<uuid:attachment_id>/unshare")
@@ -296,7 +305,7 @@ def unshare(attachment_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
-    return redirect(url_for("bugreport.index"))
+    return _back(notice="Sharing stopped.")
 
 
 @bp.post("/attachments/<uuid:attachment_id>/delete")
@@ -311,4 +320,4 @@ def remove_attachment(attachment_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
-    return redirect(url_for("bugreport.index"))
+    return _back(notice="File deleted.")

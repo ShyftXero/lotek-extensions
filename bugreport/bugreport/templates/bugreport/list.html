@@ -10,25 +10,32 @@
 
 {% block head_extra %}
 <style>
+  /* Themed against the host CSS variables (styles.css :root) so this page follows the host's
+     dark / light / h4xor theme instead of the hardcoded dark palette it used to ship. */
   .br-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
   .br-wrap h1{font-size:20px;margin:0 0 4px}
   .br-wrap h2{font-size:15px;margin:26px 0 8px}
-  .br-muted{color:#7f93a3;font-size:13px}
-  .br-card{border:1px solid #1c2a35;border-radius:6px;padding:12px 14px;margin:0 0 10px;background:#0e151c}
-  .br-card.br-acted{border-left:3px solid #3ad29a}
-  .br-card pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:13px;color:#c6d4de}
+  .br-muted{color:var(--muted);font-size:13px}
+  .br-card{border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin:0 0 10px;background:var(--card)}
+  .br-card.br-acted{border-left:3px solid var(--accent)}
+  .br-card pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:13px;color:var(--ink)}
   .br-pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;text-transform:uppercase;
-           letter-spacing:.06em;border:1px solid #24333f;color:#9fb2c0}
-  .br-acknowledged{color:#e8c46a;border-color:#5a4a1e}
-  .br-resolved{color:#3ad29a;border-color:#1e5a42}
-  .br-deleted{color:#e8776a;border-color:#5a2420}
-  .br-note{margin:8px 0 0;padding:8px 10px;border-radius:4px;background:#101d17;color:#bfe5d4;font-size:13px}
+           letter-spacing:.06em;border:1px solid var(--line-strong);color:var(--muted)}
+  .br-acknowledged{color:var(--ink);border-color:var(--line-strong)}
+  .br-resolved{color:var(--accent);border-color:var(--accent)}
+  .br-deleted{color:var(--danger);border-color:var(--danger)}
+  .br-note{margin:8px 0 0;padding:8px 10px;border-radius:4px;background:var(--bg2);color:var(--ink);font-size:13px}
+  .br-banner{margin:0 0 12px;padding:9px 12px;border-radius:4px;font-size:13px;background:var(--bg2)}
+  .br-banner-ok{color:var(--ink);border:1px solid var(--accent)}
+  .br-banner-err{color:var(--danger);border:1px solid var(--danger)}
+  .br-trunc{margin:8px 0 0;font-size:12px}
   .br-wrap input[type=text],.br-wrap textarea,.br-wrap select{
-    width:100%;box-sizing:border-box;background:#0a1219;color:#dfe9f0;border:1px solid #24333f;
+    width:100%;box-sizing:border-box;background:var(--field-bg);color:var(--ink);border:1px solid var(--field-border);
     border-radius:4px;padding:7px 9px;font:inherit;font-size:13px;margin:0 0 8px}
-  .br-wrap button{background:#16323f;color:#bfe9f0;border:1px solid #24505f;border-radius:4px;
+  .br-wrap button{background:var(--bg2);color:var(--ink);border:1px solid var(--line-strong);border-radius:4px;
     padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}
-  .br-wrap summary{cursor:pointer;color:#37c9d6;font-size:12px;margin-top:8px}
+  .br-wrap button:hover{border-color:var(--accent)}
+  .br-wrap summary{cursor:pointer;color:var(--accent);font-size:12px;margin-top:8px}
   .br-row{display:flex;gap:8px;align-items:flex-start}
   .br-row>*{margin-bottom:0}
 </style>
@@ -36,6 +43,10 @@
 
 {% block content %}
 <div class="br-wrap">
+  {#- Post/Redirect/Get feedback. Autoescaped: the text is a fixed success string or a service-authored
+      validation message, never raw user input rendered as HTML. -#}
+  {% if request.args.get('notice') %}<p class="br-banner br-banner-ok">{{ request.args.get('notice') }}</p>{% endif %}
+  {% if request.args.get('error') %}<p class="br-banner br-banner-err">{{ request.args.get('error') }}</p>{% endif %}
   <h1>Bug reports</h1>
   <p class="br-muted">
     Text-only capture. Nothing here is filed anywhere else — it lands in this list, an admin responds,
@@ -97,11 +108,13 @@
                   <code>{{ url_for('bugreport.shared_attachment', token=a.share_token, _external=True) }}</code>
                 </div>
                 <form method="post" style="display:inline"
-                      action="{{ url_for('bugreport.unshare', attachment_id=a.id) }}">
+                      action="{{ url_for('bugreport.unshare', attachment_id=a.id) }}"
+                      onsubmit="return confirm('Stop sharing this file? The public link will stop working.');">
                   {{ csrf() }}<button type="submit">Stop sharing</button>
                 </form>
                 <form method="post" style="display:inline"
-                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}">
+                      action="{{ url_for('bugreport.share', attachment_id=a.id) }}"
+                      onsubmit="return confirm('Rotate the link? The current public link stops working immediately.');">
                   {{ csrf() }}<button type="submit">New link (revokes the old one)</button>
                 </form>
               {% else %}
@@ -111,7 +124,8 @@
                 </form>
               {% endif %}
               <form method="post" style="display:inline"
-                    action="{{ url_for('bugreport.remove_attachment', attachment_id=a.id) }}">
+                    action="{{ url_for('bugreport.remove_attachment', attachment_id=a.id) }}"
+                    onsubmit="return confirm('Delete this file? This cannot be undone.');">
                 {{ csrf() }}<button type="submit">Delete file</button>
               </form>
             </div>
@@ -124,7 +138,8 @@
           </form>
         </div>
         <form method="post" action="{{ url_for('bugreport.delete', report_id=r.id) }}"
-              style="margin-top:6px">
+              style="margin-top:6px"
+              onsubmit="return confirm('Delete this report? This cannot be undone.');">
           {{ csrf() }}<button type="submit">Delete this report</button>
         </form>
       </details>
@@ -133,6 +148,10 @@
   {% else %}
     <p class="br-muted">You have not filed any reports.</p>
   {% endfor %}
+  {% if mine | length >= bugreport_list_limit %}
+  <p class="br-muted br-trunc">Showing the most recent {{ bugreport_list_limit }}. Older reports are
+    available through the machine API.</p>
+  {% endif %}
 
   {% if bugreport_is_admin and not standalone %}
   <h2>All reports (admin)</h2>
@@ -162,6 +181,10 @@
   {% else %}
     <p class="br-muted">Nobody has filed a report.</p>
   {% endfor %}
+  {% if every | length >= bugreport_list_limit %}
+  <p class="br-muted br-trunc">Showing the most recent {{ bugreport_list_limit }}. Older reports are
+    available through the machine API.</p>
+  {% endif %}
   {% endif %}
 </div>
 {% endblock %}
