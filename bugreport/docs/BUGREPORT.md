@@ -51,9 +51,26 @@ the dashboard applies to writes.
 
 A report can carry files — screenshots, logs, captures, anything. The bytes live in lotek's object
 store (SeaweedFS) through the host seam `extras["blobs"]`, under a key namespace reserved for this
-extension; the row here is just metadata. Bounds: **25 MiB per file**, **20 files per report**, both
-enforced server-side while the upload streams (never from `Content-Length`, which the uploader also
-controls).
+extension; the row here is just metadata. Bounds: **25 MiB per file** (tunable — see below), **20
+files per report** (fixed), both enforced server-side while the upload streams (never from
+`Content-Length`, which the uploader also controls).
+
+### Per-install settings (admin)
+
+Two knobs are declared as `[[settings]]` in `lotek-extension.toml`, so lotek renders the form, gates
+it to admins and audits every change. Find them at **Settings → Extensions → ⚙ bugreport**.
+
+| Setting | Default | Range | What it does |
+|---|---|---|---|
+| Share link lifetime (days) | 7 | 1–365 | How long a minted public share link keeps resolving. This is the leak window for an **unauthenticated bearer capability**, so lower is safer; re-sharing an attachment restarts the clock. Existing links keep the expiry they were minted with. |
+| Max attachment size (MB) | 25 | 1–200 | Per-file upload ceiling. Raise it for screen recordings, lower it on a small object store. |
+
+The per-file cap bounds ONE file; the 20-attachments-per-report limit is deliberately not tunable, so
+the per-file cap cannot be sidestepped by volume.
+
+Both are re-clamped to the ranges above when read (`bugreport/deps.py`), and a value that is not
+usable as a number degrades to the shipped default — these size security bounds, so they must never
+widen past the declared ceiling even if something upstream hands back a surprise.
 
 **Browser:** the *Files* block on each of your reports — attach, download, share, delete.
 **Machine (PAT):**

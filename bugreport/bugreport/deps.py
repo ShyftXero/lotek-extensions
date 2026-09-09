@@ -141,9 +141,12 @@ def host_setting(key: str, default=None):
     that breaks the request it configures.
 
     **A caller consuming a security bound must still clamp the result.** This returns whatever the host
-    hands back; it is not a validator. See ``bugreport.service._share_ttl_days`` /
-    ``_max_attachment_bytes``, which re-apply the manifest's own ``min``/``max``, so a bad value
-    degrades to the shipped default instead of widening a cap.
+    hands back; it is not a validator. See :func:`share_ttl_days` / :func:`max_attachment_bytes` below,
+    which re-apply the manifest's own ``min``/``max`` so a bad value degrades to the shipped default
+    instead of widening a cap. (An earlier version of this line pointed at
+    ``bugreport.service._share_ttl_days`` / ``_max_attachment_bytes`` — neither exists: ``service`` is
+    deliberately Flask-free and reads no setting at all, so it was directing the reader at the one
+    module where the clamp is NOT.)
 
     NOT for a per-USER preference — that crosses no privilege boundary, so the host has no business
     holding it.
@@ -173,9 +176,16 @@ def _clamped_int(key: str, default: int, bounds: tuple[int, int]) -> int:
         return default
     try:
         value = int(raw)
-    except (TypeError, ValueError):
+    # OverflowError is NOT a ValueError subclass, and `int(float("inf"))` raises it — so `inf` (or a
+    # float built from an over-large literal) escaped this guard and propagated out of a resolver whose
+    # whole contract is "never raise, degrade to the default". A test written for this file found it.
+    except (TypeError, ValueError, OverflowError):
         return default
     lo, hi = bounds
+    # NaN is checked by identity, not by comparison: `nan < lo` and `nan > hi` are BOTH False, so
+    # `min(max(nan, lo), hi)` returns nan and every ordered bound silently passes it.
+    if value != value:  # noqa: PLR0124 — isnan without importing math
+        return default
     return min(max(value, lo), hi)
 
 

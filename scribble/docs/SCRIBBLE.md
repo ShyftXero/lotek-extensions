@@ -690,6 +690,30 @@ retroactively.
 human to accept or reject and never mutates core scan data. The shipped driver is the null one: no
 lookup, no egress, no proposals. A real driver replaces it.
 
+## Which report Theme renders — three levels, in order
+
+A report resolves its Theme from the first of these that is set:
+
+1. **`?theme=<name>` in the URL.** Explicit and highest, so a report link you *send* renders the Theme
+   that link names rather than the recipient's taste — a shared URL has to mean the same thing to
+   everybody who opens it. This is also what the report toolbar's switcher uses.
+2. **Your own preference.** `preferred_report_theme`, a per-user setting with **no admin gate** — it is
+   your view of the report, so it needs no administrator. Set it on lotek's **Settings → Account**
+   page, under *Scribble preferences*. Leave it blank to follow the install default. It is declared as
+   `[[user_settings]]` in `lotek-extension.toml`; the host owns the form, the identity and the storage,
+   and scribble only reads it (`deps.host_user_setting`).
+3. **This install's default.** `ScribbleSettings.default_report_theme`, set on the **Report Themes**
+   page — admin-gated and audited, because it changes every future deliverable for everyone.
+
+Two consequences worth knowing:
+
+- **A share link and a PAT request see level 3, never level 2.** There is no signed-in reader to have
+  a preference, so the host's reader answers the default. That is what keeps a client's copy of a
+  report on the install Theme rather than showing them an operator's colour choice.
+- **An unrecognised name simply falls back**, the same way an unrecognised `?theme=` does. The
+  preference is free text rather than a fixed list because the valid set is the bundled Themes *plus*
+  whatever override Themes this install has uploaded — not knowable when the manifest is written.
+
 ---
 
 Source, issues and the rest of the extension set:
