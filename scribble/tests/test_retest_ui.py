@@ -106,3 +106,16 @@ def test_finding_page_hides_retest_form_from_viewer(client, stub_host, session_f
     body = client.get(f"{UI}/findings/{fid}").get_data(as_text=True)
     assert "Verify the fix" in body          # history stays visible read-only
     assert "Record retest" not in body       # but the form is gated away
+
+
+def test_record_retest_caps_tested_by_to_column_width(client, stub_host, session_factory):
+    """`tested_by` is truncated to the String(128) column width in the route, so an over-long value
+    can't become a DataError -> 500 on Postgres (SQLite would silently truncate and hide the bug)."""
+    fid = _finding(session_factory)
+    resp = client.post(f"{UI}/findings/{fid}/retest",
+                       data={"outcome": "remediated", "tested_by": "x" * 200})
+    assert resp.status_code == 302
+    with session_factory() as db:
+        rounds = list(db.get(fm.EngagementFinding, fid).retests)
+        assert len(rounds) == 1
+        assert len(rounds[0].tested_by) == 128

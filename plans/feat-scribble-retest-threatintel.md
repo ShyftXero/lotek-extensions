@@ -34,9 +34,26 @@ already written but had **no browser writer**:
 
 ## Remaining
 
-- Run the full scribble suite green; `/security-review` + `/adversarial-reviewer`; PR.
+- PR.
 - (Out of scope, noted) a machine-API retest endpoint — the model docstring still claims a machine
   caller that does not exist. UI is the deliverable here.
+
+## Review (adversarial, on the committed diff — cross-repo `/security-review` reviews the wrong tree)
+
+No blockers. Findings resolved / triaged:
+- **CONCERN-3 (fixed here):** `tested_by` was uncapped against `Retest.tested_by = String(128)` → a
+  DataError/500 on Postgres (SQLite hides it). Now truncated to 128 in the route + `maxlength="128"` on
+  the input; `test_record_retest_caps_tested_by_to_column_width` pins it.
+- **CONCERN-1 (follow-up, lotek CORE):** the new cookie form routes (retest, consent) carry no CSRF
+  token — systemic to every scribble `bp` form, NOT a regression, but the consent toggle raises the
+  stakes (a forged POST enabling KEV/EPSS egress). Needs a MOUNTED test in `lotek/tests/
+  test_scribble_extension.py` asserting a token-less cross-site POST is refused; the stub-host suite
+  can't prove the mount.
+- **CONCERN-2 (follow-up, lotek CORE):** cross-tenant retest enforcement rides `authz._gate` (proven by
+  the generic tenancy test, not a retest-specific mounted case). Add a mounted "no-membership actor
+  POSTs retest → 404, no row" case.
+- Verified clean: gate keying (404-not-403, no existence oracle), single-writer status policy, consent
+  read only by the egress predicate (never authz), XSS (autoescaped, theme-token CSS only).
 
 ## Notes / gotchas
 

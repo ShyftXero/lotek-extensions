@@ -854,7 +854,9 @@ def register(api_bp, bp) -> None:
                 finding,
                 outcome,
                 notes=(request.form.get("notes") or "").strip() or None,
-                tested_by=(request.form.get("tested_by") or "").strip() or None,
+                # Cap to the column width (models.Retest.tested_by is String(128)); an over-long value
+                # is a DataError -> 500 on Postgres (SQLite silently truncates), so bound it here.
+                tested_by=(request.form.get("tested_by") or "").strip()[:128] or None,
                 tested_on=_parse_date(request.form.get("tested_on")),
             )
             db.commit()
