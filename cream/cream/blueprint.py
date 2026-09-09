@@ -14,7 +14,6 @@ import json
 import uuid
 
 from flask import Blueprint, Response, abort, render_template, request
-from sqlalchemy import select
 
 from cream._version import __version__
 from cream.deps import (
@@ -28,7 +27,7 @@ from cream.handles import document_handle, export_stem
 from cream.models import Document
 from cream.money import as_json, money, pct
 from cream.render import render_document_html, render_document_pdf
-from cream.service import get_brand, totals
+from cream.service import get_brand, scoped_documents, totals
 from cream.viewmodel import view_for
 
 bp = Blueprint("cream", __name__, template_folder="templates")
@@ -152,15 +151,8 @@ def dashboard():
     status = _as_doc_enum(DocStatus, (request.args.get("status") or "").strip())
     kind = _as_doc_enum(DocKind, (request.args.get("kind") or "").strip())
     with cfg.session_factory() as db:
-        stmt = select(Document).order_by(Document.created_at.desc())
-        if vis is not None:
-            # read-scope in SQL (was a post-query Python skip) so the row cap below is correct
-            stmt = stmt.where(Document.engagement_id.in_(vis))
-        if status is not None:
-            stmt = stmt.where(Document.status == status)
-        if kind is not None:
-            stmt = stmt.where(Document.kind == kind)
-        fetched = db.scalars(stmt.limit(_DASHBOARD_MAX + 1)).all()
+        # The one scoped+bounded query all three list surfaces share (service.scoped_documents).
+        fetched = scoped_documents(db, vis, status=status, kind=kind, limit=_DASHBOARD_MAX + 1)
         truncated = len(fetched) > _DASHBOARD_MAX
         for d in fetched[:_DASHBOARD_MAX]:
             rows.append({

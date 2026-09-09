@@ -34,7 +34,6 @@ from __future__ import annotations
 import uuid
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import select
 
 from cream import host
 
@@ -46,7 +45,15 @@ from cream.deps import get_config, host_can_operate_on, host_visible_engagement_
 from cream.enums import DEFAULT_UNIT, DocKind
 from cream.models import Document
 from cream.money import as_json, pct
-from cream.service import DocumentFrozen, add_line_item, get_brand, suggest_line_items
+from cream.service import (
+    DocumentFrozen,
+    add_line_item,
+    clamp_limit,
+    clamp_offset,
+    get_brand,
+    scoped_documents,
+    suggest_line_items,
+)
 
 machine_bp = Blueprint("cream_machine", __name__)
 machine_bp.before_request(host.authenticate)
@@ -112,13 +119,14 @@ def _load_visible_or_none(db, doc_id: uuid.UUID) -> Document | None:
 @machine_bp.get("/documents")
 @host.require_scope("read")
 def list_documents():
-    """List documents for the token's user's engagements (read-scoped to those engagements)."""
+    """Documents for the token user's engagements, newest first — read-scoped AND bounded. `?limit=`
+    (default 200, max 500) + `?offset=` page the result; `has_more` says whether another page exists."""
+    limit = clamp_limit(request.args.get("limit"))
+    offset = clamp_offset(request.args.get("offset"))
     with get_config().session_factory() as db:
-        rows = db.scalars(select(Document).order_by(Document.created_at.desc())).all()
-        vis = host_visible_engagement_ids()
-        if vis is not None:
-            rows = [d for d in rows if d.engagement_id in vis]
-        return jsonify(documents=[_doc_json(d) for d in rows])
+        rows = scoped_documents(db, host_visible_engagement_ids(), limit=limit + 1, offset=offset)
+        return jsonify(documents=[_doc_json(d) for d in rows[:limit]],
+                       limit=limit, offset=offset, has_more=len(rows) > limit)
 
 
 @machine_bp.get("/documents/<uuid:doc_id>")
