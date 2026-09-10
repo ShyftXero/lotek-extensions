@@ -42,9 +42,19 @@ before save; it never auto-publishes.
 
 ## Done
 - [x] Cut branch off origin/main; worktree + split identity set up.
+- [x] `draft_api.py` — `POST /rephrase/<block>` relays `host_hook("ai_stream")`, fails closed to inline
+      text, inherits the tenancy gate; empty block → first-pass draft, text → rephrase (owner: "rephrase
+      this"). Wired into `_wire_feature_routes`.
+- [x] `static/draft.js` + `_editor.html` per-block button (gated on `scribble_can_write`) — streams into
+      a preview + Copy, via `window.fetch` (host CSRF), `textContent` only.
+- [x] `tests/test_draft.py` (5) + a fake `ai_stream` on the conftest stub so the tenancy gate covers the
+      route. Full scribble suite green (1575→1576 after the tenancy fix), pyrefly 0 errors.
 
 ## Remaining
-- [ ] Route + auth + button + JS + tests, per the scribble map.
+- [ ] `/security-review` + `/adversarial-reviewer` + `--ack-*`; PR (ext gate is hard — all markers).
+- [ ] (later) Lights up in prod only once core ships `ai_stream` to the deployment (on main; a core
+      release + this ext re-pinned). Optional follow-up: direct ProseMirror insertion instead of
+      copy-from-preview; a mounted test driving the real host `ai_stream`.
 
 ## Notes / gotchas
 - INV-INPUT-03: no `{{ }}` inside a `<script>` — put any token in a `data-` attribute (bit us in #730).
