@@ -32,6 +32,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
     from scribble.checklists_api import register as _checklists
     from scribble.collab.crdt import register as _collab
     from scribble.collab.presence import register as _presence
+    from scribble.draft_api import register as _draft
     from scribble.engagement_ui import register as _engagement_ui
     from scribble.library_ui import register as _library_ui
     from scribble.report_docx_api import register as _report_docx
@@ -50,6 +51,7 @@ def _wire_feature_routes(api_bp, bp, machine_bp) -> None:
         _report_docx,
         _themes,
         _autosave,
+        _draft,
         _presence,
         _collab,
     ):
