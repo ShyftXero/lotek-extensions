@@ -466,6 +466,9 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims
     # to mirror the bundle and is one key short.
     cfg.extras["can_operate_on"] = stub.can_operate_on
+    # AI seam (core app.ai.stream): a fake streamer so a mounted route can exercise the AI-draft path.
+    # Absent this key, draft_api fails closed (503) — that fail-closed path has its own test.
+    cfg.extras["ai_stream"] = lambda messages, **_kw: iter(["stub AI draft."])  # noqa: ARG005
     cfg.extras["audit"] = stub.audit
     cfg.extras["idempotent"] = _make_stub_idempotent()
 
