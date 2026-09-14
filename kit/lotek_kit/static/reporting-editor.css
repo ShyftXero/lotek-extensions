@@ -1,0 +1,27 @@
+/*!
+ * lotek_kit/static/reporting-editor.css — styles for the shared reporting editor (reporting-editor.js).
+ * Extracted from scribble's inline editor styles into the kit so every consumer looks the same. Colours
+ * come from the HOST theme tokens (--ink/--accent/--line/--field-bg/--danger…, src/app/static/styles.css),
+ * so the editor follows the active dark/light/h4xor theme. The `.fr-editor-*` classes are the ones the
+ * editor JS creates; `.lotek-reporting-editor-wrap` is the container the host template puts the editor in.
+ */
+.lotek-reporting-editor-wrap { display: flex; flex-direction: column; gap: 10px; }
+.fr-editor-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fr-editor-btn { padding: 5px 10px; font-size: 13px; }
+.fr-editor-varpicker {
+  padding: 5px 8px; border-radius: 10px; border: 1px solid var(--line-strong);
+  background: var(--field-bg); color: var(--ink); font: inherit;
+}
+.fr-editor-surface {
+  min-height: 140px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--field-bg); color: var(--ink);
+  line-height: 1.55; outline: none;
+}
+.fr-editor-surface:focus { border-color: var(--accent); }
+.fr-editor-surface p:first-child { margin-top: 0; }
+.fr-editor-surface img.fr-inline-image { max-width: 100%; border-radius: 8px; display: block; margin: 8px 0; }
+.fr-editor-surface img.fr-inline-image-pending { opacity: .6; outline: 2px dashed var(--line-strong); }
+.fr-var.pill { cursor: default; user-select: none; }
+.fr-editor-status { font-size: 12px; min-height: 14px; }
+.fr-editor-status-error { color: var(--danger); }
+.fr-editor-presence { font-size: 12px; }
