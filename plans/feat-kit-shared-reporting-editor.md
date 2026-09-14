@@ -1,0 +1,86 @@
+# Plan: feat/kit-shared-reporting-editor (+ follow-on phases)
+
+- **Branch (P1):** `feat/kit-shared-reporting-editor` (off `main`)
+- **Status:** 🟡 P1 in progress — plan landed, kit primitive being extracted
+- **Directive (Eli, 2026-09-14):** screenshots via ctrl+v; images in blob storage; purge deletes images;
+  an orphan sweep reaps bucket objects with no valid id; **and the rich reporting editor is a SHARED
+  PRIMITIVE — one canonical copy, updated in one place, that extensions load and CONFIGURE / OVERRIDE
+  (custom nodes, upload endpoint, or opt out), for a consistent UX. Not copy-pasted per extension.**
+
+## Architecture
+
+scribble already owns a hand-rolled, ProseMirror-shaped contentEditable editor with working ctrl+v
+image-paste → blob upload (`scribble/static/{editor,outbox}.js`, mounted via `_editor.html`). Its
+`mount(container, options)` is already parameterized (`apiBase`, `artifactUrl`, `initialDoc`, `block`,
+`variableKeys`) and carries a TipTap drop-in seam (`window.ScribbleTipTap`). It is NOT a shared asset —
+it lives in scribble's package and can't be reached by another extension (extensions must not import each
+other).
+
+The kit is the sanctioned shared home: `lotek_kit/static/` already ships browser assets (`reorder.js`),
+served by a `lotek_kit.static` blueprint (`flask_assets.ensure_registered`), with the stable template
+contract `url_for("lotek_kit.static", filename=...)` whether mounted in core (`/_kit`) or an extension.
+The kit's admission rule — "something enters the kit only when two consumers that may not import each
+other both need it" — is now met (scribble + bugreport). The machinery exists but is **dormant** (no host
+calls `ensure_registered` today).
+
+**The shared primitive + override model:**
+- `lotek_kit/static/reporting-editor.js` (+ `reporting-outbox.js`, `reporting-editor.css`) — the ONE
+  canonical editor. Kit-neutral global (`window.LotekReportingEditor`), the durable upload outbox, and a
+  `window.LotekReportingEditorTipTap` drop-in seam preserved.
+- Config (per `mount`): `uploadUrl` (REQUIRED — no scribble default), `uploadResponse` adapter
+  (map the extension's upload response → `{id, url}`), `initialDoc`, `blocks`, `user`, and `plugins` —
+  the override point. A plugin registers extra nodes/marks/toolbar items. **scribble's `{{variable}}`
+  chip becomes a scribble-supplied plugin, not baked into the kit** — the "override / do their own thing"
+  the directive asks for. An extension may also decline the primitive entirely.
+- Core wires `ensure_registered(app)` once at boot so `/_kit/*` serves the assets for every mounted
+  extension; the host base may link the shared CSS.
+
+## Phases (each a PR; cross-repo re-pin between the ext repo and core)
+
+- **P1 — ext(kit): the shared primitive.** Move `editor.js`/`outbox.js`/editor-CSS into
+  `lotek_kit/static/`, generalized: kit-neutral globals, `uploadUrl`+`uploadResponse` config (drop the
+  `/scribble/api` default), the `{{variable}}` node extracted to an opt-in plugin, TipTap seam kept.
+  Kit tests: the assets exist, `mount`/`_internal`/the plugin registry are exported, a plugin can add a
+  node. Additive — scribble/bugreport not yet switched. **← this branch.**
+- **P2 — core: serve it.** Call `lotek_kit.flask_assets.ensure_registered(app)` at boot; re-pin kit to
+  P1's tag. Mounted test: `url_for("lotek_kit.static", filename="reporting-editor.js")` → 200.
+- **P3 — ext(scribble): adopt the primitive.** `_editor.html` loads the editor from `lotek_kit.static`
+  and registers scribble's `{{variable}}` plugin; **delete scribble's own `editor.js`/`outbox.js`** (one
+  home). Byte-identical behavior — proven by scribble's suite + a live Firefox paste/save check. Re-pin
+  scribble in core.
+- **P4 — ext(bugreport): adopt + blob lifecycle.** Body → `content_json` (rich, migration); mount the kit
+  editor configured for a bugreport upload endpoint returning `{id,url}` that stores the pasted image in
+  `ExtensionBlobs`; inline-image render + server-side sanitize on display; ctrl+v pastes inline. Fix
+  `delete_own` to also delete the report's blobs (closes the leak at `service.py:173`). Re-pin in core.
+- **P5 — core: the orphan sweep (DEFERRED, data-loss-capable).** Rebuild `reconcile_extension_blobs` +
+  `ExtensionBlobs.list_ids` with the guards the cut version earned (24h grace floor, opt-in by manifest
+  declaration, type check, zero-overlap check, bounded progress, paginated listing, exact-key parse) +
+  an `INVARIANTS.md` entry (a host sweep may delete extension bytes only for ids the owning extension was
+  asked about and did NOT return; a zero-overlap or wrong-typed answer is a broken claims function, never
+  a purge order) + independent review. Its OWN branch + baseline, per the #492 cut decision.
+
+## Notes / risks
+
+- **Cross-repo round-trips:** kit→(core re-pin+serve)→scribble→(core re-pin)→bugreport→(core re-pin), then
+  P5 in core. Each ext PR auto-cuts a release tag; core re-pins the one-line `tag=`.
+- **P5 is the only data-loss-capable piece** and was cut on adversarial review + owner decision (#492 /
+  `feat-extension-blob-seam.md:123`). Rebuild it deliberately with its earned guards + invariant +
+  independent "refute this claim" review — never rushed alongside the editor work.
+- **`{{variable}}` stays OUT of the kit core** — scribble-specific; it's the reference override plugin.
+- **bugreport `content_json`** is a schema change + a render/sanitize surface. Reuse scribble's
+  `prosemirror_sanitize.py` — itself a kit-share candidate once two consumers need it (P4 will decide:
+  share it, or bugreport carries its own until a third consumer appears).
+- **Consistency drift-guard:** a test asserting no extension ships its OWN editor copy once the kit owns
+  it (the kit README already laments three hand-rolled drag-reorder impls — don't add an editor to that
+  list).
+
+## Evals (EDD)
+
+- **P1:** kit test — mount API + plugin seam exported; a headless JS smoke that `mount` builds an editable
+  surface and a registered plugin's node round-trips through the JSON serializer.
+- **P3:** scribble live (Firefox) — paste an image, it uploads + saves; `content_json` byte-identical to
+  the pre-move baseline for the same input.
+- **P4:** bugreport live (Firefox) — ctrl+v inline screenshot uploads to `ExtensionBlobs`, renders on the
+  report, survives save; deleting the report deletes the blob (assert the key is gone).
+- **P5:** its own baseline — a planted orphan is reaped; a blob with a live row is NEVER deleted; a broken
+  claims function (empty/wrong-typed) reaps nothing.
