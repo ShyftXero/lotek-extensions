@@ -67,6 +67,16 @@ calls `ensure_registered` today).
   `feat-extension-blob-seam.md:123`). Rebuild it deliberately with its earned guards + invariant +
   independent "refute this claim" review — never rushed alongside the editor work.
 - **`{{variable}}` stays OUT of the kit core** — scribble-specific; it's the reference override plugin.
+  scribble's `{{VARIABLE}}` templating (built-ins `COMPANY_NAME`, `ENGAGEMENT_NAME`, `TODAY`,
+  `START_DATE`, `END_DATE`, `TARGET_HOST`, `TARGET_PORT`, `TARGET_URL`, `ASSESSOR`, `SEVERITY` + custom
+  per-engagement vars; resolved through a SandboxedEnvironment) is KEPT and is precisely the reference
+  override plugin the kit editor loads via config. The refactor must not drop it. (Eli 2026-09-14:
+  "the jinja variables are what make the report feel tailored.")
+- **P3 rider — surface available variables as a visible reminder.** scribble already offers them via the
+  editor's variable picker + the resolve-preview; Eli wants them OFFERED more plainly as a reminder. Add
+  an always-visible "Available variables" hint/list beside the editor (driven by `known_variable_keys`),
+  and consider an `OPERATOR_HOST`/tester-identity built-in in `templating/resolver.py::build_context`
+  (today the closest is `ASSESSOR` = engagement.created_by; there is no operator-host var). Small, scribble-side.
 - **bugreport `content_json`** is a schema change + a render/sanitize surface. Reuse scribble's
   `prosemirror_sanitize.py` — itself a kit-share candidate once two consumers need it (P4 will decide:
   share it, or bugreport carries its own until a third consumer appears).
