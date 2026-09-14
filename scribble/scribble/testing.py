@@ -220,8 +220,22 @@ def register_kit_assets_shim(app) -> None:
     """
     from flask import Blueprint
 
+    # Re-registering raises in Flask, and there is no unregister -- but more importantly a
+    # module-scoped app that has already served a request refuses ANY blueprint registration, and the
+    # per-test autouse fixture calls this again for every test in that module. Returning early is what
+    # makes that safe.
     if "lotek_kit" in app.blueprints:
         return
+    # Refuse rather than serve 404s. A Blueprint with a missing static_folder registers happily and
+    # `url_for` still resolves, so the page would render, silently load nothing, and show a blank
+    # editor -- the failure mode that looks like success. This only happens outside a monorepo
+    # checkout (an installed wheel), which is exactly when the caller should be told instead.
+    if not _KIT_STATIC_DIR.is_dir():
+        raise RuntimeError(
+            f"kit assets not found at {_KIT_STATIC_DIR}. register_kit_assets_shim() is the "
+            "monorepo-checkout test/demo shell; a real host must call "
+            "lotek_kit.flask_assets.ensure_registered(app) instead."
+        )
     app.register_blueprint(
         Blueprint("lotek_kit", __name__, static_folder=str(_KIT_STATIC_DIR), static_url_path=""),
         url_prefix="/_kit",
