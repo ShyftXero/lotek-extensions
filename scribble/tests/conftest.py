@@ -76,8 +76,14 @@ def _every_app_gets_a_host_object_store(request):
     """
     if "app" not in request.fixturenames:
         return
-    from scribble.testing import wire_mock_host
-    wire_mock_host(request.getfixturevalue("app").extensions["scribble"])
+    from scribble.testing import register_kit_assets_shim, wire_mock_host
+    app = request.getfixturevalue("app")
+    wire_mock_host(app.extensions["scribble"])
+    # Scribble's templates load the SHARED reporting editor from the kit's asset blueprint, which core
+    # registers and a bare Flask() app does not. Without this every page that includes _editor.html
+    # raises BuildError before it renders. Same fixture as the object store above, and for the same
+    # reason: modules that override `app` would each otherwise have to remember.
+    register_kit_assets_shim(app)
 
 
 @pytest.fixture

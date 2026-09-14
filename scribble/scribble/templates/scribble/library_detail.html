@@ -9,9 +9,13 @@
   (WS4's partial): that partial's autosave hardcodes `.../findings/<id>/blocks/<block>` against the
   EngagementFinding table, which has its own independent id sequence — pointing it at a template id
   would either 404 or silently write into an unrelated finding that happens to share the numeric id.
-  Per the WS2 brief we don't edit WS4's files, so instead we reuse the JSON<->DOM converters that
-  scribble/static/editor.js explicitly exports for this purpose (`window.ScribbleEditor._internal`),
-  and wire our own debounced save against scribble/library_ui.py's template-scoped block endpoints.
+  Per the WS2 brief we don't edit WS4's files, so instead we reuse the JSON<->DOM converters that the
+  shared kit editor explicitly exports for this purpose (`window.LotekReportingEditor._internal`), and
+  wire our own debounced save against scribble/library_ui.py's template-scoped block endpoints.
+
+  Only `_internal` is used here -- never `mount()`, and never image paste -- so this page deliberately
+  does NOT also load the kit's reporting-outbox.js: the editor's two outbox touchpoints are both
+  guarded, and an unused outbox would open an IndexedDB connection on a page that never uploads.
 #}
 {% extends scribble_base %}
 {% block title %}Scribble — {{ template.name }}{% endblock %}
@@ -101,7 +105,7 @@
   .fr-editor-status { font-size: 12px; min-height: 14px; margin-top: 6px; }
 </style>
 
-<script src="{{ url_for('scribble.static', filename='editor.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='reporting-editor.js') }}"></script>
 <script>
 (function () {
   var API = "{{ scribble_api_prefix | default('/scribble/api') }}";
@@ -180,9 +184,9 @@
   });
 
   // ---------------------------------------------------------------- content blocks
-  // Reuses editor.js's exported window.ScribbleEditor._internal JSON<->DOM converters (documented
-  // there as the intended reuse point) rather than ScribbleEditor.mount(), which hardcodes the
-  // finding-scoped autosave URL. See the template-level comment at the top of this file.
+  // Reuses the kit editor's exported window.LotekReportingEditor._internal JSON<->DOM converters
+  // (documented there as the intended reuse point) rather than mount(), which wires the finding-scoped
+  // autosave URL. See the template-level comment at the top of this file.
 
   function mountLibraryBlock(container) {
     var block = container.dataset.libBlock;
@@ -197,7 +201,7 @@
 
     var surface = container.querySelector(".fr-editor-surface");
     var blockStatus = container.querySelector(".fr-editor-status");
-    var internal = window.ScribbleEditor && window.ScribbleEditor._internal;
+    var internal = window.LotekReportingEditor && window.LotekReportingEditor._internal;
 
     if (internal) {
       surface.appendChild(internal.docToFragment(initialDoc));

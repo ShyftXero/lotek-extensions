@@ -1,10 +1,16 @@
 {#
 Scribble rich-text editor partial (WS4 Phase A).
 
-Mounts scribble/static/editor.js for one content block of one finding: debounced autosave
-(POST/GET .../findings/<id>/blocks/<block>, see scribble/autosave_api.py), lightweight polling
-presence ("X is editing", see scribble/collab/presence.py), inline image paste/drop -> artifact
-upload, and {{VARIABLE}} chip insertion.
+Mounts the SHARED kit reporting editor (lotek_kit/static/reporting-editor.js, ext#212) for one content
+block of one finding: debounced autosave (POST/GET .../findings/<id>/blocks/<block>, see
+scribble/autosave_api.py), lightweight polling presence ("X is editing", see scribble/collab/presence.py),
+inline image paste/drop -> artifact upload, and {{VARIABLE}} chip insertion.
+
+The editor is NOT scribble's any more — one canonical copy lives in the kit and every extension that
+authors report text mounts that. It is served by whichever host registered
+`lotek_kit.flask_assets.ensure_registered(app)` (core does, at /_kit), which is what makes
+`url_for('lotek_kit.static', …)` below resolve. Scribble's own standalone test harness has no core, so
+`scribble.testing.register_kit_assets_shim()` stands one up — see that function.
 
 Required context:
   finding      — an EngagementFinding (needs .id and .content_json; a dict-like with those keys works
@@ -22,14 +28,19 @@ kwarg). `scribble_api_prefix` / `scribble_variable_keys` are injected automatica
 wires `scribble.autosave_api.register(api_bp, bp)` into the mount path (scribble/__init__.py); until
 then this partial degrades to the "/scribble/api" default and an empty variable list.
 
-NOTE ON STYLING: scribble/static/scribble.css is a shared/frozen file this workstream doesn't own, so
-new editor-only classes (fr-editor-*) are scoped here rather than added there; the base look (.card,
-.btn, .pill, .muted) is reused straight from scribble.css's existing tokens.
+NOTE ON `data-api-base`: the kit editor has NO default apiBase (P1 deliberately dropped the
+`/scribble/api` one so the primitive carries no scribble coupling). Every scribble surface that mounts
+it therefore MUST emit data-api-base, or autosave and image upload POST to a relative "/artifacts".
+
+NOTE ON STYLING: the editor's own look now ships with the editor (lotek_kit/static/reporting-editor.css),
+so there is no inline <style> here; the base look (.card, .btn, .pill, .muted) is still scribble.css's.
 #}
 {% set _doc = (finding.content_json or {}).get(block) %}
 {% if not _doc %}{% set _doc = {"type": "doc", "content": []} %}{% endif %}
 
-<div class="scribble-editor-wrap card"
+<link rel="stylesheet" href="{{ url_for('lotek_kit.static', filename='reporting-editor.css') }}">
+
+<div class="lotek-reporting-editor-wrap card"
      data-scribble-editor
      data-finding-id="{{ finding.id }}"
      data-engagement-id="{{ finding.engagement_id }}"
@@ -38,9 +49,21 @@ new editor-only classes (fr-editor-*) are scoped here rather than added there; t
      {%- if editor_user %}
      data-user="{{ editor_user }}"
      {%- endif %}>
-  <script type="application/json" class="scribble-editor-doc-data">{{ _doc | tojson }}</script>
-  <script type="application/json" class="scribble-editor-vars-data">{{ (scribble_variable_keys or []) | tojson }}</script>
+  <script type="application/json" class="lotek-reporting-editor-doc-data">{{ _doc | tojson }}</script>
+  <script type="application/json" class="lotek-reporting-editor-vars-data">{{ (scribble_variable_keys or []) | tojson }}</script>
 </div>
+
+{% if scribble_variable_keys %}
+{#
+  The variable picker is a dropdown you have to open, so the keys an engagement actually offers are
+  invisible until you go looking. They are what makes a report read as tailored rather than generic, so
+  list them in the open (Eli, 2026-09-14).
+#}
+<p class="muted scribble-editor-variable-hint" style="font-size:12px;margin:4px 0 0">
+  Variables:
+  {%- for key in scribble_variable_keys %} <code>{{ '{{' }}{{ key }}{{ '}}' }}</code>{% endfor %}
+</p>
+{% endif %}
 
 {% if scribble_can_write %}
 <div class="scribble-rephrase" data-scribble-rephrase
@@ -55,44 +78,21 @@ new editor-only classes (fr-editor-*) are scoped here rather than added there; t
 </div>
 {% endif %}
 
-<style>
-  .scribble-editor-wrap { display: flex; flex-direction: column; gap: 10px; }
-  .fr-editor-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .fr-editor-btn { padding: 5px 10px; font-size: 13px; }
-  .fr-editor-varpicker {
-    padding: 5px 8px; border-radius: 10px; border: 1px solid var(--line-strong);
-    background: var(--field-bg); color: var(--ink); font: inherit;
-  }
-  .fr-editor-surface {
-    min-height: 140px; padding: 12px 14px; border-radius: 10px;
-    border: 1px solid var(--line); background: var(--field-bg); color: var(--ink);
-    line-height: 1.55; outline: none;
-  }
-  .fr-editor-surface:focus { border-color: var(--accent); }
-  .fr-editor-surface p:first-child { margin-top: 0; }
-  .fr-editor-surface img.fr-inline-image { max-width: 100%; border-radius: 8px; display: block; margin: 8px 0; }
-  .fr-editor-surface img.fr-inline-image-pending { opacity: .6; outline: 2px dashed var(--line-strong); }
-  .fr-var.pill { cursor: default; user-select: none; }
-  .fr-editor-status { font-size: 12px; min-height: 14px; }
-  .fr-editor-status-error { color: var(--danger); }
-  .fr-editor-presence { font-size: 12px; }
-</style>
-
 {#
-  outbox.js (WS14, PLAN.md §19) must run before editor.js: it defines window.ScribbleOutbox, which
-  editor.js's own top-level image-upload wiring reads at script-load time. Both are safe to include
-  more than once per page (once per content block) -- each guards itself against
-  double-initialization (window.ScribbleOutbox / window.__scribbleEditorOutboxWired).
+  reporting-outbox.js must run before reporting-editor.js: it defines window.LotekReportingOutbox, which
+  the editor's own top-level image-upload wiring reads at script-load time. Both are safe to include
+  more than once per page (once per content block) -- each guards itself against double-initialization
+  (window.LotekReportingOutbox / window.__lotekReportingEditorOutboxWired).
 #}
-<script src="{{ url_for('scribble.static', filename='outbox.js') }}"></script>
-<script src="{{ url_for('scribble.static', filename='editor.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='reporting-outbox.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='reporting-editor.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='draft.js') }}"></script>
 <script>
   (function () {
     document.querySelectorAll("[data-scribble-editor]").forEach(function (el) {
       if (el.dataset.scribbleEditorMounted) return;
       el.dataset.scribbleEditorMounted = "1";
-      window.ScribbleEditor.mount(el);
+      window.LotekReportingEditor.mount(el);
     });
   })();
 </script>

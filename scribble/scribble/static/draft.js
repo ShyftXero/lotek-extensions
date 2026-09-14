@@ -6,7 +6,7 @@
  * host `ai_stream` hook and fails closed to inline text (e.g. when AI completion is disabled), which we
  * simply render.
  *
- * Loaded per content block (like editor.js) but guards itself against double-wiring.
+ * Loaded per content block (like the kit's reporting-editor.js) but guards itself against double-wiring.
  */
 (function () {
   if (window.__scribbleRephraseWired) return;

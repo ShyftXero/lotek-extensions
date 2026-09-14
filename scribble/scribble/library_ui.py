@@ -16,7 +16,7 @@ Full CRUD for the vuln template library, keyed on **edit-in-place**:
   `active`, so it is fully reversible (the detail page's state-aware button reactivates through it).
 - Tags: assign existing or create-and-assign (by name; unknown names create a new `Tag` row).
 
-Content-block editing note: `scribble/templates/scribble/_editor.html` + `scribble/static/editor.js`
+Content-block editing note: `scribble/templates/scribble/_editor.html` + the kit reporting editor
 (WS4) hardcode their autosave URL to ``.../findings/<finding_id>/blocks/<block>`` and read/write an
 ``EngagementFinding`` row. Templates are a different table with an independently-numbered primary key,
 so pointing that partial at a template id would silently misfire: it would try to autosave against
@@ -25,9 +25,9 @@ that numeric id, clobbers *its* content. Per the WS2 brief we do not edit WS4's 
 module exposes its own template-scoped block endpoints (mirroring `scribble/autosave_api.py`'s shape:
 same doc validation and `render_block`-and-cache-`content_html` behavior, but intentionally omitting
 artifact-URL resolution since library templates predate any engagement/artifacts) and the detail page
-wires a small bespoke editor surface (see `library_detail.html`) that reuses `editor.js`'s *exported*
-`window.ScribbleEditor._internal.{docToFragment,domToDoc}` JSON<->DOM converters (explicitly documented
-in that file as a reuse point for exactly this kind of adapter) instead of `ScribbleEditor.mount()`.
+wires a small bespoke editor surface (see `library_detail.html`) that reuses the kit editor's *exported*
+`window.LotekReportingEditor._internal.{docToFragment,domToDoc}` JSON<->DOM converters (explicitly
+documented in that file as a reuse point for exactly this kind of adapter) instead of `mount()`.
 
 Routes:
     UI (``bp``):

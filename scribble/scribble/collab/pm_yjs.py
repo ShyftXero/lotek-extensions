@@ -18,7 +18,8 @@ Mapping (mirrors y-prosemirror's actual approach):
 - A node that holds *block* content (``bulletList``/``orderedList``/``listItem``/``blockquote``, and the
   root ``doc``) recurses: each child becomes its own nested ``XmlElement``.
 - Unknown/foreign node types never drop content (same philosophy as ``content/render_html.py`` and
-  ``static/editor.js``): they're classified as inline- or block-holding by inspecting their first child.
+  the kit's ``reporting-editor.js``): they're classified as inline- or block-holding by inspecting their
+  first child.
 
 Yjs/JSON numbers round-trip as floats (``42`` -> ``42.0``); :func:`_normalize` converts integral floats
 back to ``int`` so reconstructed docs compare equal to hand-written ProseMirror JSON fixtures.

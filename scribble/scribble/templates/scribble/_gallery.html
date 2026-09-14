@@ -123,10 +123,11 @@
   {% endif %}
 </div>
 {#
-  outbox.js (WS14, PLAN.md §19) must run before artifacts.js: it defines window.ScribbleOutbox, which
-  artifacts.js's own top-level `if (window.ScribbleOutbox) {...}` wiring reads at script-load time. Both
-  tags are safe to include once per gallery on a page with several galleries -- each script guards
-  itself against double-initialization (window.ScribbleOutbox / window.__scribbleArtifactsInit).
+  The kit's shared upload outbox (WS14, PLAN.md §19; one canonical copy since ext#212) must run before
+  artifacts.js: it defines window.LotekReportingOutbox, which artifacts.js's own top-level
+  `if (window.LotekReportingOutbox) {...}` wiring reads at script-load time. Both tags are safe to
+  include once per gallery on a page with several galleries -- each script guards itself against
+  double-initialization (window.LotekReportingOutbox / window.__scribbleArtifactsInit).
 #}
-<script src="{{ url_for('scribble.static', filename='outbox.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='reporting-outbox.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='artifacts.js') }}" defer></script>

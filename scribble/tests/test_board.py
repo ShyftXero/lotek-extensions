@@ -324,6 +324,18 @@ def test_finding_detail_get_renders_editor_and_gallery(client, session_factory):
     assert "scribble-gallery" in body
     assert 'data-block="description"' in body
     assert 'data-block="remediation"' in body
+    # The editor is the SHARED kit primitive, served by the host's `lotek_kit` asset blueprint (core
+    # registers it; the harness shims it). If that endpoint were missing this page would not render at
+    # all -- so asserting the built URLs is what proves the page is wired to the kit and not to a
+    # scribble-local copy.
+    assert "/_kit/reporting-outbox.js" in body
+    assert "/_kit/reporting-editor.js" in body
+    assert "/_kit/reporting-editor.css" in body
+    assert "window.LotekReportingEditor.mount" in body
+    # Available {{VARIABLE}} keys are listed in the open, not only inside the picker dropdown: they are
+    # what makes a report read as tailored, and an operator who never opens the picker never sees them.
+    assert "scribble-editor-variable-hint" in body
+    assert "{{TARGET_HOST}}" in body
 
 
 def test_finding_detail_404_for_missing(client):
