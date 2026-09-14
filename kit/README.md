@@ -20,7 +20,7 @@ is known by core as a hardcoded string literal.
 | --- | --- |
 | `lotek_kit.attackpath` | The `attackpath/v1` document model — `normalize()`, `blank_model()`, `is_supported_schema_id()`. Ported from `vector/vector/schema.py`. |
 | `lotek_kit.assets` | Stdlib access to shipped browser assets, for inlining into a self-contained deliverable. |
-| `lotek_kit.static/` | The browser assets themselves — `reorder.{js,css}`, and the shared **reporting editor** primitive `reporting-editor.{js,css}` + `reporting-outbox.js` (a `contenteditable` ProseMirror-JSON editor with image paste→upload; extension-neutral — the host supplies `apiBase`/`uploadUrl` and mounts via `window.LotekReportingEditor.mount`). |
+| `lotek_kit.static/` | The browser assets themselves — `reorder.{js,css}`, and the shared **reporting editor** primitive `reporting-editor.{js,css}` + `reporting-outbox.js` (a `contenteditable` ProseMirror-JSON editor with image paste→upload; extension-neutral — the host supplies its own `apiBase` (image upload POSTs to `apiBase + "/artifacts"`) and mounts via `window.LotekReportingEditor.mount`). |
 
 ## The admission rule
 

@@ -52,12 +52,14 @@ def test_the_mount_api_is_exported():
         assert re.search(rf"\b{name}:", OUTBOX), f"{name} missing from the outbox api"
 
 
-def test_upload_endpoint_has_no_baked_in_extension_default():
-    """`/scribble/api` must not be a live DEFAULT — the host passes apiBase/uploadUrl. It may only appear
-    in a comment (documenting what scribble passes)."""
-    for m in re.finditer(r"/scribble/api", EDITOR):
-        line = EDITOR[EDITOR.rfind("\n", 0, m.start()) + 1: m.start()]
-        assert line.lstrip().startswith(("//", "*")), "/scribble/api appears in live code, not a comment"
+@pytest.mark.parametrize("text,label", [(EDITOR, "reporting-editor.js"), (OUTBOX, "reporting-outbox.js")])
+def test_upload_endpoint_has_no_baked_in_extension_default(text, label):
+    """No `/scribble` path may be a live DEFAULT in either the editor or the upload outbox — the host
+    passes apiBase and the upload endpoint is `apiBase + "/artifacts"`. It may only appear in a comment
+    (documenting what scribble passes)."""
+    for m in re.finditer(r"/scribble\b", text):
+        line = text[text.rfind("\n", 0, m.start()) + 1: m.start()]
+        assert line.lstrip().startswith(("//", "*")), f"{label}: /scribble appears in live code, not a comment"
 
 
 def test_no_external_resource_or_dynamic_eval():

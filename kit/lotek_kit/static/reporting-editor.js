@@ -11,22 +11,26 @@
  *
  * ── HOW AN EXTENSION USES IT ──────────────────────────────────────────────────────────────────────
  *   LotekReportingEditor.mount(container, {
- *     uploadUrl:   "/<ext>/.../upload",      // REQUIRED for image paste/drop — the extension's OWN
- *                                            //   endpoint; there is no default (no scribble coupling)
- *     uploadFields: { engagement_id, ... },  // extra multipart fields the extension's endpoint wants
- *     uploadResponse: fn(json) -> {id, url}, // adapt the endpoint's response (default: identity)
- *     initialDoc, block, user, variableKeys, // variableKeys drives the {{VARIABLE}} picker — an
- *                                            //   OPT-IN: absent -> no chips (the extension override point)
+ *     apiBase:      "/<ext>/api",   // the extension's OWN API root; NO default (no scribble coupling).
+ *                                   //   Image paste/drop POSTs to `apiBase + "/artifacts"`; artifacts
+ *                                   //   render from `apiBase + "/artifacts/<id>/raw"`. Also readable
+ *                                   //   off the container as data-api-base.
+ *     findingId,                    // REQUIRED for autosave + presence — both are SKIPPED when absent.
+ *     engagementId,                 // REQUIRED by POST /artifacts — inline image upload 400s without it.
+ *     block, user, initialDoc,      // (initialDoc also read from an embedded <script> in the container)
+ *     variableKeys,                 // drives the {{VARIABLE}} picker — OPT-IN: absent -> no chips.
+ *     artifactUrl,                  // override the raw-artifact URL builder (default uses apiBase).
  *   });
- * An extension may configure/override these, supply a TipTap bundle (below), or not use the editor at
- * all (e.g. a plain textarea + the shared paste-upload helper).
+ * All are also readable off the container's data-* attributes (data-api-base, data-finding-id, …). An
+ * extension may configure/override these, supply a TipTap bundle (below), or not use the editor at all
+ * (e.g. a plain textarea + the shared paste-upload helper).
  *
  * ── FALLBACK EDITOR (this file) ──────────────────────────────────────────────────────────────────
  * - JSON<->DOM walkers matching the ProseMirror schema mirrored below: doc/paragraph/text/heading/
  *   bulletList/orderedList/listItem/blockquote/codeBlock/hardBreak/image, plus custom `variable`,
  *   `inlineImage`, `figure` nodes. (`variable` is scribble's {{}} chip — inert unless `variableKeys`.)
  * - Marks via `document.execCommand` (deprecated but adequate; TipTap replaces it in the drop-in).
- * - Image paste/drop -> uploads via `uploadUrl`, inserts an `inlineImage` node at the caret.
+ * - Image paste/drop -> POSTs to `apiBase + "/artifacts"`, inserts an `inlineImage` node at the caret.
  * - Debounced autosave (the mount's `save`/`onSave`) — the host wires its own persistence.
  *
  * ── TIPTAP DROP-IN POINT ──────────────────────────────────────────────────────────────────────────

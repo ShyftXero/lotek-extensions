@@ -48,16 +48,22 @@ calls `ensure_registered` today).
   and registers scribble's `{{variable}}` plugin; **delete scribble's own `editor.js`/`outbox.js`** (one
   home). Byte-identical behavior — proven by scribble's suite + a live Firefox paste/save check. Re-pin
   scribble in core.
-- **P4 — ext(bugreport): adopt + blob lifecycle.** Body → `content_json` (rich, migration); mount the kit
-  editor configured for a bugreport upload endpoint returning `{id,url}` that stores the pasted image in
-  `ExtensionBlobs`; inline-image render + server-side sanitize on display; ctrl+v pastes inline. Fix
-  `delete_own` to also delete the report's blobs (closes the leak at `service.py:173`). Re-pin in core.
-- **P5 — core: the orphan sweep (DEFERRED, data-loss-capable).** Rebuild `reconcile_extension_blobs` +
-  `ExtensionBlobs.list_ids` with the guards the cut version earned (24h grace floor, opt-in by manifest
-  declaration, type check, zero-overlap check, bounded progress, paginated listing, exact-key parse) +
-  an `INVARIANTS.md` entry (a host sweep may delete extension bytes only for ids the owning extension was
-  asked about and did NOT return; a zero-overlap or wrong-typed answer is a broken claims function, never
-  a purge order) + independent review. Its OWN branch + baseline, per the #492 cut decision.
+- **P4 — ext(bugreport): paste screenshots as ATTACHMENTS (Eli 2026-09-14: "use attachments").** NOT a
+  rich `content_json` body. bugreport keeps its plain textarea; a small SHARED **paste-upload helper**
+  from the kit (the outbox + a `attachPasteUpload(el, {uploadUrl, onUploaded})` — the paste handler the
+  editor also uses internally) is wired to the body textarea. Ctrl+V a screenshot → uploads to bugreport's
+  existing attachment endpoint → stored in `ExtensionBlobs` → appears in the report's Files list. Fix
+  `delete_own` to also delete the report's blobs (closes the leak at `service.py:173`). A small schema
+  touch is acceptable if needed (e.g. flag a pasted attachment), but no rich-body migration. Re-pin in core.
+- **P5 — core: an ADMIN MAINTENANCE UI, human-driven (NOT the cut auto-sweep).** (Eli 2026-09-14.) The
+  auto-`reconcile_extension_blobs` stays cut — its unattended data-loss is exactly the risk. Instead:
+  each extension owns cleanup of orphans in ITS OWN prefix, surfaced to an admin. Build (a)
+  `ExtensionBlobs.list_ids` (paginated S3 enumeration of `ext/<name>/*` — the missing piece), (b) an
+  orphan check = enumerated ids minus the extension's `claimed_blob_ids` (the manifest hook that already
+  exists, revived read-side), (c) an admin maintenance page: list orphaned objects per extension with
+  checkboxes, and per-selection **download-to-save** or **delete**. Human-in-the-loop → no unattended
+  purge; the safety net so opaque-S3 files can't accumulate invisibly. Its own branch; deletion still
+  gets an "are you sure" + audit. NOT part of P1→P4.
 
 ## Notes / risks
 
