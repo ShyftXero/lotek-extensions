@@ -40,6 +40,12 @@ EXPECTED_CONSUMERS = {
 }
 
 
+#: The opening tag of an editor mount element. Scoped to the TAG rather than the file because
+#: `_editor.html` also carries `data-api-base` on the Rephrase block, which would satisfy a
+#: file-level check after the editor's own attribute was deleted.
+_MOUNT_TAG_RE = re.compile(r"<[a-zA-Z][^>]*\bdata-scribble-editor\b[^>]*>")
+
+
 def _kit_assets(template: pathlib.Path) -> list[str]:
     """Kit assets the template loads, in source order."""
     return _KIT_ASSET_RE.findall(template.read_text(encoding="utf-8"))
@@ -117,6 +123,35 @@ def test_the_outbox_loads_before_the_editor(template):
     if "reporting-outbox.js" not in assets or "reporting-editor.js" not in assets:
         pytest.skip(f"{template} does not load both")
     assert assets.index("reporting-outbox.js") < assets.index("reporting-editor.js")
+
+
+def test_every_editor_mount_site_declares_its_api_base():
+    """A mount site without `data-api-base` silently misroutes autosave and evidence upload.
+
+    P1 deliberately dropped the kit editor's `/scribble/api` default so the primitive carries no
+    scribble coupling, which means the attribute is now load-bearing rather than an override: it decides
+    where a finding's content and its pasted screenshots are POSTed. Omit it and `state.apiBase` is
+    undefined, so the editor posts to a garbage relative path — no exception, no failed assertion, just
+    autosaves that never land.
+
+    `_editor.html` says all of this in a comment at the top of the file, and a comment is not a guard.
+    Adversarial review of #213 flagged it: the branch shipped seven drift guards and none covered the
+    one hazard its own prose calls out.
+
+    Asserts on the MOUNT ELEMENT, not on the file. `_editor.html` carries `data-api-base` twice — once
+    on the editor and once on the Rephrase-with-AI block — so a file-level substring check passes even
+    after the editor's own attribute is deleted. That was the first version of this guard, and it did
+    not go red when the attribute was removed.
+    """
+    offenders = []
+    for template in sorted(TEMPLATES.rglob("*.html")):
+        for tag in _MOUNT_TAG_RE.findall(template.read_text(encoding="utf-8")):
+            if "data-api-base" not in tag:
+                offenders.append(template.name)
+    assert not offenders, (
+        "an element carrying data-scribble-editor declares no data-api-base, so autosave and image "
+        f"upload POST to a relative path and silently go nowhere: {offenders}"
+    )
 
 
 def test_editor_partial_uses_the_kit_css_and_data_classes():

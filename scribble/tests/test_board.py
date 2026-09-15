@@ -25,6 +25,7 @@ import io
 import uuid
 from types import SimpleNamespace
 
+from flask import url_for
 from sqlalchemy import select
 
 from scribble.blueprint import _inject_base
@@ -308,7 +309,7 @@ def test_add_finding_rejects_group_from_another_engagement(client, session_facto
 # ------------------------------------------------------------------------------- finding detail page
 
 
-def test_finding_detail_get_renders_editor_and_gallery(client, session_factory):
+def test_finding_detail_get_renders_editor_and_gallery(app, client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
         t = _make_template(db, "XSS", Severity.high)
@@ -328,9 +329,23 @@ def test_finding_detail_get_renders_editor_and_gallery(client, session_factory):
     # registers it; the harness shims it). If that endpoint were missing this page would not render at
     # all -- so asserting the built URLs is what proves the page is wired to the kit and not to a
     # scribble-local copy.
-    assert "/_kit/reporting-outbox.js" in body
-    assert "/_kit/reporting-editor.js" in body
-    assert "/_kit/reporting-editor.css" in body
+    #
+    # Ask `url_for` for the URLs rather than hard-coding "/_kit/...". The mount point is deliberately
+    # NOT fixed -- lotek_kit.flask_assets says so in as many words: the endpoint "resolves identically
+    # whether the kit is mounted under /_kit in core or under /scribble/kit inside an extension". A
+    # literal would pin the HARNESS's prefix, so remounting the kit in core would leave this suite green
+    # while the mounted page moved underneath it. Adversarial review of #213, W3.
+    with app.test_request_context():
+        kit_urls = {
+            name: url_for("lotek_kit.static", filename=name)
+            for name in ("reporting-outbox.js", "reporting-editor.js", "reporting-editor.css")
+        }
+    for name, url in kit_urls.items():
+        # Not vacuous: `url_for` must produce a real kit-blueprint URL, not "" and not a scribble-local
+        # path -- otherwise body-contains would be satisfied by a copy of the editor served by scribble.
+        assert url.endswith(name), f"url_for gave {url!r} for {name}"
+        assert "/scribble/static/" not in url, f"{name} resolved to a scribble-local copy: {url}"
+        assert url in body, f"the page does not load {name} from the kit blueprint ({url})"
     assert "window.LotekReportingEditor.mount" in body
     # Available {{VARIABLE}} keys are listed in the open, not only inside the picker dropdown: they are
     # what makes a report read as tailored, and an operator who never opens the picker never sees them.
