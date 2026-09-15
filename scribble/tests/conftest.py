@@ -62,13 +62,21 @@ event.listen(_scribble_models.Engagement, "before_insert", _stamp_core_engagemen
 
 
 @pytest.fixture(autouse=True)
-def _every_app_gets_a_host_object_store(request):
-    """Scribble persists evidence ONLY to the host's object store, so every app under test has one.
+def _every_app_gets_a_host_and_the_kit_assets(request):
+    """Give every app under test the two things a real host provides: an object store and the kit.
+
+    Scribble persists evidence ONLY to the host's object store, so every app under test has one.
 
     Standalone Scribble is a testbed, not a deployment: keeping a local-disk fallback "for standalone"
     would put back the split this cutover deleted (some evidence in the bucket, some on whichever host
     served the upload -- a difference that produced bugs nothing went red for). So the shell that boots
     it supplies a mock host instead, and there is one code path everywhere.
+
+    The kit's asset blueprint is the same shape of gap: scribble's templates load the SHARED reporting
+    editor via `url_for("lotek_kit.static", …)`, core registers that blueprint at boot, and a bare
+    Flask() app does not -- so without the shim every page including `_editor.html` raises BuildError
+    before it renders. Modules that build their OWN app outside this fixture (the Playwright `live_app`
+    fixtures) call `register_kit_assets_shim` themselves.
 
     Autouse and additive: several modules override the `app` fixture with their own, and each of them
     would otherwise need to remember this. `wire_mock_host` only defaults `host`/`pat_actor`, so a
@@ -76,8 +84,10 @@ def _every_app_gets_a_host_object_store(request):
     """
     if "app" not in request.fixturenames:
         return
-    from scribble.testing import wire_mock_host
-    wire_mock_host(request.getfixturevalue("app").extensions["scribble"])
+    from scribble.testing import register_kit_assets_shim, wire_mock_host
+    app = request.getfixturevalue("app")
+    wire_mock_host(app.extensions["scribble"])
+    register_kit_assets_shim(app)
 
 
 @pytest.fixture

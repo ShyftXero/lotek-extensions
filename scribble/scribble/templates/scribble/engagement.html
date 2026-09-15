@@ -410,8 +410,8 @@
 {#
   Engagement-evidence panel above (ext#51) reuses the finding gallery's item markup/classes so
   artifacts.js's delegated toggle/caption/delete handlers apply to it unmodified -- no upload form
-  here, so outbox.js is not needed (artifacts.js's own `if (window.ScribbleOutbox)` guard skips the
-  upload-resolve wiring cleanly when it's absent).
+  here, so the kit's reporting-outbox.js is not needed (artifacts.js's own
+  `if (window.LotekReportingOutbox)` guard skips the upload-resolve wiring cleanly when it's absent).
 #}
 <script src="{{ url_for('scribble.static', filename='artifacts.js') }}" defer></script>
 {% endblock %}

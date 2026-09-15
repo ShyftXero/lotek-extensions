@@ -27,7 +27,7 @@
   // artifact appears immediately without a full page reload.
   //
   // `pendingInfo`, when given, means this row represents an upload still in flight through the
-  // resilience outbox (scribble/static/outbox.js) rather than a real, persisted Artifact: there is no
+  // shared resilience outbox (lotek_kit/static/reporting-outbox.js) rather than a real, persisted Artifact: there is no
   // id/update_url/delete_url yet, the thumbnail (if any) is a local `object-URL` preview, and the row
   // carries a status line instead of the include-toggle. `reconcileResolved`/`markFailed` below mutate
   // this same DOM node in place once the outbox settles, so the caption input / include checkbox /
@@ -185,7 +185,7 @@
   function maxRealId(gallery) {
     // The greatest id currently rendered, as an ORDERABLE STRING. Ids are UUIDv7 since lotek#335, and
     // v7 is time-ordered, so lexicographic `>` still means "created later" — which is the only property
-    // `notBeforeId` needs (see outbox.js: a lost-success retry must only adopt a row NEWER than every
+    // `notBeforeId` needs (see reporting-outbox.js: a lost-success retry must only adopt a row NEWER than every
     // row present at enqueue).
     //
     // The previous version seeded `max = 0` and compared a string id against a number: JS coerces the
@@ -201,9 +201,9 @@
   }
 
   function enqueueGalleryUpload(tempId, meta) {
-    if (!window.ScribbleOutbox) return false;
+    if (!window.LotekReportingOutbox) return false;
     const filename = meta.file.name || "artifact";
-    window.ScribbleOutbox.enqueueUpload({
+    window.LotekReportingOutbox.enqueueUpload({
       tempId: tempId,
       url: meta.createUrl,
       blob: meta.file,
@@ -271,8 +271,8 @@
     }
   });
 
-  if (window.ScribbleOutbox) {
-    window.ScribbleOutbox.on("resolved", function (tempId, data) {
+  if (window.LotekReportingOutbox) {
+    window.LotekReportingOutbox.on("resolved", function (tempId, data) {
       const meta = pendingUploads[tempId];
       delete pendingUploads[tempId];
       const li = document.querySelector('.scribble-gallery-item[data-temp-id="' + tempId + '"]');
@@ -288,7 +288,7 @@
       reconcileResolved(li, data);
     });
 
-    window.ScribbleOutbox.on("failed", function (tempId, error) {
+    window.LotekReportingOutbox.on("failed", function (tempId, error) {
       // Keep pendingUploads[tempId] around -- the Retry button reuses the stashed File. A 4xx never
       // creates a server-side row (validation happens before insert in create_artifact), so there is
       // nothing to clean up here even if the li was already removed.

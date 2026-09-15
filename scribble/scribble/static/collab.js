@@ -27,9 +27,9 @@
  * ── THE HONEST LIMITATION ─────────────────────────────────────────────────────────────────────────
  * True per-keystroke collaborative editing (two people typing in the same paragraph at the same time
  * with live remote cursors) requires `y-prosemirror` bound to a real ProseMirror `EditorView` — that
- * needs `scribble/static/editor.js` itself to *be* a ProseMirror/TipTap instance. It currently isn't:
+ * needs the kit's reporting editor itself to *be* a ProseMirror/TipTap instance. It currently isn't:
  * PLAN.md §8/§16 always described it as a fallback `contenteditable` editor pending a small bundling
- * step that was never scoped, and `editor.js` isn't this workstream's file to change (see
+ * step that was never scoped, and the editor isn't this workstream's file to change (see
  * `plans/CONTRACTS.md` ownership map). So this bridge operates at **whole-document granularity**: each
  * local edit (after the debounce) replaces the entire shared document's content in one CRDT transaction,
  * and each remote change re-renders the entire block. Two people editing the *same* block concurrently
@@ -42,12 +42,12 @@
  *
  * ── WIRING (done by the driver/WS3, not this file — this file isn't loaded automatically) ──────────
  * `scribble/templates/scribble/_editor.html` (owned by WS3/WS4) mounts the editor via
- * `ScribbleEditor.mount(container, opts)`, which returns a handle `{getDoc, setDoc, save, destroy}`.
- * To turn on live collab for that block, load this file as an ES module *after* editor.js and call:
+ * `LotekReportingEditor.mount(container, opts)`, which returns a handle `{getDoc, setDoc, save, destroy}`.
+ * To turn on live collab for that block, load this file as an ES module *after* the editor and call:
  *
  *   <script type="module">
  *     import { attach, isSupported } from "{{ url_for('scribble.static', filename='collab.js') }}";
- *     var handle = ScribbleEditor.mount(containerEl, opts);
+ *     var handle = LotekReportingEditor.mount(containerEl, opts);
  *     if (isSupported()) {
  *       var collab = attach(containerEl, handle, {
  *         findingId: opts.findingId, block: opts.block, apiBase: opts.apiBase, user: opts.user,
@@ -215,8 +215,8 @@ var LOCAL_EDIT_DEBOUNCE_MS = 600;
 /**
  * Wire live CRDT co-editing onto an already-mounted editor.
  *
- * @param {HTMLElement} container the element passed to ScribbleEditor.mount()
- * @param {{getDoc:Function,setDoc:Function}} handle the handle ScribbleEditor.mount() returned
+ * @param {HTMLElement} container the element passed to LotekReportingEditor.mount()
+ * @param {{getDoc:Function,setDoc:Function}} handle the handle LotekReportingEditor.mount() returned
  * @param {{findingId:number,block:string,apiBase?:string,wsUrl?:string,user?:string,
  *          onPresenceChange?:Function}} opts
  * @returns {{destroy:Function, doc:Y.Doc, awareness:Awareness}}
@@ -393,7 +393,7 @@ export function isSupported() {
   return typeof WebSocket !== "undefined";
 }
 
-// Non-module-script fallback (mirrors how scribble/static/editor.js exposes window.ScribbleEditor),
+// Non-module-script fallback (mirrors how the kit editor exposes window.LotekReportingEditor),
 // in case the host page can't load this as `type="module"`.
 if (typeof window !== "undefined") {
   window.ScribbleCollab = {

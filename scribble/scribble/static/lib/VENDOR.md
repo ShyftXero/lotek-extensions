@@ -72,9 +72,9 @@ re-verify after touching either mapping.
 This vendors Yjs's **core CRDT + sync/awareness protocol** only. `y-prosemirror` and
 `@tiptap/extension-collaboration` (which would give real per-keystroke collaborative cursors inside the
 rich-text editor) were deliberately **not** vendored: both require a genuine ProseMirror `EditorView`
-instance to bind to, and `scribble/static/editor.js` — owned by WS4, out of scope for this workstream —
+instance to bind to, and the kit's `reporting-editor.js` — owned by WS4, out of scope for this workstream —
 is a hand-rolled `contenteditable` fallback (PLAN.md §16 flagged this as needing a small bundling step
 that was never scoped). `scribble/static/collab.js` bridges the gap honestly: it gets real CRDT sync,
 persistence, and presence, at whole-document-per-debounce granularity, not per-keystroke merge. See the
 docstring at the top of `collab.js` for the exact limitation and the upgrade path once a real
-TipTap/ProseMirror bundle replaces `editor.js`.
+TipTap/ProseMirror bundle replaces the kit's `reporting-editor.js`.

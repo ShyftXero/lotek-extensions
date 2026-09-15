@@ -1,7 +1,8 @@
 # Plan: feat/kit-shared-reporting-editor (+ follow-on phases)
 
 - **Branch (P1):** `feat/kit-shared-reporting-editor` (off `main`)
-- **Status:** 🟡 P1 in progress — plan landed, kit primitive being extracted
+- **Branch (P3):** `feat/scribble-adopt-kit-editor` (off `main`)
+- **Status:** 🟡 P1 + P2 SHIPPED · P3 in review (scribble adopts the primitive; NOT live-validated) · P4/P5 not started
 - **Directive (Eli, 2026-09-14):** screenshots via ctrl+v; images in blob storage; purge deletes images;
   an orphan sweep reaps bucket objects with no valid id; **and the rich reporting editor is a SHARED
   PRIMITIVE — one canonical copy, updated in one place, that extensions load and CONFIGURE / OVERRIDE
@@ -100,3 +101,72 @@ calls `ensure_registered` today).
   report, survives save; deleting the report deletes the blob (assert the key is gone).
 - **P5:** its own baseline — a planted orphan is reaped; a blob with a live row is NEVER deleted; a broken
   claims function (empty/wrong-typed) reaps nothing.
+
+---
+
+## P3 — scribble adopts the primitive (`feat/scribble-adopt-kit-editor`)
+
+**Purpose.** Make scribble load the ONE canonical editor from the kit and delete its own copy, so the
+"updated in one place" promise in the directive above is a fact about the tree rather than an intention.
+
+### Done
+
+- `_editor.html` mounts `window.LotekReportingEditor` from `lotek_kit.static` (`reporting-outbox.js`
+  before `reporting-editor.js`; the editor reads the outbox global at script-load time), links
+  `reporting-editor.css`, and drops its inline `<style>`. Container class is
+  `lotek-reporting-editor-wrap` (the kit CSS's selector); `data-scribble-editor` stays as the MOUNT
+  SELECTOR — that attribute is scribble's page contract, not the editor's. Embedded doc/vars script
+  classes renamed to what the kit's `readEmbeddedDoc`/`readVariableKeys` actually query
+  (`lotek-reporting-editor-doc-data` / `-vars-data`). `draft.js` and the `data-scribble-rephrase` block
+  are scribble's own and stay.
+- **Variable reminder** (the "P3 rider" above): a visible muted `Variables: {{…}} …` line beside the
+  editor whenever `scribble_variable_keys` is non-empty, so the operator sees them without opening the
+  picker.
+- `_gallery.html` loads `reporting-outbox.js`; `artifacts.js` calls `window.LotekReportingOutbox`.
+- `library_detail.html` loads `reporting-editor.js`. It uses only the exported `_internal` JSON<->DOM
+  walkers (never `mount()`, never image upload), so it deliberately does NOT also load the outbox — the
+  editor's two outbox touchpoints are both guarded (`uploadAndInsertImage` early-returns with a status
+  message; the resolved/failed wiring is `if (window.LotekReportingOutbox && …)`), and an unused outbox
+  would open an IndexedDB connection on a page that never uploads.
+- Deleted `scribble/static/editor.js` and `scribble/static/outbox.js`.
+- Drift guard `tests/test_kit_editor_adoption.py`: scribble ships no editor/outbox copy, no
+  `window.Scribble{Editor,Outbox}` reference survives, and every template that mounts the editor loads
+  the kit assets in the right order. This is the "consistency drift-guard" the Notes section asks for.
+
+### The test-harness shim (this is what wedged the first attempt)
+
+`url_for('lotek_kit.static', …)` only resolves in a host that registered the kit blueprint. Core does
+(P2, `/_kit`). Scribble's own suite boots a bare `Flask()`, so every template render raised
+`BuildError` and the suite died. `scribble.testing.register_kit_assets_shim(app)` registers a blueprint
+named `lotek_kit` serving the monorepo's real `kit/lotek_kit/static/` — the same bytes core serves, so
+the Playwright suites still exercise the actual editor rather than a 404. It is called from conftest's
+autouse fixture and from the two e2e `live_app` builders. Red-then-green transcript in the PR.
+
+**Assumption, recorded:** scribble now has a TEMPLATE-level dependency on a host that calls
+`lotek_kit.flask_assets.ensure_registered(app)`, but no package-level dependency on `lotek-kit`. That is
+deliberate — adding one would be this monorepo's first `[tool.uv.sources]` path dep and a lockfile
+change, for no runtime gain, since core already registers the blueprint. The cost is that a host which
+mounts scribble WITHOUT the kit gets a `BuildError` on the finding page. If a second consumer ever needs
+this, promote the shim to a real `ensure_registered` call in `scribble.register()`.
+
+### Remaining (NOT done on this branch — needs a session with core + a browser)
+
+- MOUNTED/live validation: boot core, load a finding page, confirm the editor mounts from `/_kit`,
+  paste a screenshot → `POST /scribble/api/artifacts` → inline image, autosave →
+  `/scribble/api/findings/<id>/blocks/<block>`. Firefox.
+- Re-pin scribble's tag in core's `pyproject.toml` `[tool.uv.sources]` + `uv lock` + run
+  `tests/test_scribble_*` mounted; open the core re-pin PR.
+
+### Notes / gotchas found while building
+
+- The kit editor's `apiBase` has **no default** (P1 dropped `/scribble/api`). Scribble's template always
+  emits `data-api-base`, so this is inert — but any new scribble surface that mounts the editor must
+  pass it or every autosave/upload POSTs to a relative `/artifacts`.
+- The kit outbox renamed its IndexedDB store (`scribble-outbox` → `lotek-reporting-outbox`) and its test
+  config global (`__scribbleOutboxConfig` → `__lotekReportingOutboxConfig`). Consequence for a live
+  deploy: uploads still queued in a browser's OLD database at upgrade time are orphaned — they are not
+  lost from disk, but nothing drains them. Judged acceptable (the window is one page-load wide and the
+  queue is normally empty); noting it rather than pretending it is nothing.
+- P1 shipped the `{{variable}}` chip as an **opt-in via `variableKeys`**, not as the separate plugin
+  registry this plan's P1 bullet described. Adoption needs no plugin registration as a result — the
+  template's `data`-embedded vars list is enough. The plan's earlier wording is the stale one.

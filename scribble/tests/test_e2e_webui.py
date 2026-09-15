@@ -28,7 +28,7 @@ from scribble.enums import ArtifactKind, ArtifactPlacement, OrderMode, Severity
 from scribble.models import Artifact, EngagementFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
-from scribble.testing import store_evidence, wire_mock_host
+from scribble.testing import register_kit_assets_shim, store_evidence, wire_mock_host
 
 try:
     from playwright.sync_api import sync_playwright
@@ -84,6 +84,9 @@ def live_app(tmp_path_factory):
     # thing that boots it supplies a mock host. Keeping a disk fallback "just for standalone" is what
     # put evidence in two places to begin with.
     wire_mock_host(cfg)
+    # Standalone has no core to register the kit's asset blueprint, and the templates load the
+    # shared reporting editor from it -- so this REAL browser would otherwise get a BuildError.
+    register_kit_assets_shim(flask_app)
 
     with cfg.session_factory() as session:
         seed_defaults(session)

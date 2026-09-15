@@ -7,12 +7,12 @@ gallery's upload form while using ``page.route(...)`` to make the artifact-uploa
 (503s, aborted connections, delayed responses) exactly the way a crashing server or a dropped network
 would.
 
-This guards ``scribble/static/outbox.js`` (the IndexedDB-backed upload outbox) end to end:
+This guards the kit's ``reporting-outbox.js`` (the IndexedDB-backed upload outbox) end to end:
 
 - a transient failure (5xx / network abort) is retried with backoff until it lands, not given up on;
 - a queued upload survives a page reload while the server is still unreachable (this is the whole
   reason the outbox uses IndexedDB and not an in-memory queue) and completes once it comes back;
-- the shared beforeunload guard (``ScribbleOutbox.isGuardArmed()`` / ``pendingCount()``) is armed for
+- the shared beforeunload guard (``LotekReportingOutbox.isGuardArmed()`` / ``pendingCount()``) is armed for
   as long as an upload is in flight and clears once it resolves.
 
 Every assertion is against real end-state (docs/RAILS.md §4): a persisted ``Artifact`` row queried
@@ -43,7 +43,7 @@ from scribble.enums import Severity
 from scribble.models import Artifact, EngagementFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
-from scribble.testing import wire_mock_host
+from scribble.testing import register_kit_assets_shim, wire_mock_host
 
 try:
     from playwright.sync_api import sync_playwright
@@ -98,6 +98,9 @@ def live_app(tmp_path_factory):
     # The demo shell supplies a mock host: scribble persists evidence only to an object store,
     # and this fixture boots a REAL server, so without one every upload in this module fails.
     wire_mock_host(cfg)
+    # Standalone has no core to register the kit's asset blueprint, and the templates load the
+    # shared reporting editor from it -- so this REAL browser would otherwise get a BuildError.
+    register_kit_assets_shim(flask_app)
 
     with cfg.session_factory() as session:
         seed_defaults(session)
@@ -376,7 +379,7 @@ def test_upload_survives_reload_while_offline_then_flushes(page, live_app, tmp_p
         assert _artifact_rows(live_app["session_factory"], finding_id, filename) == []
 
         # Now "reconnect": let subsequent attempts through. auto-flush-on-load already re-armed a
-        # retry loop for the durably-queued op the instant this reloaded page's outbox.js ran.
+        # retry loop for the durably-queued op the instant this reloaded page's reporting-outbox.js ran.
         blocked["value"] = False
 
         row = _wait_for_artifact_row(page, live_app["session_factory"], finding_id, filename, timeout=15.0)
@@ -398,7 +401,7 @@ def test_upload_survives_reload_while_offline_then_flushes(page, live_app, tmp_p
 
 def test_beforeunload_guard_armed_while_pending_and_cleared_after_flush(page, live_app, tmp_path):
     """beforeunload dialogs can't be asserted directly in a headless browser, so assert the
-    observable state ScribbleOutbox exposes instead: pendingCount()/isGuardArmed() must be truthy
+    observable state LotekReportingOutbox exposes instead: pendingCount()/isGuardArmed() must be truthy
     while an upload is in flight, and both must clear once it resolves."""
     filename = "guard-evidence.png"
     png_path = _write_png(tmp_path, filename)
@@ -427,8 +430,8 @@ def test_beforeunload_guard_armed_while_pending_and_cleared_after_flush(page, li
         _open_finding(page, live_app)
 
         # Before any upload: nothing pending, guard not armed.
-        assert page.evaluate("window.ScribbleOutbox.pendingCount()") == 0
-        assert page.evaluate("window.ScribbleOutbox.isGuardArmed()") is False
+        assert page.evaluate("window.LotekReportingOutbox.pendingCount()") == 0
+        assert page.evaluate("window.LotekReportingOutbox.isGuardArmed()") is False
 
         gallery = _gallery(page, live_app)
         _upload_via_gallery(page, gallery, png_path)
@@ -436,14 +439,14 @@ def test_beforeunload_guard_armed_while_pending_and_cleared_after_flush(page, li
         gallery.locator(".scribble-gallery-item.is-pending").first.wait_for(
             state="attached", timeout=5000
         )
-        assert page.evaluate("window.ScribbleOutbox.pendingCount()") > 0
-        assert page.evaluate("window.ScribbleOutbox.isGuardArmed()") is True
+        assert page.evaluate("window.LotekReportingOutbox.pendingCount()") > 0
+        assert page.evaluate("window.LotekReportingOutbox.isGuardArmed()") is True
 
         real_item = _real_item_by_filename(gallery, filename)
         real_item.first.wait_for(state="attached", timeout=10000)
 
-        assert page.evaluate("window.ScribbleOutbox.pendingCount()") == 0
-        assert page.evaluate("window.ScribbleOutbox.isGuardArmed()") is False
+        assert page.evaluate("window.LotekReportingOutbox.pendingCount()") == 0
+        assert page.evaluate("window.LotekReportingOutbox.isGuardArmed()") is False
         assert attempts["count"] >= 2  # the first attempt really did fail and get retried
     finally:
         page.unroute(_ARTIFACTS_ROUTE, handle)
@@ -482,7 +485,7 @@ def test_editor_inline_paste_transient_fail_then_persists_with_real_artifact_id(
     try:
         _open_finding(page, live_app)
 
-        editor = page.locator(f'.scribble-editor-wrap[data-block="{block}"]')
+        editor = page.locator(f'.lotek-reporting-editor-wrap[data-block="{block}"]')
         assert editor.count() == 1
         editor.locator(".fr-editor-surface").wait_for(state="attached", timeout=5000)
 
@@ -545,9 +548,9 @@ def test_outbox_gives_up_after_max_attempts_and_drains(page, live_app, tmp_path)
     cap the op is dropped, the row is marked failed, and -- critically -- ``pendingCount()`` returns to
     0 and the beforeunload guard clears (otherwise a doomed upload pins the guard on for the whole
     session and the op never leaves IndexedDB). A tiny capped config keeps the test fast."""
-    # Must be set before any page script loads so outbox.js reads it at module-eval time.
+    # Must be set before any page script loads so the outbox reads it at module-eval time.
     page.add_init_script(
-        "window.__scribbleOutboxConfig = { maxAttempts: 3, baseDelayMs: 20, maxDelayMs: 40 };"
+        "window.__lotekReportingOutboxConfig = { maxAttempts: 3, baseDelayMs: 20, maxDelayMs: 40 };"
     )
     finding_id = live_app["finding_id"]
     filename = "doomed-evidence.png"
@@ -573,8 +576,8 @@ def test_outbox_gives_up_after_max_attempts_and_drains(page, live_app, tmp_path)
             state="attached", timeout=10000
         )
         # The whole point of the cap: the queue drains and the guard clears.
-        assert _poll(page, lambda: page.evaluate("window.ScribbleOutbox.pendingCount()") == 0)
-        assert page.evaluate("window.ScribbleOutbox.isGuardArmed()") is False
+        assert _poll(page, lambda: page.evaluate("window.LotekReportingOutbox.pendingCount()") == 0)
+        assert page.evaluate("window.LotekReportingOutbox.isGuardArmed()") is False
         assert attempts["count"] == 3  # exactly the cap, then it gave up (not unbounded)
 
         # And nothing was persisted.

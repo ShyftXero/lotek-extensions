@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from flask import jsonify, request
 
 # How long a heartbeat keeps a user "active" without a follow-up ping. Clients should heartbeat at
-# roughly half this interval (see scribble/static/editor.js PRESENCE_HEARTBEAT_MS).
+# roughly half this interval (see the kit's reporting-editor.js PRESENCE_HEARTBEAT_MS).
 DEFAULT_TTL_SECONDS = 20.0
 
 

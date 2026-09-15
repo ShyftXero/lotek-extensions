@@ -2,7 +2,7 @@
 
 Canonical storage is ProseMirror JSON, one doc per named block, in ``EngagementFinding.content_json``
 (a dict keyed by block name — see ``scribble/content/schema.py``). This module adds the block
-read/write endpoints on top of that: the client (``scribble/static/editor.js``) debounces edits and
+read/write endpoints on top of that: the client (the kit's ``reporting-editor.js``) debounces edits and
 PUTs/POSTs the current doc; the server validates it's a ProseMirror ``doc``, stores it, and re-derives +
 caches sanitized HTML via ``scribble.content.render_html.render_block`` into ``content_html`` so list
 views/previews never need to walk JSON themselves.

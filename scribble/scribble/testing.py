@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import pathlib
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -190,3 +191,52 @@ def read_evidence(app, reference: str) -> bytes | None:
 
     with app.app_context():
         return artifact_bytes(reference)
+
+
+#: Where the kit's browser assets live in this monorepo, relative to `scribble/scribble/testing.py`.
+#: A checkout is the only place `register_kit_assets_shim` is ever used, so a repo-relative path is
+#: honest here in a way a packaged-resource lookup would not be — scribble does not depend on
+#: `lotek-kit` as a package (see below).
+_KIT_STATIC_DIR = pathlib.Path(__file__).resolve().parents[2] / "kit" / "lotek_kit" / "static"
+
+
+def register_kit_assets_shim(app) -> None:
+    """Serve the kit's browser assets on a standalone Scribble app. TEST/DEMO SHELL ONLY.
+
+    Scribble's templates reference the shared reporting editor as
+    ``url_for("lotek_kit.static", filename="reporting-editor.js")``. In production that endpoint is
+    real: core calls ``lotek_kit.flask_assets.ensure_registered(app)`` at boot and serves the assets at
+    ``/_kit`` (lotek#750). Standalone Scribble has no core, so without this the finding page raises
+    ``BuildError: Could not build url for endpoint 'lotek_kit.static'`` before it renders a byte.
+
+    This registers a blueprint under the SAME fixed name (``lotek_kit`` — the endpoint name is the
+    template-level contract) serving the REAL files out of the monorepo's ``kit/`` directory, not
+    stand-ins. That matters for the Playwright suites: a shim that only made ``url_for`` resolve, and
+    404'd the script, would let a broken asset reference pass as green.
+
+    Not production code, and not a substitute for the host doing it: scribble declares no dependency on
+    ``lotek-kit``, so a host that mounts scribble WITHOUT registering the kit blueprint gets that
+    ``BuildError``. Core registers it; that is the contract.
+    """
+    from flask import Blueprint
+
+    # Re-registering raises in Flask, and there is no unregister -- but more importantly a
+    # module-scoped app that has already served a request refuses ANY blueprint registration, and the
+    # per-test autouse fixture calls this again for every test in that module. Returning early is what
+    # makes that safe.
+    if "lotek_kit" in app.blueprints:
+        return
+    # Refuse rather than serve 404s. A Blueprint with a missing static_folder registers happily and
+    # `url_for` still resolves, so the page would render, silently load nothing, and show a blank
+    # editor -- the failure mode that looks like success. This only happens outside a monorepo
+    # checkout (an installed wheel), which is exactly when the caller should be told instead.
+    if not _KIT_STATIC_DIR.is_dir():
+        raise RuntimeError(
+            f"kit assets not found at {_KIT_STATIC_DIR}. register_kit_assets_shim() is the "
+            "monorepo-checkout test/demo shell; a real host must call "
+            "lotek_kit.flask_assets.ensure_registered(app) instead."
+        )
+    app.register_blueprint(
+        Blueprint("lotek_kit", __name__, static_folder=str(_KIT_STATIC_DIR), static_url_path=""),
+        url_prefix="/_kit",
+    )
