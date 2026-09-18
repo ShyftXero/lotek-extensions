@@ -21,7 +21,7 @@ dev = [
     "ruff>=0.6.0",
     "pyrefly>=0.16.0",
 ]
-pdf = ["weasyprint>=60.0"]
+pdf = ["weasyprint>=70.0"]
 
 # Discovery signal: lotek enumerates installed extensions via this entry-point group
 # (importlib.metadata.entry_points(group="lotek.extensions")). The value is the entrypoint MODULE that
