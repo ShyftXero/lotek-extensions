@@ -469,7 +469,12 @@
     if (window.LotekReportingOutbox) window.LotekReportingOutbox.setExternalPending(pendingKey(state), false);
   }
 
+  // A host that wires its OWN persistence (a form-submit adopter such as bugreport) mounts WITHOUT a
+  // findingId; the per-block autosave/fetch/presence loop targets ".../findings/<id>/blocks/<block>",
+  // which is meaningless there, so all four short-circuit and the editor becomes a plain field whose
+  // value the host reads with getDoc(). scribble always supplies a findingId, so it is unaffected.
   function scheduleSave(state) {
+    if (state.findingId == null) return;
     state.dirty = true;
     armPendingGuard(state);
     setStatus(state, "editing…");
@@ -480,6 +485,7 @@
   }
 
   function saveNow(state) {
+    if (state.findingId == null) return;
     if (!state.dirty) return;
     var doc = domToDoc(state.editableEl);
     state.dirty = false;
@@ -512,6 +518,7 @@
   }
 
   function fetchLatest(state) {
+    if (state.findingId == null) return;
     fetch(state.apiBase + "/findings/" + state.findingId + "/blocks/" + encodeURIComponent(state.block), {
       credentials: "same-origin",
     })
@@ -531,6 +538,7 @@
   }
 
   function startPresence(state) {
+    if (state.findingId == null) return;
     var url = state.apiBase + "/findings/" + state.findingId + "/blocks/" + encodeURIComponent(state.block) + "/presence";
     function beat() {
       fetch(url, {
