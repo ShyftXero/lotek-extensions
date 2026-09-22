@@ -135,6 +135,24 @@ def blobs():
     return FakeBlobs()
 
 
+def _register_kit_assets_shim(application) -> None:
+    """Make ``url_for('lotek_kit.static', …)`` resolve in these bare test apps. In production core
+    registers the kit's asset blueprint at /_kit; here we point one at the kit's on-disk static dir so
+    the editor markup in list.html renders (mirrors scribble.testing.register_kit_assets_shim — bugreport
+    can't import a sibling extension, so it carries its own copy)."""
+    import pathlib
+
+    from flask import Blueprint
+
+    if "lotek_kit" in application.blueprints:
+        return
+    static_dir = pathlib.Path(__file__).resolve().parents[2] / "kit" / "lotek_kit" / "static"
+    application.register_blueprint(
+        Blueprint("lotek_kit", __name__, static_folder=str(static_dir), static_url_path=""),
+        url_prefix="/_kit",
+    )
+
+
 @pytest.fixture
 def app(tmp_path, hooks, blobs):
     application = Flask(__name__)
@@ -151,6 +169,7 @@ def app(tmp_path, hooks, blobs):
     # Core hands each mounted extension a handle already bound to its own prefix.
     cfg.extras["blobs"] = blobs
     _wire_pat_hooks(cfg, hooks)
+    _register_kit_assets_shim(application)
     return application
 
 
@@ -163,6 +182,7 @@ def standalone_app(tmp_path):
     bugreport.register(
         application, engine, instance_path=str(tmp_path), base_template="bugreport/base.html"
     )
+    _register_kit_assets_shim(application)
     return application
 
 

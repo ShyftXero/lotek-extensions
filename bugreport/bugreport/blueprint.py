@@ -29,6 +29,7 @@ from bugreport.deps import (
 )
 from bugreport.downloads import send_attachment
 from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
+from bugreport.render_html import body_to_doc, render_body
 from bugreport.service import (
     LIST_LIMIT,
     Denied,
@@ -52,6 +53,21 @@ _log = logging.getLogger(__name__)
 bp = Blueprint("bugreport", __name__, template_folder="templates")
 
 
+def _editor_api_base(report_id) -> str:
+    """The apiBase the kit editor mounts with for a report: ``/<mount>/<report_id>/api``. Derived from
+    the artifact route so it tracks the mount prefix instead of hardcoding it."""
+    return url_for("bugreport.upload_artifact", report_id=report_id).rsplit("/artifacts", 1)[0]
+
+
+def _render_report_body(report):
+    """A report's stored body -> sanitized HTML, with inline-image artifacts resolved to THIS report's
+    own raw-artifact URLs (visibility-gated, same-origin)."""
+    return render_body(
+        report.body,
+        artifact_url=lambda aid: url_for("bugreport.artifact_raw", report_id=report.id, attachment_id=aid),
+    )
+
+
 @bp.context_processor
 def _inject_base():
     cfg = get_config()
@@ -64,6 +80,10 @@ def _inject_base():
         "bugreport_max_title": MAX_TITLE,
         "bugreport_max_body": MAX_BODY,
         "bugreport_list_limit": LIST_LIMIT,
+        # Kit reporting-editor wiring for the templates.
+        "bugreport_render_body": _render_report_body,
+        "bugreport_body_doc": body_to_doc,
+        "bugreport_editor_api_base": _editor_api_base,
     }
 
 
