@@ -69,8 +69,16 @@
     {{ csrf() }}
     <input type="text" name="title" placeholder="What is broken, in one line" required
            maxlength="{{ bugreport_max_title }}">
-    <textarea name="body" rows="5" maxlength="{{ bugreport_max_body }}"
+    <div class="lotek-reporting-editor-wrap br-editor" data-br-editor data-api-base="">
+      <script type="application/json" class="lotek-reporting-editor-doc-data">{"type":"doc","content":[]}</script>
+    </div>
+    {#- Progressive enhancement: this textarea IS the body field. With JS the editor mounts and hides
+        it, writing its ProseMirror-JSON here on submit; with JS off it stays a working plain-text box,
+        so a no-JS client can still file (and never submits an empty body). #}
+    <textarea name="body" data-br-body class="br-fallback" rows="5" maxlength="{{ bugreport_max_body }}"
               placeholder="What you did, what happened, what you expected."></textarea>
+    <p class="br-muted" style="font-size:12px;margin:4px 0 0">Rich text supported. To paste an image
+      into the body, file the report first, then edit it (images attach to a saved report).</p>
     <button type="submit">File it</button>
   </form>
   {% else %}
@@ -82,7 +90,7 @@
     <div class="br-card{% if r.status.value != 'open' %} br-acted{% endif %}" data-report-id="{{ r.id }}">
       <div>{{ status_pill(r.status.value) }} <strong>{{ r.title }}</strong>
         <span class="br-muted">— {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span></div>
-      {% if r.body %}<pre>{{ r.body }}</pre>{% endif %}
+      {% if r.body %}<div class="br-body">{{ bugreport_render_body(r) }}</div>{% endif %}
       {% if r.status.value != 'open' or r.admin_note %}
         {#- The feedback loop #112 asks for: what an admin did to YOUR report, and what they said. -#}
         <p class="br-note" data-testid="admin-feedback">
@@ -99,7 +107,14 @@
           {{ csrf() }}
           <input type="text" name="title" value="{{ r.title }}" required
                  maxlength="{{ bugreport_max_title }}">
-          <textarea name="body" rows="4" maxlength="{{ bugreport_max_body }}">{{ r.body }}</textarea>
+          <div class="lotek-reporting-editor-wrap br-editor" data-br-editor
+               data-api-base="{{ bugreport_editor_api_base(r.id) }}">
+            <script type="application/json" class="lotek-reporting-editor-doc-data">{{ bugreport_body_doc(r.body) | tojson }}</script>
+          </div>
+          {#- No-JS fallback + the submitted field (see the create form). Prefilled with the raw stored
+              body so a no-JS edit round-trips it unchanged. #}
+          <textarea name="body" data-br-body class="br-fallback" rows="4"
+                    maxlength="{{ bugreport_max_body }}">{{ r.body }}</textarea>
           <button type="submit">Save</button>
         </form>
         {% endif %}
@@ -169,7 +184,7 @@
       <div>{{ status_pill(r.status.value) }} <strong>{{ r.title }}</strong>
         <span class="br-muted">— {{ r.reporter_name or 'unknown' }},
           {{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</span></div>
-      {% if r.body %}<pre>{{ r.body }}</pre>{% endif %}
+      {% if r.body %}<div class="br-body">{{ bugreport_render_body(r) }}</div>{% endif %}
       {% if bugreport_can_write %}
       <form method="post" action="{{ url_for('bugreport.respond', report_id=r.id) }}"
             style="margin-top:10px">
@@ -194,6 +209,40 @@
   <p class="br-muted br-trunc">Showing the most recent {{ bugreport_list_limit }}. Older reports are
     available through the machine API.</p>
   {% endif %}
+  {% endif %}
+
+  {% if bugreport_can_write %}
+  {#- Kit reporting editor: mount every create/edit body field and serialize its ProseMirror-JSON into
+      the form's hidden `body` on submit. Assets come from the host's /_kit (core registers lotek_kit;
+      bugreport's own tests register a shim). A body field mounts WITHOUT a finding-id, so the editor's
+      per-finding autosave loop stays off — the form submit is the only persistence. #}
+  <style>
+    .br-editor { margin: 6px 0; }
+    .br-body img { max-width: 100%; height: auto; }
+    .br-body pre { white-space: pre-wrap; word-break: break-word; }
+    .br-body blockquote { border-left: 3px solid var(--line, #ccc); margin: 6px 0; padding-left: 10px; }
+  </style>
+  <link rel="stylesheet" href="{{ url_for('lotek_kit.static', filename='reporting-editor.css') }}">
+  <script src="{{ url_for('lotek_kit.static', filename='reporting-outbox.js') }}"></script>
+  <script src="{{ url_for('lotek_kit.static', filename='reporting-editor.js') }}"></script>
+  <script>
+    (function () {
+      document.querySelectorAll("[data-br-editor]").forEach(function (el) {
+        if (el.dataset.brMounted) return;
+        el.dataset.brMounted = "1";
+        var handle = window.LotekReportingEditor.mount(el);
+        var form = el.closest("form");
+        if (!form) return;
+        var hidden = form.querySelector("[data-br-body]");
+        if (hidden) {
+          hidden.style.display = "none";   // JS present: the rich editor is the input; hide the fallback
+          form.addEventListener("submit", function () {
+            hidden.value = JSON.stringify(handle.getDoc());
+          });
+        }
+      });
+    })();
+  </script>
   {% endif %}
 </div>
 {% endblock %}

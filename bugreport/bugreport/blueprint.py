@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from flask import Blueprint, abort, redirect, render_template, request, url_for
+from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
 
 from bugreport._version import __version__
 from bugreport.deps import (
@@ -29,6 +29,7 @@ from bugreport.deps import (
 )
 from bugreport.downloads import send_attachment
 from bugreport.models import MAX_BODY, MAX_TITLE, ReportStatus
+from bugreport.render_html import body_to_doc, render_body
 from bugreport.service import (
     LIST_LIMIT,
     Denied,
@@ -52,6 +53,21 @@ _log = logging.getLogger(__name__)
 bp = Blueprint("bugreport", __name__, template_folder="templates")
 
 
+def _editor_api_base(report_id) -> str:
+    """The apiBase the kit editor mounts with for a report: ``/<mount>/<report_id>/api``. Derived from
+    the artifact route so it tracks the mount prefix instead of hardcoding it."""
+    return url_for("bugreport.upload_artifact", report_id=report_id).rsplit("/artifacts", 1)[0]
+
+
+def _render_report_body(report):
+    """A report's stored body -> sanitized HTML, with inline-image artifacts resolved to THIS report's
+    own raw-artifact URLs (visibility-gated, same-origin)."""
+    return render_body(
+        report.body,
+        artifact_url=lambda aid: url_for("bugreport.artifact_raw", report_id=report.id, attachment_id=aid),
+    )
+
+
 @bp.context_processor
 def _inject_base():
     cfg = get_config()
@@ -64,6 +80,10 @@ def _inject_base():
         "bugreport_max_title": MAX_TITLE,
         "bugreport_max_body": MAX_BODY,
         "bugreport_list_limit": LIST_LIMIT,
+        # Kit reporting-editor wiring for the templates.
+        "bugreport_render_body": _render_report_body,
+        "bugreport_body_doc": body_to_doc,
+        "bugreport_editor_api_base": _editor_api_base,
     }
 
 
@@ -253,6 +273,67 @@ def download_attachment(attachment_id: uuid.UUID):
         except KeyError:
             # The row survived its bytes. Not a 500: nothing is wrong with the request.
             _log.warning("bugreport: attachment %s has no stored bytes", attachment_id)
+            abort(404)
+
+
+# --------------------------------------------------------------------------- editor inline artifacts
+#
+# The kit reporting editor pastes/drops images to `apiBase + "/artifacts"` and renders them from
+# `apiBase + "/artifacts/<id>/raw"`. bugreport mounts the editor with apiBase = "/<report_id>/api", so
+# these two routes ARE the editor's artifact sink + source — thin wrappers over the SAME hardened
+# attachment store (`service.attach` / `send_attachment`) the manual upload uses, differing only in
+# that the POST returns JSON the editor consumes instead of redirecting. An inline image therefore IS a
+# normal report attachment: same 25 MiB cap, same magic-byte sniff, same reporter+admin visibility.
+# Mounted in lotek the host wraps `fetch` to attach X-CSRFToken, so the editor's POST clears CSRF.
+
+
+@bp.post("/<uuid:report_id>/api/artifacts")
+def upload_artifact(report_id: uuid.UUID):
+    """The editor's inline-image sink: attach the pasted file to the report and return {id, url}."""
+    _require_write()
+    blobs = _blobs_or_503()
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        abort(400, "no file")
+    with get_config().session_factory() as db:
+        try:
+            row = attach(
+                db, blobs, report_id,
+                actor_id=current_actor_id(), is_admin=current_actor_is_admin(),
+                filename=upload.filename, claimed_type=upload.mimetype, stream=upload.stream,
+                max_bytes=max_attachment_bytes(),
+            )
+        except Denied as exc:
+            abort(403, str(exc))
+        except Invalid as exc:
+            abort(400, str(exc))
+        except ValueError:
+            _log.warning("bugreport: unexpected ValueError on %s", request.path, exc_info=True)
+            abort(400, "invalid")
+        artifact_id = str(row.id)
+    return jsonify({
+        "id": artifact_id,
+        "url": url_for("bugreport.artifact_raw", report_id=report_id, attachment_id=artifact_id),
+    })
+
+
+@bp.get("/<uuid:report_id>/api/artifacts/<uuid:attachment_id>/raw")
+def artifact_raw(report_id: uuid.UUID, attachment_id: uuid.UUID):
+    """Serve one inline-image artifact for the editor / read view. Same identity gate as the download
+    route (visibility inherited from the report); loaded via <img>, which renders it regardless of the
+    attachment Content-Disposition. The report_id in the path must own the attachment (a 404 otherwise —
+    no existence oracle, INV-TENANCY-01)."""
+    blobs = _blobs_or_503()
+    with get_config().session_factory() as db:
+        row = load_attachment_visible(
+            db, attachment_id, actor_id=current_actor_id(), is_admin=current_actor_is_admin()
+        )
+        if row is None or row.report_id != report_id:
+            abort(404)
+        try:
+            return send_attachment(row, blobs)
+        except KeyError:
+            _log.warning("bugreport: artifact %s has no stored bytes", attachment_id)
             abort(404)
 
 
