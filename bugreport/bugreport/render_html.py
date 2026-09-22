@@ -74,7 +74,9 @@ def _render_inline(nodes: list[dict] | None, out: list[str], artifact_url: Calla
             # artifact URLs) — never an arbitrary external URL (tracking pixel / SSRF-adjacent).
             attrs = node.get("attrs") or {}
             src = str(attrs.get("src", ""))
-            if src.startswith("/"):
+            # A same-origin absolute path only. `//host/x` also starts with "/" but is a
+            # PROTOCOL-RELATIVE url that loads from `host` — external, so it is rejected here.
+            if src.startswith("/") and not src.startswith("//"):
                 out.append(f'<img src="{_esc(src)}" alt="{_esc(attrs.get("alt", ""))}">')
         # any other inline node type -> dropped (never trusted verbatim)
 

@@ -61,11 +61,12 @@ def test_images_only_from_artifacts_or_same_origin():
     doc = {"type": "doc", "content": [
         {"type": "paragraph", "content": [{"type": "inlineImage", "attrs": {"artifactId": "abc", "alt": "shot"}}]},
         {"type": "paragraph", "content": [{"type": "image", "attrs": {"src": "https://evil.example/track.gif"}}]},
+        {"type": "paragraph", "content": [{"type": "image", "attrs": {"src": "//evil.example/track.gif"}}]},
         {"type": "paragraph", "content": [{"type": "image", "attrs": {"src": "/bugreport/api/artifacts/z/raw"}}]},
     ]}
     html = str(render_body(doc, artifact_url=_art))
     assert 'src="/bugreport/api/artifacts/abc/raw"' in html  # inline image -> our artifact url
-    assert "evil.example" not in html                        # external image dropped
+    assert "evil.example" not in html                        # external AND protocol-relative dropped
     assert 'src="/bugreport/api/artifacts/z/raw"' in html    # same-origin relative image kept
 
 
