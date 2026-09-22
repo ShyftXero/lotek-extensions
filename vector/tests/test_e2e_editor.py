@@ -70,6 +70,22 @@ def test_example_renders_and_advances(server, browser):
     assert page.locator(".ved-preview svg.map path.edge").count() > 0
 
 
+def test_divider_resizes_the_split(server, browser):
+    page = browser.new_page()
+    page.goto(f"{server}/vector/new")
+    page.wait_for_selector(".ved-divider")
+    left = page.locator(".ved-left")
+    before = left.bounding_box()["width"]
+    box = page.locator(".ved-divider").bounding_box()
+    # drag the divider ~180px to the right → the editor column widens
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 180, box["y"] + box["height"] / 2, steps=6)
+    page.mouse.up()
+    after = left.bounding_box()["width"]
+    assert after > before + 50  # the split actually moved
+
+
 def test_author_new_diagram_and_export(server, browser, tmp_path):
     page = browser.new_page()
     page.goto(f"{server}/vector/new")

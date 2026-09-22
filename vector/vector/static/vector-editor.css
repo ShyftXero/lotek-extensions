@@ -6,9 +6,15 @@
  * buttons, panels, toasts) is themed — the diagram PREVIEW keeps its own dark semantic palette
  * (exploit-red / C2-orange / tunnel-cyan / OT-amber), which lives in vector-viewer.css and is meaningful,
  * so the preview pane (.ved-right) stays dark like a map surface regardless of host theme. */
-.ved{display:grid;grid-template-columns:minmax(360px,44%) 1fr;gap:0;flex:1;min-height:0;height:100%}
+/* 3-track grid: [editor] [draggable divider] [preview]. The editor width is a CSS var the divider
+   drag writes (persisted to localStorage); default 34% so the diagram preview gets ~two thirds. */
+.ved{display:grid;grid-template-columns:minmax(300px,var(--ved-split,34%)) 6px minmax(0,1fr);gap:0;flex:1;min-height:0;height:100%}
 .ved-left{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line,#1c2a35);background:var(--card,#0c141b)}
 .ved-right{display:flex;flex-direction:column;min-height:0;background:#0a0f14}
+/* divider between the editor and preview — drag to resize, double-click to reset */
+.ved-divider{cursor:col-resize;background:var(--line,#1c2a35);position:relative;z-index:2}
+.ved-divider::before{content:"";position:absolute;top:0;bottom:0;left:-4px;right:-4px}
+.ved-divider:hover,.ved-divider.dragging{background:var(--accent,#37c9d6)}
 
 .ved-tabs{display:flex;gap:2px;padding:8px 10px 0;border-bottom:1px solid var(--line,#1c2a35);flex-wrap:wrap}
 .ved-tab{font:700 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;
@@ -23,7 +29,7 @@
 .ved-scrub-lbl span{color:#dfe9f0}
 .ved-scrub{flex:1;accent-color:#ff4d5e}
 .ved-preview-note{font:11px/1 ui-monospace,monospace;color:#4a5b69}
-.ved-preview{flex:1;min-height:0;overflow:hidden}
+.ved-preview{flex:1;min-height:0;overflow:auto}
 .ved-preview .vap-root{height:100%;overflow:auto}
 
 /* appbar controls (rendered into base appbar_actions — inside the host appbar, so they follow its theme) */
@@ -76,4 +82,4 @@
   padding:10px 16px;border-radius:8px;font:13px system-ui;z-index:50;box-shadow:0 8px 30px var(--shadow,rgba(0,0,0,.5));opacity:0;transition:opacity .2s}
 .ved-toast.show{opacity:1}
 .ved-toast.err{border-color:var(--danger,#8f2a34);color:var(--danger,#ffb4bb)}
-@media (max-width:900px){.ved{grid-template-columns:1fr;grid-template-rows:1fr 1fr}}
+@media (max-width:900px){.ved{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.ved-divider{display:none}}

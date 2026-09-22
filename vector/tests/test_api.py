@@ -33,6 +33,15 @@ def test_create_get_update_delete_as_owner(app, client):
     assert client.get(f"/vector/api/diagrams/{did}").status_code == 404
 
 
+def test_editor_ships_resizable_divider(app, client):
+    # The editor exposes a draggable divider (writing a persisted --ved-split CSS var) so the operator
+    # can widen the preview pane to see a whole attack path — pin that the markup ships.
+    login(app, OP_A)
+    html = client.get("/vector/new").get_data(as_text=True)
+    assert 'class="ved-divider"' in html
+    assert "data-divider" in html
+
+
 def test_idor_other_user_cannot_see_or_modify(app, client):
     login(app, OP_A)
     did = _create(client, "A-private").get_json()["id"]
