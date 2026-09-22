@@ -35,6 +35,16 @@ def test_a_prosemirror_json_body_renders_formatted(client):
     assert "<h2>Big</h2>" in html                       # the JSON body rendered as a heading
 
 
+def test_no_js_fallback_textarea_is_the_body_field(client):
+    # Progressive enhancement: the body field is a real <textarea name="body"> that JS hides + serializes
+    # into; with JS off it stays a working plain-text box, so a no-JS client can still file and an edit
+    # never submits an empty body. The edit form prefills it with the stored body so it round-trips.
+    client.post("/bugreport/", data={"title": "t", "body": "keep me"})
+    html = client.get("/bugreport/").get_data(as_text=True)
+    assert '<textarea name="body" data-br-body' in html
+    assert ">keep me</textarea>" in html
+
+
 def test_editor_body_field_has_no_finding_id_so_autosave_stays_off(client):
     # bugreport is a form-submit host: the editor mounts with no data-finding-id, so the kit's per-block
     # autosave loop short-circuits (the finding-id gate) and the form submit is the only persistence.

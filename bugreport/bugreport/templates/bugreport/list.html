@@ -72,7 +72,11 @@
     <div class="lotek-reporting-editor-wrap br-editor" data-br-editor data-api-base="">
       <script type="application/json" class="lotek-reporting-editor-doc-data">{"type":"doc","content":[]}</script>
     </div>
-    <input type="hidden" name="body" data-br-body>
+    {#- Progressive enhancement: this textarea IS the body field. With JS the editor mounts and hides
+        it, writing its ProseMirror-JSON here on submit; with JS off it stays a working plain-text box,
+        so a no-JS client can still file (and never submits an empty body). #}
+    <textarea name="body" data-br-body class="br-fallback" rows="5" maxlength="{{ bugreport_max_body }}"
+              placeholder="What you did, what happened, what you expected."></textarea>
     <p class="br-muted" style="font-size:12px;margin:4px 0 0">Rich text supported. To paste an image
       into the body, file the report first, then edit it (images attach to a saved report).</p>
     <button type="submit">File it</button>
@@ -107,7 +111,10 @@
                data-api-base="{{ bugreport_editor_api_base(r.id) }}">
             <script type="application/json" class="lotek-reporting-editor-doc-data">{{ bugreport_body_doc(r.body) | tojson }}</script>
           </div>
-          <input type="hidden" name="body" data-br-body>
+          {#- No-JS fallback + the submitted field (see the create form). Prefilled with the raw stored
+              body so a no-JS edit round-trips it unchanged. #}
+          <textarea name="body" data-br-body class="br-fallback" rows="4"
+                    maxlength="{{ bugreport_max_body }}">{{ r.body }}</textarea>
           <button type="submit">Save</button>
         </form>
         {% endif %}
@@ -228,6 +235,7 @@
         if (!form) return;
         var hidden = form.querySelector("[data-br-body]");
         if (hidden) {
+          hidden.style.display = "none";   // JS present: the rich editor is the input; hide the fallback
           form.addEventListener("submit", function () {
             hidden.value = JSON.stringify(handle.getDoc());
           });
