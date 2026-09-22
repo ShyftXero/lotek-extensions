@@ -340,6 +340,43 @@
   });
   scrub.addEventListener("input", function () { var p = +scrub.value; phaseNum.textContent = p; viewer.goto(p); });
 
+  // ---- resizable split ----------------------------------------------------
+  // A draggable divider sets the editor-column width (--ved-split) so the operator can widen the
+  // preview to see a whole attack path. The choice persists in localStorage; double-click resets.
+  (function () {
+    var divider = rootEl.querySelector("[data-divider]");
+    if (!divider) return;
+    var KEY = "vector.ved-split", dragging = false, saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) { /* private mode */ }
+    if (saved) rootEl.style.setProperty("--ved-split", saved);
+    function onMove(ev) {
+      var r = rootEl.getBoundingClientRect();
+      var pct = ((ev.clientX - r.left) / r.width) * 100;
+      pct = Math.max(20, Math.min(70, pct));
+      rootEl.style.setProperty("--ved-split", pct.toFixed(1) + "%");
+    }
+    function stop() {
+      if (!dragging) return;
+      dragging = false;
+      divider.classList.remove("dragging");
+      document.body.style.cursor = ""; document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", stop);
+      try { localStorage.setItem(KEY, rootEl.style.getPropertyValue("--ved-split") || ""); } catch (e) { /* ignore */ }
+    }
+    divider.addEventListener("mousedown", function (ev) {
+      ev.preventDefault(); dragging = true;
+      divider.classList.add("dragging");
+      document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", stop);
+    });
+    divider.addEventListener("dblclick", function () {
+      rootEl.style.removeProperty("--ved-split");
+      try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
+    });
+  })();
+
   // ---- toolbar ------------------------------------------------------------
   var dirty = false;
   function headers(json) { var h = { "X-CSRFToken": token }; if (json) h["Content-Type"] = "application/json"; return h; }
