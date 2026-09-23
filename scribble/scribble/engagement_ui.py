@@ -327,27 +327,49 @@ def register(api_bp, bp) -> None:
                 # working engagement whose evidence has nowhere to go.
                 # Not gated on `host_is_mounted()`: storage and authorization are separate host
                 # capabilities, and evidence needs its anchor wherever an object store exists.
-                try:
-                    core_engagement_id = host.create_engagement(client_id, name)
-                except PermissionError:
-                    return (
-                        render_template(
-                            "scribble/engagement_new.html",
-                            clients=_viewable_clients(db),
-                            error="Creating an engagement requires manager or admin. Ask one to "
-                                  "create it, or create it in lotek first.",
-                        ),
-                        403,
-                    )
-                except ValueError:
-                    return (
-                        render_template(
-                            "scribble/engagement_new.html",
-                            clients=_viewable_clients(db),
-                            error="An engagement with this name already exists for this client.",
-                        ),
-                        409,
-                    )
+                # Reverse-link create (lotek#632 pair): the `by-core` resolver sends an operator here
+                # with the core engagement id it found NO board for. Point the new board at that
+                # existing core engagement instead of spawning a second one. Creating a core
+                # engagement is manager-only; pointing at one you already operate is not -- gate on
+                # `host.can_operate_on` (the exact case its docstring names), which also fails closed
+                # so a forged id can't attach a board to an engagement you don't operate.
+                supplied = (request.form.get("core_engagement_id") or "").strip()
+                if supplied:
+                    try:
+                        core_engagement_id = uuid.UUID(supplied)
+                    except ValueError:
+                        core_engagement_id = None
+                    if core_engagement_id is None or not host.can_operate_on(core_engagement_id):
+                        return (
+                            render_template(
+                                "scribble/engagement_new.html",
+                                clients=_viewable_clients(db),
+                                error="You don't hold an operator role on that engagement.",
+                            ),
+                            403,
+                        )
+                else:
+                    try:
+                        core_engagement_id = host.create_engagement(client_id, name)
+                    except PermissionError:
+                        return (
+                            render_template(
+                                "scribble/engagement_new.html",
+                                clients=_viewable_clients(db),
+                                error="Creating an engagement requires manager or admin. Ask one to "
+                                      "create it, or create it in lotek first.",
+                            ),
+                            403,
+                        )
+                    except ValueError:
+                        return (
+                            render_template(
+                                "scribble/engagement_new.html",
+                                clients=_viewable_clients(db),
+                                error="An engagement with this name already exists for this client.",
+                            ),
+                            409,
+                        )
 
                 engagement = Engagement(
                     name=name,
@@ -364,9 +386,41 @@ def register(api_bp, bp) -> None:
                 db.commit()
                 return redirect(url_for("scribble.engagement_board", engagement_id=engagement.id))
 
+            # The template reads `core_engagement_id` from request.values itself (survives a POST
+            # re-render too), so nothing extra to pass here.
             return render_template(
                 "scribble/engagement_new.html", clients=_viewable_clients(db), error=None
             )
+
+    @bp.get("/engagements/by-core/<core_id>", endpoint="engagement_by_core")
+    def engagement_by_core(core_id):
+        """Reverse of the board's source-jobs panel (#629): a core engagement page links HERE to reach
+        its report board. Resolve the board by ``Engagement.core_engagement_id``; if none exists yet,
+        send the operator to the create form pre-seeded to LINK to this core engagement (not spawn a
+        second one).
+
+        Tenancy: gate on the host's own ``can_operate_on`` and collapse every failure to one 404, so
+        this leaks nothing about a core engagement the caller can't operate -- unknown id, malformed
+        id, and "exists but not yours" are indistinguishable (same rule as ``_resolve_engagement``).
+        There is no UNIQUE constraint on ``core_engagement_id`` (models.py: index, not unique), so a
+        collision resolves deterministically to the oldest board rather than raising.
+        """
+        try:
+            key = uuid.UUID(str(core_id))
+        except (ValueError, AttributeError):
+            abort(404)
+        if not host.can_operate_on(key):
+            abort(404)
+        with open_session() as db:
+            row = db.execute(
+                select(Engagement)
+                .where(Engagement.core_engagement_id == key)
+                .order_by(Engagement.id)
+                .limit(1)
+            ).scalar_one_or_none()
+        if row is not None:
+            return redirect(url_for("scribble.engagement_board", engagement_id=row.id))
+        return redirect(url_for("scribble.engagement_new", core_engagement_id=str(key)))
 
     # =============================================================================== UI: edit / delete
 
