@@ -13,6 +13,7 @@
 {% endblock %}
 {% block content %}
 <div class="card">
+  <p class="muted scribble-report-kicker">Report</p>
   <h2>{{ engagement.name }}</h2>
   <p class="muted">
     Client: {{ client_name or '—' }} ·
@@ -317,6 +318,7 @@
   .scribble-attack-link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .scribble-attack-link select, .scribble-attack-link input { font: inherit; }
   .scribble-readonly-note { font-style: italic; }
+  .scribble-report-kicker { margin: 0 0 2px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
 
   /* Engagement-level evidence panel (ext#51) -- shares the finding gallery's item classes so
      scribble/static/artifacts.js's delegated toggle/caption/delete handlers apply unmodified, but

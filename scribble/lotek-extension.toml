@@ -72,6 +72,14 @@ machine_prefix = "/machine"
 # knob there would trade a validated picker for a free-text field that happily accepts a Theme this
 # install does not have.
 config_path = "/themes"
+# Deep-link template (#632/#847) for an ALREADY-promoted job: core substitutes `Job.promoted_ref_id`
+# (the ReportBoard UUID) into the single `{ref_id}` placeholder to link a promoted job straight to its
+# report board. This is consumed VERBATIM by core's `ExtensionMount.promoted_ref_url` — it is NOT
+# prefixed with `url_prefix` (unlike `machine_prefix`/`config_path` above), so it must be the full
+# app-absolute board path, hence the leading `/scribble`. Fail-closed rules (extensions.py): must start
+# with a single `/`, contain exactly one `{ref_id}`, and carry no `..`/`//`/backslash/whitespace, or
+# core drops the link and the ref renders as plain text.
+promoted_ref_path = "/scribble/engagements/{ref_id}"
 # Table in the shared DB whose rows soft-reference a host Client (client_id). The host's client-delete
 # guard counts these generically so deleting a client can't orphan them.
 client_ref_table = "scribble_report_boards"

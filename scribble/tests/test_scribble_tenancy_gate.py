@@ -92,6 +92,10 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         # (host.can_operate_on) and collapsing every failure to one 404 — not scoped by a scribble
         # board id, so it is declared non-scoped here (lotek-extensions #227).
         "scribble.engagement_by_core",
+        # One-click "Add to report" POST twin (#847): also keyed on a CORE engagement id + host.can_operate_on
+        # (one 404 on failure) + host_can_write; the per-job tenancy is the shared #845 anchor inside
+        # _adopt_job_onto_board, not a scribble board-id scope. Same non-scoped class as its GET resolver.
+        "scribble.adopt_job_by_core",
         "scribble.library",
         "scribble.library_new",
         "scribble.library_detail",

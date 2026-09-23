@@ -266,6 +266,74 @@ def _apply_engagement_form(engagement: ReportBoard, form, db) -> str | None:
     return None
 
 
+def _adopt_job_onto_board(db, engagement: ReportBoard, job_id: str, actor) -> None:
+    """Link + pour ONE scan job onto ``engagement`` — the SINGLE shared body of ``adopt_job`` and the
+    by-core one-click ``adopt_job_by_core``, so every promote routes through ONE place and never forks
+    the #845 predicate.
+
+    Order is load-bearing (mirrors the machine route): the anchor check (#845) runs FIRST, then the
+    refuse-on-conflict mark (#632) GATES the pour — a cross-engagement job 409s and a job already
+    adopted elsewhere 409s, and NOTHING is poured or linked in either case. An unknown/not-viewable job
+    (host ``get_job`` -> ``None``) is a silent no-op — the same one-answer-no-leak posture the routes give.
+
+    The CALLER owns write-gating (``host_can_write``) and resolving/committing ``engagement``; this body
+    is only get_job -> anchor -> mark -> promote. ``abort(409)`` raises through the view.
+    """
+    findings_ns = host.findings()
+    job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
+    if job is None:  # unknown/not-viewable/no id -> silent no-op, exactly like the routes
+        return
+    from scribble.promote import (  # lazy: promote.py is Track D's file
+        CrossEngagementPromote,
+        assert_promote_anchor,
+        promote_job,
+    )
+    # Anchor check (#845) BEFORE the gating mark, so a cross-engagement adopt never leaves the job
+    # linked-but-not-poured. Same single predicate the machine route uses.
+    try:
+        assert_promote_anchor(engagement, getattr(job, "engagement_id", None))
+    except CrossEngagementPromote as exc:
+        abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, "
+                   f"but this report board is anchored to engagement {exc.anchor}. "
+                   f"Reassign the job first.")
+    # Link FIRST so it can gate: refuse-on-conflict returns False -> 409, pour nothing.
+    if not host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement.id):
+        abort(409, "This scan job is already adopted by another engagement.")
+    dtos = findings_ns.list_findings(job_id, actor)
+    promote_job(db, engagement=engagement, findings=dtos,
+                actor_username=current_actor_username(),
+                job_engagement_id=getattr(job, "engagement_id", None))
+
+
+def _board_for_core(db, core_id: uuid.UUID) -> ReportBoard:
+    """Resolve the report board LINKED to ``core_id``, CREATING it (name + client DERIVED from the scoped
+    summary, never trusted from input) if none exists — the SINGLE board-create seam, shared by
+    ``import_board`` and the one-click ``adopt_job_by_core`` so a board is never an orphan with no core
+    engagement behind it. The CALLER owns the ``can_operate_on`` gate and the commit. ``abort(404)`` if
+    the core id isn't a summary the actor can see (the create path needs its name/client)."""
+    existing = db.execute(
+        select(ReportBoard)
+        .where(ReportBoard.core_engagement_id == core_id)
+        .order_by(ReportBoard.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    summ = next((s for s in host.engagement_summaries() if s["id"] == core_id), None)
+    if summ is None:
+        abort(404)
+    board = ReportBoard(
+        name=summ["name"],
+        client_id=summ["client_id"],
+        core_engagement_id=core_id,
+        created_by=current_actor_username(),
+        owner_id=current_actor_id(),
+    )
+    db.add(board)
+    db.flush()  # populate board.id for the redirect / adopt ref_id before the caller commits
+    return board
+
+
 def register(api_bp, bp) -> None:
     global _REGISTERED
     if _REGISTERED:
@@ -321,26 +389,8 @@ def register(api_bp, bp) -> None:
             abort(404)
         if not host.can_operate_on(core_id):
             abort(404)
-        summ = next((s for s in host.engagement_summaries() if s["id"] == core_id), None)
-        if summ is None:
-            abort(404)
         with open_session() as db:
-            existing = db.execute(
-                select(ReportBoard)
-                .where(ReportBoard.core_engagement_id == core_id)
-                .order_by(ReportBoard.id)
-                .limit(1)
-            ).scalar_one_or_none()
-            if existing is not None:
-                return redirect(url_for("scribble.engagement_board", engagement_id=existing.id))
-            board = ReportBoard(
-                name=summ["name"],
-                client_id=summ["client_id"],
-                core_engagement_id=core_id,
-                created_by=current_actor_username(),
-                owner_id=current_actor_id(),
-            )
-            db.add(board)
+            board = _board_for_core(db, core_id)  # resolve-or-create, the shared seam
             db.commit()
             return redirect(url_for("scribble.engagement_board", engagement_id=board.id))
 
@@ -381,6 +431,37 @@ def register(api_bp, bp) -> None:
         if row is not None:
             return redirect(url_for("scribble.engagement_board", engagement_id=row.id))
         return redirect(url_for("scribble.engagements"))
+
+    @bp.post("/engagements/by-core/<core_id>/adopt-job/<job_id>", endpoint="adopt_job_by_core")
+    def adopt_job_by_core(core_id, job_id):
+        """One-click "Add to report" (#847): the POST twin of ``engagement_by_core``. A core job page
+        POSTs HERE (CSRF-protected, so unlike a GET link it can't be triggered cross-site) to pour a
+        job's findings onto the report board anchored to its core engagement in ONE click.
+
+        Resolves-or-CREATES the board for the core engagement (the shared ``_board_for_core`` seam — the
+        SAME summary-derived create as ``import_board``, so a board is never an orphan), then adopts the
+        job via ``_adopt_job_onto_board`` (the SAME #845 anchor + #632 refuse-on-conflict as
+        ``adopt_job`` — a cross-engagement / already-adopted job 409s identically, and the just-created
+        board rolls back with it since the commit is last). WRITE-gated + tenancy-gated
+        (``can_operate_on``, one 404 on failure)."""
+        if not host_can_write():
+            abort(403)
+        try:
+            key = uuid.UUID(str(core_id))
+        except (ValueError, AttributeError):
+            abort(404)
+        if not host.can_operate_on(key):
+            abort(404)
+        job_id = (job_id or "").strip()
+        with open_session() as db:
+            board = _board_for_core(db, key)
+            # An unknown/unviewable job makes the adopt a silent no-op (no existence oracle): the board is
+            # still created (exactly as a bare import would) and we still redirect to it, so a real-vs-bogus
+            # job is indistinguishable in the response. A 409 (cross-engagement/already-adopted) instead
+            # rolls the fresh board back — commit is last.
+            _adopt_job_onto_board(db, board, job_id, current_actor())
+            db.commit()
+            return redirect(url_for("scribble.engagement_board", engagement_id=board.id))
 
     # =============================================================================== UI: edit / delete
 
@@ -646,7 +727,8 @@ def register(api_bp, bp) -> None:
         and NOTHING is poured, so a conflicting job is never re-pointed and never double-linked. Same
         tenancy posture as its twin: WRITE-gated at the route, and an unknown/forbidden job (host
         `get_job` -> None) is a silent no-op redirect — not-found and not-viewable are indistinguishable,
-        no existence leak.
+        no existence leak. The get_job -> anchor -> mark -> pour body is the shared ``_adopt_job_onto_board``
+        (also driven by the by-core one-click ``adopt_job_by_core``), so both share ONE #845 predicate.
         """
         if not host_can_write():
             abort(403)
@@ -655,30 +737,8 @@ def register(api_bp, bp) -> None:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
-            findings_ns = host.findings()
-            job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
-            if job is not None:  # unknown/not-viewable -> silent no-op + redirect, exactly like the twin
-                from scribble.promote import (  # lazy: promote.py is Track D's file
-                    CrossEngagementPromote,
-                    assert_promote_anchor,
-                    promote_job,
-                )
-                # Anchor check (#845) BEFORE the gating mark, so a cross-engagement adopt never leaves the
-                # job linked-but-not-poured. Same single predicate the machine route uses.
-                try:
-                    assert_promote_anchor(engagement, getattr(job, "engagement_id", None))
-                except CrossEngagementPromote as exc:
-                    abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, "
-                               f"but this report board is anchored to engagement {exc.anchor}. "
-                               f"Reassign the job first.")
-                # Link FIRST so it can gate: refuse-on-conflict returns False -> 409, pour nothing.
-                if not host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement.id):
-                    abort(409, "This scan job is already adopted by another engagement.")
-                dtos = findings_ns.list_findings(job_id, actor)
-                promote_job(db, engagement=engagement, findings=dtos,
-                            actor_username=current_actor_username(),
-                            job_engagement_id=getattr(job, "engagement_id", None))
-                db.commit()
+            _adopt_job_onto_board(db, engagement, job_id, actor)
+            db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     # =============================================================================== UI: un-adopt (#635)
