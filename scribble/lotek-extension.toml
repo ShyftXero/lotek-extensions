@@ -74,8 +74,8 @@ machine_prefix = "/machine"
 config_path = "/themes"
 # Table in the shared DB whose rows soft-reference a host Client (client_id). The host's client-delete
 # guard counts these generically so deleting a client can't orphan them.
-client_ref_table = "scribble_engagements"
-client_ref_label = "engagement"
+client_ref_table = "scribble_report_boards"
+client_ref_label = "report board"
 # Operator doc for the host Docs page. Optional — omitted, the host looks for docs/<NAME>.md.
 docs = "docs/SCRIBBLE.md"
 docs_title = "Scribble (reporting)"
