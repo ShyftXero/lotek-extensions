@@ -31,11 +31,11 @@ from scribble import checklists as C
 from scribble.content import schema
 from scribble.enums import Severity
 from scribble.models import (
+    BoardFinding,
     ChecklistTemplate,
     Client,
-    Engagement,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context
 from scribble.reporting.render_html import _CSS, render_report_html
@@ -130,17 +130,17 @@ def report_page(browser, session_factory, tmp_path):
         client = Client(name="TeamsPlus")
         db.add(client)
         db.flush()
-        eng = Engagement(
+        eng = ReportBoard(
             name="Print Media Assessment", client_id=client.id, company_name="TeamsPlus",
             scope_type="web-app",
         )
         grp = FindingGroup(engagement=eng, name="Web Application", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             target_host="portal.teamsplus.example", cvss_score=7.4,
             content_json={"description": _block("Reflected XSS in the search parameter.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Exposed Admin Console", severity=Severity.critical,
             order_index=1, content_json={"description": _block("Unauthenticated admin console.")},
         )
@@ -148,7 +148,7 @@ def report_page(browser, session_factory, tmp_path):
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     path = tmp_path / "report.html"
     path.write_text(html, encoding="utf-8")
 
@@ -314,9 +314,9 @@ def test_a_dark_template_still_prints_on_paper_colours(report_page, session_fact
     """A template that FORCES the dark theme (``<html data-theme="dark">``) must still print light: the
     sheet is white either way. Covers the ``:root[data-theme="dark"]`` half of the print override."""
     with session_factory() as db:
-        eng = Engagement(name="Dark Template", company_name="TeamsPlus")
+        eng = ReportBoard(name="Dark Template", company_name="TeamsPlus")
         grp = FindingGroup(engagement=eng, name="Web Application", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             content_json={"description": _block("Reflected XSS in the search parameter.")},
         )
@@ -324,7 +324,7 @@ def test_a_dark_template_still_prints_on_paper_colours(report_page, session_fact
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), template="dark")
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), template="dark")
     assert 'data-theme="dark"' in html  # the template really did force it
     path = tmp_path / "dark-report.html"
     path.write_text(html, encoding="utf-8")
@@ -345,7 +345,7 @@ def test_the_compliance_badges_print_readably_from_a_dark_viewer(session_factory
     sibling — whose ``--sev-high`` background WAS pinned — printed correctly. That inconsistency is the
     omission's fingerprint, and it lands on a section titled "Compliance Attestation"."""
     with session_factory() as db:
-        eng = Engagement(name="Attestation", company_name="TeamsPlus", scope_type="external")
+        eng = ReportBoard(name="Attestation", company_name="TeamsPlus", scope_type="external")
         db.add(eng)
         db.flush()
         comp = C.assign_template(
@@ -356,7 +356,7 @@ def test_the_compliance_badges_print_readably_from_a_dark_viewer(session_factory
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     assert "ck-satisfied" in html and "ck-deficient" in html  # the fixture really produced both badges
     path = tmp_path / "attestation.html"
     path.write_text(html, encoding="utf-8")
@@ -439,15 +439,15 @@ def test_ctrl_p_opens_the_child_findings_so_the_figure_sequence_starts_at_one(
         client = Client(name="PrintChildren")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Print Children", client_id=client.id, company_name="PrintChildren")
+        eng = ReportBoard(name="Print Children", client_id=client.id, company_name="PrintChildren")
         grp = FindingGroup(engagement=eng, name="Web", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             content_json={"description": _block("Reflected XSS on /search.")},
         )
         db.add(eng)
         db.flush()
-        child = EngagementFinding(
+        child = BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS host b", severity=Severity.high,
             order_index=1, parent_id=parent.id,
             content_json={"description": _block("Same issue, host b.")},
@@ -464,7 +464,7 @@ def test_ctrl_p_opens_the_child_findings_so_the_figure_sequence_starts_at_one(
         eid = eng.id
     with session_factory() as db:
         html = render_report_html(
-            build_report_context(db.get(Engagement, eid)),
+            build_report_context(db.get(ReportBoard, eid)),
             inline_assets=True,
             artifact_bytes=lambda path: Path(path).read_bytes(),
         )
@@ -515,9 +515,9 @@ def _closeout_engagement(session_factory, *, with_retest: bool, outcome=None):
         client = Client(name=f"Closeout {uuid.uuid4()}")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Closeout Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Closeout Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             content_json={"description": _block("Reflected XSS on /search.")},
         )
@@ -534,7 +534,7 @@ def _closeout_engagement(session_factory, *, with_retest: bool, outcome=None):
 
 def _closeout_html(session_factory, eid: str) -> str:
     with session_factory() as db:
-        return render_report_html(build_report_context(db.get(Engagement, eid)))
+        return render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
 
 def test_no_retest_renders_no_closeout_section(session_factory):
@@ -561,7 +561,7 @@ def test_recorded_retest_renders_the_closeout_table(session_factory):
     assert "partially_remediated" not in html
     # the row links back to the finding's own anchor, which the findings block really emits
     with session_factory() as db:
-        eng = db.get(Engagement, eid)
+        eng = db.get(ReportBoard, eid)
         fid = eng.findings[0].id
     assert f'href="#finding-{fid}"' in html
     assert f'id="finding-{fid}"' in html  # target exists -> no dangling anchor
@@ -609,7 +609,7 @@ def test_closeout_excludes_a_finding_whose_disposition_is_excluded(session_facto
     assert "sec-retest" in _closeout_html(session_factory, eid)  # GREEN: `remediated` renders
 
     with session_factory() as db:
-        eng = db.get(Engagement, eid)
+        eng = db.get(ReportBoard, eid)
         eng.findings[0].status = FindingStatus.false_positive
         db.commit()
 
@@ -629,7 +629,7 @@ def test_docx_mirrors_the_closeout_table(session_factory):
 
     eid = _closeout_engagement(session_factory, with_retest=True, outcome=RetestOutcome.not_remediated)
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     doc = docx.Document(io.BytesIO(payload))
     text = "".join(t.text or "" for t in doc.element.body.iter(qn("w:t")))
     assert "Retest Closeout" in text
@@ -647,7 +647,7 @@ def test_docx_without_a_retest_has_no_closeout_heading(session_factory):
 
     eid = _closeout_engagement(session_factory, with_retest=False)
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     doc = docx.Document(io.BytesIO(payload))
     text = "".join(t.text or "" for t in doc.element.body.iter(qn("w:t")))
     assert "Retest Closeout" not in text

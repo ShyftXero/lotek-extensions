@@ -56,7 +56,7 @@ def request_body(model: type[BaseModel]):
 class CreateEngagementRequest(BaseModel):
     """Body of ``POST /scribble/machine/engagements`` — create a report engagement (write scope)."""
 
-    name: str = Field(..., description="Engagement name (required).")
+    name: str = Field(..., description="ReportBoard name (required).")
     client_id: int | str | None = Field(
         None,
         description="Host client id (int or UUID). REQUIRED when mounted in a host — a mounted engagement "
@@ -111,7 +111,7 @@ class AddFindingRequest(BaseModel):
     cvss_vector: str | None = Field(None, description="Optional CVSS vector string.")
     references: list[Any] | None = Field(
         None,
-        description="Structured references (#624) -> the typed EngagementFinding.references column. Each "
+        description="Structured references (#624) -> the typed BoardFinding.references column. Each "
         "element is a URL/label string, or a {label, url, source, suppressed} object. Rendered as an "
         "omit-when-empty labeled-link block (non-suppressed only), NOT a prose content block.",
     )
@@ -187,7 +187,7 @@ class PatchFindingRequest(BaseModel):
     remediation: str | None = Field(None, description="Plain-text prose for the 'remediation' block.")
     references: list[Any] | None = Field(
         None,
-        description="Structured references (#624) -> the typed EngagementFinding.references column. Each "
+        description="Structured references (#624) -> the typed BoardFinding.references column. Each "
         "element is a URL/label string or a {label, url, source, suppressed} object; supply the full list "
         "to add/edit, set an element's suppressed=true to hide it. Author-added refs are source=author.",
     )

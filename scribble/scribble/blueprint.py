@@ -21,7 +21,7 @@ from scribble.deps import (
     host_can_write,
     open_session,
 )
-from scribble.models import Engagement, EngagementFinding, VulnerabilityTemplate
+from scribble.models import BoardFinding, ReportBoard, VulnerabilityTemplate
 
 bp = Blueprint("scribble", __name__, template_folder="templates", static_folder="static")
 
@@ -61,7 +61,7 @@ def dashboard():
     """
     with open_session() as db:
         visible = visible_engagements(
-            db, select(Engagement).order_by(Engagement.created_at.desc()), current_actor()
+            db, select(ReportBoard).order_by(ReportBoard.created_at.desc()), current_actor()
         )
         visible_ids = [e.id for e in visible]
         findings = 0
@@ -69,8 +69,8 @@ def dashboard():
             findings = (
                 db.scalar(
                     select(func.count())
-                    .select_from(EngagementFinding)
-                    .where(EngagementFinding.engagement_id.in_(visible_ids))
+                    .select_from(BoardFinding)
+                    .where(BoardFinding.engagement_id.in_(visible_ids))
                 )
                 or 0
             )

@@ -40,7 +40,7 @@ from werkzeug.serving import make_server
 import scribble
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Artifact, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
 from scribble.testing import register_kit_assets_shim, wire_mock_host
@@ -112,7 +112,7 @@ def live_app(tmp_path_factory):
         group = FindingGroup(engagement=engagement, name="Resilience QA", order_index=999)
         session.add(group)
         session.flush()
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=engagement,
             group=group,
             title="Resilience QA Finding",
@@ -227,7 +227,7 @@ def _real_item_by_filename(gallery, filename: str):
 def _block_doc(session_factory, finding_id: int, block: str):
     """The persisted ProseMirror doc for one content block, straight from the DB (autosave writes it)."""
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         return (finding.content_json or {}).get(block) if finding is not None else None
 
 

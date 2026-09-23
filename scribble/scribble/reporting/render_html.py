@@ -895,7 +895,7 @@ def _cover_facts(ctx: ReportContext) -> list[tuple[str, str]]:
     if assessor:
         facts.append(("Assessor", _esc(assessor)))
     facts.append(("Report date", datetime.now(UTC).strftime("%Y-%m-%d")))
-    facts.append(("Engagement reference", f"#{_esc(str(ctx.engagement_id))}"))
+    facts.append(("ReportBoard reference", f"#{_esc(str(ctx.engagement_id))}"))
     return facts
 
 
@@ -968,7 +968,7 @@ def _render_front_matter(ctx: ReportContext) -> str:
     narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
     return (
         '<div class="frontmatter">'
-        '<div class="fm-block"><h3>Engagement overview</h3>'
+        '<div class="fm-block"><h3>ReportBoard overview</h3>'
         f'<p class="fm-lead">{_overview_paragraph(ctx)}</p>{narrative}</div>'
         '<div class="fm-block"><h3>Scope and limitations</h3>'
         f'<ul class="fm-limits">{limits}</ul></div>'
@@ -1594,7 +1594,7 @@ def _render_integrity_manifest(artifacts: list[ArtifactCtx]) -> str:
 
 
 def _render_evidence_appendix(ctx: ReportContext, resolver: _AssetResolver) -> str:
-    """Engagement-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
+    """ReportBoard-level evidence — ``ReportContext.artifacts``, i.e. artifacts attached to the engagement
     with no ``finding_id``.
 
     Renders nothing when there are none, which is the normal case and is why the toolbar's Evidence link

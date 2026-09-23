@@ -32,7 +32,7 @@ from __future__ import annotations
 import pytest
 
 from scribble.content import schema
-from scribble.models import Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.layouts import list_layouts
 from scribble.reporting.render_html import _LIMITATIONS, render_report_html
@@ -61,10 +61,10 @@ def promoted_report(session_factory):
     """The reviewer's scenario, minimally: findings that arrived by promotion (``source_finding_id`` set),
     with no coverage checklist and no evidence of hand validation anywhere in the record."""
     with session_factory() as db:
-        eng = Engagement(name="Bulk Promoted", company_name="Acme", scope_type="external")
+        eng = ReportBoard(name="Bulk Promoted", company_name="Acme", scope_type="external")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
         for i in range(3):
-            EngagementFinding(
+            BoardFinding(
                 engagement=eng, group=grp, title=f"Nessus plugin {i}", severity="medium",
                 order_index=i, source_finding_id=1000 + i, target_host=f"10.0.0.{i}",
                 content_json={"description": schema.doc_from_text("Carried over from the scan.")},
@@ -73,7 +73,7 @@ def promoted_report(session_factory):
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        return render_report_html(build_report_context(db.get(Engagement, eid)))
+        return render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
 
 @pytest.mark.parametrize("phrase", FORBIDDEN)
@@ -90,12 +90,12 @@ def test_no_shipped_layout_can_reintroduce_the_claims(session_factory, layout):
     registry is FROZEN data (reporting/layouts.py) with no editor and no operator route, so all
     of them ship the same prose and the only real fix is for the prose itself to be honest."""
     with session_factory() as db:
-        eng = Engagement(name="Bulk Promoted", company_name="Acme", scope_type="external")
+        eng = ReportBoard(name="Bulk Promoted", company_name="Acme", scope_type="external")
         db.add(eng)
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), layout=layout)
     for phrase in FORBIDDEN:
         assert phrase not in html, f"layout {layout!r} asserts {phrase!r}"
 

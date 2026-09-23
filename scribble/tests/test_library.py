@@ -9,7 +9,7 @@ standard fixtures the same way `tests/test_smoke.py` exercises `scribble.library
 Covers: edit-in-place (same row id, fields changed, content_html re-cached), duplicate (new row, copied
 content), create, delete/deactivate (soft, reversible), tag assign (existing + create-and-assign), the
 template-scoped block read/write endpoints (mirroring autosave_api's contract but keyed on
-VulnerabilityTemplate instead of EngagementFinding), and list search/filter.
+VulnerabilityTemplate instead of BoardFinding), and list search/filter.
 """
 
 from __future__ import annotations

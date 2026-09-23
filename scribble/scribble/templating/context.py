@@ -1,14 +1,14 @@
 """Custom-variable overlay: load ``VariableValue`` rows and merge them onto the built-in context.
 
 ``resolver.build_context`` computes the built-in context (``COMPANY_NAME``, ``TARGET_HOST``, ...)
-structurally from ``Engagement``/``EngagementFinding`` attributes and never touches the database. This
+structurally from ``ReportBoard``/``BoardFinding`` attributes and never touches the database. This
 module is the DB-aware layer WS6 adds on top of it: it loads user-defined ``TemplateVariable`` /
 ``VariableValue`` rows (FACTION's ``CustomType``/``CustomField``) and overlays them.
 
 **Precedence (lowest -> highest):**
 
 1. Built-in structural context (``resolver.BUILTIN_KEYS``, computed from engagement/finding attributes).
-2. Engagement-scope custom variable values (``VariableValue.engagement_id`` set, ``finding_id`` unset).
+2. ReportBoard-scope custom variable values (``VariableValue.engagement_id`` set, ``finding_id`` unset).
 3. Finding-scope custom variable values (``VariableValue.finding_id`` set) -- overrides an
    engagement-scope value of the same key.
 4. ``extra`` passed explicitly by the caller of :func:`build_full_context` (e.g. a preview request

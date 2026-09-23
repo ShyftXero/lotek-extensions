@@ -73,13 +73,13 @@ def current_actor():
 
 
 def current_actor_id() -> int | uuid.UUID | None:
-    """The logged-in host user's id (for ``Engagement.owner_id`` attribution), or ``None``. Same
+    """The logged-in host user's id (for ``ReportBoard.owner_id`` attribution), or ``None``. Same
     optional ``extras['current_actor']`` hook + fail-safe contract as :func:`current_actor_username`
     (standalone Scribble always gets ``None``). Ownership is attribution + admin oversight, NEVER an
     access gate — engagements stay team-shared so live collaboration keeps working — so a misbehaving
     hook must never break the write it decorates.
 
-    Accepts either host id shape ``Engagement.owner_id``/``scribble.models.SoftHostId`` can store: a
+    Accepts either host id shape ``ReportBoard.owner_id``/``scribble.models.SoftHostId`` can store: a
     plain ``int`` (legacy/standalone-style host ids) or a ``uuid.UUID`` (Lotek v2's UUIDv7 surrogate
     PKs). Anything else (a raising hook, a hook returning something with no ``.id``, or an ``.id`` of
     some other type) resolves to ``None`` -- a bad/foreign id shape must degrade to "no attribution",
@@ -106,7 +106,7 @@ def client_model():
     Returns the host-injected model (``ScribbleConfig.client_model``, e.g. Lotek's ``Client``) when one
     was passed to ``register()``; otherwise Scribble's own ``scribble.models.Client`` -- standalone
     Scribble (no host, or a host that didn't inject one) always gets its own table. This is what makes
-    ``Engagement.client_id`` a soft reference rather than a hard FK (docs/LOTEK_ADOPTION.md §3.1): the
+    ``ReportBoard.client_id`` a soft reference rather than a hard FK (docs/LOTEK_ADOPTION.md §3.1): the
     id may belong to ``scribble_clients`` (standalone) or the host's own client table (mounted), and
     only this resolver -- not a static SQLAlchemy relationship -- can tell which at call time.
     """
@@ -125,7 +125,7 @@ def severity_enum():
     Returns the host-injected enum (``ScribbleConfig.severity_enum``, e.g. Lotek's ``Severity``) when
     one was passed to ``register()``; otherwise Scribble's own ``scribble.enums.Severity``. The two
     vocabularies are value-for-value identical (docs/LOTEK_ADOPTION.md §3.2), so swapping the enum
-    object a boundary (e.g. ``EngagementFinding.from_lotek_finding``) constructs from a raw string never
+    object a boundary (e.g. ``BoardFinding.from_lotek_finding``) constructs from a raw string never
     changes which string values are valid -- it only means "one severity vocabulary when mounted".
     """
     from scribble.enums import Severity  # local import: mirrors client_model's cycle-avoidance
@@ -140,7 +140,7 @@ def severity_enum():
 def client_names(session, engagements) -> dict[int, str]:
     """Bulk-resolve ``{engagement.id: display client name}`` in ONE query, for list views.
 
-    ``Engagement.client_id`` is a soft reference (no FK, no static ``.client`` relationship -- see
+    ``ReportBoard.client_id`` is a soft reference (no FK, no static ``.client`` relationship -- see
     docs/LOTEK_ADOPTION.md §3.1), so list views can't lazy-load a client per row; this resolves through
     ``client_model()`` instead (Lotek's when mounted, Scribble's own ``scribble.models.Client``
     standalone). Missing/unresolvable client ids fall back to "—". Shared by ``scribble/blueprint.py``'s

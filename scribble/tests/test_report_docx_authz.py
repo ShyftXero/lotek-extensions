@@ -35,7 +35,7 @@ OTHER_CLIENT = uuid.uuid7()  # a client the actor holds no grant under
 
 def _make_engagement(session_factory, *, client_id, owner_id=None) -> int:
     with session_factory() as db:
-        eng = fm.Engagement(
+        eng = fm.ReportBoard(
             name="engagement under test", scope_type="external",
             owner_id=owner_id, client_id=client_id,
         )

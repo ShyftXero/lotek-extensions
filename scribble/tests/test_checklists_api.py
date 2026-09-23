@@ -1,4 +1,4 @@
-"""Engagement-checklist JSON API (browser surface). Drives the endpoints the UI calls: library CRUD +
+"""ReportBoard-checklist JSON API (browser surface). Drives the endpoints the UI calls: library CRUD +
 import/export/hide/reset, assignment, and per-item updates."""
 
 from __future__ import annotations
@@ -6,14 +6,14 @@ from __future__ import annotations
 import re
 import uuid
 
-from scribble.models import ChecklistTemplate, Engagement, EngagementFinding
+from scribble.models import BoardFinding, ChecklistTemplate, ReportBoard
 
 API = "/scribble/api"
 
 
 def _mk_engagement(session_factory) -> int:
     with session_factory() as db:
-        e = Engagement(name="API Eng")
+        e = ReportBoard(name="API Eng")
         db.add(e)
         db.commit()
         return e.id
@@ -124,11 +124,11 @@ def test_import_sanitizes_slug(client):
 def test_finding_link_must_be_same_engagement(client, session_factory):
     # W4: finding_id must reference a finding in THIS engagement; a cross-engagement link is rejected.
     with session_factory() as db:
-        e1, e2 = Engagement(name="E1"), Engagement(name="E2")
+        e1, e2 = ReportBoard(name="E1"), ReportBoard(name="E2")
         db.add_all([e1, e2])
         db.flush()
-        f_other = EngagementFinding(engagement_id=e2.id, title="foreign finding")
-        f_same = EngagementFinding(engagement_id=e1.id, title="local finding")
+        f_other = BoardFinding(engagement_id=e2.id, title="foreign finding")
+        f_same = BoardFinding(engagement_id=e1.id, title="local finding")
         db.add_all([f_other, f_same])
         db.commit()
         e1_id, foreign_fid, local_fid = e1.id, f_other.id, f_same.id

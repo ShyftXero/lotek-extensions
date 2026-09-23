@@ -11,7 +11,7 @@ here at all — ``parent_id``/``source_finding_id``/``target_host`` are uncondit
 Report-variable values (``{{AFFECTED}}``, ``{{DOMAIN}}``, …) are computed per finding via
 ``scribble.facts.resolve_variables``/``synthesize_parent_variables`` against the DB-declared
 ``TemplateVariable.from_facts`` rules (CONTRACT-FACTS.md §4.1/§4.2) and stored on
-``EngagementFinding.variables`` — plus, for a ``target_column``-declared key (``TARGET_HOST``/
+``BoardFinding.variables`` — plus, for a ``target_column``-declared key (``TARGET_HOST``/
 ``TARGET_URL``/…), onto the matching column itself. Nothing in this file names a tool or branches on
 ``dto.source`` — the only source-shaped thing here is ``ScribbleVulnMap``, which is a DATA lookup an
 operator curates, not a Python branch.
@@ -35,7 +35,7 @@ from scribble.metadata import (
     normalize_cve_ids,
     normalize_cwe_ids,
 )
-from scribble.models import EngagementFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
+from scribble.models import BoardFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
 
 # Columns a declaration may ALSO write directly onto the created row (besides ``variables``). Mirrors
 # ``TemplateVariable.target_column``'s own allowlist (models.py) -- enforced again here, at the one place
@@ -152,7 +152,7 @@ def _target_overrides(
     variables: dict[str, str], declarations: list[tuple[str, str | None, list]]
 ) -> dict[str, str]:
     """The subset of ``variables`` that a declaration also wants written onto a real
-    ``EngagementFinding`` column (``target_host``/``target_port``/``target_url``), keyed by that column
+    ``BoardFinding`` column (``target_host``/``target_port``/``target_url``), keyed by that column
     name so it can be splatted straight into the constructor ``overrides``."""
     overrides: dict[str, str] = {}
     for key, target_column, _rules in declarations:
@@ -170,7 +170,7 @@ def _source_overrides(dto: Any) -> dict[str, Any]:
     silently at ``medium``/``new`` because promote never mapped them), the structured metadata
     ``cve_ids``/``cwe_ids``/``owasp_categories`` (#625 -- ``cve_ids`` from the scalar ``DTO.cve``,
     ``cwe_ids`` from ``DTO.facts["cwe"]`` with NO DTO widening, ``owasp_categories`` DERIVED from the CWEs
-    via the offline map), and the FULL DTO captured verbatim in ``source_facts`` so ``EngagementFinding``
+    via the offline map), and the FULL DTO captured verbatim in ``source_facts`` so ``BoardFinding``
     is a lossless superset of the scan finding. ``references`` is stamped separately (it needs the matched
     template too -- see ``_reference_override``).
 
@@ -204,8 +204,8 @@ def _reference_override(dto: Any, template: VulnerabilityTemplate | None) -> lis
 
 def _get_or_create_parent(
     db: Any, *, engagement_id: int, template: VulnerabilityTemplate, actor: str | None, order_index: int
-) -> tuple[EngagementFinding, bool]:
-    """Find-or-create the ONE parent ``EngagementFinding`` this template's matched instances nest under.
+) -> tuple[BoardFinding, bool]:
+    """Find-or-create the ONE parent ``BoardFinding`` this template's matched instances nest under.
 
     Idempotency key: ``(engagement_id, template_id, parent_id IS NULL, source_finding_id IS NULL,
     title == template.name)`` -- the null parent_id/source_finding_id pair is exactly what distinguishes
@@ -214,22 +214,22 @@ def _get_or_create_parent(
     """
     existing = (
         db.execute(
-            select(EngagementFinding)
+            select(BoardFinding)
             .where(
-                EngagementFinding.engagement_id == engagement_id,
-                EngagementFinding.template_id == template.id,
-                EngagementFinding.parent_id.is_(None),
-                EngagementFinding.source_finding_id.is_(None),
-                EngagementFinding.title == template.name,
+                BoardFinding.engagement_id == engagement_id,
+                BoardFinding.template_id == template.id,
+                BoardFinding.parent_id.is_(None),
+                BoardFinding.source_finding_id.is_(None),
+                BoardFinding.title == template.name,
             )
-            .order_by(EngagementFinding.id)
+            .order_by(BoardFinding.id)
         )
         .scalars()
         .first()
     )
     if existing is not None:
         return existing, False
-    parent = EngagementFinding.from_template(
+    parent = BoardFinding.from_template(
         template,
         engagement_id=engagement_id,
         group_id=None,
@@ -250,7 +250,7 @@ def promote_one(
     ``promote_job``. Resolves a library template via ``ScribbleVulnMap``; falls back to bridging the raw
     finding verbatim (``from_lotek_finding``) when nothing matches. Report-variable values are computed
     from ``dto.facts``/attributes via the DB-declared mapping and stored on
-    ``EngagementFinding.variables`` -- plus, for any ``target_column``-declared key, onto the matching
+    ``BoardFinding.variables`` -- plus, for any ``target_column``-declared key, onto the matching
     column. Adds the created row to ``db`` (a caller may ``db.add`` it again defensively -- a harmless
     no-op on an already-pending object).
 
@@ -273,9 +273,9 @@ def promote_one(
     template = _matched_template(db, dto)
     overrides["references"] = _reference_override(dto, template)
     finding = (
-        EngagementFinding.from_template(template, **overrides)
+        BoardFinding.from_template(template, **overrides)
         if template is not None
-        else EngagementFinding.from_lotek_finding(dto, **overrides)
+        else BoardFinding.from_lotek_finding(dto, **overrides)
     )
     db.add(finding)
     return finding
@@ -285,7 +285,7 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
     """Bulk-promote a lotek scan job's findings (host ``FindingDTO``s) into ``engagement``.
 
     Findings that resolve to the SAME library template are grouped under ONE parent
-    ``EngagementFinding`` (the vuln-DB write-up, built from the template) with each scan finding becoming
+    ``BoardFinding`` (the vuln-DB write-up, built from the template) with each scan finding becoming
     a CHILD (``parent_id`` set; its own ``target_host``/``variables`` derived from its OWN facts, so the
     per-host rows in a report show real per-host evidence, never a copy of the parent). A finding that
     matches no template is bridged verbatim (``from_lotek_finding``) and stays flat/ungrouped -- there is
@@ -317,7 +317,7 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
     order_index = len(siblings)
     # Keyed by ``template.id``, a UUIDv7 since the scribble UUID-PK migration — the annotations said
     # ``int`` (leftover from the int-PK era), which typechecks as a real error against ``template.id``.
-    parents_by_template: dict[uuid.UUID, EngagementFinding] = {}
+    parents_by_template: dict[uuid.UUID, BoardFinding] = {}
     parent_children: dict[uuid.UUID, list[Any]] = {}
     promoted = 0
     skipped = 0
@@ -369,10 +369,10 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
                     parents_created += 1
             overrides["parent_id"] = parent.id
             overrides["order_index"] = order_index
-            finding = EngagementFinding.from_template(template, **overrides)
+            finding = BoardFinding.from_template(template, **overrides)
             parent_children[template.id].append(dto)
         else:
-            finding = EngagementFinding.from_lotek_finding(dto, **overrides)
+            finding = BoardFinding.from_lotek_finding(dto, **overrides)
 
         order_index += 1
         db.add(finding)
@@ -408,6 +408,6 @@ def finding_is_enriched(finding: Any, job_finding_ids) -> bool:
 
 
 def enriched_findings(engagement: Any, job_finding_ids) -> list:
-    """Every ``EngagementFinding`` on ``engagement`` that :func:`finding_is_enriched` selects for a job.
+    """Every ``BoardFinding`` on ``engagement`` that :func:`finding_is_enriched` selects for a job.
     The ONE caller of the predicate, shared by the un-adopt preview and the destructive delete."""
     return [f for f in engagement.findings if finding_is_enriched(f, job_finding_ids)]

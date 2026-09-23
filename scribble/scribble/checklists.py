@@ -1,4 +1,4 @@
-"""Engagement-checklist logic: recommended statuses, rollup buckets, markdown/JSON import/export, and
+"""ReportBoard-checklist logic: recommended statuses, rollup buckets, markdown/JSON import/export, and
 the copy-on-assign snapshot.
 
 Checklists are NON-BLOCKING visual reminders (see plans/SCRIBBLE_CHECKLISTS.md in lotek). Item status is

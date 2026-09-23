@@ -19,7 +19,7 @@ from scribble import draft_api
 from scribble.api import api_bp
 from scribble.blueprint import bp
 from scribble.content import schema
-from scribble.models import Engagement, EngagementFinding
+from scribble.models import BoardFinding, ReportBoard
 from scribble.seed import seed_defaults
 
 API_PREFIX = "/scribble/api"
@@ -57,8 +57,8 @@ def session_factory(app):
 @pytest.fixture
 def finding_id(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Draft Test", company_name="Acme")
-        finding = EngagementFinding(engagement=eng, title="Reflected XSS", content_json={}, content_html={})
+        eng = ReportBoard(name="Draft Test", company_name="Acme")
+        finding = BoardFinding(engagement=eng, title="Reflected XSS", content_json={}, content_html={})
         db.add(eng)
         db.add(finding)
         db.commit()
@@ -99,7 +99,7 @@ def test_empty_block_drafts_then_text_block_rephrases(app, client, session_facto
 
     # give the block text -> REPHRASE framing carries the existing prose
     with session_factory() as db:
-        f = db.get(EngagementFinding, finding_id)
+        f = db.get(BoardFinding, finding_id)
         f.content_json = {"description": schema.doc_from_text("teh servr is vulnrable")}
         db.commit()
     client.post(_url(finding_id, "description"))

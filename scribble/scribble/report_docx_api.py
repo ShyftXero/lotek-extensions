@@ -27,7 +27,7 @@ from flask import Response, abort
 from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
 from scribble.deps import open_session
-from scribble.models import Engagement
+from scribble.models import ReportBoard
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
 
@@ -40,7 +40,7 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 
 
-def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
+def _artifact_url_factory(engagement: ReportBoard) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves inline-image content nodes to a
     placeholder baking in the artifact's ``storage_path`` (see ``render_docx.make_inline_artifact_url``,
     WS8's own copy of the WS7 placeholder trick)."""
@@ -74,7 +74,7 @@ def register(api_bp, bp) -> None:
     @bp.get("/engagements/<uuid:engagement_id>/report.docx")
     def engagement_report_docx(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)

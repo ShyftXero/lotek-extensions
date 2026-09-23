@@ -52,7 +52,7 @@ def test_promote_job_creates_findings_and_records_host_assignment(client, stub_h
     assert body["promoted"] == 2 and body["skipped"] == 0
 
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert {f.title for f in eng.findings} == {"SQLi", "XSS"}
         assert all(f.created_by == "opA" for f in eng.findings)
 
@@ -87,7 +87,7 @@ def test_promote_uses_vulnmap_template(client, stub_host, session_factory, clean
 
     client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert eng.findings[0].template_id == tid  # promoted via from_template (VulnMap match)
 
 

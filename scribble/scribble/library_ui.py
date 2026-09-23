@@ -18,9 +18,9 @@ Full CRUD for the vuln template library, keyed on **edit-in-place**:
 
 Content-block editing note: `scribble/templates/scribble/_editor.html` + the kit reporting editor
 (WS4) hardcode their autosave URL to ``.../findings/<finding_id>/blocks/<block>`` and read/write an
-``EngagementFinding`` row. Templates are a different table with an independently-numbered primary key,
+``BoardFinding`` row. Templates are a different table with an independently-numbered primary key,
 so pointing that partial at a template id would silently misfire: it would try to autosave against
-`EngagementFinding` id `<template.id>`, which either 404s or — worse — if a finding happens to share
+`BoardFinding` id `<template.id>`, which either 404s or — worse — if a finding happens to share
 that numeric id, clobbers *its* content. Per the WS2 brief we do not edit WS4's files, so instead this
 module exposes its own template-scoped block endpoints (mirroring `scribble/autosave_api.py`'s shape:
 same doc validation and `render_block`-and-cache-`content_html` behavior, but intentionally omitting

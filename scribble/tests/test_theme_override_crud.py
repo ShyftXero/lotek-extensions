@@ -595,7 +595,7 @@ def _engagement_for_report(session_factory):
 
     client_id = _uuid.uuid7()
     with session_factory() as db:
-        eng = fm.Engagement(
+        eng = fm.ReportBoard(
             name="themed engagement", scope_type="external", client_id=client_id
         )
         db.add(eng)

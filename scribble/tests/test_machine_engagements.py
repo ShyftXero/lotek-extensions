@@ -71,7 +71,7 @@ def test_create_engagement_sets_created_by_and_owner_id(client, stub_host, sessi
     assert resp.status_code == 201
     eid = uuid.UUID(resp.get_json()["id"])
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert eng is not None
         assert eng.created_by == "opA"
         assert eng.owner_id == 7
@@ -110,7 +110,7 @@ def test_create_engagement_repoints_client_id_to_injected_host_client(app, sessi
     assert resp.status_code == 201
     eid = uuid.UUID(resp.get_json()["id"])
     with app.app_context(), session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         resolved = eng.resolve_client(db)
         assert resolved is not None and resolved.id == cid
 
@@ -146,7 +146,7 @@ def test_add_finding_from_template(client, stub_host, session_factory):
     assert resp.status_code == 201
     fid = resp.get_json()["finding_id"]
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, fid)
+        f = db.get(fm.BoardFinding, fid)
         assert f is not None and f.engagement_id == eid and f.template_id == tid
         assert f.target_host == "10.0.0.5" and f.order_index == 0
 
@@ -204,7 +204,7 @@ def test_promote_lotek_finding_respects_job_tenancy(client, stub_host, session_f
     assert r_a.status_code == 201
     assert _promote(StubActor(id=1, username="admin", role="admin")).status_code == 201
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, r_a.get_json()["finding_id"])
+        f = db.get(fm.BoardFinding, r_a.get_json()["finding_id"])
         assert f.title == "RCE via upload"  # from_lotek_finding bridge, verbatim title
 
 
@@ -236,7 +236,7 @@ def test_promote_lotek_finding_accepts_a_uuid_core_id(client, stub_host, session
     r1 = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": str(core_id)})
     assert r1.status_code == 201, r1.get_json()
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, r1.get_json()["finding_id"])
+        f = db.get(fm.BoardFinding, r1.get_json()["finding_id"])
         assert f.source_finding_id == core_id
 
     r2 = client.post(f"{M}/engagements/{eid}/findings", json={"lotek_finding_id": str(core_id)})
@@ -260,7 +260,7 @@ def test_promote_lotek_finding_dedups_on_source_finding_id(client, stub_host, se
     assert body["deduped"] is True
     assert body["finding_id"] == r1.get_json()["finding_id"]
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert len([f for f in eng.findings if f.source_finding_id == 202]) == 1
 
 
@@ -281,7 +281,7 @@ def test_create_engagement_accepts_core_engagement_uuid(client, stub_host, sessi
     body = resp.get_json()
     assert body["core_engagement_id"] == str(core_id)
     with session_factory() as db:
-        eng = db.get(fm.Engagement, body["id"])
+        eng = db.get(fm.ReportBoard, body["id"])
         assert eng.core_engagement_id == core_id  # the UUID object, not its string spelling
 
 
@@ -307,7 +307,7 @@ def test_address_engagement_by_core_uuid(client, stub_host, session_factory):
     add = client.post(f"{M}/engagements/{core_id}/findings", json={"template_id": tid})
     assert add.status_code == 201, add.get_json()
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, add.get_json()["finding_id"])
+        f = db.get(fm.BoardFinding, add.get_json()["finding_id"])
         assert str(f.engagement_id) == eid
 
 

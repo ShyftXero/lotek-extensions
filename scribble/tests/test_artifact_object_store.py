@@ -38,7 +38,7 @@ from scribble.artifacts_storage import (
     read_object_bytes,
 )
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting.context import _artifact_ctxs
 from scribble.testing import CORE_OBJECT_KINDS, InMemoryObjects, MockCoreEngagements, wire_mock_host
 
@@ -72,7 +72,7 @@ def engagement(app, stub_host, session_factory):
         client_row = Client(name="Acme")
         db.add(client_row)
         db.flush()
-        eng = Engagement(name="Q3", client_id=client_row.id, company_name="Acme Corp",
+        eng = ReportBoard(name="Q3", client_id=client_row.id, company_name="Acme Corp",
                          core_engagement_id=uuid.uuid7())
         db.add(eng)
         db.commit()
@@ -283,7 +283,7 @@ def test_report_context_carries_the_reference_through_verbatim(
         group = FindingGroup(engagement_id=engagement.id, name="External", order_index=0)
         db.add(group)
         db.flush()
-        finding = EngagementFinding(engagement_id=engagement.id, group_id=group.id, title="xss",
+        finding = BoardFinding(engagement_id=engagement.id, group_id=group.id, title="xss",
                                     severity=Severity.high)
         db.add(finding)
         db.flush()
@@ -387,7 +387,7 @@ def test_creating_an_engagement_asks_the_host_for_a_core_engagement(
     body = resp.get_json()
     assert body["core_engagement_id"] is not None
     with session_factory() as db:
-        assert db.get(Engagement, uuid.UUID(str(body["id"]))).core_engagement_id is not None
+        assert db.get(ReportBoard, uuid.UUID(str(body["id"]))).core_engagement_id is not None
 
 
 def test_a_caller_that_cannot_create_one_gets_403_not_an_unusable_engagement(
@@ -419,7 +419,7 @@ def test_a_caller_may_supply_a_core_engagement_it_already_operates(
     assert resp.status_code == 201, resp.get_data(as_text=True)[:300]
     assert engagements.created == []
     with session_factory() as db:
-        stored = db.get(Engagement, uuid.UUID(str(resp.get_json()["id"]))).core_engagement_id
+        stored = db.get(ReportBoard, uuid.UUID(str(resp.get_json()["id"]))).core_engagement_id
     assert str(stored) == str(existing)
 
 

@@ -1,5 +1,5 @@
 """Parent aggregation in `scribble/promote.py::promote_job` — findings that resolve to the SAME
-`ScribbleVulnMap` template are grouped under ONE parent `EngagementFinding`, each scan finding
+`ScribbleVulnMap` template are grouped under ONE parent `BoardFinding`, each scan finding
 becoming a host-attributed CHILD (`parent_id` set). An unmapped finding stays flat/ungrouped.
 
 Ported from the deleted lotek `tests/test_promote_aggregation.py`, rewired onto the machine route +
@@ -77,7 +77,7 @@ def test_promote_groups_same_template_into_one_parent_with_host_attributed_child
     assert body["promoted"] == 2 and body["skipped"] == 0 and body["parents"] == 1
 
     with session_factory() as db:
-        rows = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).all()
+        rows = db.query(fm.BoardFinding).filter_by(engagement_id=eid).all()
         parents = [row for row in rows if row.parent_id is None]
         children = [row for row in rows if row.parent_id is not None]
         assert len(parents) == 1
@@ -118,7 +118,7 @@ def test_promote_rerun_does_not_duplicate_parent_or_children(
     assert body2["promoted"] == 0 and body2["skipped"] == 2 and body2["parents"] == 0
 
     with session_factory() as db:
-        rows = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).all()
+        rows = db.query(fm.BoardFinding).filter_by(engagement_id=eid).all()
         assert len([row for row in rows if row.parent_id is None]) == 1
         assert len([row for row in rows if row.parent_id is not None]) == 2
 
@@ -152,7 +152,7 @@ def test_promote_different_templates_get_separate_parents(
     assert body["promoted"] == 2 and body["parents"] == 2
 
     with session_factory() as db:
-        rows = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).all()
+        rows = db.query(fm.BoardFinding).filter_by(engagement_id=eid).all()
         parents = [row for row in rows if row.parent_id is None]
         assert {p.template_id for p in parents} == {tid_a, tid_b}
         assert len(parents) == 2
@@ -172,7 +172,7 @@ def test_promote_unmapped_findings_stay_flat_ungrouped(client, stub_host, sessio
     assert body["promoted"] == 1 and body["parents"] == 0
 
     with session_factory() as db:
-        rows = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).all()
+        rows = db.query(fm.BoardFinding).filter_by(engagement_id=eid).all()
         assert len(rows) == 1
         assert rows[0].parent_id is None
         assert rows[0].template_id is None
@@ -201,7 +201,7 @@ def test_promote_still_respects_job_tenancy_with_aggregation(
     assert r_b.status_code == 404
 
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert eng.findings == []  # opB's failed attempt created nothing
 
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
@@ -241,8 +241,8 @@ def test_promote_attributes_internal_host_without_global_asset(
 
     with session_factory() as db:
         children = (
-            db.query(fm.EngagementFinding)
-            .filter(fm.EngagementFinding.engagement_id == eid, fm.EngagementFinding.parent_id.isnot(None))
+            db.query(fm.BoardFinding)
+            .filter(fm.BoardFinding.engagement_id == eid, fm.BoardFinding.parent_id.isnot(None))
             .all()
         )
         assert len(children) == 2

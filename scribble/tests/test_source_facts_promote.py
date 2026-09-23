@@ -1,6 +1,6 @@
 """``source_facts`` snapshot + confidence/status mapping in promote (map #616 / #617).
 
-``EngagementFinding`` is a lossless superset of the scan ``FindingDTO``: promote captures the WHOLE DTO
+``BoardFinding`` is a lossless superset of the scan ``FindingDTO``: promote captures the WHOLE DTO
 verbatim into ``source_facts`` — even on the template-match path, where ``from_template`` otherwise
 discards the DTO's own title/severity/prose — and maps ``DTO.confidence``/``status`` onto the typed
 columns that previously sat silently at their defaults (medium/new). Re-promote REFRESHES ``source_facts``
@@ -57,7 +57,7 @@ def test_unmapped_promote_captures_full_source_facts_and_maps_confidence_status(
     assert r.status_code == 200 and r.get_json()["promoted"] == 1
 
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         # confidence/status mapped from the DTO — previously these defaulted silently to medium/new.
         assert row.confidence is fm.Confidence.high
         assert row.status is fm.FindingStatus.triaged
@@ -91,8 +91,8 @@ def test_template_match_promote_still_snapshots_the_source_dto(
 
     with session_factory() as db:
         child = (
-            db.query(fm.EngagementFinding)
-            .filter(fm.EngagementFinding.engagement_id == eid, fm.EngagementFinding.parent_id.isnot(None))
+            db.query(fm.BoardFinding)
+            .filter(fm.BoardFinding.engagement_id == eid, fm.BoardFinding.parent_id.isnot(None))
             .one()
         )
         # confidence/status come from the DTO even though the visible fields came from the template.
@@ -117,7 +117,7 @@ def test_repromote_refreshes_source_facts_without_clobbering_edits(
 
     # The operator edits the finding (title + status), THEN the upstream scan value moves.
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         row.title = "Open redirect (verified)"
         row.status = fm.FindingStatus.triaged
         db.commit()
@@ -130,7 +130,7 @@ def test_repromote_refreshes_source_facts_without_clobbering_edits(
     assert body["promoted"] == 0 and body["skipped"] == 1
 
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         assert row.title == "Open redirect (verified)"   # operator edit preserved
         assert row.status is fm.FindingStatus.triaged     # NOT stomped to the upstream "fixed"
         assert row.source_facts["status"] == "fixed"      # snapshot refreshed to source truth

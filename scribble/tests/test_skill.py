@@ -163,9 +163,9 @@ def test_context_sidecar_session_is_genuinely_readonly(tmp_path):
     sidecar = _load_sidecar_module()
     with sidecar.open_readonly_session(db_path) as session:
         # A plain read still works over this "read-only" session...
-        assert session.execute(sidecar.select(sidecar.Engagement)).first() is not None
+        assert session.execute(sidecar.select(sidecar.ReportBoard)).first() is not None
         # ...but any attempted write is rejected by SQLite itself (mode=ro), not merely by convention.
-        session.add(sidecar.Engagement(name="should never be persisted"))
+        session.add(sidecar.ReportBoard(name="should never be persisted"))
         with pytest.raises(OperationalError, match="readonly"):
             session.commit()
 
@@ -186,7 +186,7 @@ def test_context_sidecar_handles_path_with_uri_reserved_characters(tmp_path):
 
         from sqlalchemy.exc import OperationalError
 
-        session.add(sidecar.Engagement(name="should never be persisted"))
+        session.add(sidecar.ReportBoard(name="should never be persisted"))
         with pytest.raises(OperationalError, match="readonly"):
             session.commit()
 
@@ -210,7 +210,7 @@ def test_context_sidecar_cli_writes_json_file(tmp_path):
     # The DB itself must be untouched by the whole CLI round-trip.
     raw = sqlite3.connect(db_path)
     try:
-        (count,) = raw.execute("SELECT COUNT(*) FROM scribble_engagements").fetchone()
+        (count,) = raw.execute("SELECT COUNT(*) FROM scribble_report_boards").fetchone()
         assert count == 1
     finally:
         raw.close()

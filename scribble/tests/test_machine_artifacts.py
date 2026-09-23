@@ -151,7 +151,7 @@ def test_upload_can_be_attached_to_a_finding(client, stub_host, session_factory)
     """Evidence usually belongs to one finding, which is how it lands in the right report section."""
     eid = _engagement(client, stub_host)
     with session_factory() as db:
-        finding = fm.EngagementFinding(engagement_id=eid, title="XSS", severity="high")
+        finding = fm.BoardFinding(engagement_id=eid, title="XSS", severity="high")
         db.add(finding)
         db.commit()
         fid = finding.id
@@ -166,7 +166,7 @@ def test_upload_can_be_attached_to_a_finding(client, stub_host, session_factory)
 
 def _finding_on(session_factory, engagement_id: int, title: str = "XSS") -> int:
     with session_factory() as db:
-        finding = fm.EngagementFinding(engagement_id=engagement_id, title=title, severity="high")
+        finding = fm.BoardFinding(engagement_id=engagement_id, title=title, severity="high")
         db.add(finding)
         db.commit()
         return finding.id
@@ -206,7 +206,7 @@ def test_a_foreign_finding_id_is_dropped_AND_the_caller_is_told(client, stub_hos
     assert body["finding_id_dropped"] is True, "a dropped attachment must be visible to the caller"
     with session_factory() as db:
         assert db.get(fm.Artifact, body["id"]).finding_id is None
-        assert db.get(fm.EngagementFinding, foreign_fid).artifacts == []
+        assert db.get(fm.BoardFinding, foreign_fid).artifacts == []
 
 
 def test_a_nonexistent_finding_id_is_dropped_the_same_way(client, stub_host):

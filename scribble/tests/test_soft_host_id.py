@@ -1,4 +1,4 @@
-"""Unit tests for ``scribble.db.SoftHostId`` -- the TEXT-backed column type ``Engagement.owner_id``/
+"""Unit tests for ``scribble.db.SoftHostId`` -- the TEXT-backed column type ``ReportBoard.owner_id``/
 ``.client_id`` use to hold EITHER host id shape (a plain int, standalone/legacy, or a ``uuid.UUID``,
 Lotek v2's UUIDv7 PKs) and round-trip the ORIGINAL Python type on read (see the type's own docstring for
 why that round-trip is load-bearing, not cosmetic).

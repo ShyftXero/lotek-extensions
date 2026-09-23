@@ -50,7 +50,7 @@ def _build_int_schema_with_data(eng):
 
     with eng.begin() as c:
         c.execute(text(
-            "INSERT INTO scribble_engagements "
+            "INSERT INTO scribble_report_boards "
             "(id, name, scope_type, status, created_at, updated_at) VALUES "
             "(1, 'Acme Q3', 'external', 'active', now(), now()), "
             "(2, 'Beta Corp', 'external', 'active', now(), now())"
@@ -79,14 +79,14 @@ def test_migration_preserves_every_row_and_its_relationships():
         # Types actually changed...
         kinds = {
             col["name"]: type(col["type"]).__name__
-            for col in inspect(eng).get_columns("scribble_engagements")
+            for col in inspect(eng).get_columns("scribble_report_boards")
         }
         assert kinds["id"] == "UUID", f"engagement PK is still {kinds['id']}"
 
         # ...and, the part that matters, each finding is still attached to ITS OWN engagement.
         pairs = c.execute(text(
             "SELECT f.title, e.name FROM scribble_findings f "
-            "JOIN scribble_engagements e ON f.engagement_id = e.id ORDER BY f.title"
+            "JOIN scribble_report_boards e ON f.engagement_id = e.id ORDER BY f.title"
         )).fetchall()
     assert [tuple(r) for r in pairs] == [("SQLi in login", "Acme Q3"), ("XSS in search", "Beta Corp")], (
         "findings were re-pointed at the wrong engagements — the FK backfill joined incorrectly"
@@ -113,14 +113,14 @@ def test_the_mapping_table_survives_the_migration_and_covers_the_cross_repo_refe
         )
         rows = c.execute(text(
             f"SELECT old_int_id, new_uuid FROM {MAP_TABLE} "
-            "WHERE table_name = 'scribble_engagements' ORDER BY old_int_id"
+            "WHERE table_name = 'scribble_report_boards' ORDER BY old_int_id"
         )).fetchall()
         assert [r[0] for r in rows] == [1, 2], "engagement ids missing from the mapping"
 
         # The mapped uuid is the one the row actually carries — not a fresh, unrelated uuid.
         for old_id, mapped in rows:
             name = c.execute(
-                text("SELECT name FROM scribble_engagements WHERE id = :u"), {"u": mapped}
+                text("SELECT name FROM scribble_report_boards WHERE id = :u"), {"u": mapped}
             ).scalar_one()
             assert name == {1: "Acme Q3", 2: "Beta Corp"}[old_id]
 
@@ -131,7 +131,7 @@ def test_new_rows_get_uuid7_not_uuid4():
     from alembic import command
 
     from scribble.db import _alembic_config, make_session_factory
-    from scribble.models import Engagement
+    from scribble.models import ReportBoard
 
     eng = _wiped_engine()
     _build_int_schema_with_data(eng)
@@ -139,7 +139,7 @@ def test_new_rows_get_uuid7_not_uuid4():
         command.upgrade(_alembic_config(conn), "head")
 
     with make_session_factory(eng)() as db:
-        e = Engagement(name="post-migration")
+        e = ReportBoard(name="post-migration")
         db.add(e)
         db.commit()
         assert isinstance(e.id, uuid.UUID)

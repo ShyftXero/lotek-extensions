@@ -75,7 +75,7 @@ def render_report_json(ctx: ReportContext) -> str:
             "risk_override_rationale": ctx.risk_override_rationale,
         },
         "findings": [_finding(f, g.name) for g in ctx.groups for f in g.findings],
-        # Engagement-level evidence appendix (artifacts with no finding_id) — the same list the report's
+        # ReportBoard-level evidence appendix (artifacts with no finding_id) — the same list the report's
         # Evidence appendix publishes, carried so its #626 hashes are exportable too.
         "evidence": _evidence(ctx.artifacts),
     }

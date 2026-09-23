@@ -7,10 +7,10 @@ from scribble.content import schema
 from scribble.enums import OrderMode, Severity
 from scribble.models import (
     AssessmentType,
+    BoardFinding,
     Client,
-    Engagement,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     VulnerabilityTemplate,
 )
 from scribble.reporting import build_report_context
@@ -50,7 +50,7 @@ def test_client_normalized_in_seed(session_factory):
 
 
 def _finding(engagement, group, title, sev, order, *, target_host=None, block=None):
-    return EngagementFinding(
+    return BoardFinding(
         engagement=engagement,
         group=group,
         title=title,
@@ -66,7 +66,7 @@ def test_report_context_ordering_and_filtering(session_factory):
         c = Client(name="Acme")
         db.add(c)
         db.flush()
-        eng = Engagement(name="Q3 Combined", client_id=c.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Q3 Combined", client_id=c.id, company_name="Acme Corp")
         internal = FindingGroup(engagement=eng, name="Internal", order_index=0)
         external = FindingGroup(engagement=eng, name="External", order_index=1)
         # auto_severity: low added first but critical must sort ahead of it.
@@ -92,7 +92,7 @@ def test_report_context_ordering_and_filtering(session_factory):
 
 def test_report_context_manual_order(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Manual", company_name="Acme")
+        eng = ReportBoard(name="Manual", company_name="Acme")
         g = FindingGroup(engagement=eng, name="External", order_index=0, order_mode=OrderMode.manual)
         _finding(eng, g, "second-added-first-shown", Severity.low, 0)
         _finding(eng, g, "first-added-second-shown", Severity.critical, 1)
@@ -111,7 +111,7 @@ def test_report_context_nests_children_under_parent(session_factory):
     """D1 (nested render): a finding whose ``parent_id`` points at another finding in the SAME
     ordered list becomes that parent's ``FindingCtx.children`` instead of its own top-level entry."""
     with session_factory() as db:
-        eng = Engagement(name="Nested", company_name="Acme")
+        eng = ReportBoard(name="Nested", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
         parent = _finding(
             eng, g, "Weak SMB Signing", Severity.high, 0, target_host="10.0.0.1"
@@ -126,7 +126,7 @@ def test_report_context_nests_children_under_parent(session_factory):
         db.add_all([child_a, child_b])
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     findings = ctx.groups[0].findings
     # Only the parent is top-level -- children never get their own top-level FindingCtx entry.
@@ -140,13 +140,13 @@ def test_report_context_nests_children_under_parent(session_factory):
 def test_report_context_childless_finding_has_empty_children(session_factory):
     """A finding with no children renders exactly as before nesting existed: ``children == []``."""
     with session_factory() as db:
-        eng = Engagement(name="No Nesting", company_name="Acme")
+        eng = ReportBoard(name="No Nesting", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
         _finding(eng, g, "Standalone Finding", Severity.medium, 0)
         db.add(eng)
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     assert ctx.groups[0].findings[0].children == []
 
@@ -158,7 +158,7 @@ def test_report_context_orphaned_child_falls_back_to_top_level(session_factory):
     a real finding row that ``_order_findings`` has already filtered out -- not a dangling id, which
     the FK constraint wouldn't allow to be inserted at all."""
     with session_factory() as db:
-        eng = Engagement(name="Orphan", company_name="Acme")
+        eng = ReportBoard(name="Orphan", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
         excluded_parent = _finding(eng, g, "Excluded Parent", Severity.low, 0)
         excluded_parent.include_in_report = False
@@ -170,7 +170,7 @@ def test_report_context_orphaned_child_falls_back_to_top_level(session_factory):
         db.add(orphan)
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     findings = ctx.groups[0].findings
     assert [f.title for f in findings] == ["Orphaned Child"]
@@ -188,7 +188,7 @@ def test_report_context_nests_exactly_one_level_deep(session_factory):
     faithful, and one shared copy means one break shows up on both surfaces.
     """
     with session_factory() as db:
-        eng = Engagement(name="Deep", company_name="Acme")
+        eng = ReportBoard(name="Deep", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
         parent = _finding(eng, g, "Weak SMB Signing", Severity.high, 0, target_host="10.0.0.1")
         db.add(eng)
@@ -204,7 +204,7 @@ def test_report_context_nests_exactly_one_level_deep(session_factory):
         db.add(grandchild)
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     findings = ctx.groups[0].findings
     assert [f.target_host for f in findings] == ["10.0.0.1", "10.0.0.3"]
@@ -219,14 +219,14 @@ def test_report_context_narrative_is_populated_and_data_derived(session_factory)
         c = Client(name="Acme")
         db.add(c)
         db.flush()
-        eng = Engagement(name="Narrative Co", client_id=c.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Narrative Co", client_id=c.id, company_name="Acme Corp")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
         _finding(eng, g, "Domain Admin Compromise", Severity.critical, 0)
         _finding(eng, g, "Weak SMB Signing", Severity.low, 1)
         db.add(eng)
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     assert ctx.narrative != ""
     assert "Acme Corp" in ctx.narrative
@@ -237,11 +237,11 @@ def test_report_context_narrative_is_populated_and_data_derived(session_factory)
 def test_report_context_narrative_empty_engagement(session_factory):
     """A clean engagement (no findings) still gets a factual, non-empty narrative sentence."""
     with session_factory() as db:
-        eng = Engagement(name="Clean", company_name="Acme")
+        eng = ReportBoard(name="Clean", company_name="Acme")
         db.add(eng)
         db.commit()
 
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     assert ctx.narrative != ""
     assert "Acme" in ctx.narrative
@@ -262,7 +262,7 @@ def test_variable_resolution_in_context(session_factory):
         ],
     }
     with session_factory() as db:
-        eng = Engagement(name="Vars", company_name="Acme Corp")
+        eng = ReportBoard(name="Vars", company_name="Acme Corp")
         g = FindingGroup(engagement=eng, name="Web App", order_index=0)
         _finding(eng, g, "xss", Severity.high, 0, target_host="10.0.0.5", block=block)
         db.add(eng)
@@ -278,7 +278,7 @@ def test_variable_resolution_in_context(session_factory):
 def test_from_template(session_factory):
     with session_factory() as db:
         tmpl = db.query(VulnerabilityTemplate).first()
-        finding = EngagementFinding.from_template(tmpl)
+        finding = BoardFinding.from_template(tmpl)
         assert finding.title == tmpl.name
         assert finding.template_id == tmpl.id
         assert finding.severity == tmpl.default_severity

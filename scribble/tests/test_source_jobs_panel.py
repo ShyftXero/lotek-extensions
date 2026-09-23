@@ -1,4 +1,4 @@
-"""Engagement board "Source jobs" panel (#629): the REVERSE of promotion.
+"""ReportBoard board "Source jobs" panel (#629): the REVERSE of promotion.
 
 `promote-job` records that a host scan job's findings were poured onto THIS engagement
 (`host.mark_job_promoted`). The reverse view — which jobs fed this engagement — is `host.list_jobs`
@@ -18,7 +18,7 @@ import scribble.models as fm
 
 def _engagement(session_factory, name: str = "E") -> object:
     with session_factory() as db:
-        eng = fm.Engagement(name=name)  # client_id NULL -> admin-only, which the default stub actor is
+        eng = fm.ReportBoard(name=name)  # client_id NULL -> admin-only, which the default stub actor is
         db.add(eng)
         db.commit()
         return eng.id

@@ -82,6 +82,10 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         "scribble.dashboard",
         "scribble.engagements",
         "scribble.engagement_new",
+        # Reverse-link resolver: keyed on a CORE engagement id (core_id), authorized by the HOST seam
+        # (host.can_operate_on) and collapsing every failure to one 404 — not scoped by a scribble
+        # board id, so it is declared non-scoped here (lotek-extensions #227).
+        "scribble.engagement_by_core",
         "scribble.library",
         "scribble.library_new",
         "scribble.library_detail",
@@ -162,7 +166,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
     not safe to share across a mutation and a later read of the same rows.
     """
     with session_factory() as db:
-        eng = fm.Engagement(name="Tenancy Gate Target", client_id=client_id)
+        eng = fm.ReportBoard(name="Tenancy Gate Target", client_id=client_id)
         db.add(eng)
         db.commit()
 
@@ -170,7 +174,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
         db.add(tmpl)
         db.commit()
 
-        finding = fm.EngagementFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
+        finding = fm.BoardFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
         db.add(finding)
         group = fm.FindingGroup(engagement_id=eng.id, name="Group", order_index=0)
         db.add(group)
@@ -366,7 +370,7 @@ def test_every_scoped_route_write_blocks_a_writeless_viewer(app, stub_host, sess
 
 def _make_engagement(session_factory, *, client_id) -> int:
     with session_factory() as db:
-        eng = fm.Engagement(name="Named-route target", client_id=client_id)
+        eng = fm.ReportBoard(name="Named-route target", client_id=client_id)
         db.add(eng)
         db.commit()
         return eng.id
@@ -409,13 +413,13 @@ def test_engagement_delete_denied_then_allowed(client, stub_host, session_factor
     _outsider(stub_host)
     assert client.post(f"{UI}/engagements/{denied_eid}/delete").status_code == 404
     with session_factory() as db:
-        assert db.get(fm.Engagement, denied_eid) is not None  # never touched
+        assert db.get(fm.ReportBoard, denied_eid) is not None  # never touched
 
     allowed_eid = _make_engagement(session_factory, client_id=ACME)
     _member(stub_host)
     assert client.post(f"{UI}/engagements/{allowed_eid}/delete").status_code == 302
     with session_factory() as db:
-        assert db.get(fm.Engagement, allowed_eid) is None
+        assert db.get(fm.ReportBoard, allowed_eid) is None
 
 
 def test_add_finding_denied_then_allowed(client, stub_host, session_factory):
@@ -430,13 +434,13 @@ def test_add_finding_denied_then_allowed(client, stub_host, session_factory):
     resp = client.post(f"{UI}/engagements/{eid}/findings", data={"template_id": str(tmpl_id)})
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).findings == []  # never touched
+        assert db.get(fm.ReportBoard, eid).findings == []  # never touched
 
     _member(stub_host)
     resp = client.post(f"{UI}/engagements/{eid}/findings", data={"template_id": str(tmpl_id)})
     assert resp.status_code == 302
     with session_factory() as db:
-        assert len(db.get(fm.Engagement, eid).findings) == 1
+        assert len(db.get(fm.ReportBoard, eid).findings) == 1
 
 
 def test_groups_reorder_denied_then_allowed(client, stub_host, session_factory):
@@ -498,7 +502,7 @@ def test_artifact_upload_to_foreign_engagement_denied(client, stub_host, session
     )
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).artifacts == []  # nothing written
+        assert db.get(fm.ReportBoard, eid).artifacts == []  # nothing written
 
 
 def test_artifact_upload_to_own_client_engagement_allowed(client, stub_host, session_factory):

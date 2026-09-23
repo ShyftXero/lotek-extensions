@@ -24,7 +24,7 @@ import zipfile
 
 from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context, render_html
 from scribble.reporting.render_html import export_zip, render_report_html
 
@@ -64,19 +64,19 @@ def _matrix(session_factory) -> int:
         client = Client(name="TeamsPlus")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Matrix engagement", client_id=client.id, company_name="TeamsPlus")
+        eng = ReportBoard(name="Matrix engagement", client_id=client.id, company_name="TeamsPlus")
         grp = FindingGroup(engagement=eng, name="Web Application", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=grp, title="CONTROL parent finding", severity=Severity.high,
             order_index=0, content_json={"description": _block("Parent with its own screenshot.")},
         )
-        aggregated = EngagementFinding(
+        aggregated = BoardFinding(
             engagement=eng, group=grp, title="AGGREGATED parent finding", severity=Severity.critical,
             order_index=1, content_json={"description": _block("Evidence sits on the child.")},
         )
         db.add_all([eng, grp, parent, aggregated])
         db.flush()
-        child = EngagementFinding(
+        child = BoardFinding(
             engagement=eng, group=grp, title="CHILD instance", severity=Severity.critical,
             order_index=0, parent_id=aggregated.id, target_host="portal.teamsplus.example",
             content_json={"description": _block("Child instance.")},
@@ -95,7 +95,7 @@ def _matrix(session_factory) -> int:
 
 def _render(session_factory, eng_id: int) -> str:
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     return render_report_html(ctx, inline_assets=True, artifact_bytes=FILES.get)
 
 
@@ -158,7 +158,7 @@ def test_no_engagement_artifacts_means_no_evidence_section_and_no_nav_link(sessi
     """The normal case: all evidence hangs off findings, so the appendix (and its nav link) is absent
     rather than an empty section with a live link into it."""
     with session_factory() as db:
-        eng = Engagement(name="No loose evidence", company_name="Acme")
+        eng = ReportBoard(name="No loose evidence", company_name="Acme")
         db.add(eng)
         db.commit()
         eid = eng.id
@@ -170,7 +170,7 @@ def test_no_engagement_artifacts_means_no_evidence_section_and_no_nav_link(sessi
 def test_engagement_artifact_excluded_from_the_report_stays_out(session_factory):
     """``include_in_report`` governs engagement-level evidence exactly as it governs a finding's."""
     with session_factory() as db:
-        eng = Engagement(name="Hidden evidence", company_name="Acme")
+        eng = ReportBoard(name="Hidden evidence", company_name="Acme")
         db.add(eng)
         db.flush()
         db.add(_artifact(filename="engagement-level.png", engagement=eng, include_in_report=False))
@@ -186,7 +186,7 @@ def test_context_lists_only_unattached_artifacts(session_factory):
     finding's gallery and must not be duplicated into the appendix."""
     eid = _matrix(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     assert [a.filename for a in ctx.artifacts] == ["engagement-level.png"]
 
 
@@ -195,15 +195,15 @@ def test_context_lists_only_unattached_artifacts(session_factory):
 
 def test_child_row_with_no_evidence_shows_a_dash_not_a_blank_cell(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Bare child", company_name="Acme")
+        eng = ReportBoard(name="Bare child", company_name="Acme")
         grp = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=grp, title="Parent", severity=Severity.high, order_index=0,
             content_json={"description": _block("x")},
         )
         db.add_all([eng, grp, parent])
         db.flush()
-        db.add(EngagementFinding(
+        db.add(BoardFinding(
             engagement=eng, group=grp, title="Child", severity=Severity.high, order_index=0,
             parent_id=parent.id, target_host="host-a.example", content_json={"description": _block("y")},
         ))
@@ -223,7 +223,7 @@ def test_export_zip_carries_child_and_engagement_evidence(session_factory):
     about."""
     eid = _matrix(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     payload = export_zip(ctx, artifact_bytes=FILES.get)
     with zipfile.ZipFile(io.BytesIO(payload)) as zf:
         names = zf.namelist()
@@ -258,7 +258,7 @@ PCAP = b"\xd4\xc3\xb2\xa1" + b"\x00" * 4096
 
 def _engagement_with(session_factory, *artifacts_kwargs) -> int:
     with session_factory() as db:
-        eng = Engagement(name="Evidence bytes", company_name="Acme")
+        eng = ReportBoard(name="Evidence bytes", company_name="Acme")
         db.add(eng)
         db.flush()
         for kw in artifacts_kwargs:
@@ -276,7 +276,7 @@ def test_a_non_image_artifact_is_NAMED_but_its_bytes_stay_out_of_the_document(se
          "caption": "raw capture", "byte_size": len(PCAP)},
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(ctx, inline_assets=True, artifact_bytes=lambda _p: PCAP)
 
     assert 'id="sec-evidence"' in html, "the appendix must still list it"
@@ -302,7 +302,7 @@ def test_the_bytes_of_a_non_image_are_never_even_READ(session_factory):
         return PNG if storage_path.endswith(".png") else PCAP
 
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(ctx, inline_assets=True, artifact_bytes=reader)
     assert read == ["shot.png"], f"the renderer read bytes it cannot embed: {read}"
     assert "data:image/png;base64," in html
@@ -318,7 +318,7 @@ def test_an_image_over_the_PER_ASSET_budget_is_not_embedded(session_factory, mon
         {"filename": "small.png", "content_type": "image/png", "byte_size": len(PNG)},
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(
         ctx, inline_assets=True,
         artifact_bytes=lambda p: PNG if p.startswith("small") else b"\x89PNG" + b"\x00" * 4096,
@@ -336,7 +336,7 @@ def test_a_LYING_byte_size_does_not_get_an_artifact_past_the_budget(session_fact
         {"filename": "liar.png", "content_type": "image/png", "byte_size": 10},
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(
         ctx, inline_assets=True, artifact_bytes=lambda _p: b"\x89PNG" + b"\x00" * 4096
     )
@@ -359,7 +359,7 @@ def test_the_PER_RENDER_budget_bounds_a_document_full_of_legal_images(session_fa
         ],
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(ctx, inline_assets=True, artifact_bytes=lambda _p: img)
 
     embedded = html.count("data:image/png;base64,") // 2  # each embedded image renders thumb + lightbox
@@ -378,7 +378,7 @@ def test_export_zip_still_delivers_a_non_image_as_a_REAL_FILE(session_factory):
          "byte_size": len(PCAP)},
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     payload = export_zip(ctx, artifact_bytes=lambda _p: PCAP)
     with zipfile.ZipFile(io.BytesIO(payload)) as zf:
         entries = [n for n in zf.namelist() if n.startswith("artifacts/")]
@@ -399,7 +399,7 @@ def test_the_appendix_lists_at_most_MAX_items_and_SAYS_how_many_it_withheld(sess
         ],
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(ctx, inline_assets=True, artifact_bytes=lambda _p: PNG)
 
     assert "5 items" in html, "the heading must report the true total"
@@ -415,6 +415,6 @@ def test_the_not_embedded_chip_reports_the_size_it_is_not_carrying(session_facto
          "byte_size": 3 * 1024 * 1024},
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = render_report_html(ctx, inline_assets=True, artifact_bytes=lambda _p: PCAP)
     assert "not embedded · 3.0 MiB" in html

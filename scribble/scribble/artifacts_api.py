@@ -61,7 +61,7 @@ from scribble.artifacts_storage import (
 from scribble.authz import can_view_engagement
 from scribble.deps import current_actor, current_actor_username, open_session
 from scribble.enums import ArtifactKind, ArtifactPlacement
-from scribble.models import Artifact, Engagement, EngagementFinding
+from scribble.models import Artifact, BoardFinding, ReportBoard
 
 _REGISTERED_ATTR = "_scribble_artifacts_registered"
 
@@ -227,7 +227,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         # oracle (adversarial review on #256). ``can_view_engagement`` is the same predicate, called
         # explicitly so both cases return this route's own JSON shape.
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None or not can_view_engagement(engagement, current_actor()):
                 return jsonify(error="engagement not found"), 404
 
@@ -276,7 +276,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         finding_id_dropped = False
         if finding_id is not None:
             with open_session() as db:
-                target = db.get(EngagementFinding, finding_id)
+                target = db.get(BoardFinding, finding_id)
                 if target is None or target.engagement_id != engagement_id:
                     finding_id = None
                     finding_id_dropped = True
@@ -305,7 +305,7 @@ def register(api_bp, bp) -> None:  # noqa: ARG001 - `bp` reserved for future UI 
         # `core_engagement_id` is read in its own short session so the S3 put holds no DB connection
         # and cannot read a detached attribute.
         with open_session() as db:
-            engagement_row = db.get(Engagement, engagement_id)
+            engagement_row = db.get(ReportBoard, engagement_id)
             core_engagement_id = getattr(engagement_row, "core_engagement_id", None)
         try:
             storage_path, sha256, byte_size = persist_bytes(

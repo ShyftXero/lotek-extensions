@@ -16,7 +16,7 @@ ordering bug can't hide behind a same-severity fixture, and the arranged manual 
 worst-first order (critical, medium, low) -- in fact it's the exact reverse of severity order -- so a
 regression to either wrong order would be caught by every assertion below, not just one.
 
-Fixtures are built from scratch here (own VulnerabilityTemplates, own Client/Engagement) rather than
+Fixtures are built from scratch here (own VulnerabilityTemplates, own Client/ReportBoard) rather than
 depending on the FACTION-derived seed text WS12 is actively rewriting.
 """
 
@@ -35,9 +35,9 @@ from scribble.content import schema
 from scribble.enums import Severity
 from scribble.models import (
     AssessmentType,
-    Engagement,
-    EngagementFinding,
+    BoardFinding,
     FindingGroup,
+    ReportBoard,
     VulnerabilityTemplate,
 )
 from scribble.reporting import build_report_context
@@ -117,7 +117,7 @@ def flow(client, session_factory, cfg, app):
     resp = client.post(
         f"{UI}/engagements/new",
         data={
-            "name": "E2E Flow Engagement",
+            "name": "E2E Flow ReportBoard",
             "new_client_name": "E2E Flow Client",
             "scope_type": "combined",
             "company_name": "E2E Flow Corp",
@@ -126,7 +126,7 @@ def flow(client, session_factory, cfg, app):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        eng = db.query(Engagement).filter_by(name="E2E Flow Engagement").one()
+        eng = db.query(ReportBoard).filter_by(name="E2E Flow ReportBoard").one()
         eng_id = eng.id
         resolved_client = eng.resolve_client(db)
         assert resolved_client is not None
@@ -174,7 +174,7 @@ def flow(client, session_factory, cfg, app):
 
     with session_factory() as db:
         by_title = {
-            f.title: f.id for f in db.query(EngagementFinding).filter_by(engagement_id=eng_id).all()
+            f.title: f.id for f in db.query(BoardFinding).filter_by(engagement_id=eng_id).all()
         }
     med_id = by_title[TITLE_MEDIUM]
     crit_id = by_title[TITLE_CRITICAL]
@@ -184,7 +184,7 @@ def flow(client, session_factory, cfg, app):
     # Sanity: before any manual drag, auto_severity renders worst-first (critical, high, medium, low)
     # -- confirms the fixture's starting state is exactly what the rest of this fixture assumes.
     with session_factory() as db:
-        ctx0 = build_report_context(db.get(Engagement, eng_id))
+        ctx0 = build_report_context(db.get(ReportBoard, eng_id))
     internal0 = next(g for g in ctx0.groups if g.name == "Internal")
     assert [f.title for f in internal0.findings] == [
         TITLE_CRITICAL,
@@ -209,7 +209,7 @@ def flow(client, session_factory, cfg, app):
     # only the final order would pass green with the bug present -- this intermediate check is the only
     # thing that can catch it. (High is still included at this point; exclusion happens in step 7.)
     with session_factory() as db:
-        ctx_after_first = build_report_context(db.get(Engagement, eng_id))
+        ctx_after_first = build_report_context(db.get(ReportBoard, eng_id))
     internal_after_first = next(g for g in ctx_after_first.groups if g.name == "Internal")
     assert [f.title for f in internal_after_first.findings] == [
         TITLE_LOW,
@@ -269,10 +269,10 @@ def flow(client, session_factory, cfg, app):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        low_finding = db.get(EngagementFinding, low_id)
+        low_finding = db.get(BoardFinding, low_id)
         assert low_finding.target_host == TARGET_HOST_VALUE
         assert low_finding.include_in_report is True
-        assert db.get(EngagementFinding, high_id).include_in_report is False
+        assert db.get(BoardFinding, high_id).include_in_report is False
 
     def _artifact_bytes(storage_path: str) -> bytes | None:
         # The real reader — there is only one now, and a test that reimplemented it would stop
@@ -299,7 +299,7 @@ def flow(client, session_factory, cfg, app):
 
 def test_context_order_matches_arranged_board_order(session_factory, flow):
     with session_factory() as db:
-        engagement = db.get(Engagement, flow["eng_id"])
+        engagement = db.get(ReportBoard, flow["eng_id"])
         ctx = build_report_context(engagement)
 
     # Group order: the reorder call put External before Internal -- board order == document order.
@@ -328,7 +328,7 @@ def test_context_order_matches_arranged_board_order(session_factory, flow):
 
 def test_html_report_matches_context_order_and_resolves_variables(session_factory, flow):
     with session_factory() as db:
-        engagement = db.get(Engagement, flow["eng_id"])
+        engagement = db.get(ReportBoard, flow["eng_id"])
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=flow["artifact_bytes"])
 
@@ -372,7 +372,7 @@ def test_html_report_matches_context_order_and_resolves_variables(session_factor
 
 def test_docx_report_matches_context_order_and_resolves_variables(session_factory, flow):
     with session_factory() as db:
-        engagement = db.get(Engagement, flow["eng_id"])
+        engagement = db.get(ReportBoard, flow["eng_id"])
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx, artifact_bytes=flow["artifact_bytes"])
 
@@ -408,7 +408,7 @@ def test_docx_report_matches_context_order_and_resolves_variables(session_factor
 
 def test_export_zip_bundles_report_and_artifacts(session_factory, flow):
     with session_factory() as db:
-        engagement = db.get(Engagement, flow["eng_id"])
+        engagement = db.get(ReportBoard, flow["eng_id"])
         ctx = build_report_context(engagement)
         payload = export_zip(ctx, artifact_bytes=flow["artifact_bytes"])
 

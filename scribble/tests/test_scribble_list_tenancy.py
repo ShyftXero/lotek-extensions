@@ -48,7 +48,7 @@ def _clients(session_factory) -> None:
 
 def _engagement(session_factory, *, client_id, name) -> int:
     with session_factory() as db:
-        eng = fm.Engagement(name=name, client_id=client_id)
+        eng = fm.ReportBoard(name=name, client_id=client_id)
         db.add(eng)
         db.commit()
         return eng.id
@@ -87,7 +87,7 @@ def test_dashboard_counts_are_scoped_too(client, stub_host, session_factory):
         db.add(tmpl)
         db.commit()
         for eid in (ours, theirs):
-            db.add(fm.EngagementFinding.from_template(tmpl, engagement_id=eid, order_index=0))
+            db.add(fm.BoardFinding.from_template(tmpl, engagement_id=eid, order_index=0))
         db.commit()
     _member(stub_host)
 
@@ -128,7 +128,7 @@ def test_client_picker_shows_only_the_viewers_clients(client, stub_host, session
 
 def _engagement_count(session_factory) -> int:
     with session_factory() as db:
-        return len(db.query(fm.Engagement).all())
+        return len(db.query(fm.ReportBoard).all())
 
 
 def test_create_denies_a_client_the_actor_cannot_view(client, stub_host, session_factory):
@@ -176,7 +176,7 @@ def test_create_allows_a_client_the_actor_holds(client, stub_host, session_facto
     resp = client.post(f"{UI}/engagements/new", data={"name": "Ours", "client_id": str(ACME)})
     assert resp.status_code == 302
     with session_factory() as db:
-        assert [e.client_id for e in db.query(fm.Engagement).all()] == [ACME]
+        assert [e.client_id for e in db.query(fm.ReportBoard).all()] == [ACME]
 
 
 # ── the client field on edit (the MOVE case) ─────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ def test_edit_cannot_move_an_engagement_to_a_foreign_client(client, stub_host, s
     )
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).client_id == ACME  # untouched
+        assert db.get(fm.ReportBoard, eid).client_id == ACME  # untouched
 
 
 def test_edit_cannot_strip_the_client_when_mounted(client, stub_host, session_factory):
@@ -208,7 +208,7 @@ def test_edit_cannot_strip_the_client_when_mounted(client, stub_host, session_fa
     resp = client.post(f"{UI}/engagements/{eid}/edit", data={"name": "Ours Q3", "client_id": ""})
     assert resp.status_code == 400
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).client_id == ACME
+        assert db.get(fm.ReportBoard, eid).client_id == ACME
 
 
 def test_edit_within_the_actors_own_clients_still_works(client, stub_host, session_factory):
@@ -222,7 +222,7 @@ def test_edit_within_the_actors_own_clients_still_works(client, stub_host, sessi
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert eng.name == "Ours Q3 (renamed)" and eng.client_id == ACME
 
 

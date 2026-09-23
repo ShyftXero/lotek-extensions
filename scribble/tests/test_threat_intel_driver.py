@@ -18,7 +18,7 @@ EDD: the ``feed`` is a HAND-WRITTEN synthetic INPUT, never a captured exploiteer
 from __future__ import annotations
 
 from scribble.enrichment import ThreatIntelDriver, egress_consented
-from scribble.models import Engagement, EngagementFinding
+from scribble.models import BoardFinding, ReportBoard
 
 
 def _recording_hook(feed, health):
@@ -37,10 +37,10 @@ def _recording_hook(feed, health):
 def _make_finding(session_factory, *, scope_type="external", consent=False,
                   cve_ids=("CVE-2021-44228",)):
     with session_factory() as db:
-        eng = Engagement(name="e642", scope_type=scope_type, threat_intel_egress_consent=consent)
+        eng = ReportBoard(name="e642", scope_type=scope_type, threat_intel_egress_consent=consent)
         db.add(eng)
         db.flush()
-        finding = EngagementFinding(engagement_id=eng.id, title="rce", severity="high",
+        finding = BoardFinding(engagement_id=eng.id, title="rce", severity="high",
                                     cve_ids=list(cve_ids))
         db.add(finding)
         db.commit()
@@ -51,7 +51,7 @@ def _make_finding(session_factory, *, scope_type="external", consent=False,
 
 def test_egress_consented_is_off_by_default(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="d", scope_type="external")
+        eng = ReportBoard(name="d", scope_type="external")
         db.add(eng)
         db.flush()
         assert egress_consented(eng) is False
@@ -59,7 +59,7 @@ def test_egress_consented_is_off_by_default(session_factory):
 
 def test_egress_consented_true_when_external_and_flag_set(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="c", scope_type="external", threat_intel_egress_consent=True)
+        eng = ReportBoard(name="c", scope_type="external", threat_intel_egress_consent=True)
         db.add(eng)
         db.flush()
         assert egress_consented(eng) is True
@@ -67,7 +67,7 @@ def test_egress_consented_true_when_external_and_flag_set(session_factory):
 
 def test_egress_consented_forced_off_for_internal_even_with_flag(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="i", scope_type="internal", threat_intel_egress_consent=True)
+        eng = ReportBoard(name="i", scope_type="internal", threat_intel_egress_consent=True)
         db.add(eng)
         db.flush()
         assert egress_consented(eng) is False
@@ -84,12 +84,12 @@ def test_a_consent_on_with_mock_feed_populates_threat_intel(app, stub_host, sess
     with app.app_context():
         app.extensions["scribble"].extras["verdicts_for_cves"] = hook
         with session_factory() as db:
-            finding = db.get(EngagementFinding, fid)
+            finding = db.get(BoardFinding, fid)
             snap = ThreatIntelDriver().propose(db, finding)
             ThreatIntelDriver().apply(db, finding, snap)
             db.commit()
         with session_factory() as db:
-            ti = db.get(EngagementFinding, fid).threat_intel
+            ti = db.get(BoardFinding, fid).threat_intel
     assert hook.calls == [["CVE-2021-44228"]]           # the lookup happened, with the finding's CVEs
     assert ti["source"] == "exploiteer"
     assert ti["cves"]["CVE-2021-44228"]["kev"] is True  # produced by build_threat_intel, not reinvented
@@ -107,7 +107,7 @@ def test_b_exploiteer_absent_yields_none_without_error_or_audit(app, stub_host, 
     with app.app_context():
         # no verdicts_for_cves hook wired -> exploiteer unmounted -> degrade to no snapshot
         with session_factory() as db:
-            finding = db.get(EngagementFinding, fid)
+            finding = db.get(BoardFinding, fid)
             assert ThreatIntelDriver().propose(db, finding) is None
     assert stub_host.audit_calls == []  # no lookup happened -> nothing to audit
 
@@ -118,7 +118,7 @@ def test_c_consent_off_makes_no_lookup_and_no_audit(app, stub_host, session_fact
     with app.app_context():
         app.extensions["scribble"].extras["verdicts_for_cves"] = hook
         with session_factory() as db:
-            finding = db.get(EngagementFinding, fid)
+            finding = db.get(BoardFinding, fid)
             assert ThreatIntelDriver().propose(db, finding) is None
     assert hook.calls == []             # consent off -> the hook is NEVER called (no egress attempt)
     assert stub_host.audit_calls == []  # and nothing is audited
@@ -131,12 +131,12 @@ def test_d_degraded_feed_leaves_threat_intel_none_but_audits_health(app, stub_ho
     with app.app_context():
         app.extensions["scribble"].extras["verdicts_for_cves"] = hook
         with session_factory() as db:
-            finding = db.get(EngagementFinding, fid)
+            finding = db.get(BoardFinding, fid)
             snap = ThreatIntelDriver().propose(db, finding)
             ThreatIntelDriver().apply(db, finding, snap)
             db.commit()
         with session_factory() as db:
-            ti = db.get(EngagementFinding, fid).threat_intel
+            ti = db.get(BoardFinding, fid).threat_intel
     assert ti is None                          # degraded != "nothing exploitable" (INV-DEPLOY-02)
     assert hook.calls == [["CVE-2021-44228"]]  # the lookup DID fire (consent on, hook present)
     assert len(stub_host.audit_calls) == 1     # and the degraded state is recorded
@@ -165,7 +165,7 @@ def test_e_internal_engagement_forces_consent_off(app, stub_host, session_factor
     with app.app_context():
         app.extensions["scribble"].extras["verdicts_for_cves"] = hook
         with session_factory() as db:
-            finding = db.get(EngagementFinding, fid)
+            finding = db.get(BoardFinding, fid)
             assert ThreatIntelDriver().propose(db, finding) is None
     assert hook.calls == []
     assert stub_host.audit_calls == []

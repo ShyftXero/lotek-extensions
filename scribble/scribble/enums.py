@@ -1,7 +1,7 @@
 """Enumerations for Scribble.
 
 Severity / Confidence / FindingStatus mirror Lotek's enum *values* exactly so a Lotek scan ``Finding``
-can be promoted into an ``EngagementFinding`` and so the two systems reconcile cleanly at the port
+can be promoted into an ``BoardFinding`` and so the two systems reconcile cleanly at the port
 checkpoint. When mounted in Lotek, ``register(..., severity_enum=...)`` can inject the host enum; these
 are the standalone definitions and the canonical value set.
 """
@@ -49,7 +49,7 @@ class RetestOutcome(enum.StrEnum):
 
 
 class ChecklistKind(enum.StrEnum):
-    """Engagement-checklist kind. Fixed set: the report layout and the recommended item-status
+    """ReportBoard-checklist kind. Fixed set: the report layout and the recommended item-status
     vocabulary are keyed to it. A checklist's kind is reassignable; adding a NEW kind is a code change
     (it needs a report renderer). Checklists are non-blocking visual reminders in every kind."""
 

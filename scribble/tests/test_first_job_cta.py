@@ -15,7 +15,7 @@ import scribble.models as fm
 
 def _engagement(session_factory, name: str = "E") -> object:
     with session_factory() as db:
-        eng = fm.Engagement(name=name)  # client_id NULL -> admin-only, which the default stub actor is
+        eng = fm.ReportBoard(name=name)  # client_id NULL -> admin-only, which the default stub actor is
         db.add(eng)
         db.commit()
         return eng.id

@@ -91,10 +91,10 @@ from scribble.deps import open_session, severity_enum
 from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingStatus, OrderMode
 from scribble.models import (
     Artifact,
-    Engagement,
+    BoardFinding,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     ScribbleVulnMap,
     VulnerabilityTemplate,
     normalize_strategic_recommendations,
@@ -215,10 +215,10 @@ def _engagement_not_found():
 
 def _resolve_engagement(db, raw_id, actor):
     """Address an engagement by EITHER id space (#49): its own UUIDv7 PK, or the core host's engagement
-    id it was created with (``Engagement.core_engagement_id`` — int on a legacy/standalone host, UUID on
+    id it was created with (``ReportBoard.core_engagement_id`` — int on a legacy/standalone host, UUID on
     v2 core; see models.py).
 
-    Returns the ``Engagement`` if it exists AND ``can_view_engagement`` allows ``actor`` to see it,
+    Returns the ``ReportBoard`` if it exists AND ``can_view_engagement`` allows ``actor`` to see it,
     else ``None`` — callers translate a ``None`` to ``_engagement_not_found()``, so this introduces no
     new oracle: unknown id, malformed id, and "exists but not visible" all collapse to the same 404.
 
@@ -240,12 +240,12 @@ def _resolve_engagement(db, raw_id, actor):
     # unique — a pre-existing table can't be retrofitted with one), so a deliberate/accidental collision
     # resolves deterministically to the oldest row rather than 500ing on ``scalar_one``;
     # ``can_view_engagement`` below still gates what the resolved row exposes.
-    eng = db.get(Engagement, key)
+    eng = db.get(ReportBoard, key)
     if eng is None:
         stmt = (
-            select(Engagement)
-            .where(Engagement.core_engagement_id == key)
-            .order_by(Engagement.id)
+            select(ReportBoard)
+            .where(ReportBoard.core_engagement_id == key)
+            .order_by(ReportBoard.id)
             .limit(1)
         )
         eng = db.execute(stmt).scalar_one_or_none()
@@ -267,7 +267,7 @@ def _forbidden_write():
     return jsonify({"error": "forbidden", "detail": "not an operator on this engagement"}), 403
 
 
-def _deny_write(engagement: Engagement):
+def _deny_write(engagement: ReportBoard):
     """The WRITE axis every engagement-scoped machine route shares — INV-TENANCY-05.
 
     Returns a 403 response when the PAT actor does NOT hold an operator capability on this engagement's
@@ -390,7 +390,7 @@ def _bad_request(detail: str):
 # same blueprint writing the same columns unbounded — a 500 waiting on prod behind a green SQLite suite.
 # A cap that only one of two writers consults is not a boundary.
 _COLUMN_MAX_LEN = {
-    "title": 512,          # EngagementFinding.title       String(512)
+    "title": 512,          # BoardFinding.title       String(512)
     "category": 255,       # …category                     String(255)
     "cvss_vector": 255,    # …cvss_vector                  String(255)
     "target_host": 255,    # …target_host                  String(255)
@@ -400,9 +400,9 @@ _COLUMN_MAX_LEN = {
 # Same-named fields on OTHER tables of this blueprint, named separately because ``name`` is three
 # different widths depending on which route is writing it (see ``_too_long``'s ``cap`` argument).
 _GROUP_NAME_MAX_LEN = 128       # FindingGroup.name              String(128)
-_ENGAGEMENT_NAME_MAX_LEN = 255  # Engagement.name                String(255)
-_SCOPE_TYPE_MAX_LEN = 64        # Engagement.scope_type          String(64)
-_COMPANY_NAME_MAX_LEN = 255     # Engagement.company_name        String(255)
+_ENGAGEMENT_NAME_MAX_LEN = 255  # ReportBoard.name                String(255)
+_SCOPE_TYPE_MAX_LEN = 64        # ReportBoard.scope_type          String(64)
+_COMPANY_NAME_MAX_LEN = 255     # ReportBoard.company_name        String(255)
 _TEMPLATE_NAME_MAX_LEN = 512    # VulnerabilityTemplate.name     String(512)
 # NOT the column width: ``Artifact.filename`` is String(512), but the FILESYSTEM binds first.
 # ``artifacts_storage.save_bytes`` writes the bytes under "<uuid4hex>_<secure_filename>", so the
@@ -604,7 +604,7 @@ def _with_idempotency(
 # ── report rendering helpers (reused by the machine report route) ────────────────────────────────────
 
 
-def _inline_url_factory(engagement: Engagement, make_inline_artifact_url) -> Callable[[int], str]:
+def _inline_url_factory(engagement: ReportBoard, make_inline_artifact_url) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves an inline-image node's artifact id to the
     renderer-specific placeholder that bakes in the artifact's storage_path."""
     by_id = {a.id: a.storage_path for a in engagement.artifacts}
@@ -680,7 +680,7 @@ def _author_content_json(data: dict) -> dict:
     through unchanged.)
 
     ``references`` is NO LONGER folded into a content block (#624): a finding's references now live in the
-    typed ``EngagementFinding.references`` column as structured value objects (see ``_author_references``),
+    typed ``BoardFinding.references`` column as structured value objects (see ``_author_references``),
     so they render as an omit-when-empty labeled-link block, not as prose. Handled by the caller, not here.
     """
     raw: dict[str, Any] = {}
@@ -703,7 +703,7 @@ def _author_content_json(data: dict) -> dict:
 
 
 def _author_references(data: dict, *, key: str = "references"):
-    """Structured ``EngagementFinding.references`` for a directly-authored/edited finding (#624), or
+    """Structured ``BoardFinding.references`` for a directly-authored/edited finding (#624), or
     ``(None, None)`` when the field was not supplied (leave it unchanged). Accepts a list whose elements
     are plain strings (a URL, or a bare label like ``CWE-79``) OR ``{label, url, source, suppressed}``
     value objects — so an operator can add, edit, and per-reference SUPPRESS. Author-added refs default to
@@ -828,13 +828,13 @@ def scribble_create_engagement():
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            eng = Engagement(
+            eng = ReportBoard(
                 name=name,
                 scope_type=(scope_type or "external"),
                 company_name=company_name,
                 client_id=client_id,
                 created_by=actor.username if actor else None,
-                # owner_id is unconditional now: scribble owns Engagement/EngagementFinding outright, so
+                # owner_id is unconditional now: scribble owns ReportBoard/BoardFinding outright, so
                 # it cannot be older than itself (no more capability-gating on the mounted schema).
                 owner_id=actor.id if actor else None,
                 core_engagement_id=core_engagement_id,
@@ -1076,7 +1076,7 @@ def scribble_add_finding(engagement_id: str):
                     tmpl = wdb.get(VulnerabilityTemplate, _tmpl_pk)
                     if tmpl is None or not tmpl.active:
                         return {"error": "not_found", "detail": "template not found"}, 404
-                    finding = EngagementFinding.from_template(tmpl, **overrides)
+                    finding = BoardFinding.from_template(tmpl, **overrides)
                     wdb.add(finding)
                     wdb.flush()  # assign the PK for the audit row + response
                     body = {"finding_id": finding.id, "engagement_id": engagement_id}
@@ -1199,7 +1199,7 @@ def scribble_add_finding(engagement_id: str):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            finding = EngagementFinding(
+            finding = BoardFinding(
                 engagement_id=engagement_id,
                 group_id=author_group_pk,
                 order_index=author_order,
@@ -1396,7 +1396,7 @@ def scribble_promote_job(engagement_id: str, job_id: str):
 # ── 8b. GET /engagements — list the engagements this token may see ───────────────────────────────────
 
 
-def _engagement_summary(engagement: Engagement) -> dict:
+def _engagement_summary(engagement: ReportBoard) -> dict:
     return {
         "id": engagement.id,
         "name": engagement.name,
@@ -1429,7 +1429,7 @@ def scribble_list_engagements():
     the cookie dashboard, so a read token never enumerates another tenant's engagements."""
     actor = host.actor()
     with open_session() as db:
-        stmt = select(Engagement).order_by(Engagement.id)
+        stmt = select(ReportBoard).order_by(ReportBoard.id)
         rows = visible_engagements(db, stmt, actor)
         items = [_engagement_summary(e) for e in rows]
     return jsonify({"count": len(items), "items": items})
@@ -1858,7 +1858,7 @@ def scribble_upload_artifact(engagement_id: str):
         # precedent: the artifact still lands on the engagement the URL named, unattached.
         requested_fid = fid
         if fid is not None:
-            target = db.get(EngagementFinding, fid)
+            target = db.get(BoardFinding, fid)
             if target is None or target.engagement_id != engagement_id:
                 fid = None
         artifact = Artifact(
@@ -1957,7 +1957,7 @@ def scribble_list_artifacts(engagement_id: int):
     actor = host.actor()
     unattached_only = (request.args.get("unattached") or "").strip().lower() in _TRUE_WORDS
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
+        engagement = db.get(ReportBoard, engagement_id)
         # Missing and not-visible are the SAME 404 — no existence oracle (as everywhere in this module).
         if engagement is None or not can_view_engagement(engagement, actor):
             return _engagement_not_found()
@@ -1987,7 +1987,7 @@ def scribble_update_artifact(engagement_id: int, artifact_id: int):
     actor = host.actor()
     payload = request.get_json(silent=True) or {}
     with open_session() as db:
-        engagement = db.get(Engagement, engagement_id)
+        engagement = db.get(ReportBoard, engagement_id)
         if engagement is None or not can_view_engagement(engagement, actor):
             return _engagement_not_found()
         if (denied := _deny_write(engagement)) is not None:
@@ -2067,25 +2067,25 @@ def _group_not_found():
     return jsonify({"error": "not_found", "detail": "group not found on this engagement"}), 404
 
 
-def _visible_engagement(db, engagement_id, actor) -> Engagement | None:
+def _visible_engagement(db, engagement_id, actor) -> ReportBoard | None:
     """The engagement, or None for BOTH missing and not-visible (the caller 404s identically)."""
-    engagement = db.get(Engagement, engagement_id)
+    engagement = db.get(ReportBoard, engagement_id)
     if engagement is None or not can_view_engagement(engagement, actor):
         return None
     return engagement
 
 
-def _visible_finding(db, finding_id, actor) -> EngagementFinding | None:
+def _visible_finding(db, finding_id, actor) -> BoardFinding | None:
     """The finding, or None when it does not exist OR its ENGAGEMENT is outside the actor's grants.
 
     This is rule 1 of the section banner: the tenancy anchor is the row's own ``engagement_id``, read from
     the database, never an engagement id the caller supplied alongside it. A caller therefore cannot pair
     one of its own engagement ids with another tenant's finding id.
     """
-    finding = db.get(EngagementFinding, finding_id)
+    finding = db.get(BoardFinding, finding_id)
     if finding is None:
         return None
-    engagement = db.get(Engagement, finding.engagement_id)
+    engagement = db.get(ReportBoard, finding.engagement_id)
     if engagement is None or not can_view_engagement(engagement, actor):
         return None
     return finding
@@ -2118,7 +2118,7 @@ def _artifact_summary(artifact: Artifact) -> dict:
     }
 
 
-def _finding_summary(finding: EngagementFinding) -> dict:
+def _finding_summary(finding: BoardFinding) -> dict:
     """The board-shaped view of a finding: enough to LIST, order and address it, without its prose."""
     return {
         "id": finding.id,
@@ -2144,7 +2144,7 @@ def _finding_summary(finding: EngagementFinding) -> dict:
     }
 
 
-def _finding_detail(db, finding: EngagementFinding) -> dict:
+def _finding_detail(db, finding: BoardFinding) -> dict:
     """The full view: prose blocks, evidence, and the promoted per-host CHILDREN.
 
     Children are included because they are otherwise invisible to a machine caller: nesting is produced by
@@ -2154,9 +2154,9 @@ def _finding_detail(db, finding: EngagementFinding) -> dict:
     """
     detail = _finding_summary(finding)
     children = db.scalars(
-        select(EngagementFinding)
-        .where(EngagementFinding.parent_id == finding.id)
-        .order_by(EngagementFinding.order_index, EngagementFinding.id)
+        select(BoardFinding)
+        .where(BoardFinding.parent_id == finding.id)
+        .order_by(BoardFinding.order_index, BoardFinding.id)
     ).all()
     detail.update({
         "engagement_id": finding.engagement_id,
@@ -2431,7 +2431,7 @@ def _parse_finding_patch(data: dict):
     return updates, blocks, None
 
 
-def _apply_content_blocks(finding: EngagementFinding, blocks: dict) -> None:
+def _apply_content_blocks(finding: BoardFinding, blocks: dict) -> None:
     """Merge sanitized prose blocks into ``content_json`` and re-derive the cached ``content_html`` for
     exactly those blocks.
 
@@ -2563,7 +2563,7 @@ def scribble_update_finding(finding_id: int):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             # Re-fetched in the write session, so a row deleted between the check above and here is a
             # clean 404 rather than an AttributeError. The engagement_id equality is the load-bearing
             # half: a finding cannot legally change engagement, so if this id moved, the row is not the
@@ -2627,7 +2627,7 @@ def scribble_delete_finding(finding_id: int):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None or finding.engagement_id != authorized_engagement_id:
                 return {"error": "not_found", "detail": "finding not found"}, 404
             before = _finding_summary(finding)
@@ -2727,7 +2727,7 @@ def scribble_move_finding(finding_id: int):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None or finding.engagement_id != engagement_id:
                 return {"error": "not_found", "detail": "finding not found"}, 404
             target_group = (
@@ -2814,9 +2814,9 @@ def scribble_move_findings(engagement_id: int):
         # nothing, the database pays everything). Same refusal, same atomicity: the set difference is empty
         # only if every id belongs to this engagement.
         present = set(db.scalars(
-            select(EngagementFinding.id).where(
-                EngagementFinding.id.in_(finding_ids),
-                EngagementFinding.engagement_id == engagement_id,
+            select(BoardFinding.id).where(
+                BoardFinding.id.in_(finding_ids),
+                BoardFinding.engagement_id == engagement_id,
             )
         ).all())
         if len(present) != len(finding_ids):
@@ -2829,9 +2829,9 @@ def scribble_move_findings(engagement_id: int):
             )
             if target_group_id is not None and target_group is None:
                 return {"error": "not_found", "detail": "group not found on this engagement"}, 404
-            placed: list[EngagementFinding] = []
+            placed: list[BoardFinding] = []
             for offset, fid in enumerate(finding_ids):
-                finding = db.get(EngagementFinding, fid)
+                finding = db.get(BoardFinding, fid)
                 if finding is None or finding.engagement_id != engagement_id:
                     return {"error": "not_found", "detail": "finding not found"}, 404
                 findings_service.place_finding(finding, target_group, order_index + offset)
@@ -2890,7 +2890,7 @@ def scribble_create_group(engagement_id: int):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 return {"error": "not_found", "detail": "engagement not found"}, 404
             from scribble.models import AssessmentType  # local: keeps the module import list minimal
@@ -3052,7 +3052,7 @@ def scribble_reorder_groups(engagement_id: int):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 return {"error": "not_found", "detail": "engagement not found"}, 404
             ordered_ids = findings_service.reorder_groups(engagement, order)
@@ -3158,7 +3158,7 @@ def scribble_link_attack_path(engagement_id):
 
     def _produce() -> tuple[dict, int]:
         with open_session() as wdb:
-            eng = wdb.get(Engagement, engagement_id)
+            eng = wdb.get(ReportBoard, engagement_id)
             if eng is None:
                 return {"error": "not_found", "detail": "engagement not found"}, 404
             siblings = list(eng.diagrams)

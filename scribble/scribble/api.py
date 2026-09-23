@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 
 from scribble._version import __version__
 from scribble.deps import client_model, open_session
-from scribble.models import Engagement, EngagementFinding, VulnerabilityTemplate
+from scribble.models import BoardFinding, ReportBoard, VulnerabilityTemplate
 
 api_bp = Blueprint("scribble_api", __name__)
 
@@ -35,8 +35,8 @@ def health():
                 # client_model(): the mounted client table (the host's, when injected -- see
                 # docs/LOTEK_ADOPTION.md §3.1), not always scribble_clients (empty when mounted).
                 "clients": db.scalar(select(func.count()).select_from(client_model())) or 0,
-                "engagements": db.scalar(select(func.count()).select_from(Engagement)) or 0,
+                "engagements": db.scalar(select(func.count()).select_from(ReportBoard)) or 0,
                 "templates": db.scalar(select(func.count()).select_from(VulnerabilityTemplate)) or 0,
-                "findings": db.scalar(select(func.count()).select_from(EngagementFinding)) or 0,
+                "findings": db.scalar(select(func.count()).select_from(BoardFinding)) or 0,
             },
         )

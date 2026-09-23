@@ -58,7 +58,7 @@ class ScribbleUuid(TypeDecorator):
 
 
 class SoftHostId(TypeDecorator):
-    """A HOST soft-ref id (``Engagement.owner_id`` / ``.client_id``) that must hold either shape the host
+    """A HOST soft-ref id (``ReportBoard.owner_id`` / ``.client_id``) that must hold either shape the host
     may use: a plain sequential int (standalone Scribble's own tables, and any pre-v2/legacy mounted
     host) OR a ``uuid.UUID`` (Lotek v2's UUIDv7 surrogate PKs) -- see docs/LOTEK_ADOPTION.md §3.1/§4.
     There is no FK (the referenced table isn't known until mount time -- ``scribble.deps.client_model``),
@@ -68,17 +68,17 @@ class SoftHostId(TypeDecorator):
     Python type on read (int for a digit string, ``uuid.UUID`` for a UUID-shaped one) rather than always
     handing back a string. That round-trip is load-bearing, not cosmetic: a plain string passed to
     ``session.get()``/``.in_()`` against a ``sqlalchemy.Uuid``-typed host PK raises (the Uuid type expects
-    a real ``uuid.UUID`` object), so returning a string here would silently break ``Engagement.
+    a real ``uuid.UUID`` object), so returning a string here would silently break ``ReportBoard.
     resolve_client`` and ``scribble.deps.client_names`` for a UUID host even though the id itself
     "persisted" -- and returning a string instead of the original int would just as silently break every
     existing int-id equality check (``engagement.owner_id == some_user.id``).
 
-    Schema-history caveat (mirrors ``Engagement.client_id``'s FK-removal note above): ``scribble.db.
+    Schema-history caveat (mirrors ``ReportBoard.client_id``'s FK-removal note above): ``scribble.db.
     create_all`` only ADDS columns to a pre-existing table, it never retrofits an existing column's
     declared type. A table created before this change has ``owner_id``/``client_id`` as a native INTEGER
     column; on SQLite that's harmless (no real type enforcement, so a UUID string still stores), but on
     Postgres inserting a UUID string into an INTEGER column raises. A pre-existing Postgres-backed mount
-    needs a one-time manual ``ALTER TABLE scribble_engagements ALTER COLUMN owner_id/client_id TYPE
+    needs a one-time manual ``ALTER TABLE scribble_report_boards ALTER COLUMN owner_id/client_id TYPE
     VARCHAR(64)`` before mounting under a UUID host -- there is no migration framework here to do it
     automatically. A freshly created database (the common case, and every test) needs nothing.
     """
@@ -120,12 +120,17 @@ def make_session_factory(engine) -> sessionmaker:
 #: Table-name suffixes Scribble owns (real names are ``scribble_<suffix>``). Kept in sync with
 #: ``models.py`` __tablename__s; used only by the one-shot fraction->scribble rename below.
 _TABLE_SUFFIXES = (
-    "clients", "engagements", "assessment_types", "finding_groups", "vuln_templates",
+    "clients", "report_boards", "assessment_types", "finding_groups", "vuln_templates",
     "vuln_map", "findings", "artifacts", "variables", "variable_values", "tags",
     "finding_tags", "template_tags", "report_templates", "report_renders", "collab_docs",
     "checklist_templates", "checklist_template_items", "engagement_checklists",
     "engagement_checklist_items",
 )
+
+#: Tables whose suffix changed across a rename, so the plain ``fraction_<suffix> -> scribble_<suffix>``
+#: map can't reach them. Currently just the board table (was ``fraction_engagements``, now
+#: ``scribble_report_boards`` after Fraction->Scribble then Engagement->ReportBoard).
+_FRACTION_LEGACY_ALIASES = {"fraction_engagements": "scribble_report_boards"}
 
 
 def _rename_from_fraction(engine) -> None:
@@ -144,6 +149,16 @@ def _rename_from_fraction(engine) -> None:
 
     existing = set(inspect(engine).get_table_names())
     with engine.begin() as conn:
+        # One table's suffix changed across BOTH renames: the old Fraction table was
+        # ``fraction_engagements`` and it is now ``scribble_report_boards`` (Fraction->Scribble, then
+        # Engagement->ReportBoard). A suffix-based ``fraction_X -> scribble_X`` map cannot express a
+        # suffix change, so this legacy alias is handled explicitly (and first, so ``existing`` is
+        # up to date for the suffix loop). Guarded the same way: old present AND new absent.
+        for old, new in _FRACTION_LEGACY_ALIASES.items():
+            if old in existing and new not in existing:
+                conn.execute(text(f'ALTER TABLE "{old}" RENAME TO "{new}"'))
+                existing.discard(old)
+                existing.add(new)
         for suffix in _TABLE_SUFFIXES:
             old, new = f"fraction_{suffix}", f"scribble_{suffix}"
             if old in existing and new not in existing:
@@ -151,9 +166,9 @@ def _rename_from_fraction(engine) -> None:
 
 
 def _remap_standalone_client_ids(engine) -> None:
-    """One-shot, idempotent remap of ``scribble_engagements.client_id`` from standalone
+    """One-shot, idempotent remap of ``scribble_report_boards.client_id`` from standalone
     ``scribble_clients`` ids to the HOST client table's ids — closing a report-authz IDOR.
-    ``Engagement.client_id`` is a *soft* int reference that carries no id-space, so a scribble-space id
+    ``ReportBoard.client_id`` is a *soft* int reference that carries no id-space, so a scribble-space id
     in a standalone->mounted DB is misread as a host ``clients.id`` and can collide with a real host
     client an attacker owns a job under (both are small sequential ints), exposing that client's report.
 
@@ -187,7 +202,7 @@ def _remap_standalone_client_ids(engine) -> None:
     if host_model is models.Client:
         return  # standalone: scribble_clients is the real client store
     existing = set(inspect(engine).get_table_names())
-    if "scribble_clients" not in existing or "scribble_engagements" not in existing:
+    if "scribble_clients" not in existing or "scribble_report_boards" not in existing:
         return
     host_table = host_model.__tablename__
     with engine.begin() as conn:
@@ -198,7 +213,7 @@ def _remap_standalone_client_ids(engine) -> None:
         name_to_host = {r[1]: r[0] for r in conn.execute(text(f'SELECT id, name FROM "{host_table}"'))}
         remapped = nulled = 0
         for eid, cid in conn.execute(
-            text("SELECT id, client_id FROM scribble_engagements WHERE client_id IS NOT NULL")
+            text("SELECT id, client_id FROM scribble_report_boards WHERE client_id IS NOT NULL")
         ).fetchall():
             # client_id is now `SoftHostId` (TEXT-backed, to also hold a v2 UUID host id) -- a raw SQL
             # fetch (bypassing the ORM's type decoder) hands back whatever the driver's storage/affinity
@@ -214,7 +229,7 @@ def _remap_standalone_client_ids(engine) -> None:
                 continue  # not a known scribble-space id -> leave (host-space, or already remapped)
             new_id = name_to_host.get(smap[cid_key])
             conn.execute(
-                text("UPDATE scribble_engagements SET client_id = :n WHERE id = :e"),
+                text("UPDATE scribble_report_boards SET client_id = :n WHERE id = :e"),
                 {"n": new_id, "e": eid},
             )
             nulled += new_id is None
@@ -242,7 +257,7 @@ def soft_host_id_columns_typed_integer(engine) -> list[tuple[str, str]]:
 
     Reflection-driven rather than a hardcoded list: a column added to ``models.py`` as a ``SoftHostId``
     later is covered the day it is declared, which is the exact way ``source_finding_id``/``asset_id``
-    slipped through the first time (only ``Engagement.owner_id``/``.client_id`` were known about, and they
+    slipped through the first time (only ``ReportBoard.owner_id``/``.client_id`` were known about, and they
     were the only two anyone thought to ALTER by hand).
     """
     from sqlalchemy import Integer, inspect
@@ -450,7 +465,7 @@ def _additive_column_sync(engine) -> None:
 
     SQLAlchemy's ``create_all`` only ever creates MISSING TABLES — never new COLUMNS on a table that
     already exists, and it skips a pre-existing table entirely (so it won't add a new index either).
-    Scribble has no migration framework, so when a model gains a column (e.g. ``Engagement.owner_id``) a
+    Scribble has no migration framework, so when a model gains a column (e.g. ``ReportBoard.owner_id``) a
     database that already had the table would be left without it and the next write would fail. This runs
     a minimal, additive, idempotent migration: for each table that ALREADY existed before ``create_all``,
     ``ALTER TABLE ADD COLUMN`` for any model column the DB is missing, then create any declared index on a
@@ -477,7 +492,7 @@ def _additive_column_sync(engine) -> None:
     # Only ensure the tables that ALREADY exist (a no-op — they're present — that lets the ADD COLUMN loop
     # below add their missing columns). Do NOT create brand-new, post-baseline tables here: this runs on
     # the adoption path against a LEGACY int-PK schema, and a new table declared with a UUID FK to
-    # scribble_engagements.id (e.g. scribble_engagement_diagram, lotek#335) cannot be built while that
+    # scribble_report_boards.id (e.g. scribble_engagement_diagram, lotek#335) cannot be built while that
     # parent PK is still INTEGER — Postgres rejects the mixed-type FK. New tables are created by the
     # Alembic upgrade that runs straight after this, AFTER b1d4a7c9e250 converts the parent to UUID.
     existing_tables = [t for t in Base.metadata.sorted_tables if t.name in pre_existing]
@@ -501,7 +516,7 @@ def _additive_column_sync(engine) -> None:
                 added = True
             if added:
                 # create_all skipped this pre-existing table, so an index on a just-added column
-                # (e.g. ix_scribble_engagements_owner_id) is missing. checkfirst -> IF NOT EXISTS.
+                # (e.g. ix_scribble_report_boards_owner_id) is missing. checkfirst -> IF NOT EXISTS.
                 for index in table.indexes:
                     if all(c.name in have for c in index.columns):
                         index.create(bind=conn, checkfirst=True)
@@ -510,5 +525,5 @@ def _additive_column_sync(engine) -> None:
     # sequenced by `run_migrations` (adoption path only), because their ordering relative to the Alembic
     # STAMP is what makes adoption correct: the schema must match the baseline *before* it is stamped.
     # (Ordering there is the same as here: widen SoftHostId storage before _remap_standalone_client_ids
-    # writes a v2 UUID host id into scribble_engagements.client_id — an unrepaired INTEGER column would
+    # writes a v2 UUID host id into scribble_report_boards.client_id — an unrepaired INTEGER column would
     # refuse that write.)

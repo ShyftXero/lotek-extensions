@@ -51,8 +51,8 @@ class Client(Base, TimestampMixin):
     Used as the DEFAULT client model standalone (see ``scribble.deps.client_model``); when mounted with
     a host ``client_model`` injected (e.g. Lotek's own ``Client``), new engagements are created against
     the host's table instead and this table stays empty (docs/LOTEK_ADOPTION.md §3.1). No ``engagements``
-    back-reference: ``Engagement.client_id`` is a soft reference resolved at read time, not a static FK
-    (see ``Engagement.resolve_client``), because a fixed relationship can't join to "whichever client
+    back-reference: ``ReportBoard.client_id`` is a soft reference resolved at read time, not a static FK
+    (see ``ReportBoard.resolve_client``), because a fixed relationship can't join to "whichever client
     model is mounted right now".
     """
 
@@ -62,20 +62,20 @@ class Client(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), unique=True)
 
 
-class Engagement(Base, TimestampMixin):
+class ReportBoard(Base, TimestampMixin):
     """One assessment container. Many per client, concurrent (incl. same client)."""
 
-    __tablename__ = "scribble_engagements"
+    __tablename__ = "scribble_report_boards"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     # Soft reference, NOT a foreign key (docs/LOTEK_ADOPTION.md §3.1): may point at ``scribble_clients``
     # (standalone) or the host's own client table (mounted, e.g. Lotek's ``clients``) -- a static FK/
     # relationship can only target one table, so resolution goes through ``scribble.deps.client_model``
     # at read/write time instead (see ``resolve_client`` below). Same pattern as
-    # ``EngagementFinding.asset_id`` below.
+    # ``BoardFinding.asset_id`` below.
     #
     # Schema-history note: ``scribble.db.create_all`` is additive-only (``Base.metadata.create_all``) --
-    # it does not retrofit a table that already exists on disk. A ``scribble_engagements`` table created
+    # it does not retrofit a table that already exists on disk. A ``scribble_report_boards`` table created
     # by a PRE-existing checkout (which had ``client_id`` as a real FK to ``scribble_clients.id``) keeps
     # that FK constraint physically in its SQLite schema until the table is rebuilt; only a freshly
     # created database picks up the new (FK-less) column. There is no migration framework in this repo
@@ -134,7 +134,7 @@ class Engagement(Base, TimestampMixin):
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
     )
-    findings: Mapped[list[EngagementFinding]] = relationship(
+    findings: Mapped[list[BoardFinding]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan"
     )
     artifacts: Mapped[list[Artifact]] = relationship(
@@ -160,7 +160,7 @@ class Engagement(Base, TimestampMixin):
     def resolve_client(self, session):
         """Load this engagement's client through the currently-mounted client model, or ``None``.
 
-        Replaces the old ``Engagement.client`` relationship, which required a static FK to a single
+        Replaces the old ``ReportBoard.client`` relationship, which required a static FK to a single
         table. ``client_id`` is a soft reference that may point at ``scribble_clients`` (standalone) or
         the host's client table (mounted) -- which one is live is only known via
         ``scribble.deps.client_model()`` at call time, so this does a plain ``session.get`` against
@@ -211,17 +211,17 @@ class FindingGroup(Base, TimestampMixin):
     __tablename__ = "scribble_finding_groups"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))
     assessment_type_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_assessment_types.id"))
     name: Mapped[str] = mapped_column(String(128))
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     order_mode: Mapped[OrderMode] = mapped_column(Enum(OrderMode), default=OrderMode.auto_severity)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    engagement: Mapped[Engagement] = relationship(back_populates="groups")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="groups")
     assessment_type: Mapped[AssessmentType | None] = relationship()
-    findings: Mapped[list[EngagementFinding]] = relationship(
-        back_populates="group", order_by="EngagementFinding.order_index"
+    findings: Mapped[list[BoardFinding]] = relationship(
+        back_populates="group", order_by="BoardFinding.order_index"
     )
 
 
@@ -245,7 +245,7 @@ class VulnerabilityTemplate(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # True when the row was authored over the PAT/machine API rather than by a human in the library UI.
     #
-    # The template library is a SINGLE, SHARED, tenant-free table, and `EngagementFinding.from_template`
+    # The template library is a SINGLE, SHARED, tenant-free table, and `BoardFinding.from_template`
     # copies `content_json` VERBATIM into a client-facing finding. `promote.py` instantiates templates
     # AUTOMATICALLY whenever a `ScribbleVulnMap` rule matches — no human chooses that. Since a
     # write-scoped PAT can already install a global vuln-map rule, letting an agent also author the
@@ -285,14 +285,14 @@ class ScribbleVulnMap(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
 
-class EngagementFinding(Base, TimestampMixin):
+class BoardFinding(Base, TimestampMixin):
     """A finding instance in an engagement (FACTION ``Vulnerability``). Editable copy of a template;
     keeps a nullable link back to the template it came from. Field names mirror Lotek's ``Finding``."""
 
     __tablename__ = "scribble_findings"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))
     group_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_finding_groups.id"))
     template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_vuln_templates.id"))
     # Soft reference (NOT a foreign key -- mirrors ``asset_id`` below) to a host Lotek ``Finding.id``,
@@ -348,7 +348,7 @@ class EngagementFinding(Base, TimestampMixin):
     variables: Mapped[dict] = mapped_column(JSON, default=dict, nullable=True)
 
     # The FULL source scan ``FindingDTO`` (``host_contract.FindingDTO``) captured VERBATIM at promote
-    # time -- what makes ``EngagementFinding`` a LOSSLESS SUPERSET of the scan finding (map #616 / #617).
+    # time -- what makes ``BoardFinding`` a LOSSLESS SUPERSET of the scan finding (map #616 / #617).
     # Every DTO field is representable here even when it has no typed column, and it preserves the source
     # finding's own title/severity/prose on the TEMPLATE-MATCH path (where ``from_template`` builds the
     # row from the library template and would otherwise discard them). Written by ``promote.py`` via
@@ -393,7 +393,7 @@ class EngagementFinding(Base, TimestampMixin):
     # NULL when absent. Nullable; every read uses ``finding.threat_intel`` guarded.
     threat_intel: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    engagement: Mapped[Engagement] = relationship(back_populates="findings")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="findings")
     group: Mapped[FindingGroup | None] = relationship(back_populates="findings")
     template: Mapped[VulnerabilityTemplate | None] = relationship()
     artifacts: Mapped[list[Artifact]] = relationship(
@@ -410,7 +410,7 @@ class EngagementFinding(Base, TimestampMixin):
     tags: Mapped[list[Tag]] = relationship(secondary="scribble_finding_tags")
 
     @classmethod
-    def from_template(cls, template: VulnerabilityTemplate, **overrides) -> EngagementFinding:
+    def from_template(cls, template: VulnerabilityTemplate, **overrides) -> BoardFinding:
         """Instantiate a finding from a library template (copies content; keeps the link)."""
         from scribble.metadata import REF_SOURCE_TEMPLATE, merge_references  # local: avoid import cycle
 
@@ -432,7 +432,7 @@ class EngagementFinding(Base, TimestampMixin):
         return cls(**data)
 
     @classmethod
-    def from_lotek_finding(cls, finding, **overrides) -> EngagementFinding:
+    def from_lotek_finding(cls, finding, **overrides) -> BoardFinding:
         """Adapter: promote a host scan finding (a ``host_contract.FindingDTO``, or anything
         duck-shaped like one) into an engagement finding. Bridges the two models without overloading
         the host's tool-derived table (see PLAN.md §4, §16).
@@ -502,11 +502,11 @@ class Artifact(Base, TimestampMixin):
     __tablename__ = "scribble_artifacts"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))
     finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
     # Which retest round this evidence belongs to (lotek#621), or NULL for original-assessment evidence.
     # A SOFT reference (``ScribbleUuid``, no ``ForeignKey``) — deliberately, like ``EngagementChecklist.
-    # template_id``: a retest dies with its finding (``EngagementFinding.retests`` cascade), and a hard FK
+    # template_id``: a retest dies with its finding (``BoardFinding.retests`` cascade), and a hard FK
     # here would make that cascade an FK-ordering hazard in the shared finding/engagement delete paths
     # (``findings_service``) for a retest-only artifact. Retest evidence is finding-scoped anyway — it
     # carries ``finding_id`` and is removed by ``delete_finding`` with the rest of the finding's evidence
@@ -552,8 +552,8 @@ class Artifact(Base, TimestampMixin):
     # silently stored it. The basename alone is a String(512), so no bounded length is safe here.
     idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
 
-    engagement: Mapped[Engagement] = relationship(back_populates="artifacts")
-    finding: Mapped[EngagementFinding | None] = relationship(back_populates="artifacts")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="artifacts")
+    finding: Mapped[BoardFinding | None] = relationship(back_populates="artifacts")
 
 
 # --------------------------------------------------------------------------- retests (verify-the-fix)
@@ -563,10 +563,10 @@ class Retest(Base, TimestampMixin):
     """One retest round recorded against a finding after remediation — the verify-the-fix pass a
     deliverable reports (lotek#621). ``outcome`` (a :class:`RetestOutcome`) is the verdict;
     ``findings_service.record_retest`` is the ONE writer that both the UI (#622) and the machine API call,
-    so appending a round and transitioning ``EngagementFinding.status`` happen together in a single place.
+    so appending a round and transitioning ``BoardFinding.status`` happen together in a single place.
 
     Finding-owned: a retest of a finding is meaningless without it, so it dies with the finding via
-    ``EngagementFinding.retests``'s ``delete-orphan`` cascade (also its delete disposition in
+    ``BoardFinding.retests``'s ``delete-orphan`` cascade (also its delete disposition in
     ``findings_service._FINDING_FK_HANDLED_ELSEWHERE``). ``finding_id`` is a REAL FK (an intra-scribble
     reference to a table that always exists); there is no ``engagement_id`` column — a retest reaches its
     engagement through its finding, so denormalising it would be a second copy of that link to keep true.
@@ -581,7 +581,7 @@ class Retest(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text)
     tested_by: Mapped[str | None] = mapped_column(String(128))  # soft attribution, like created_by elsewhere
 
-    finding: Mapped[EngagementFinding] = relationship(back_populates="retests")
+    finding: Mapped[BoardFinding] = relationship(back_populates="retests")
 
 
 # --------------------------------------------------------------------------- attack-path diagrams
@@ -596,7 +596,7 @@ class EngagementDiagram(Base, TimestampMixin):
     ``scribble_link_attack_path`` in ``api_pat.py``). ``diagram_ref`` is a soft reference (the vector
     diagram's UUID, stored as text) kept for provenance/dedup only; nothing here re-fetches through it.
 
-    ``engagement_id`` is a real FK to ``scribble_engagements.id`` — UUIDv7 since ext#36/lotek#335
+    ``engagement_id`` is a real FK to ``scribble_report_boards.id`` — UUIDv7 since ext#36/lotek#335
     migrated every Scribble PK off sequential integers. This table was authored on the int-PK branch
     and rebased onto the UUID one, exactly the "trivial rebase" the earlier note here predicted.
     """
@@ -604,14 +604,14 @@ class EngagementDiagram(Base, TimestampMixin):
     __tablename__ = "scribble_engagement_diagram"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"), index=True)
     diagram_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     caption: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    engagement: Mapped[Engagement] = relationship(back_populates="diagrams")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="diagrams")
 
 
 # --------------------------------------------------------------------------- attack-chain narratives
@@ -628,13 +628,13 @@ class AttackChain(Base, TimestampMixin):
     beside the narrative via the shared ``render_html._render_diagram_item``. It is OPTIONAL: a chain with
     no embed renders as pure narrative, byte-identically in both deliverables.
 
-    Engagement-owned, dies with the engagement (``Engagement.chains`` ``delete-orphan``). ``engagement_id``
+    ReportBoard-owned, dies with the engagement (``ReportBoard.chains`` ``delete-orphan``). ``engagement_id``
     is a real intra-scribble FK (UUIDv7 PK, like every scribble surrogate key since ext#36/lotek#335)."""
 
     __tablename__ = "scribble_attack_chains"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"), index=True)
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     # OPTIONAL visual, mirroring EngagementDiagram's soft-snapshot fields (see the class docstring).
@@ -643,7 +643,7 @@ class AttackChain(Base, TimestampMixin):
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    engagement: Mapped[Engagement] = relationship(back_populates="chains")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="chains")
     steps: Mapped[list[AttackChainStep]] = relationship(
         back_populates="chain",
         cascade="all, delete-orphan",
@@ -698,7 +698,7 @@ class TemplateVariable(Base, TimestampMixin):
     # rule table) · ``template`` = optional "{value}" wrapper. [] / NULL = never derived from facts (the
     # seeded TARGET_* builtins are computed structurally by resolver.build_context).
     from_facts: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
-    # OPTIONAL: also write the resolved value onto this EngagementFinding column, so a token that is
+    # OPTIONAL: also write the resolved value onto this BoardFinding column, so a token that is
     # ALREADY a structural builtin (TARGET_URL <- resolver.build_context reads finding.target_url) gets
     # populated by the same declaration instead of by promote-time Python. Allowlisted to
     # {"target_host", "target_port", "target_url"}; anything else is ignored.
@@ -713,12 +713,12 @@ class VariableValue(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     variable_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_variables.id"))
-    engagement_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_report_boards.id"))
     finding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"))
     value: Mapped[str | None] = mapped_column(Text)
 
     variable: Mapped[TemplateVariable] = relationship()
-    engagement: Mapped[Engagement | None] = relationship(back_populates="variable_values")
+    engagement: Mapped[ReportBoard | None] = relationship(back_populates="variable_values")
 
 
 # --------------------------------------------------------------------------- tags (aligns w/ Lotek)
@@ -764,7 +764,7 @@ class ReportRender(Base, TimestampMixin):
     __tablename__ = "scribble_report_renders"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))
     format: Mapped[ReportFormat] = mapped_column(Enum(ReportFormat))
     path: Mapped[str] = mapped_column(String(1024))
     context_hash: Mapped[str | None] = mapped_column(String(64))
@@ -880,8 +880,8 @@ class ScribbleSettings(Base, TimestampMixin):
 
     # The per-install default Theme NAME (`scribble.reporting.themes.ReportTheme.name`, a bundled Theme
     # name today; an override or installed Theme name once selection is wired to consult them), used
-    # whenever an Engagement's own Theme choice is unset. No FK/no Enum — same reasoning as the cut
-    # `Engagement.report_theme` column this recovers from (`75159ed`): the set of valid names is a
+    # whenever an ReportBoard's own Theme choice is unset. No FK/no Enum — same reasoning as the cut
+    # `ReportBoard.report_theme` column this recovers from (`75159ed`): the set of valid names is a
     # Python-level registry (plus, after this ticket, `ScribbleThemeOverride.name`) that can grow
     # without a schema change, so this column only stores the chosen name; resolving it safely (falling
     # back for an unknown/removed name) is the reader's job, same as an untrusted `?theme=` query value.
@@ -908,7 +908,7 @@ class CollabDoc(Base, TimestampMixin):
 
 # --------------------------------------------------------------------------- checklists
 
-# NOTE: Integer PKs match the rest of Scribble's model (Client/Engagement/Finding). Checklists are
+# NOTE: Integer PKs match the rest of Scribble's model (Client/ReportBoard/Finding). Checklists are
 # NON-BLOCKING visual reminders: no state here gates an operation or withholds a report. See
 # plans/SCRIBBLE_CHECKLISTS.md (in lotek) for the full design.
 
@@ -966,7 +966,7 @@ class EngagementChecklist(Base, TimestampMixin):
     __tablename__ = "scribble_engagement_checklists"
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
-    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_engagements.id"))
+    engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))
     # Soft ref (provenance) to `scribble_checklist_templates.id` — an INTRA-Scribble reference that never
     # declared its ForeignKey, which is why the UUID migration's FK sweep does not see it and why it has
     # to be typed by hand. It points at a Scribble PK, so it follows them to UUIDv7 (lotek#335).
@@ -977,7 +977,7 @@ class EngagementChecklist(Base, TimestampMixin):
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     assigned_by: Mapped[str | None] = mapped_column(String(128))
 
-    engagement: Mapped[Engagement] = relationship(back_populates="checklists")
+    engagement: Mapped[ReportBoard] = relationship(back_populates="checklists")
     items: Mapped[list[EngagementChecklistItem]] = relationship(
         back_populates="checklist",
         cascade="all, delete-orphan",
@@ -1012,12 +1012,12 @@ class EngagementChecklistItem(Base, TimestampMixin):
 
 __all__ = [
     "Client",
-    "Engagement",
+    "ReportBoard",
     "AssessmentType",
     "FindingGroup",
     "VulnerabilityTemplate",
     "ScribbleVulnMap",
-    "EngagementFinding",
+    "BoardFinding",
     "Artifact",
     "Retest",
     "EngagementDiagram",

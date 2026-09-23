@@ -1,4 +1,4 @@
-"""Engagement-checklist JSON API (browser surface, cookie-authed ``api_bp``).
+"""ReportBoard-checklist JSON API (browser surface, cookie-authed ``api_bp``).
 
 Checklists are non-blocking visual reminders (plans/SCRIBBLE_CHECKLISTS.md). This module is the
 functional core the UI drives: library CRUD (create / import / edit-in-place / hide / reset / duplicate /
@@ -23,12 +23,12 @@ from scribble.artifacts_api import _as_uuid
 from scribble.deps import open_session
 from scribble.enums import ChecklistKind
 from scribble.models import (
+    BoardFinding,
     ChecklistTemplate,
     ChecklistTemplateItem,
-    Engagement,
     EngagementChecklist,
     EngagementChecklistItem,
-    EngagementFinding,
+    ReportBoard,
 )
 
 _REGISTERED = False
@@ -294,7 +294,7 @@ def register(api_bp, bp) -> None:
     @api_bp.get("/engagements/<uuid:eid>/checklists")
     def list_engagement_checklists(eid: int):
         with open_session() as db:
-            e = db.get(Engagement, eid)
+            e = db.get(ReportBoard, eid)
             if e is None:
                 return jsonify(ok=False, error="engagement not found"), 404
             rows = db.scalars(
@@ -321,7 +321,7 @@ def register(api_bp, bp) -> None:
             # whether to retry.
             return jsonify(ok=False, error="template_id must be a UUID"), 400
         with open_session() as db:
-            e = db.get(Engagement, eid)
+            e = db.get(ReportBoard, eid)
             if e is None:
                 return jsonify(ok=False, error="engagement not found"), 404
             t = db.get(ChecklistTemplate, template_id)
@@ -378,7 +378,7 @@ def register(api_bp, bp) -> None:
                     fid = _as_uuid(fid)
                     if fid is None:
                         return jsonify(ok=False, error="finding_id must be a UUID or null"), 400
-                    f = db.get(EngagementFinding, fid)
+                    f = db.get(BoardFinding, fid)
                     if f is None or f.engagement_id != it.checklist.engagement_id:
                         return jsonify(
                             ok=False, error="finding_id must reference a finding in this engagement"

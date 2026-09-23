@@ -20,7 +20,7 @@ from tests.conftest import FakeFindingDTO
 
 def _engagement(session_factory, name: str = "E") -> object:
     with session_factory() as db:
-        eng = fm.Engagement(name=name)  # client_id NULL -> admin-only, which the default stub actor is
+        eng = fm.ReportBoard(name=name)  # client_id NULL -> admin-only, which the default stub actor is
         db.add(eng)
         db.commit()
         return eng.id
@@ -36,15 +36,15 @@ def _adopt(client, stub_host, eid, job_id="job-x", dtos=()):
 
 def _finding_ids(session_factory, eid):
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         return {(f.title, f.source_finding_id) for f in eng.findings}
 
 
 def _enriched_row_ids(session_factory, eid, source_ids):
-    """The scribble EngagementFinding PKs (as str) whose source finding id is in ``source_ids`` — the
+    """The scribble BoardFinding PKs (as str) whose source finding id is in ``source_ids`` — the
     rows a destructive un-adopt of that job removes, identified by their OWN id (not the core one)."""
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         return {str(f.id) for f in eng.findings if f.source_finding_id in source_ids}
 
 
@@ -116,7 +116,7 @@ def test_destructive_preview_lists_exactly_the_enriched_findings(
            dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
     # A hand-authored finding (no source finding id) — this job did NOT enrich it.
     with session_factory() as db:
-        db.add(fm.EngagementFinding(engagement_id=eid, title="Manual note", severity=Severity.info))
+        db.add(fm.BoardFinding(engagement_id=eid, title="Manual note", severity=Severity.info))
         db.commit()
 
     resp = client.get(f"/scribble/engagements/{eid}/unadopt-job/job-x/preview")
@@ -135,7 +135,7 @@ def test_destructive_confirm_removes_exactly_those_and_audits(
     _adopt(client, stub_host, eid, "job-x",
            dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
     with session_factory() as db:
-        db.add(fm.EngagementFinding(engagement_id=eid, title="Manual note", severity=Severity.info))
+        db.add(fm.BoardFinding(engagement_id=eid, title="Manual note", severity=Severity.info))
         db.commit()
     # Capture the enriched rows' OWN ids BEFORE the destroy — that's what should be deleted + audited.
     doomed_ids = _enriched_row_ids(session_factory, eid, {101, 102})

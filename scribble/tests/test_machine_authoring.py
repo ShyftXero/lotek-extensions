@@ -44,7 +44,7 @@ def _make_engagement(session_factory, *, name: str = "E", client_id=ACME) -> int
     """Create an engagement directly via the ORM (bypassing the create route), so authoring/report tests
     start from a known engagement the fixture's default ADMIN actor can view (admin sees every client)."""
     with session_factory() as db:
-        eng = fm.Engagement(name=name, scope_type="external", client_id=client_id, company_name="Acme")
+        eng = fm.ReportBoard(name=name, scope_type="external", client_id=client_id, company_name="Acme")
         db.add(eng)
         db.commit()
         return eng.id
@@ -52,7 +52,7 @@ def _make_engagement(session_factory, *, name: str = "E", client_id=ACME) -> int
 
 def _finding_with_body(session_factory, engagement_id: int, title: str = "SMB signing", **kw) -> None:
     with session_factory() as db:
-        finding = fm.EngagementFinding(
+        finding = fm.BoardFinding(
             engagement_id=engagement_id, title=title, severity=Severity.medium, order_index=0,
             content_json={"description": schema.doc_from_text("body")}, **kw,
         )
@@ -70,7 +70,7 @@ def _node_types(doc) -> set[str]:
 def test_author_finding_from_plain_text(client, stub_host, session_factory):
     """Neither ``template_id`` nor ``lotek_finding_id`` -> author directly. Plain-text description/
     remediation are wrapped into content blocks; title + severity land on the row; ``references`` now land
-    on the typed ``EngagementFinding.references`` column as structured value objects (#624), NOT a prose
+    on the typed ``BoardFinding.references`` column as structured value objects (#624), NOT a prose
     block."""
     eid = _make_engagement(session_factory)
     resp = client.post(
@@ -88,7 +88,7 @@ def test_author_finding_from_plain_text(client, stub_host, session_factory):
     assert resp.status_code == 201, resp.get_json()
     fid = resp.get_json()["finding_id"]
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, fid)
+        f = db.get(fm.BoardFinding, fid)
         assert f is not None and f.engagement_id == eid and f.template_id is None
         assert f.title == "Reflected XSS"
         assert f.severity is Severity.high
@@ -152,7 +152,7 @@ def test_author_finding_content_json_is_sanitized_end_to_end(client, stub_host, 
 
     # GREEN: the stored document dropped the raw-HTML node (and its script) but kept the legit paragraph.
     with session_factory() as db:
-        stored = db.get(fm.EngagementFinding, fid).content_json["description"]
+        stored = db.get(fm.BoardFinding, fid).content_json["description"]
     types = _node_types(stored)
     assert "html" not in types and "script" not in types
     assert "script" not in str(stored)
@@ -402,22 +402,22 @@ def test_artifact_cannot_be_attached_to_another_engagements_finding(session_fact
     import scribble.models as fm
 
     with session_factory() as db:
-        mine = fm.Engagement(name="mine", client_id=501)
-        theirs = fm.Engagement(name="theirs", client_id=502)
+        mine = fm.ReportBoard(name="mine", client_id=501)
+        theirs = fm.ReportBoard(name="theirs", client_id=502)
         db.add_all([mine, theirs])
         db.flush()
-        foreign = fm.EngagementFinding(engagement_id=theirs.id, title="Their finding")
-        own = fm.EngagementFinding(engagement_id=mine.id, title="My finding")
+        foreign = fm.BoardFinding(engagement_id=theirs.id, title="Their finding")
+        own = fm.BoardFinding(engagement_id=mine.id, title="My finding")
         db.add_all([foreign, own])
         db.commit()
         mine_id, foreign_fid, own_fid = mine.id, foreign.id, own.id
 
-    from scribble.models import EngagementFinding
+    from scribble.models import BoardFinding
 
     def _resolved(fid: int, engagement_id: int):
         """The guard as the route applies it: keep the id only if the finding is in this engagement."""
         with session_factory() as db:
-            target = db.get(EngagementFinding, fid)
+            target = db.get(BoardFinding, fid)
             return None if target is None or target.engagement_id != engagement_id else fid
 
     assert _resolved(foreign_fid, mine_id) is None, "a foreign finding must not be attachable"

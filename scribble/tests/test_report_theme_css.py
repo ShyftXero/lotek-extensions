@@ -168,17 +168,17 @@ def test_an_unknown_theme_degrades_to_the_base_sheet():
 def test_the_report_carries_the_override_after_the_base_sheet(session_factory):
     """End to end: the rendered document must contain a SECOND <style> holding the override, and it
     must come after the base sheet or the cascade argument does not hold."""
-    from scribble.models import Engagement
+    from scribble.models import ReportBoard
     from scribble.reporting import build_report_context
     from scribble.reporting.render_html import render_report_html
 
     with session_factory() as db:
-        eng = Engagement(name="Themed Co Assessment", company_name="Themed Co")
+        eng = ReportBoard(name="Themed Co Assessment", company_name="Themed Co")
         db.add(eng)
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), theme="dark")
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), theme="dark")
 
     assert html.count("<style>") >= 2
     assert ":root:root {" in html
@@ -188,17 +188,17 @@ def test_the_report_carries_the_override_after_the_base_sheet(session_factory):
 def test_an_unthemed_report_gains_no_second_style(session_factory):
     """The auto path must not start emitting an empty <style> — that would be a silent diff on every
     existing report."""
-    from scribble.models import Engagement
+    from scribble.models import ReportBoard
     from scribble.reporting import build_report_context
     from scribble.reporting.render_html import render_report_html
 
     with session_factory() as db:
-        eng = Engagement(name="Plain Co Assessment", company_name="Plain Co")
+        eng = ReportBoard(name="Plain Co Assessment", company_name="Plain Co")
         db.add(eng)
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
     assert html.count("<style>") == 1
     assert ":root:root {" not in html

@@ -106,7 +106,7 @@ def test_neither_refusal_created_anything(client, stub_host, session_factory):
     client.post(f"{M}/engagements", json={"name": "E", "client_id": UNGRANTED})
     client.post(f"{M}/engagements", json={"name": "E", "client_id": NONEXISTENT})
     with session_factory() as db:
-        assert db.query(fm.Engagement).count() == 0
+        assert db.query(fm.ReportBoard).count() == 0
 
 
 def test_the_engagement_refusal_is_untouched(client, stub_host, session_factory):
@@ -114,7 +114,7 @@ def test_the_engagement_refusal_is_untouched(client, stub_host, session_factory)
     different refusal about a different id space and already says all it should."""
     _token(stub_host)
     with session_factory() as db:
-        eng = fm.Engagement(name="Theirs", client_id=UNGRANTED)
+        eng = fm.ReportBoard(name="Theirs", client_id=UNGRANTED)
         db.add(eng)
         db.commit()
         eid = eng.id

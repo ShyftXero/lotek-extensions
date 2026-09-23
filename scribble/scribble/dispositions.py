@@ -1,10 +1,10 @@
-"""The ``FindingDTO`` -> ``EngagementFinding`` disposition contract (map #616, decision #617).
+"""The ``FindingDTO`` -> ``BoardFinding`` disposition contract (map #616, decision #617).
 
-``EngagementFinding`` is a LOSSLESS SUPERSET of the scan ``FindingDTO`` (``host_contract.FindingDTO``,
+``BoardFinding`` is a LOSSLESS SUPERSET of the scan ``FindingDTO`` (``host_contract.FindingDTO``,
 the neutral seam scribble consumes -- scribble never imports lotek). Every DTO field carries an explicit
 DISPOSITION on independent axes:
 
-  * **home** -- where the field lives on the ``EngagementFinding``:
+  * **home** -- where the field lives on the ``BoardFinding``:
       ``column``        a typed column (the value is ALSO in ``source_facts`` verbatim)
       ``source_facts``  only in the verbatim ``source_facts`` snapshot (no typed column yet)
       ``drop``          intentionally not represented at all (reasoned; none today)
@@ -38,7 +38,7 @@ from scribble.enums import Confidence, FindingStatus, coerce_finding_status
 
 
 class Home(enum.StrEnum):
-    column = "column"              # a typed EngagementFinding column (also in source_facts)
+    column = "column"              # a typed BoardFinding column (also in source_facts)
     source_facts = "source_facts"  # only in the verbatim snapshot; no typed column yet
     drop = "drop"                  # intentionally unrepresented (reasoned; none today)
 
@@ -56,7 +56,7 @@ class Operator(enum.StrEnum):
 
 @dataclass(frozen=True)
 class Disposition:
-    """One DTO field's home + two axes. ``column`` is the ``EngagementFinding`` column when
+    """One DTO field's home + two axes. ``column`` is the ``BoardFinding`` column when
     ``home is Home.column`` (several prose fields legitimately share ``content_json``), else ``None``."""
 
     field: str

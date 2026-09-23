@@ -71,12 +71,12 @@ class FindingCtx:
     target_url: str | None
     blocks_html: dict[str, str]  # block_name -> rendered, variable-resolved HTML
     artifacts: list[ArtifactCtx]
-    # Nested per-host instances of the same vuln TYPE (``EngagementFinding.parent_id`` -> this finding's
+    # Nested per-host instances of the same vuln TYPE (``BoardFinding.parent_id`` -> this finding's
     # id). Populated only for a PARENT finding; a finding with no children leaves this ``[]`` and
     # renders exactly as before nesting existed. Children themselves are never top-level (they don't
     # appear in ``GroupCtx.findings`` once nested) -- see ``_nest_findings``.
     children: list[FindingCtx] = field(default_factory=list)
-    # The report-variable overlay for THIS finding (``EngagementFinding.variables``, filled by promote --
+    # The report-variable overlay for THIS finding (``BoardFinding.variables``, filled by promote --
     # see ``scribble.facts``/``scribble.promote``). Also the source of ``facts_line`` (a tight per-host
     # evidence line built from these values, replacing a truncated copy of the parent's description --
     # see ``render_html._child_summary_text``/``render_docx`` equivalent).
@@ -306,7 +306,7 @@ _FACTS_LINE_KEYS = ("DOMAIN", "AFFECTED", "TARGET_URL")
 
 def _facts_line(variables: dict) -> str:
     """A tight, single-line evidence summary for a per-host child row, built from THIS finding's own
-    report-variable overlay (``EngagementFinding.variables`` — see ``scribble.facts``/``scribble.promote``),
+    report-variable overlay (``BoardFinding.variables`` — see ``scribble.facts``/``scribble.promote``),
     never from its content blocks: every child promoted under the same vuln-DB template shares the
     template's ``content_json`` verbatim with its parent, so summarizing ``blocks_html`` would repeat the
     parent's write-up for every host instead of showing what's actually different about this one. Reads
@@ -539,7 +539,7 @@ def number_figures(
 
 def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     engagement = finding.engagement
-    # Resolve this finding's OWN report-variable overlay (``EngagementFinding.variables``, filled by
+    # Resolve this finding's OWN report-variable overlay (``BoardFinding.variables``, filled by
     # promote from the host's neutral facts — CONTRACT.md §5.4) into the render context so a vuln-DB
     # write-up's ``{{AFFECTED}}``/``{{DOMAIN}}``/etc. resolve to real values instead of surviving
     # verbatim. ``_KeepUndefined`` still applies to any token this overlay doesn't cover — a genuinely
@@ -731,7 +731,7 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
     created = getattr(engagement, "created_at", None)
     if created is not None:
         events.append((created, ActivityEntry(_fmt(created), "engagement",
-                                               f"Engagement created: {engagement.name}")))
+                                               f"ReportBoard created: {engagement.name}")))
     for f in engagement.findings:
         if not report_visible(f):
             continue
@@ -755,7 +755,7 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
 
 
 def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
-    """Assemble a ``ReportContext`` from a loaded ``Engagement`` (with relationships available).
+    """Assemble a ``ReportContext`` from a loaded ``ReportBoard`` (with relationships available).
 
     ``artifact_url(artifact_id) -> str`` supplies inline-image src; None yields empty srcs (fine for
     tests / structure checks).
@@ -828,15 +828,15 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         overall=risk_rating(counts).value,
         disposition_counts=disposition_counts,
     )
-    # ``Engagement.client`` no longer exists (soft reference, no static relationship -- see
-    # docs/LOTEK_ADOPTION.md §3.1 / scribble.models.Engagement.resolve_client). Resolve through the
+    # ``ReportBoard.client`` no longer exists (soft reference, no static relationship -- see
+    # docs/LOTEK_ADOPTION.md §3.1 / scribble.models.ReportBoard.resolve_client). Resolve through the
     # SAME session the engagement is already attached to (every caller builds/loads it inside an open
     # ``with open_session() as db`` block) rather than widening this frozen-contract function's
     # signature to take a session explicitly.
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or (client.name if client else "")
-    # Engagement-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
+    # ReportBoard-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
     # These have no finding gallery to appear in, so without this list they reached no deliverable at
     # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
     engagement_artifacts = _artifact_ctxs(

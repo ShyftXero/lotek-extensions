@@ -2,7 +2,7 @@
 
 Originally ported from the deleted lotek `tests/test_scribble_report_authz.py` (adversarial review
 2026-07-27, CRIT-4: the live report + its export embed a client's findings/evidence, so a bare
-`db.get(Engagement, id)` with no ownership check would let ANY authenticated user read ANY engagement's
+`db.get(ReportBoard, id)` with no ownership check would let ANY authenticated user read ANY engagement's
 report by walking the id).
 
 **The axis changed, and these tests changed with it (2026-08-05).** The check used to be a hand-written
@@ -24,7 +24,7 @@ are asserted rather than left implicit:
 * An engagement with **no client** (`client_id IS NULL`) is **admin-only** — it carries nothing to
   attribute a read to. That is the secure default the host uses everywhere else.
 
-`Engagement.owner_id` is ATTRIBUTION, never an authorization key (see the model) — no test here should
+`ReportBoard.owner_id` is ATTRIBUTION, never an authorization key (see the model) — no test here should
 reintroduce it as one.
 """
 
@@ -45,7 +45,7 @@ OTHER_CLIENT = uuid.uuid7()  # a client the actor holds no grant under
 
 def _make_engagement(session_factory, *, client_id, owner_id=None) -> int:
     with session_factory() as db:
-        eng = fm.Engagement(
+        eng = fm.ReportBoard(
             name="engagement under test", scope_type="external",
             owner_id=owner_id, client_id=client_id,
         )

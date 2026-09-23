@@ -15,7 +15,7 @@ import zipfile
 
 from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
 
@@ -44,11 +44,11 @@ def _build_engagement(session_factory) -> int:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Q3 Combined Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Q3 Combined Assessment", client_id=client.id, company_name="Acme Corp")
         internal = FindingGroup(engagement=eng, name="Internal", order_index=0)
         external = FindingGroup(engagement=eng, name="External", order_index=1)
 
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=internal,
             title="Weak SMB Signing",
@@ -56,7 +56,7 @@ def _build_engagement(session_factory) -> int:
             order_index=0,
             content_json={"description": _block("SMB signing is not required on several hosts.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=internal,
             title="Domain Admin Compromise",
@@ -64,7 +64,7 @@ def _build_engagement(session_factory) -> int:
             order_index=1,
             content_json={"description": _block("Full domain compromise was achieved via Kerberoasting.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=external,
             title="Reflected XSS",
@@ -74,7 +74,7 @@ def _build_engagement(session_factory) -> int:
             target_port="443",
             content_json={"description": _target_host_block()},
         )
-        hidden = EngagementFinding(
+        hidden = BoardFinding(
             engagement=eng,
             group=external,
             title="Excluded Finding",
@@ -92,7 +92,7 @@ def _build_engagement(session_factory) -> int:
 def test_render_report_html_contract(session_factory):
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
 
@@ -132,13 +132,13 @@ def test_render_report_html_contract(session_factory):
 
 def test_render_report_html_empty_engagement(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Clean Sweep", company_name="Acme")
+        eng = ReportBoard(name="Clean Sweep", company_name="Acme")
         db.add(eng)
         db.commit()
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
 
@@ -151,9 +151,9 @@ def test_inline_assets_embeds_data_uri(session_factory):
         client = Client(name="Acme")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Assets Engagement", client_id=client.id, company_name="Acme")
+        eng = ReportBoard(name="Assets ReportBoard", client_id=client.id, company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=eng,
             group=group,
             title="Stored XSS",
@@ -181,7 +181,7 @@ def test_inline_assets_embeds_data_uri(session_factory):
     fake_files = {"poc.png": b"\x89PNG\r\n\x1a\nFAKEDATA"}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         embedded = render_report_html(ctx, inline_assets=True, artifact_bytes=fake_files.get)
         not_embedded = render_report_html(ctx)  # inline_assets defaults to False
@@ -197,9 +197,9 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
     per-host list (not one full flat card per instance). A child never gets its own top-level
     ``<article id="finding-N">`` card."""
     with session_factory() as db:
-        eng = Engagement(name="Nested Report", company_name="Acme")
+        eng = ReportBoard(name="Nested Report", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -210,7 +210,7 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
         db.add(eng)
         db.flush()
 
-        child_a = EngagementFinding(
+        child_a = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -221,11 +221,11 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
             # ``content_json`` verbatim with its parent (see ``scribble.promote.promote_job``) -- these
             # per-child blocks are deliberately DIFFERENT text here to prove the renderer does NOT read
             # them for the per-host row; the real per-host evidence comes from ``variables`` instead
-            # (``EngagementFinding.variables``, filled by promote from the host's own facts).
+            # (``BoardFinding.variables``, filled by promote from the host's own facts).
             content_json={"description": _block("Should not render as its own card.")},
             variables={"AFFECTED": "svc_sql"},
         )
-        child_b = EngagementFinding(
+        child_b = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -242,7 +242,7 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
         eng_id, parent_id, child_a_id, child_b_id = eng.id, parent.id, child_a.id, child_b.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
 
@@ -280,7 +280,7 @@ def test_render_report_html_childless_finding_unaffected(session_factory):
     block/markup at all)."""
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
 
@@ -292,7 +292,7 @@ def test_render_report_html_includes_narrative(session_factory):
     """D2: the generated executive-summary narrative renders inside the Executive Summary section."""
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
 
@@ -306,7 +306,7 @@ def test_render_report_html_includes_narrative(session_factory):
 def test_export_zip_bundles_report_and_artifacts(session_factory):
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = export_zip(ctx, artifact_bytes=None)
 
@@ -352,9 +352,9 @@ def test_engagement_level_evidence_renders_in_appendix(session_factory):
         client = Client(name="Acme")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Engagement Evidence", client_id=client.id, company_name="Acme")
+        eng = ReportBoard(name="ReportBoard Evidence", client_id=client.id, company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="Some Finding",
@@ -382,7 +382,7 @@ def test_engagement_level_evidence_renders_in_appendix(session_factory):
     fake_files = {"network-diagram.png": b"\x89PNG\r\n\x1a\nFAKEDATA"}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         assert len(ctx.artifacts) == 1  # engagement-level evidence reaches the frozen contract
         html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=fake_files.get)
@@ -397,9 +397,9 @@ def test_child_finding_evidence_renders_without_leaking_child_content(session_fa
     compact children block -- and the child's content-block text must still never appear anywhere,
     exactly as ``test_render_report_html_renders_nested_children_compactly`` already pins."""
     with session_factory() as db:
-        eng = Engagement(name="Child Evidence", company_name="Acme")
+        eng = ReportBoard(name="Child Evidence", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -409,7 +409,7 @@ def test_child_finding_evidence_renders_without_leaking_child_content(session_fa
         )
         db.add(eng)
         db.flush()
-        child = EngagementFinding(
+        child = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -440,7 +440,7 @@ def test_child_finding_evidence_renders_without_leaking_child_content(session_fa
     fake_files = {"child-shot.png": b"\x89PNG\r\n\x1a\nFAKEDATA"}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=fake_files.get)
 
@@ -461,9 +461,9 @@ def test_export_zip_evidence_appendix_cap_is_exempt(session_factory, monkeypatch
     monkeypatch.setattr(rh, "_MAX_APPENDIX_ITEMS", 3)
 
     with session_factory() as db:
-        eng = Engagement(name="Many Artifacts", company_name="Acme")
+        eng = ReportBoard(name="Many Artifacts", company_name="Acme")
         g = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=g, title="F", severity=Severity.low, order_index=0,
             content_json={"description": _block("x")},
         )
@@ -490,7 +490,7 @@ def test_export_zip_evidence_appendix_cap_is_exempt(session_factory, monkeypatch
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         assert len(ctx.artifacts) == n
         payload = export_zip(ctx, artifact_bytes=fake_files.get)
@@ -505,7 +505,7 @@ def test_unresolvable_inline_image_yields_honest_chip_not_blank_pixel(session_fa
     """#61: an inline content image whose bytes are unavailable must render a visible chip NAMING the
     file -- never a silent, invisible blank pixel."""
     with session_factory() as db:
-        eng = Engagement(name="Inline Evidence", company_name="Acme")
+        eng = ReportBoard(name="Inline Evidence", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
         db.add(eng)
         db.flush()
@@ -521,7 +521,7 @@ def test_unresolvable_inline_image_yields_honest_chip_not_blank_pixel(session_fa
         )
         db.add(artifact)
         db.flush()
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=eng,
             group=group,
             title="Inline Finding",
@@ -537,7 +537,7 @@ def test_unresolvable_inline_image_yields_honest_chip_not_blank_pixel(session_fa
     empty_files: dict[str, bytes] = {}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
         html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=empty_files.get)
 
@@ -568,9 +568,9 @@ def _engagement_with_screenshot(db):
     client = Client(name="Acme")
     db.add(client)
     db.flush()
-    eng = Engagement(name="Evidence Engagement", client_id=client.id, company_name="Acme")
+    eng = ReportBoard(name="Evidence ReportBoard", client_id=client.id, company_name="Acme")
     group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-    finding = EngagementFinding(
+    finding = BoardFinding(
         engagement=eng, group=group, title="Stored XSS", severity=Severity.high, order_index=0,
         content_json={"description": _block("See evidence below.")},
     )
@@ -592,7 +592,7 @@ def test_evidence_images_render_readable_not_cropped_thumbnail(session_factory):
     with session_factory() as db:
         eng_id = _engagement_with_screenshot(db)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(
             ctx, inline_assets=True, artifact_bytes={"poc.png": b"\x89PNG\r\n\x1a\nFAKE"}.get
@@ -615,7 +615,7 @@ def test_report_has_no_cookie_authed_artifact_raw_url(session_factory):
     with session_factory() as db:
         eng_id = _engagement_with_screenshot(db)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(
             ctx, inline_assets=True, artifact_bytes={"poc.png": b"\x89PNG\r\n\x1a\nFAKE"}.get

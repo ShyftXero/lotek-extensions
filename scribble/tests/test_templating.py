@@ -26,7 +26,7 @@ from scribble.config import ScribbleConfig
 from scribble.content import schema
 from scribble.db import create_all, make_session_factory
 from scribble.enums import Severity, VariableScope, VariableType
-from scribble.models import Engagement, EngagementFinding, TemplateVariable, VariableValue
+from scribble.models import BoardFinding, ReportBoard, TemplateVariable, VariableValue
 from scribble.seed import seed_defaults
 from scribble.templating import (
     BUILTIN_KEYS,
@@ -70,16 +70,16 @@ def preview_client(tmp_path, preview_session_factory):
 # --------------------------------------------------------------------------- helpers
 
 
-def _engagement(**overrides) -> Engagement:
+def _engagement(**overrides) -> ReportBoard:
     data = dict(name="Q1 Pentest", company_name="Acme Corp")
     data.update(overrides)
-    return Engagement(**data)
+    return ReportBoard(**data)
 
 
-def _finding(engagement, **overrides) -> EngagementFinding:
+def _finding(engagement, **overrides) -> BoardFinding:
     data = dict(engagement=engagement, title="SQLi", severity=Severity.high)
     data.update(overrides)
-    return EngagementFinding(**data)
+    return BoardFinding(**data)
 
 
 def _custom_variable(session, key, *, scope=VariableScope.engagement) -> TemplateVariable:
@@ -151,7 +151,7 @@ def test_finding_scope_overrides_engagement_scope(session_factory):
         db.add(VariableValue(variable=var, finding_id=finding.id, value="production"))
         db.commit()
 
-        # Engagement-level alone (no finding) sees the engagement-scope value.
+        # ReportBoard-level alone (no finding) sees the engagement-scope value.
         eng_only_ctx = build_full_context(db, eng)
         assert eng_only_ctx["ENV_LABEL"] == "staging"
 

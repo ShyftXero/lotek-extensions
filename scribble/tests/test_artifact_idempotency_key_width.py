@@ -37,7 +37,7 @@ def test_the_migration_widens_a_pre_existing_varchar80_idempotency_key():
     from sqlalchemy.exc import DataError
 
     from scribble.db import Base, _alembic_config, make_session_factory, run_migrations
-    from scribble.models import Artifact, Engagement
+    from scribble.models import Artifact, ReportBoard
 
     _PREV_HEAD = "c2f8a1d3e460"
     long_key = "ev-" + "a" * 40 + "-" + "b" * 40 + "-shot.png-" + "c" * 32  # ~120 chars, well over 80
@@ -57,9 +57,9 @@ def test_the_migration_widens_a_pre_existing_varchar80_idempotency_key():
 
     session_factory = make_session_factory(eng)
     with session_factory() as db:
-        db.add(Engagement(name="E"))
+        db.add(ReportBoard(name="E"))
         db.commit()
-        eid = db.query(Engagement).one().id
+        eid = db.query(ReportBoard).one().id
 
     # RED: the long UUID-era key overflows VARCHAR(80).
     with session_factory() as db, pytest.raises(DataError, match="too long"):

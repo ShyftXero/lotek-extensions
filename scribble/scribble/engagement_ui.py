@@ -1,4 +1,4 @@
-"""Engagement + finding-board UI (WS3 owns this module).
+"""ReportBoard + finding-board UI (WS3 owns this module).
 
 The keystone workstream: engagement CRUD, `AssessmentType`-linked `FindingGroup` management, "add
 finding from template", the finding detail page (mounting the WS4 editor + WS5 gallery + WS6 preview),
@@ -25,7 +25,7 @@ UI (``bp``, mounted at the host ``url_prefix``, default ``/scribble``):
                                                           (endpoint: engagement_delete) -- groups/findings/
                                                           artifacts/variable_values cascade via the
                                                           ``delete-orphan`` relationships already declared
-                                                          on ``Engagement`` in models.py.
+                                                          on ``ReportBoard`` in models.py.
     GET  /engagements/<id>                               the board (endpoint: engagement_board)
     POST /engagements/<id>/groups                        create a FindingGroup
     POST /engagements/<id>/groups/<group_id>/delete       delete a group (findings -> ungrouped, not lost)
@@ -57,7 +57,7 @@ DETACHED like a group's findings are, because those rows carry evidence of their
 handled, deleting a promoted parent violated the ``parent_id`` self-FK and 500'd); 404 (never 500) if the
 finding doesn't exist or belongs to a different engagement, mirroring ``delete_group``'s guard.
 
-``Engagement.created_by`` / ``EngagementFinding.created_by`` are set from the optional host-injected
+``ReportBoard.created_by`` / ``BoardFinding.created_by`` are set from the optional host-injected
 ``current_actor`` hook (``scribble.deps.current_actor_username``) -- ``None`` standalone.
 """
 
@@ -86,10 +86,10 @@ from scribble.deps import (
 from scribble.enums import Confidence, FindingStatus, OrderMode, RetestOutcome
 from scribble.models import (
     AssessmentType,
-    Engagement,
+    BoardFinding,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     VulnerabilityTemplate,
     normalize_strategic_recommendations,
 )
@@ -112,7 +112,7 @@ def _as_int(value) -> int | None:
 
 
 def _as_id(value) -> int | uuid.UUID | None:
-    """Parse a form-submitted ``client_id`` tolerantly: EITHER host id shape ``Engagement.client_id``
+    """Parse a form-submitted ``client_id`` tolerantly: EITHER host id shape ``ReportBoard.client_id``
     (``scribble.models.SoftHostId``) can hold -- a plain int (standalone Scribble / legacy hosts) or a
     UUID (Lotek v2's UUIDv7 client PKs). Unlike ``_as_int``, a UUID string is not silently dropped: it
     parses to a real ``uuid.UUID`` (never a bare string -- see SoftHostId's docstring for why a raw
@@ -183,7 +183,7 @@ def _resolve_client(db, form):
     * the client is REQUIRED, because ``can_view_client(None, actor)`` is False by the host's contract: a
       client-less engagement 404s for everyone, so creating one is a success response for nothing.
 
-    Mounted, the granted id is returned WITHOUT looking the row up: ``Engagement.client_id`` is a soft
+    Mounted, the granted id is returned WITHOUT looking the row up: ``ReportBoard.client_id`` is a soft
     reference (docs/LOTEK_ADOPTION.md §3.1) and the host has just been asked the only question that
     matters about it. Requiring a resolvable row here would add a second, weaker source of truth about
     which clients are real. The standalone branch keeps its original select-existing-or-create-by-name
@@ -216,7 +216,7 @@ def _resolve_client(db, form):
     return (client.id if client is not None else None), None
 
 
-def _apply_engagement_form(engagement: Engagement, form, db) -> str | None:
+def _apply_engagement_form(engagement: ReportBoard, form, db) -> str | None:
     """Shared field-setting for the edit route (port of lotek's ``routes/engagements.py::
     _apply_engagement_form``). Unlike ``engagement_new`` above -- which never touches ``status`` and
     leaves it at the model default ("in_progress") -- this ALSO sets ``status``, since edit is the first
@@ -285,7 +285,7 @@ def register(api_bp, bp) -> None:
         """
         with open_session() as db:
             visible = visible_engagements(
-                db, select(Engagement).order_by(Engagement.created_at.desc()), current_actor()
+                db, select(ReportBoard).order_by(ReportBoard.created_at.desc()), current_actor()
             )
             return render_template(
                 "scribble/engagements.html",
@@ -371,7 +371,7 @@ def register(api_bp, bp) -> None:
                             409,
                         )
 
-                engagement = Engagement(
+                engagement = ReportBoard(
                     name=name,
                     client_id=client_id,
                     core_engagement_id=core_engagement_id,
@@ -395,7 +395,7 @@ def register(api_bp, bp) -> None:
     @bp.get("/engagements/by-core/<core_id>", endpoint="engagement_by_core")
     def engagement_by_core(core_id):
         """Reverse of the board's source-jobs panel (#629): a core engagement page links HERE to reach
-        its report board. Resolve the board by ``Engagement.core_engagement_id``; if none exists yet,
+        its report board. Resolve the board by ``ReportBoard.core_engagement_id``; if none exists yet,
         send the operator to the create form pre-seeded to LINK to this core engagement (not spawn a
         second one).
 
@@ -413,9 +413,9 @@ def register(api_bp, bp) -> None:
             abort(404)
         with open_session() as db:
             row = db.execute(
-                select(Engagement)
-                .where(Engagement.core_engagement_id == key)
-                .order_by(Engagement.id)
+                select(ReportBoard)
+                .where(ReportBoard.core_engagement_id == key)
+                .order_by(ReportBoard.id)
                 .limit(1)
             ).scalar_one_or_none()
         if row is not None:
@@ -427,7 +427,7 @@ def register(api_bp, bp) -> None:
     @bp.get("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit_page")
     def engagement_edit_page(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             return render_template(
@@ -440,7 +440,7 @@ def register(api_bp, bp) -> None:
     @bp.post("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit")
     def engagement_edit(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
@@ -473,11 +473,11 @@ def register(api_bp, bp) -> None:
     @bp.post("/engagements/<uuid:engagement_id>/delete", endpoint="engagement_delete")
     def engagement_delete(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             # Mirrors delete_finding's explicit artifact-file cleanup below: the ORM cascade
-            # (Engagement.artifacts, cascade="all, delete-orphan") removes the Artifact ROWS, but the
+            # (ReportBoard.artifacts, cascade="all, delete-orphan") removes the Artifact ROWS, but the
             # bytes on disk are not the ORM's to clean up -- collect the paths before the cascade delete,
             # then best-effort remove the files afterward, same as delete_finding does per-finding.
             storage_paths = [a.storage_path for a in engagement.artifacts]
@@ -500,7 +500,7 @@ def register(api_bp, bp) -> None:
     @bp.get("/engagements/<uuid:engagement_id>", endpoint="engagement_board")
     def engagement_board(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
 
@@ -524,7 +524,7 @@ def register(api_bp, bp) -> None:
 
             client = engagement.resolve_client(db)
 
-            # Engagement-level evidence (ext#51): artifacts attached to the engagement itself, not to
+            # ReportBoard-level evidence (ext#51): artifacts attached to the engagement itself, not to
             # any finding (``finding_id`` null). These render into the client report's Evidence
             # appendix (ext#40 / ``reporting/context.py``'s ``ReportContext.artifacts``) but previously
             # had no UI review/exclude surface -- an operator could only discover what published by
@@ -559,7 +559,7 @@ def register(api_bp, bp) -> None:
     @bp.post("/engagements/<uuid:engagement_id>/groups", endpoint="create_group")
     def create_group(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
@@ -586,7 +586,7 @@ def register(api_bp, bp) -> None:
     @bp.post("/engagements/<uuid:engagement_id>/findings", endpoint="add_finding")
     def add_finding(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
 
@@ -603,7 +603,7 @@ def register(api_bp, bp) -> None:
                     if group is not None
                     else [f for f in engagement.findings if f.group_id is None]
                 )  # count only — a new finding goes last, so display order is irrelevant here
-                finding = EngagementFinding.from_template(
+                finding = BoardFinding.from_template(
                     template,
                     engagement_id=engagement_id,
                     group_id=group.id if group is not None else None,
@@ -649,7 +649,7 @@ def register(api_bp, bp) -> None:
         actor = current_actor()
         promoted_ref = None
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             findings_ns = host.findings()
@@ -684,7 +684,7 @@ def register(api_bp, bp) -> None:
             abort(403)
         actor = current_actor()
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             findings_ns = host.findings()
@@ -736,7 +736,7 @@ def register(api_bp, bp) -> None:
             abort(403)
         actor = current_actor()
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             act = _is_source_job(engagement, job_id, actor)
@@ -756,7 +756,7 @@ def register(api_bp, bp) -> None:
         from scribble.promote import enriched_findings  # lazy: promote.py is Track D's file
         actor = current_actor()
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
@@ -780,7 +780,7 @@ def register(api_bp, bp) -> None:
         actor = current_actor()
         storage_paths: list = []
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             if not _is_source_job(engagement, job_id, actor):
@@ -804,7 +804,7 @@ def register(api_bp, bp) -> None:
     )
     def delete_finding(engagement_id: int, finding_id: int):
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None or finding.engagement_id != engagement_id:
                 abort(404)
             # Takes its artifact ROWS with it (unlike delete_group's detach) and hands back their on-disk
@@ -823,7 +823,7 @@ def register(api_bp, bp) -> None:
     @bp.route("/findings/<uuid:finding_id>", methods=["GET", "POST"], endpoint="finding_detail")
     def finding_detail(finding_id: int):
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 abort(404)
 
@@ -895,7 +895,7 @@ def register(api_bp, bp) -> None:
         if not host_can_write():
             abort(403)
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 abort(404)
             try:
@@ -926,7 +926,7 @@ def register(api_bp, bp) -> None:
             return jsonify(error="order must be a list of group ids"), 400
 
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 return jsonify(error="engagement not found"), 404
 
@@ -953,7 +953,7 @@ def register(api_bp, bp) -> None:
             return jsonify(error="order_index must be an integer"), 400
 
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 return jsonify(error="finding not found"), 404
 
@@ -1042,9 +1042,9 @@ def register(api_bp, bp) -> None:
             # One query, all-or-nothing: the set difference is empty only if every id belongs to this
             # engagement. A foreign id gets the same 404 a nonexistent one does, and NOTHING moves.
             present = set(db.scalars(
-                select(EngagementFinding.id).where(
-                    EngagementFinding.id.in_(finding_ids),
-                    EngagementFinding.engagement_id == engagement_id,
+                select(BoardFinding.id).where(
+                    BoardFinding.id.in_(finding_ids),
+                    BoardFinding.engagement_id == engagement_id,
                 )
             ).all())
             if len(present) != len(finding_ids):
@@ -1052,7 +1052,7 @@ def register(api_bp, bp) -> None:
 
             placed = []
             for offset, fid in enumerate(finding_ids):
-                finding = db.get(EngagementFinding, fid)
+                finding = db.get(BoardFinding, fid)
                 findings_service.place_finding(finding, target_group, requested_index + offset)
                 placed.append(finding)
             # Read order_index AFTER every placement — each insert reindexes the destination.
@@ -1085,7 +1085,7 @@ def register(api_bp, bp) -> None:
         if caption is not None:
             caption = str(caption)[:255]
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 return jsonify(error="engagement not found"), 404
             diagram = EngagementDiagram(

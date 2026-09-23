@@ -1,7 +1,7 @@
-"""Engagement-level tenancy on the PAT/MACHINE blueprint (`scribble/api_pat.py`).
+"""ReportBoard-level tenancy on the PAT/MACHINE blueprint (`scribble/api_pat.py`).
 
 `tests/test_scribble_tenancy_gate.py` closed this class on the two COOKIE blueprints and left
-`machine_bp` open, with a documented follow-up: its routes loaded an `Engagement` by id and acted on it
+`machine_bp` open, with a documented follow-up: its routes loaded an `ReportBoard` by id and acted on it
 with no check that the token's grant covered that engagement's client. Job-level tenancy WAS checked
 (`host.findings().get_job`/`get_finding` apply `user_can_view_job` internally), and that is precisely
 what made the hole easy to miss — `promote-job` carefully authorized the SOURCE of the data and never
@@ -177,7 +177,7 @@ def _granted_token(stub_host) -> None:
 
 def _engagement(session_factory, *, client_id) -> int:
     with session_factory() as db:
-        eng = fm.Engagement(name="Machine target", client_id=client_id)
+        eng = fm.ReportBoard(name="Machine target", client_id=client_id)
         db.add(eng)
         db.commit()
         return eng.id
@@ -220,7 +220,7 @@ def _children(session_factory, engagement_id: int) -> tuple[int, int]:
         group = fm.FindingGroup(engagement_id=engagement_id, name="Sweep section", order_index=0)
         db.add(group)
         db.flush()
-        finding = fm.EngagementFinding(
+        finding = fm.BoardFinding(
             engagement_id=engagement_id, group_id=group.id, title="Sweep finding", order_index=0
         )
         db.add(finding)
@@ -510,7 +510,7 @@ def test_add_finding_denied_for_another_clients_engagement(client, stub_host, se
     assert resp.status_code == 404
     assert resp.get_json()["detail"] == "engagement not found"  # identical to a nonexistent id
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).findings == []  # nothing authored
+        assert db.get(fm.ReportBoard, eid).findings == []  # nothing authored
 
 
 def test_add_finding_allowed_for_granted_client(client, stub_host, session_factory):
@@ -521,7 +521,7 @@ def test_add_finding_allowed_for_granted_client(client, stub_host, session_facto
     resp = client.post(f"{M}/engagements/{eid}/findings", json={"template_id": tid})
     assert resp.status_code == 201
     with session_factory() as db:
-        assert len(db.get(fm.Engagement, eid).findings) == 1
+        assert len(db.get(fm.ReportBoard, eid).findings) == 1
 
 
 def test_add_finding_refusal_is_identical_for_foreign_and_missing(client, stub_host, session_factory):
@@ -559,7 +559,7 @@ def test_promote_job_denied_when_destination_belongs_to_another_client(client, s
     resp = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).findings == []
+        assert db.get(fm.ReportBoard, eid).findings == []
     assert stub_host.promoted_calls == []  # the host-side write must not happen either
 
 
@@ -581,7 +581,7 @@ def test_promote_job_allowed_for_granted_client(client, stub_host, session_facto
 
 def _created_engagement_count(session_factory) -> int:
     with session_factory() as db:
-        return len(db.query(fm.Engagement).all())
+        return len(db.query(fm.ReportBoard).all())
 
 
 def test_create_engagement_requires_a_client_when_mounted(client, stub_host, session_factory):
@@ -606,7 +606,7 @@ def test_create_engagement_allows_a_granted_client(client, stub_host, session_fa
     resp = client.post(f"{M}/engagements", json={"name": "Ours", "client_id": ACME})
     assert resp.status_code == 201
     with session_factory() as db:
-        assert db.get(fm.Engagement, resp.get_json()["id"]).client_id == ACME
+        assert db.get(fm.ReportBoard, resp.get_json()["id"]).client_id == ACME
 
 
 def test_create_engagement_accepts_a_uuid_client_id(client, stub_host, session_factory):
@@ -620,7 +620,7 @@ def test_create_engagement_accepts_a_uuid_client_id(client, stub_host, session_f
     resp = client.post(f"{M}/engagements", json={"name": "v2 client", "client_id": str(client_uuid)})
     assert resp.status_code == 201
     with session_factory() as db:
-        assert db.get(fm.Engagement, resp.get_json()["id"]).client_id == client_uuid
+        assert db.get(fm.ReportBoard, resp.get_json()["id"]).client_id == client_uuid
 
 
 def test_create_engagement_rejects_an_unparseable_client_id(client, stub_host):

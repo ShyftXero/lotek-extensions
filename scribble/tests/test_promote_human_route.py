@@ -53,7 +53,7 @@ def test_human_promote_lands_findings_and_records_assignment(client, stub_host, 
     assert f"/scribble/engagements/{eid}" in r.headers["Location"]
 
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert {f.title for f in eng.findings} == {"SQLi", "XSS"}
         assert all(f.created_by == "op" for f in eng.findings)
     # the ONE write the host contract exposes back is recorded with the SESSION actor, not dropped
@@ -67,7 +67,7 @@ def test_human_promote_unknown_job_is_a_noop_not_a_leak(client, stub_host, sessi
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "does-not-exist"})
     assert r.status_code in (302, 303)  # redirect to the board — no crash, no 404 existence leak
     with session_factory() as db:
-        assert list(db.get(fm.Engagement, eid).findings) == []
+        assert list(db.get(fm.ReportBoard, eid).findings) == []
     assert stub_host.promoted_calls == []  # nothing recorded for a job that did not promote
 
 
@@ -78,7 +78,7 @@ def test_human_promote_empty_job_id_is_a_noop(client, stub_host, session_factory
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={})
     assert r.status_code in (302, 303)
     with session_factory() as db:
-        assert list(db.get(fm.Engagement, eid).findings) == []
+        assert list(db.get(fm.ReportBoard, eid).findings) == []
     assert stub_host.promoted_calls == []
 
 
@@ -95,7 +95,7 @@ def test_human_promote_denied_for_non_member(client, stub_host, session_factory)
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "job-9"})
     assert r.status_code == 404  # the gate, not the view
     with session_factory() as db:
-        assert list(db.get(fm.Engagement, eid).findings) == []
+        assert list(db.get(fm.ReportBoard, eid).findings) == []
 
 
 def test_human_promote_denied_for_viewer_without_write(client, stub_host, session_factory):
@@ -110,5 +110,5 @@ def test_human_promote_denied_for_viewer_without_write(client, stub_host, sessio
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "job-1"})
     assert r.status_code == 403
     with session_factory() as db:
-        assert list(db.get(fm.Engagement, eid).findings) == []
+        assert list(db.get(fm.ReportBoard, eid).findings) == []
     assert stub_host.promoted_calls == []

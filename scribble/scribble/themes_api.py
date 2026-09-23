@@ -45,7 +45,7 @@ much later wonders why the "branded" deliverable came out unbranded. Both the de
 update route therefore actively re-point or clear that setting in the SAME transaction as the mutation
 that would otherwise orphan it — see ``_delete_theme_override``/``_update_theme_override`` below. There
 is, as yet, no PER-ENGAGEMENT Theme reference in this codebase to worry about the same way (the
-``Engagement.report_theme`` column this ticket's investigation found was cut in ``75159ed`` and has not
+``ReportBoard.report_theme`` column this ticket's investigation found was cut in ``75159ed`` and has not
 returned) — when it does, its reader is expected to lean on ``reporting.themes.get_theme``'s existing
 "unknown name falls back rather than raises" contract, exactly as it already does for an untrusted
 ``?theme=`` query value, rather than needing its own cleanup pass here.

@@ -23,10 +23,10 @@ def test_rename_migrates_populated_table_in_place():
     engine = _seed_old_engagements()
     _rename_from_fraction(engine)
     names = set(inspect(engine).get_table_names())
-    assert "scribble_engagements" in names
+    assert "scribble_report_boards" in names
     assert "fraction_engagements" not in names  # renamed, not copied
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT name FROM scribble_engagements WHERE id = 1")).scalar() == "acme"
+        assert conn.execute(text("SELECT name FROM scribble_report_boards WHERE id = 1")).scalar() == "acme"
 
 
 def test_rename_is_idempotent_and_noop_on_fresh_db():
@@ -41,15 +41,15 @@ def test_rename_skips_when_target_already_present():
     alone rather than colliding — the guard is `old present AND new absent`."""
     engine = _seed_old_engagements()
     with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE scribble_engagements (id INTEGER PRIMARY KEY, name TEXT)"))
+        conn.execute(text("CREATE TABLE scribble_report_boards (id INTEGER PRIMARY KEY, name TEXT)"))
     _rename_from_fraction(engine)
     names = set(inspect(engine).get_table_names())
-    assert "scribble_engagements" in names and "fraction_engagements" in names  # untouched, no crash
+    assert "scribble_report_boards" in names and "fraction_engagements" in names  # untouched, no crash
 
 
 def test_create_all_renames_before_building():
     """The boot path: the rename happens FIRST, so table creation no-ops the renamed table instead of
-    building an empty ``scribble_engagements`` beside the populated one — and the row survives.
+    building an empty ``scribble_report_boards`` beside the populated one — and the row survives.
 
     Calls the rename plus plain table creation rather than `create_all`, which now delegates to
     `run_migrations`: on a database that already has scribble tables that takes the Alembic ADOPTION
@@ -60,7 +60,7 @@ def test_create_all_renames_before_building():
     _rename_from_fraction(engine)
     Base.metadata.create_all(engine)
     names = set(inspect(engine).get_table_names())
-    assert "scribble_engagements" in names
+    assert "scribble_report_boards" in names
     assert "fraction_engagements" not in names
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT name FROM scribble_engagements WHERE id = 1")).scalar() == "acme"
+        assert conn.execute(text("SELECT name FROM scribble_report_boards WHERE id = 1")).scalar() == "acme"

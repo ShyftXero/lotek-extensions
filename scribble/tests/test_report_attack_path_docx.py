@@ -31,11 +31,11 @@ from scribble.enums import Severity
 from scribble.models import (
     AttackChain,
     AttackChainStep,
+    BoardFinding,
     Client,
-    Engagement,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
@@ -97,9 +97,9 @@ def _engagement(session_factory, *, diagrams: list[tuple[str, str]] | None = Non
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="TeamsPlus Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="TeamsPlus Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
             order_index=0, content_json={"description": _block("Reflected XSS on /search.")},
         )
@@ -116,7 +116,7 @@ def _engagement(session_factory, *, diagrams: list[tuple[str, str]] | None = Non
 
 def _render(session_factory, eng_id) -> bytes:
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         return render_report_docx(build_report_context(eng))
 
 
@@ -555,9 +555,9 @@ def _chain_engagement(session_factory, *, embed: bool = False) -> str:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
             order_index=0, content_json={"description": _block("Reflected XSS on /search.")},
         )
