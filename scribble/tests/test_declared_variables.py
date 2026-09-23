@@ -51,7 +51,11 @@ def test_new_tool_fact_populates_DOMAIN_and_AFFECTED_with_zero_python(app, sessi
     )
     with session_factory() as db:
         engagement = db.get(fm.ReportBoard, eng_id)
-        result = promote.promote_job(db, engagement=engagement, findings=[dto], actor_username="tester")
+        # Anchor the job to this board's core engagement (lotek#845) so the promote guard admits it.
+        result = promote.promote_job(
+            db, engagement=engagement, findings=[dto], actor_username="tester",
+            job_engagement_id=engagement.core_engagement_id,
+        )
         db.commit()
         assert result == {"promoted": 1, "skipped": 0, "parents": 1}
 

@@ -18,17 +18,20 @@ from scribble.enums import Severity
 from tests.conftest import FakeFindingDTO
 
 
-def _engagement(session_factory, name: str = "E") -> object:
+def _engagement(session_factory, name: str = "E"):
     with session_factory() as db:
         eng = fm.ReportBoard(name=name)  # client_id NULL -> admin-only, which the default stub actor is
         db.add(eng)
         db.commit()
-        return eng.id
+        # (id, core-engagement anchor #845) — an adopted job must carry the SAME engagement_id or the
+        # promote guard refuses it 409. `expire_on_commit=False`, so the anchor is readable post-commit.
+        return eng.id, eng.core_engagement_id
 
 
-def _adopt(client, stub_host, eid, job_id="job-x", dtos=()):
-    """Register a viewable job and drive #630's adopt route: LINK + pour its findings onto the board."""
-    stub_host.findings.add_job(job_id, owner_id=1, dtos=list(dtos))
+def _adopt(client, stub_host, eid, anchor, job_id="job-x", dtos=()):
+    """Register a viewable job ANCHORED to this board (#845) and drive #630's adopt route: LINK + pour its
+    findings onto the board."""
+    stub_host.findings.add_job(job_id, owner_id=1, dtos=list(dtos), engagement_id=anchor)
     resp = client.post(f"/scribble/engagements/{eid}/adopt-job/{job_id}")
     assert resp.status_code in (302, 303), resp.data
     return job_id
@@ -51,8 +54,8 @@ def _enriched_row_ids(session_factory, eid, source_ids):
 # ── (a) link-only ────────────────────────────────────────────────────────────────────────────────
 
 def test_unadopt_link_only_clears_link_but_keeps_findings(client, stub_host, session_factory, clean_vuln_map):
-    eid = _engagement(session_factory)
-    _adopt(client, stub_host, eid, "job-x",
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
            dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
     # Poured: two findings, each carrying its source finding id; the panel lists the job.
     assert _finding_ids(session_factory, eid) == {("RCE", 101), ("XSS", 102)}
@@ -72,7 +75,7 @@ def test_unadopt_link_only_clears_link_but_keeps_findings(client, stub_host, ses
 
 def test_unadopt_link_only_requires_write(client, stub_host, session_factory):
     stub_host.can_write_value = False
-    eid = _engagement(session_factory)
+    eid, _ = _engagement(session_factory)
     resp = client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x")
     assert resp.status_code == 403
 
@@ -88,9 +91,9 @@ def test_unadopt_via_wrong_engagement_does_not_clear_another_engagements_link(
 ):
     """`host.remove_job_adoption` takes only a job id, so an un-adopt POSTed at the WRONG engagement's URL
     must not clear a job linked to a DIFFERENT engagement. Both paths are scoped to `host.list_jobs`."""
-    mine = _engagement(session_factory, "mine")
-    other = _engagement(session_factory, "other")
-    _adopt(client, stub_host, other, "job-y",
+    mine, _ = _engagement(session_factory, "mine")
+    other, other_anchor = _engagement(session_factory, "other")
+    _adopt(client, stub_host, other, other_anchor, "job-y",
            dtos=[FakeFindingDTO(id=201, title="RCE")])  # job-y belongs to OTHER
     assert "job-y" in client.get(f"/scribble/engagements/{other}").get_data(as_text=True)
 
@@ -111,8 +114,8 @@ def test_unadopt_via_wrong_engagement_does_not_clear_another_engagements_link(
 def test_destructive_preview_lists_exactly_the_enriched_findings(
     client, stub_host, session_factory, clean_vuln_map
 ):
-    eid = _engagement(session_factory)
-    _adopt(client, stub_host, eid, "job-x",
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
            dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
     # A hand-authored finding (no source finding id) — this job did NOT enrich it.
     with session_factory() as db:
@@ -131,8 +134,8 @@ def test_destructive_preview_lists_exactly_the_enriched_findings(
 def test_destructive_confirm_removes_exactly_those_and_audits(
     client, stub_host, session_factory, clean_vuln_map
 ):
-    eid = _engagement(session_factory)
-    _adopt(client, stub_host, eid, "job-x",
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
            dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
     with session_factory() as db:
         db.add(fm.BoardFinding(engagement_id=eid, title="Manual note", severity=Severity.info))
@@ -158,7 +161,7 @@ def test_destructive_confirm_removes_exactly_those_and_audits(
 
 def test_destructive_destroy_requires_write_but_preview_is_a_viewable_get(client, stub_host, session_factory):
     stub_host.can_write_value = False
-    eid = _engagement(session_factory)
+    eid, _ = _engagement(session_factory)
     # The ACT is write-gated...
     assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code == 403
     # ...but the preview is a GET, so a writeless viewer may read it (tenancy contract: GET == view).
@@ -168,7 +171,7 @@ def test_destructive_destroy_requires_write_but_preview_is_a_viewable_get(client
 # ── the panel renders the affordance (additive to #629/#630) ────────────────────────────────────────
 
 def test_panel_renders_unadopt_controls_for_each_source_job(client, stub_host, session_factory):
-    eid = _engagement(session_factory)
+    eid, _ = _engagement(session_factory)
     stub_host.add_promoted_job(eid, "job-alpha")
     body = client.get(f"/scribble/engagements/{eid}").get_data(as_text=True)
     assert "Source jobs" in body                                  # #629 panel intact

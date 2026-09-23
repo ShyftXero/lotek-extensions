@@ -655,10 +655,18 @@ def register(api_bp, bp) -> None:
             findings_ns = host.findings()
             job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
             if job is not None:
-                from scribble.promote import promote_job  # lazy: promote.py is Track D's file
+                from scribble.promote import CrossEngagementPromote, promote_job  # lazy: promote.py
                 dtos = findings_ns.list_findings(job_id, actor)
-                promote_job(db, engagement=engagement, findings=dtos,
-                            actor_username=current_actor_username())
+                try:
+                    promote_job(db, engagement=engagement, findings=dtos,
+                                actor_username=current_actor_username(),
+                                job_engagement_id=getattr(job, "engagement_id", None))
+                except CrossEngagementPromote as exc:
+                    # Operator-visible refusal (#845), never a silent no-op: this board is anchored to a
+                    # different core engagement than the job's. 409 with how to fix it.
+                    abort(409, f"This report board is anchored to engagement {exc.anchor}; the scan job "
+                               f"belongs to engagement {exc.job_engagement_id}. Reassign the job, or "
+                               f"promote it into that engagement's board.")
                 db.commit()
                 promoted_ref = engagement.id  # capture inside the session for the host-side write below
         if promoted_ref is not None:
@@ -690,13 +698,26 @@ def register(api_bp, bp) -> None:
             findings_ns = host.findings()
             job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
             if job is not None:  # unknown/not-viewable -> silent no-op + redirect, exactly like the twin
+                from scribble.promote import (  # lazy: promote.py is Track D's file
+                    CrossEngagementPromote,
+                    assert_promote_anchor,
+                    promote_job,
+                )
+                # Anchor check (#845) BEFORE the gating mark, so a cross-engagement adopt never leaves the
+                # job linked-but-not-poured. Same single predicate the machine route uses.
+                try:
+                    assert_promote_anchor(engagement, getattr(job, "engagement_id", None))
+                except CrossEngagementPromote as exc:
+                    abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, "
+                               f"but this report board is anchored to engagement {exc.anchor}. "
+                               f"Reassign the job first.")
                 # Link FIRST so it can gate: refuse-on-conflict returns False -> 409, pour nothing.
                 if not host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement.id):
                     abort(409, "This scan job is already adopted by another engagement.")
-                from scribble.promote import promote_job  # lazy: promote.py is Track D's file
                 dtos = findings_ns.list_findings(job_id, actor)
                 promote_job(db, engagement=engagement, findings=dtos,
-                            actor_username=current_actor_username())
+                            actor_username=current_actor_username(),
+                            job_engagement_id=getattr(job, "engagement_id", None))
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 

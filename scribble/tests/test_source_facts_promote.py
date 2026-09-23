@@ -22,11 +22,14 @@ M = "/scribble/machine"
 ACME = uuid.uuid7()
 
 
-def _engagement(client, stub_host, name: str = "E") -> uuid.UUID:
+def _engagement(client, stub_host, name: str = "E"):
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     r = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert r.status_code == 201, r.get_json()
-    return uuid.UUID(r.get_json()["id"])
+    body = r.get_json()
+    # (id, core-engagement anchor) — a promoted job must carry the SAME engagement_id or promote_job's
+    # tenancy guard (lotek#845) refuses it 409.
+    return uuid.UUID(body["id"]), body["core_engagement_id"]
 
 
 def _first_template_id(client) -> uuid.UUID:
@@ -50,8 +53,8 @@ def test_unmapped_promote_captures_full_source_facts_and_maps_confidence_status(
         references=["https://ex/1"], target_host="10.0.0.9", facts={"host": "10.0.0.9"},
         description="Server offers TLS 1.0.",
     )
-    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto])
-    eid = _engagement(client, stub_host)
+    eid, anchor = _engagement(client, stub_host)
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto], engagement_id=anchor)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200 and r.get_json()["promoted"] == 1
@@ -83,8 +86,8 @@ def test_template_match_promote_still_snapshots_the_source_dto(
         id=99, title="SMB signing not required", source="enum4linux", severity="low",
         confidence="low", status="fixed", target_host="10.0.0.1", cve="CVE-1999-9999",
     )
-    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto])
-    eid = _engagement(client, stub_host)
+    eid, anchor = _engagement(client, stub_host)
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto], engagement_id=anchor)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200 and r.get_json()["parents"] == 1
@@ -108,11 +111,12 @@ def test_repromote_refreshes_source_facts_without_clobbering_edits(
     client, stub_host, session_factory, clean_vuln_map
 ):
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1", owner_id=7,
         dtos=[FakeFindingDTO(id=5, title="Open redirect", source="autorecon", status="new")],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()["promoted"] == 1
 
     # The operator edits the finding (title + status), THEN the upstream scan value moves.
@@ -125,6 +129,7 @@ def test_repromote_refreshes_source_facts_without_clobbering_edits(
     stub_host.findings.add_job(
         "job-1", owner_id=7,
         dtos=[FakeFindingDTO(id=5, title="Open redirect", source="autorecon", status="fixed")],
+        engagement_id=anchor,
     )
     body = client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()
     assert body["promoted"] == 0 and body["skipped"] == 1
