@@ -179,15 +179,14 @@ def test_both_paths_agree(app, stub_host, session_factory):
 # ── the routes that use it ──────────────────────────────────────────────────────────────────────────
 
 
-def test_list_and_dashboard_scope_through_the_hook(client, app, stub_host, session_factory):
-    """End to end through the real routes, with the hook wired — same expectations as the predicate-only
-    coverage in `test_scribble_list_tenancy.py`, so the newer path cannot regress the older guarantee."""
+def test_dashboard_scopes_through_the_hook(client, app, stub_host, session_factory):
+    """The DASHBOARD end to end through the real route, with the hook wired, so the SQL path cannot regress
+    the older predicate guarantee. (The browser `/engagements` LIST no longer scopes scribble boards: it
+    proxies the host's already-scoped `engagement_summaries` — see `test_scribble_list_tenancy.py`. This
+    helper still scopes the dashboard tile and the PAT machine list-engagements endpoint.)"""
     _clients_and_engagements(session_factory)
     _member(stub_host)
     _wire_set_hook(app, {ACME})
-
-    listing = client.get(f"{UI}/engagements").get_data(as_text=True)
-    assert "Ours Q3" in listing and "Theirs Q3" not in listing
 
     dashboard = client.get(f"{UI}/").get_data(as_text=True)
     assert "Ours Q3" in dashboard and "Theirs Q3" not in dashboard
