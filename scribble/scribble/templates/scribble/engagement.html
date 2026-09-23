@@ -35,7 +35,18 @@
     <h3>Add a group</h3>
     <form method="post" action="{{ url_for('scribble.create_group', engagement_id=engagement.id) }}"
           class="scribble-inline-form">
-      <input type="text" name="name" placeholder="Group name (e.g. Internal)" required />
+      {# Group name: pick a common assessment area or type a custom one. Reuses core's combobox widget
+         (static/combobox.js) — `data-allow-create` with no `data-search-url` submits the typed text as the
+         value (combobox.js createEntry), so a bespoke name still posts as `name`. #}
+      {% set default_group_names = ["Internal", "External", "Web Application", "Wireless", "Physical",
+                                    "Social Engineering", "Cloud", "Mobile"] %}
+      <select name="name" data-combobox data-allow-create
+              data-placeholder="Group name (e.g. Internal, or type your own)" required>
+        <option value="" disabled selected></option>
+        {% for g in default_group_names %}
+        <option value="{{ g }}">{{ g }}</option>
+        {% endfor %}
+      </select>
       <select name="assessment_type_id">
         <option value="">No assessment type</option>
         {% for at in assessment_types %}
@@ -280,7 +291,11 @@
   .scribble-inline-form input[type="text"], .scribble-inline-form select {
     background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
     border-radius: 8px; padding: 6px 10px; font: inherit;
+    /* Cap width so a long <option> label (e.g. a verbose template name) can't blow the flex row past
+       the card and force horizontal page overflow; min-width:0 lets the flex item shrink below content. */
+    max-width: 100%; min-width: 0;
   }
+  .scribble-inline-form select { flex: 1 1 auto; }
 
   .scribble-board { display: flex; flex-direction: column; gap: 14px; }
   .scribble-board-group.is-dragging { opacity: .4; border-style: dashed; }
