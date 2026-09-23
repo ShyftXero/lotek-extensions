@@ -16,11 +16,14 @@ M = "/scribble/machine"
 ACME = uuid.uuid7()
 
 
-def _engagement(client, stub_host, name: str = "E") -> uuid.UUID:
+def _engagement(client, stub_host, name: str = "E"):
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     r = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert r.status_code == 201, r.get_json()
-    return uuid.UUID(r.get_json()["id"])
+    body = r.get_json()
+    # (id, core-engagement anchor) — a promoted job must carry the SAME engagement_id or promote_job's
+    # tenancy guard (lotek#845) refuses it 409.
+    return uuid.UUID(body["id"]), body["core_engagement_id"]
 
 
 def _template_with_refs(session_factory, refs: list[str]) -> uuid.UUID:
@@ -49,8 +52,8 @@ def test_unmapped_promote_seeds_scan_refs_and_metadata(client, stub_host, sessio
         cve="CVE-2021-44228", references=["https://scan/x", "https://scan/x"],  # dup within the scan list
         facts={"host": "10.0.0.9", "cwe": "CWE-79"},
     )
-    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto])
-    eid = _engagement(client, stub_host)
+    eid, anchor = _engagement(client, stub_host)
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto], engagement_id=anchor)
 
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()["promoted"] == 1
 
@@ -76,8 +79,8 @@ def test_template_match_promote_unions_template_and_scan_refs(
         references=["https://shared/dup", "https://scan/b"], cve="CVE-2020-0001",
         facts={"cwe": "CWE-89"},
     )
-    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto])
-    eid = _engagement(client, stub_host)
+    eid, anchor = _engagement(client, stub_host)
+    stub_host.findings.add_job("job-1", owner_id=7, dtos=[dto], engagement_id=anchor)
 
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()["parents"] == 1
 
@@ -107,12 +110,13 @@ def test_repromote_preserves_operator_reference_and_metadata_edits(
     client, stub_host, session_factory, clean_vuln_map
 ):
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1", owner_id=7,
         dtos=[FakeFindingDTO(id=5, title="Open redirect", source="autorecon",
                              references=["https://scan/one"], cve="CVE-2020-0001")],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()["promoted"] == 1
 
     # Operator suppresses the scan ref, adds an author ref, and edits cve_ids.

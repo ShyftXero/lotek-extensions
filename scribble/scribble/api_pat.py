@@ -1372,9 +1372,27 @@ def scribble_promote_job(engagement_id: str, job_id: str):
             return jsonify({"error": "not_found", "detail": "job not found"}), 404
         dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
 
-        from scribble.promote import promote_job  # lazy: scribble/promote.py is Track D's file
+        from scribble.promote import CrossEngagementPromote, promote_job  # lazy: scribble/promote.py
 
-        result = promote_job(db, engagement=engagement, findings=dtos, actor_username=actor_username)
+        try:
+            result = promote_job(
+                db, engagement=engagement, findings=dtos, actor_username=actor_username,
+                job_engagement_id=getattr(job, "engagement_id", None),
+            )
+        except CrossEngagementPromote as exc:
+            # 409, not the 404 the tenancy refusals above use: the caller is authorised on BOTH the job
+            # (get_job passed) and this report board (can_view_engagement passed), so naming both ids
+            # leaks no existence oracle. It is a genuine conflict — a valid job, a valid board, an invalid
+            # pairing (lotek#845) — and the message must tell the operator how to resolve it. Nothing was
+            # written (the guard runs before any row op inside promote_job), so no rollback is needed.
+            return jsonify({
+                "error": "cross_engagement",
+                "detail": (
+                    f"This report board is anchored to engagement {exc.anchor}; job {job_id} belongs to "
+                    f"engagement {exc.job_engagement_id}. Reassign the job to {exc.anchor}, or add it to "
+                    f"that engagement's report board."
+                ),
+            }), 409
         db.commit()
 
     # Record the assignment on the host's own generic Job.promoted_* columns (separate session/engine —

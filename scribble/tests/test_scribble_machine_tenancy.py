@@ -567,8 +567,12 @@ def test_promote_job_allowed_for_granted_client(client, stub_host, session_facto
     from tests.conftest import FakeFindingDTO
 
     _granted_token(stub_host)
-    stub_host.findings.add_job("job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")])
     eid = _engagement(session_factory, client_id=ACME)
+    with session_factory() as db:
+        anchor = db.get(fm.ReportBoard, eid).core_engagement_id  # the board's #845 anchor
+    stub_host.findings.add_job(
+        "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")], engagement_id=anchor
+    )
 
     resp = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert resp.status_code == 200

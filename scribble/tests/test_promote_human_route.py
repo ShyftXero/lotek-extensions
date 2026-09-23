@@ -37,16 +37,20 @@ def _engagement(client, stub_host, name: str = "E"):
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post("/scribble/machine/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return uuid.UUID(resp.get_json()["id"])
+    body = resp.get_json()
+    # (id, core-engagement anchor) — a promoted job must carry the SAME engagement_id or promote_job's
+    # tenancy guard (lotek#845) refuses it 409.
+    return uuid.UUID(body["id"]), body["core_engagement_id"]
 
 
 def test_human_promote_lands_findings_and_records_assignment(client, stub_host, session_factory):
     uid = _session_operator(stub_host)
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1", owner_id=uid,
         dtos=[FakeFindingDTO(id=1, title="SQLi"), FakeFindingDTO(id=2, title="XSS")],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "job-1"})
     assert r.status_code in (302, 303), r.data
@@ -62,7 +66,7 @@ def test_human_promote_lands_findings_and_records_assignment(client, stub_host, 
 
 def test_human_promote_unknown_job_is_a_noop_not_a_leak(client, stub_host, session_factory):
     _session_operator(stub_host)
-    eid = _engagement(client, stub_host)
+    eid, _anchor = _engagement(client, stub_host)
 
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "does-not-exist"})
     assert r.status_code in (302, 303)  # redirect to the board — no crash, no 404 existence leak
@@ -73,7 +77,7 @@ def test_human_promote_unknown_job_is_a_noop_not_a_leak(client, stub_host, sessi
 
 def test_human_promote_empty_job_id_is_a_noop(client, stub_host, session_factory):
     _session_operator(stub_host)
-    eid = _engagement(client, stub_host)
+    eid, _anchor = _engagement(client, stub_host)
 
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={})
     assert r.status_code in (302, 303)
@@ -84,7 +88,7 @@ def test_human_promote_empty_job_id_is_a_noop(client, stub_host, session_factory
 
 def test_human_promote_denied_for_non_member(client, stub_host, session_factory):
     _session_operator(stub_host)
-    eid = _engagement(client, stub_host)  # created under ACME, visible to the operator
+    eid, _anchor = _engagement(client, stub_host)  # created under ACME, visible to the operator
 
     # Switch to an outsider who holds no grant: the blueprint gate must 404 BEFORE the view runs, even
     # though the outsider owns the job they're trying to pull in.
@@ -104,11 +108,31 @@ def test_human_promote_denied_for_viewer_without_write(client, stub_host, sessio
     too. (Removing the route's `host_can_write()` check turns this GREEN->RED: the promotion succeeds.)"""
     _session_operator(stub_host)
     stub_host.findings.add_job("job-1", owner_id=1, dtos=[FakeFindingDTO(id=1, title="SQLi")])
-    eid = _engagement(client, stub_host)
+    eid, _anchor = _engagement(client, stub_host)
 
     stub_host.can_write_value = False  # still a member (can view ACME), but read-only
     r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "job-1"})
     assert r.status_code == 403
+    with session_factory() as db:
+        assert list(db.get(fm.ReportBoard, eid).findings) == []
+    assert stub_host.promoted_calls == []
+
+
+def test_human_promote_refuses_cross_engagement(client, stub_host, session_factory):
+    """The human twin enforces the #845 anchor too: a job whose core engagement is NOT this board's anchor
+    aborts 409, lands nothing, and never records the host-side promote mark.
+
+    Non-vacuous: without `assert_promote_anchor` in `promote_job`, the mismatched job lands its finding and
+    the route 302-redirects — so both the 409 and the empty-board assertions go red."""
+    uid = _session_operator(stub_host)
+    eid, _anchor = _engagement(client, stub_host)
+    stub_host.findings.add_job(
+        "job-1", owner_id=uid, dtos=[FakeFindingDTO(id=1, title="SQLi")],
+        engagement_id=uuid.uuid7(),  # a DIFFERENT core engagement than the board's anchor
+    )
+
+    r = client.post(f"/scribble/engagements/{eid}/promote-job", data={"job_id": "job-1"})
+    assert r.status_code == 409, r.data
     with session_factory() as db:
         assert list(db.get(fm.ReportBoard, eid).findings) == []
     assert stub_host.promoted_calls == []

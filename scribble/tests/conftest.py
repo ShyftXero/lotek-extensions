@@ -207,8 +207,14 @@ class StubFindings:
     def __init__(self) -> None:
         self._jobs: dict[str, dict[str, Any]] = {}
 
-    def add_job(self, job_id: str, *, owner_id: int | None = None, dtos: Any = ()) -> None:
-        self._jobs[job_id] = {"owner_id": owner_id, "dtos": list(dtos)}
+    def add_job(
+        self, job_id: str, *, owner_id: int | None = None, dtos: Any = (), engagement_id: Any = None
+    ) -> None:
+        # ``engagement_id`` is the job's CORE engagement (``JobDTO.engagement_id``, NOT NULL in prod). The
+        # promote anchor guard (#845) compares it to the report board's ``core_engagement_id``, so a test
+        # driving a *successful* promote must set it to that board's anchor. Left None it fails the guard
+        # closed — the honest prod shape for a job with no engagement, a state prod never makes.
+        self._jobs[job_id] = {"owner_id": owner_id, "dtos": list(dtos), "engagement_id": engagement_id}
 
     def _visible(self, owner_id: int | None, actor: StubActor | None) -> bool:
         if actor is None:
@@ -221,7 +227,9 @@ class StubFindings:
         job = self._jobs.get(job_id)
         if job is None or not self._visible(job["owner_id"], actor):
             return None
-        return SimpleNamespace(id=job_id, promoted_extension=None, promoted_ref_id=None)
+        return SimpleNamespace(
+            id=job_id, engagement_id=job["engagement_id"], promoted_extension=None, promoted_ref_id=None
+        )
 
     def list_findings(self, job_id: str, actor: StubActor | None) -> list:
         job = self._jobs.get(job_id)

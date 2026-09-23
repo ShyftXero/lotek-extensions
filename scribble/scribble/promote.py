@@ -37,6 +37,52 @@ from scribble.metadata import (
 )
 from scribble.models import BoardFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
 
+
+class CrossEngagementPromote(Exception):
+    """A job was promoted into a report board NOT anchored to that job's core engagement (lotek#845).
+
+    A report board is anchored to exactly ONE core engagement (``ReportBoard.core_engagement_id``).
+    Core's ``Job.engagement_id`` is THE tenancy key. Promoting a job that belongs to a DIFFERENT core
+    engagement would silently mix two tenants' findings into one report, so it is refused. The machine
+    route translates this into a 409 with an actionable operator message (``api_pat.py``); it is never a
+    bare 500. Carries the two ids (both already visible to the authorized caller) for that message.
+    """
+
+    def __init__(self, anchor: Any, job_engagement_id: Any) -> None:
+        self.anchor = anchor
+        self.job_engagement_id = job_engagement_id
+        super().__init__(f"job core engagement {job_engagement_id!r} != report anchor {anchor!r}")
+
+
+def _norm_core_id(value: Any) -> str | None:
+    """Canonicalise a soft core id for comparison. ``ReportBoard.core_engagement_id`` round-trips as a
+    ``uuid.UUID`` on v2 core; ``JobDTO.engagement_id`` arrives as its canonical str — both must collapse
+    to the same text. A legacy/standalone host's sequential int falls back to ``str``. ``None`` stays
+    ``None`` so the guard below can fail closed on it."""
+    if value is None:
+        return None
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return str(value)
+
+
+def assert_promote_anchor(engagement: Any, job_engagement_id: Any) -> None:
+    """Refuse promoting a job whose core engagement is not this report board's anchor (lotek#845).
+
+    This is the SINGLE home for the tenancy check — every promote path routes through ``promote_job``
+    below, which calls this first; do NOT inline a copy at a call site. Fails CLOSED when either side is
+    absent: a real deployment always has both (``Job.engagement_id`` is NOT NULL — the tenancy key; every
+    report board is created against a core engagement, so ``core_engagement_id`` is always set — see
+    ``scribble/tests/conftest.py``). A missing value is therefore not a state the product produces, and a
+    silent pass would be exactly the leak this guard exists to stop.
+    """
+    anchor = _norm_core_id(getattr(engagement, "core_engagement_id", None))
+    job = _norm_core_id(job_engagement_id)
+    if anchor is None or job is None or anchor != job:
+        raise CrossEngagementPromote(getattr(engagement, "core_engagement_id", None), job_engagement_id)
+
+
 # Columns a declaration may ALSO write directly onto the created row (besides ``variables``). Mirrors
 # ``TemplateVariable.target_column``'s own allowlist (models.py) -- enforced again here, at the one place
 # that actually performs the write, so a hand-edited row can never steer a write at an arbitrary column.
@@ -281,7 +327,9 @@ def promote_one(
     return finding
 
 
-def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str | None) -> dict:
+def promote_job(
+    db: Any, *, engagement: Any, findings: list, actor_username: str | None, job_engagement_id: Any
+) -> dict:
     """Bulk-promote a lotek scan job's findings (host ``FindingDTO``s) into ``engagement``.
 
     Findings that resolve to the SAME library template are grouped under ONE parent
@@ -298,7 +346,12 @@ def promote_job(db: Any, *, engagement: Any, findings: list, actor_username: str
     one commits).
 
     Returns ``{"promoted": int, "skipped": int, "parents": int}``.
+
+    Refuses (``CrossEngagementPromote``) unless ``job_engagement_id`` (the SOURCE job's core engagement,
+    ``JobDTO.engagement_id``) matches ``engagement.core_engagement_id`` — a report board only aggregates
+    jobs from its own core engagement (lotek#845). Checked FIRST, before any row is read or written.
     """
+    assert_promote_anchor(engagement, job_engagement_id)
     declarations = _load_declarations(db)
 
     promoted_source_ids = {

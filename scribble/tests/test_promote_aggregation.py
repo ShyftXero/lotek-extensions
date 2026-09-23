@@ -12,8 +12,12 @@ that PROMOTE carries `dto.target_host` through to the child row).
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
+
+import pytest
 
 import scribble.models as fm
+from scribble.promote import CrossEngagementPromote, assert_promote_anchor
 from tests.conftest import FakeFindingDTO, StubActor
 
 M = "/scribble/machine"
@@ -36,7 +40,10 @@ def _engagement(client, stub_host, name: str = "E") -> int:
     stub_host.viewable_client_ids = stub_host.viewable_client_ids | {ACME}
     resp = client.post(f"{M}/engagements", json={"name": name, "client_id": ACME})
     assert resp.status_code == 201, resp.get_json()
-    return uuid.UUID(resp.get_json()["id"])
+    body = resp.get_json()
+    # Return the board's core-engagement anchor alongside its id: a promoted job must carry the SAME
+    # engagement_id or promote_job's tenancy guard (lotek#845) refuses it 409.
+    return uuid.UUID(body["id"]), body["core_engagement_id"]
 
 
 def _first_template_id(client) -> uuid.UUID:
@@ -57,6 +64,7 @@ def test_promote_groups_same_template_into_one_parent_with_host_attributed_child
     tid = _first_template_id(client)
     _map_source(client, source="enum4linux", template_id=tid)
 
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1",
         owner_id=7,
@@ -68,8 +76,8 @@ def test_promote_groups_same_template_into_one_parent_with_host_attributed_child
                 id=2, title="SMB signing not required", source="enum4linux", target_host="10.0.0.2"
             ),
         ],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200
@@ -96,6 +104,7 @@ def test_promote_rerun_does_not_duplicate_parent_or_children(
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
     tid = _first_template_id(client)
     _map_source(client, source="enum4linux", template_id=tid)
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1",
         owner_id=7,
@@ -107,8 +116,8 @@ def test_promote_rerun_does_not_duplicate_parent_or_children(
                 id=2, title="SMB signing not required", source="enum4linux", target_host="10.0.0.2"
             ),
         ],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r1 = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r1.get_json()["parents"] == 1
@@ -133,6 +142,7 @@ def test_promote_different_templates_get_separate_parents(
     _map_source(client, source="enum4linux", template_id=tid_a)
     _map_source(client, source="dalfox", template_id=tid_b)
 
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1",
         owner_id=7,
@@ -144,8 +154,8 @@ def test_promote_different_templates_get_separate_parents(
                 id=2, title="Reflected XSS in parameter 'q'", source="dalfox", target_host="10.0.0.1"
             ),
         ],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     body = r.get_json()
@@ -162,10 +172,11 @@ def test_promote_unmapped_findings_stay_flat_ungrouped(client, stub_host, sessio
     """A finding that resolves to no template is bridged verbatim and stays flat (parent_id None, no
     separate parent row created)."""
     stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
-        "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="Untitled scan hit", source="autorecon")]
+        "job-1", owner_id=7, dtos=[FakeFindingDTO(id=1, title="Untitled scan hit", source="autorecon")],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     body = r.get_json()
@@ -185,6 +196,7 @@ def test_promote_still_respects_job_tenancy_with_aggregation(
     and no parent/child rows are created for them."""
     tid = _first_template_id(client)
     _map_source(client, source="enum4linux", template_id=tid)
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1",
         owner_id=7,
@@ -193,8 +205,8 @@ def test_promote_still_respects_job_tenancy_with_aggregation(
                 id=1, title="SMB signing not required", source="enum4linux", target_host="10.0.0.1"
             )
         ],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     stub_host.actor = StubActor(id=8, username="opB", role="operator")
     r_b = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
@@ -222,6 +234,7 @@ def test_promote_attributes_internal_host_without_global_asset(
     tid = _first_template_id(client)
     _map_source(client, source="kerberoast", template_id=tid)
 
+    eid, anchor = _engagement(client, stub_host)
     stub_host.findings.add_job(
         "job-1",
         owner_id=7,
@@ -233,8 +246,8 @@ def test_promote_attributes_internal_host_without_global_asset(
                 id=2, title="kerberoasting — dc02", source="kerberoast", target_host="dc02.corp.local"
             ),
         ],
+        engagement_id=anchor,
     )
-    eid = _engagement(client, stub_host)
 
     r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
     assert r.status_code == 200 and r.get_json()["parents"] == 1
@@ -247,3 +260,25 @@ def test_promote_attributes_internal_host_without_global_asset(
         )
         assert len(children) == 2
         assert {c.target_host for c in children} == {"192.168.57.10", "dc02.corp.local"}
+
+
+# ── the anchor predicate itself (lotek#845) ──────────────────────────────────────────────────────────
+
+
+def test_assert_promote_anchor_predicate():
+    """`assert_promote_anchor` is the SINGLE home every promote path routes its tenancy check through
+    (`promote_job`, the machine route, the human adopt route). A matching anchor passes; a mismatch, a
+    None anchor, and a None job id each raise `CrossEngagementPromote` (fail-closed on either side absent).
+
+    Non-vacuous: soften the guard to `anchor != job` (dropping the two None clauses) and the None-anchor
+    and None-job cases stop raising."""
+    anchor = uuid.uuid7()
+    # match -> no raise (normalized to the same canonical id on both sides)
+    assert_promote_anchor(SimpleNamespace(core_engagement_id=anchor), anchor)
+
+    with pytest.raises(CrossEngagementPromote):  # mismatch
+        assert_promote_anchor(SimpleNamespace(core_engagement_id=anchor), uuid.uuid7())
+    with pytest.raises(CrossEngagementPromote):  # None anchor -> fail closed
+        assert_promote_anchor(SimpleNamespace(core_engagement_id=None), anchor)
+    with pytest.raises(CrossEngagementPromote):  # None job id -> fail closed
+        assert_promote_anchor(SimpleNamespace(core_engagement_id=anchor), None)
