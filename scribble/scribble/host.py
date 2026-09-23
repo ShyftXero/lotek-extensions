@@ -117,6 +117,14 @@ def can_operate_on(engagement_id) -> bool:
     return bool(hook(engagement_id)) if hook is not None else False
 
 
+def engagement_summaries() -> list:
+    """Summaries ``{id, name, client_id, client_name}`` of the current principal's visible CORE
+    engagements. The Report Boards list proxies these instead of keeping a parallel engagement list.
+    Empty when unmounted -- standalone Scribble has no core engagements to proxy."""
+    hook = host_hook("engagement_summaries")
+    return list(hook()) if hook is not None else []
+
+
 def findings():
     """The host's read-only findings namespace (``get_job``/``list_findings``/``get_finding``), or
     None when unmounted. Callers treat None like an empty host (no scan data reachable)."""

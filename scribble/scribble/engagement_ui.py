@@ -71,11 +71,10 @@ from sqlalchemy import select
 
 from scribble import findings_service, host
 from scribble.artifacts_storage import delete_file
-from scribble.authz import can_view_client_id, host_is_mounted, visible_engagements
+from scribble.authz import can_view_client_id, host_is_mounted
 from scribble.content import schema
 from scribble.deps import (
     client_model,
-    client_names,
     current_actor,
     current_actor_id,
     current_actor_username,
@@ -277,120 +276,81 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements", endpoint="engagements")
     def engagements():
-        """The engagement list, scoped to the viewer's own clients.
+        """Report Boards: a VIEW over the viewer's CORE engagements, not a parallel engagement list.
 
-        It listed every engagement in the database, for every client -- the same cross-tenant read the
-        by-id gate closes, minus the need to guess an id. See `scribble.authz.visible_engagements`
-        and `blueprint.dashboard`, which is the same fix on the same data.
+        Each row is a core engagement (from the host seam, scoped to what the caller may see). It either
+        already has a report board (Open it) or offers Import-to-Scribble (create a board LINKED to that
+        core engagement). One "engagement" concept in the product; Scribble is its reporting layer. A
+        board is 1:1 with a core engagement (partial-unique on core_engagement_id), so at most one per row.
         """
+        summaries = host.engagement_summaries()  # [{id, name, client_id, client_name}], already scoped
+        core_ids = [s["id"] for s in summaries]
         with open_session() as db:
-            visible = visible_engagements(
-                db, select(ReportBoard).order_by(ReportBoard.created_at.desc()), current_actor()
+            boards = {}
+            if core_ids:
+                for b in db.execute(
+                    select(ReportBoard).where(ReportBoard.core_engagement_id.in_(core_ids))
+                ).scalars().all():
+                    if b.core_engagement_id is not None:
+                        boards[b.core_engagement_id] = b
+            rows = [
+                {
+                    "core_id": s["id"],
+                    "name": s["name"],
+                    "client_name": s["client_name"],
+                    "board": boards.get(s["id"]),
+                }
+                for s in summaries
+            ]
+        return render_template("scribble/engagements.html", rows=rows)
+
+    @bp.post("/engagements/import", endpoint="import_board")
+    def import_board():
+        """One-click Import-to-Scribble: create a report board LINKED to a core engagement (or open the
+        existing one). The ONLY create path — a board never exists without a core engagement behind it.
+
+        Tenancy: gated on ``host.can_operate_on`` (operator on that engagement) and every failure — bad
+        id, not-operator, unknown — collapsed to one 404, so this leaks nothing. Name + client are
+        DERIVED from the core engagement (via the same scoped summaries), never trusted from the form,
+        so the form carries only the core id. Idempotent: a second import opens the existing board.
+        """
+        raw = (request.form.get("core_engagement_id") or "").strip()
+        try:
+            core_id = uuid.UUID(raw)
+        except (ValueError, AttributeError):
+            abort(404)
+        if not host.can_operate_on(core_id):
+            abort(404)
+        summ = next((s for s in host.engagement_summaries() if s["id"] == core_id), None)
+        if summ is None:
+            abort(404)
+        with open_session() as db:
+            existing = db.execute(
+                select(ReportBoard)
+                .where(ReportBoard.core_engagement_id == core_id)
+                .order_by(ReportBoard.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return redirect(url_for("scribble.engagement_board", engagement_id=existing.id))
+            board = ReportBoard(
+                name=summ["name"],
+                client_id=summ["client_id"],
+                core_engagement_id=core_id,
+                created_by=current_actor_username(),
+                owner_id=current_actor_id(),
             )
-            return render_template(
-                "scribble/engagements.html",
-                engagements=visible,
-                client_names=client_names(db, visible),
-            )
+            db.add(board)
+            db.commit()
+            return redirect(url_for("scribble.engagement_board", engagement_id=board.id))
 
     @bp.route("/engagements/new", methods=["GET", "POST"], endpoint="engagement_new")
     def engagement_new():
-        with open_session() as db:
-            if request.method == "POST":
-                name = (request.form.get("name") or "").strip()
-                if not name:
-                    return (
-                        render_template(
-                            "scribble/engagement_new.html",
-                            clients=_viewable_clients(db),
-                            error="Name is required.",
-                        ),
-                        400,
-                    )
-
-                # Tenancy: the client comes from the form, so no id-shaped gate reaches it -- see
-                # `_resolve_client` for the three rules and why each exists.
-                client_id, error = _resolve_client(db, request.form)
-                if error is not None:
-                    return (
-                        render_template(
-                            "scribble/engagement_new.html",
-                            clients=_viewable_clients(db),
-                            error=error,
-                        ),
-                        400,
-                    )
-
-                # THE ANCHOR — see api_pat's create for the full reasoning. Obtained at CREATE time
-                # so an upload never finds it missing. Creating one is manager-or-admin in the host,
-                # so an operator using the browser gets a plain, actionable refusal rather than a
-                # working engagement whose evidence has nowhere to go.
-                # Not gated on `host_is_mounted()`: storage and authorization are separate host
-                # capabilities, and evidence needs its anchor wherever an object store exists.
-                # Reverse-link create (lotek#632 pair): the `by-core` resolver sends an operator here
-                # with the core engagement id it found NO board for. Point the new board at that
-                # existing core engagement instead of spawning a second one. Creating a core
-                # engagement is manager-only; pointing at one you already operate is not -- gate on
-                # `host.can_operate_on` (the exact case its docstring names), which also fails closed
-                # so a forged id can't attach a board to an engagement you don't operate.
-                supplied = (request.form.get("core_engagement_id") or "").strip()
-                if supplied:
-                    try:
-                        core_engagement_id = uuid.UUID(supplied)
-                    except ValueError:
-                        core_engagement_id = None
-                    if core_engagement_id is None or not host.can_operate_on(core_engagement_id):
-                        return (
-                            render_template(
-                                "scribble/engagement_new.html",
-                                clients=_viewable_clients(db),
-                                error="You don't hold an operator role on that engagement.",
-                            ),
-                            403,
-                        )
-                else:
-                    try:
-                        core_engagement_id = host.create_engagement(client_id, name)
-                    except PermissionError:
-                        return (
-                            render_template(
-                                "scribble/engagement_new.html",
-                                clients=_viewable_clients(db),
-                                error="Creating an engagement requires manager or admin. Ask one to "
-                                      "create it, or create it in lotek first.",
-                            ),
-                            403,
-                        )
-                    except ValueError:
-                        return (
-                            render_template(
-                                "scribble/engagement_new.html",
-                                clients=_viewable_clients(db),
-                                error="An engagement with this name already exists for this client.",
-                            ),
-                            409,
-                        )
-
-                engagement = ReportBoard(
-                    name=name,
-                    client_id=client_id,
-                    core_engagement_id=core_engagement_id,
-                    scope_type=(request.form.get("scope_type") or "external").strip() or "external",
-                    company_name=(request.form.get("company_name") or "").strip() or None,
-                    start_date=_parse_date(request.form.get("start_date")),
-                    end_date=_parse_date(request.form.get("end_date")),
-                    created_by=current_actor_username(),
-                    owner_id=current_actor_id(),
-                )
-                db.add(engagement)
-                db.commit()
-                return redirect(url_for("scribble.engagement_board", engagement_id=engagement.id))
-
-            # The template reads `core_engagement_id` from request.values itself (survives a POST
-            # re-render too), so nothing extra to pass here.
-            return render_template(
-                "scribble/engagement_new.html", clients=_viewable_clients(db), error=None
-            )
+        # Standalone board creation is retired (Report Board rework): a report board is created ONLY by
+        # importing a core engagement (see ``import_board``), so it can never be an orphan with no core
+        # engagement behind it. Kept as a redirect so a stale link/bookmark lands on the Report Boards
+        # list rather than 404ing.
+        return redirect(url_for("scribble.engagements"))
 
     @bp.get("/engagements/by-core/<core_id>", endpoint="engagement_by_core")
     def engagement_by_core(core_id):
@@ -420,7 +380,7 @@ def register(api_bp, bp) -> None:
             ).scalar_one_or_none()
         if row is not None:
             return redirect(url_for("scribble.engagement_board", engagement_id=row.id))
-        return redirect(url_for("scribble.engagement_new", core_engagement_id=str(key)))
+        return redirect(url_for("scribble.engagements"))
 
     # =============================================================================== UI: edit / delete
 

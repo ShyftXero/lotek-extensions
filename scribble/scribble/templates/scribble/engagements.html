@@ -1,28 +1,40 @@
 {% extends scribble_base %}
-{% block title %}Scribble — Engagements{% endblock %}
+{% block title %}Scribble — Report Boards{% endblock %}
 {% block content %}
 <div class="card">
   <div class="scribble-list-head">
-    <h2>Engagements <span class="muted">({{ engagements|length }})</span></h2>
-    <a class="btn btn-primary" href="{{ url_for('scribble.engagement_new') }}">+ New engagement</a>
+    <h2>Report Boards <span class="muted">({{ rows|length }})</span></h2>
   </div>
-  {% if engagements %}
+  <p class="muted">One report board per engagement. Import an engagement to start (or continue) its report.</p>
+  {% if rows %}
   <table class="table">
-    <thead><tr><th>Name</th><th>Client</th><th>Scope</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Engagement</th><th>Client</th><th>Report board</th><th></th></tr></thead>
     <tbody>
-      {% for e in engagements %}
+      {% for r in rows %}
       <tr>
-        <td><a href="{{ url_for('scribble.engagement_board', engagement_id=e.id) }}">{{ e.name }}</a></td>
-        <td>{{ client_names.get(e.id, '—') }}</td>
-        <td><span class="pill">{{ e.scope_type }}</span></td>
-        <td>{{ e.status }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.client_name or '—' }}</td>
+        <td>
+          {% if r.board %}
+          <a href="{{ url_for('scribble.engagement_board', engagement_id=r.board.id) }}">Open board</a>
+          {% else %}
+          <span class="muted">not imported</span>
+          {% endif %}
+        </td>
         <td class="scribble-engagements-actions">
-          {% if scribble_can_write %}
-          <a class="btn" href="{{ url_for('scribble.engagement_edit_page', engagement_id=e.id) }}">Edit</a>
-          <form method="post" action="{{ url_for('scribble.engagement_delete', engagement_id=e.id) }}"
-                data-confirm-name="{{ e.name }}"
-                onsubmit="return confirm('Delete engagement \'' + this.dataset.confirmName + '\' and its findings? This cannot be undone.');">
-            <button type="submit" class="btn">Delete</button>
+          {% if r.board %}
+            {% if scribble_can_write %}
+            <a class="btn" href="{{ url_for('scribble.engagement_edit_page', engagement_id=r.board.id) }}">Edit</a>
+            <form method="post" action="{{ url_for('scribble.engagement_delete', engagement_id=r.board.id) }}"
+                  data-confirm-name="{{ r.board.name }}"
+                  onsubmit="return confirm('Delete the report board for \'' + this.dataset.confirmName + '\' and its findings? This cannot be undone.');">
+              <button type="submit" class="btn">Delete</button>
+            </form>
+            {% endif %}
+          {% elif scribble_can_write %}
+          <form method="post" action="{{ url_for('scribble.import_board') }}">
+            <input type="hidden" name="core_engagement_id" value="{{ r.core_id }}" />
+            <button type="submit" class="btn btn-primary">Import to Scribble</button>
           </form>
           {% endif %}
         </td>
@@ -31,7 +43,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No engagements yet. Create one to start the finding board.</p>
+  <p class="muted">No engagements you can operate on yet. Create an engagement in lotek first, then import it here.</p>
   {% endif %}
 </div>
 
