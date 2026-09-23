@@ -47,7 +47,7 @@ from werkzeug.serving import make_server
 
 import scribble
 from scribble.checklists import assign_template
-from scribble.models import ChecklistTemplate, Client, Engagement
+from scribble.models import ChecklistTemplate, Client, ReportBoard
 from scribble.seed import seed_defaults
 
 try:
@@ -112,7 +112,7 @@ def _stylesheet_links(html: str) -> list[str]:
 
 def _new_engagement(session_factory) -> object:
     with session_factory() as db:
-        e = Engagement(name="Theming Eng")
+        e = ReportBoard(name="Theming Eng")
         db.add(e)
         db.commit()
         return e.id
@@ -320,7 +320,7 @@ def _board_with_checklist(session_factory):
         c = Client(name="Theming Client")
         db.add(c)
         db.flush()
-        eng = Engagement(name="Theming board", client_id=c.id, company_name="Theming Co")
+        eng = ReportBoard(name="Theming board", client_id=c.id, company_name="Theming Co")
         db.add(eng)
         db.commit()
         tmpl = db.scalars(select(ChecklistTemplate).limit(1)).first()
@@ -380,7 +380,7 @@ def no_templates_app(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("scribble-ckp-empty")
     flask_app, session_factory = _boot(tmp, "empty.db")
     with session_factory() as db:
-        eng = Engagement(name="Empty tray board")
+        eng = ReportBoard(name="Empty tray board")
         db.add(eng)
         rows = db.scalars(select(ChecklistTemplate)).all()
         assert rows, "seed_defaults shipped no templates, so hiding them proves nothing"

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import _metadata_line_html, _references_html
 from scribble.reporting.render_html import render_report_html
@@ -25,9 +25,9 @@ def _render(session_factory, **finding_kwargs) -> str:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="E", client_id=client.id, company_name="Acme")
+        eng = ReportBoard(name="E", client_id=client.id, company_name="Acme")
         grp = FindingGroup(engagement=eng, name="Web", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             content_json={"description": schema.doc_from_text("A parameter reflects input.")},
             **finding_kwargs,
@@ -124,9 +124,9 @@ def _render_with_content(session_factory, *, content_json, **finding_kwargs) -> 
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="E", client_id=client.id, company_name="Acme")
+        eng = ReportBoard(name="E", client_id=client.id, company_name="Acme")
         grp = FindingGroup(engagement=eng, name="Web", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Legacy Finding", severity=Severity.high, order_index=0,
             content_json=content_json, **finding_kwargs,
         )

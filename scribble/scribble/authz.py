@@ -1,4 +1,4 @@
-"""Engagement-view tenancy: the host-delegated ``can_view_client`` check + the blueprint-wide gate.
+"""ReportBoard-view tenancy: the host-delegated ``can_view_client`` check + the blueprint-wide gate.
 
 Two things live here, deliberately together (one is the primitive, one is what makes the primitive
 actually apply everywhere):
@@ -68,12 +68,12 @@ from sqlalchemy import false, or_
 from scribble.deps import current_actor, get_config, host_can_write, open_session
 from scribble.models import (
     Artifact,
-    Engagement,
+    BoardFinding,
     EngagementChecklist,
     EngagementChecklistItem,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 
 
@@ -111,7 +111,7 @@ def can_view_client_id(client_id, actor) -> bool:
     return bool(can_view_client(client_id, actor))
 
 
-def can_view_engagement(engagement: Engagement, actor) -> bool:
+def can_view_engagement(engagement: ReportBoard, actor) -> bool:
     """:func:`can_view_client_id` applied to an engagement's ``client_id``.
 
     Note the consequence for a CLIENT-LESS engagement (``client_id is None``): the host's contract
@@ -145,7 +145,7 @@ def host_visible_client_ids():
 
 
 def visible_engagements(db, stmt, actor) -> list:
-    """Run ``stmt`` (a ``select(Engagement)``) scoped to what ``actor`` may see, preferring SQL.
+    """Run ``stmt`` (a ``select(ReportBoard)``) scoped to what ``actor`` may see, preferring SQL.
 
     Two paths, and the difference is the point of the host's ``visible_client_ids`` hook:
 
@@ -162,7 +162,7 @@ def visible_engagements(db, stmt, actor) -> list:
         return filter_visible_engagements(db.scalars(stmt).all(), actor)
 
     # An empty set is NOT "unscoped": it means this actor holds nothing, so nothing matches.
-    scoped = Engagement.client_id.in_(client_ids) if client_ids else false()
+    scoped = ReportBoard.client_id.in_(client_ids) if client_ids else false()
 
     # ``IN (…)`` never matches NULL, so a CLIENT-LESS engagement would be invisible on this path
     # whatever the host thinks — while the predicate path shows it to anyone the host answers True for.
@@ -171,7 +171,7 @@ def visible_engagements(db, stmt, actor) -> list:
     # Asking the predicate once for the NULL case keeps the two paths identical for EVERY host instead
     # of only the one this was written against — the "second, drifting copy" this helper exists to avoid.
     if can_view_client_id(None, actor):
-        scoped = or_(scoped, Engagement.client_id.is_(None))
+        scoped = or_(scoped, ReportBoard.client_id.is_(None))
 
     return list(db.scalars(stmt.where(scoped)).all())
 
@@ -201,7 +201,7 @@ def filter_visible_engagements(engagements, actor) -> list:
     return visible
 
 
-def authorize_engagement_view(engagement: Engagement) -> None:
+def authorize_engagement_view(engagement: ReportBoard) -> None:
     """Audit CRIT-4 (originally): a client's findings/evidence must not be readable or writable by a
     reader/writer the host would not grant that client to.
 
@@ -214,7 +214,7 @@ def authorize_engagement_view(engagement: Engagement) -> None:
     plus the creator a read on a client it may hold no membership under. That is the argument against
     copying a predicate, and the host now exposes ``can_view_client`` so there is nothing left to copy.
 
-    Note the trap that makes the copy so easy to write: Scribble's ``Engagement.owner_id`` is
+    Note the trap that makes the copy so easy to write: Scribble's ``ReportBoard.owner_id`` is
     ATTRIBUTION only (engagements are team-shared — see the model), whereas the host's ``Job.owner_id``
     used to be the gate. The host has now inverted its own column to match Scribble's meaning. Neither
     is an authorization key; do not reintroduce either as one.
@@ -238,40 +238,40 @@ def authorize_engagement_view(engagement: Engagement) -> None:
 _DIRECT_KEYS: tuple[str, ...] = ("engagement_id", "eid")
 
 
-def _via_finding(db, value) -> Engagement | None:
-    finding = db.get(EngagementFinding, value)
-    return None if finding is None else db.get(Engagement, finding.engagement_id)
+def _via_finding(db, value) -> ReportBoard | None:
+    finding = db.get(BoardFinding, value)
+    return None if finding is None else db.get(ReportBoard, finding.engagement_id)
 
 
-def _via_group(db, value) -> Engagement | None:
+def _via_group(db, value) -> ReportBoard | None:
     group = db.get(FindingGroup, value)
-    return None if group is None else db.get(Engagement, group.engagement_id)
+    return None if group is None else db.get(ReportBoard, group.engagement_id)
 
 
-def _via_artifact(db, value) -> Engagement | None:
+def _via_artifact(db, value) -> ReportBoard | None:
     artifact = db.get(Artifact, value)
-    return None if artifact is None else db.get(Engagement, artifact.engagement_id)
+    return None if artifact is None else db.get(ReportBoard, artifact.engagement_id)
 
 
-def _via_diagram(db, value) -> Engagement | None:
+def _via_diagram(db, value) -> ReportBoard | None:
     diagram = db.get(EngagementDiagram, value)
-    return None if diagram is None else db.get(Engagement, diagram.engagement_id)
+    return None if diagram is None else db.get(ReportBoard, diagram.engagement_id)
 
 
-def _via_engagement_checklist(db, value) -> Engagement | None:
+def _via_engagement_checklist(db, value) -> ReportBoard | None:
     checklist = db.get(EngagementChecklist, value)
-    return None if checklist is None else db.get(Engagement, checklist.engagement_id)
+    return None if checklist is None else db.get(ReportBoard, checklist.engagement_id)
 
 
-def _via_checklist_item(db, value) -> Engagement | None:
+def _via_checklist_item(db, value) -> ReportBoard | None:
     item = db.get(EngagementChecklistItem, value)
     if item is None:
         return None
     checklist = item.checklist  # relationship lazy-load, within the same open session
-    return None if checklist is None else db.get(Engagement, checklist.engagement_id)
+    return None if checklist is None else db.get(ReportBoard, checklist.engagement_id)
 
 
-# child-id view-arg name -> (db, id_value) -> Engagement | None. Derived directly from the routes mapped
+# child-id view-arg name -> (db, id_value) -> ReportBoard | None. Derived directly from the routes mapped
 # in plans/fix-scribble-tenancy-gate.md: every ``bp``/``api_bp`` route whose URL carries a child id that
 # belongs to exactly one engagement. NOT a guess -- extending this table is how a brand-new child-id
 # route gets covered; ``tests/test_scribble_tenancy_gate.py`` fails closed on any route whose view args
@@ -292,7 +292,7 @@ _CHILD_RESOLVERS: dict[str, object] = {
 _RECOGNIZED_VIEW_ARG_NAMES: frozenset[str] = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
 
 
-def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
+def resolve_engagement(db, view_args: dict) -> tuple[bool, ReportBoard | None]:
     """Resolve the engagement a request's view args target, using the id-name map above.
 
     Returns ``(is_scoped, engagement)``:
@@ -302,7 +302,7 @@ def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
       * ``(True, None)``        — a recognized id was present but did not resolve to a real row (missing
                                    engagement, missing child, or a child with no engagement) — the
                                    caller must fail closed.
-      * ``(True, Engagement)``  — resolved; the caller authorizes against this engagement.
+      * ``(True, ReportBoard)``  — resolved; the caller authorizes against this engagement.
 
     ``engagement_id``/``eid`` win over a child id when a route's URL happens to carry both (e.g.
     ``delete_group``'s ``/engagements/<engagement_id>/groups/<group_id>/delete``) — the direct id is the
@@ -313,7 +313,7 @@ def resolve_engagement(db, view_args: dict) -> tuple[bool, Engagement | None]:
     """
     for key in _DIRECT_KEYS:
         if key in view_args:
-            return True, db.get(Engagement, view_args[key])
+            return True, db.get(ReportBoard, view_args[key])
     for key, resolver in _CHILD_RESOLVERS.items():
         if key in view_args:
             return True, resolver(db, view_args[key])

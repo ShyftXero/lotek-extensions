@@ -22,11 +22,11 @@ from scribble.enums import Severity
 from scribble.models import (
     AttackChain,
     AttackChainStep,
+    BoardFinding,
     Client,
-    Engagement,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context
 from scribble.reporting.render_html import render_report_html
@@ -52,9 +52,9 @@ def _build_engagement(session_factory, *, with_diagram: bool) -> int:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Diagram Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Diagram Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=grp,
             title="Reflected XSS",
@@ -83,7 +83,7 @@ def _build_engagement(session_factory, *, with_diagram: bool) -> int:
 
 def _render(session_factory, eng_id: str) -> str:
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ctx = build_report_context(eng)
         return render_report_html(ctx)
 
@@ -104,7 +104,7 @@ def test_no_diagram_renders_no_attack_paths_section(session_factory):
 def test_context_diagrams_defaults_empty(session_factory):
     eng_id = _build_engagement(session_factory, with_diagram=False)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ctx = build_report_context(eng)
     assert ctx.diagrams == []
 
@@ -155,7 +155,7 @@ def test_linked_diagram_renders_sandboxed_iframe(session_factory):
 def test_context_diagrams_populated_from_engagement(session_factory):
     eng_id = _build_engagement(session_factory, with_diagram=True)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ctx = build_report_context(eng)
     assert len(ctx.diagrams) == 1
     d = ctx.diagrams[0]
@@ -168,7 +168,7 @@ def test_excluded_diagram_does_not_render(session_factory):
     artifacts/findings/checklists."""
     eng_id = _build_engagement(session_factory, with_diagram=True)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         eng.diagrams[0].include_in_report = False
         db.commit()
     html = _render(session_factory, eng_id)
@@ -212,7 +212,7 @@ def test_link_attack_path_round_trip(client, stub_host, session_factory):
     assert lbody["diagrams"][0]["id"] == body["id"]
 
     with session_factory() as db:
-        eng = db.get(Engagement, eid)
+        eng = db.get(ReportBoard, eid)
         assert len(eng.diagrams) == 1
         assert eng.diagrams[0].embed_html == SNAPSHOT_HTML
 
@@ -276,7 +276,7 @@ def test_delete_attack_path_drops_the_count_to_zero(client, stub_host, session_f
 
     assert client.get(f"{M}/engagements/{eid}/attack-paths").get_json()["count"] == 0
     with session_factory() as db:
-        assert db.get(Engagement, eid).diagrams == []
+        assert db.get(ReportBoard, eid).diagrams == []
 
 
 def test_delete_repacks_the_remaining_order_indices(client, stub_host):
@@ -379,7 +379,7 @@ def test_per_item_routes_carry_the_collection_route_tenancy(client, stub_host):
     # …and the row is untouched by any of it.
     assert client.get(f"{M}/engagements/{eid}/attack-paths").get_json()["count"] == 1
 
-    # Engagement outside the actor's grants -> the engagement's own 404, before the diagram is touched.
+    # ReportBoard outside the actor's grants -> the engagement's own 404, before the diagram is touched.
     stub_host.actor = StubActor(id=2, username="operator", role="operator")
     stub_host.viewable_client_ids = set()
     for resp in (
@@ -505,9 +505,9 @@ def _build_chain_engagement(
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Chain Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=grp,
             title="Reflected XSS",
@@ -555,7 +555,7 @@ def test_no_chain_renders_no_attack_chains_section(session_factory):
 def test_context_chains_defaults_empty(session_factory):
     eng_id = _build_chain_engagement(session_factory, with_chain=False)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ctx = build_report_context(eng)
     assert ctx.chains == []
 
@@ -598,7 +598,7 @@ def test_linked_chain_renders_narrative(session_factory):
 def test_context_chains_populated_and_numbered(session_factory):
     eng_id = _build_chain_engagement(session_factory, with_chain=True)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ctx = build_report_context(eng)
     assert len(ctx.chains) == 1
     c = ctx.chains[0]
@@ -616,7 +616,7 @@ def test_excluded_chain_does_not_render(session_factory):
     html = _render(session_factory, eng_id)
     assert "sec-chains" not in html
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     assert ctx.chains == []
 
 

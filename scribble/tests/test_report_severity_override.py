@@ -21,7 +21,7 @@ import pytest
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 from scribble.reporting.render_html import render_report_html
@@ -36,9 +36,9 @@ def _block(text: str) -> dict:
 def _engagement_with_worst(session_factory, worst: Severity) -> int:
     """An engagement whose single finding fixes the COMPUTED overall band at ``worst``."""
     with session_factory() as db:
-        eng = Engagement(name="Override Case", company_name="Acme Corp", scope_type="external")
+        eng = ReportBoard(name="Override Case", company_name="Acme Corp", scope_type="external")
         grp = FindingGroup(engagement=eng, name="Findings", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=grp,
             title="Primary Finding",
@@ -53,7 +53,7 @@ def _engagement_with_worst(session_factory, worst: Severity) -> int:
 
 def _set_override(session_factory, eng_id, band: Severity | None, rationale: str | None) -> None:
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         eng.risk_override = band
         eng.risk_override_rationale = rationale
         db.commit()
@@ -61,7 +61,7 @@ def _set_override(session_factory, eng_id, band: Severity | None, rationale: str
 
 def _render_html(session_factory, eng_id) -> str:
     with session_factory() as db:
-        return render_report_html(build_report_context(db.get(Engagement, eng_id)))
+        return render_report_html(build_report_context(db.get(ReportBoard, eng_id)))
 
 
 def _docx_text(data: bytes) -> str:
@@ -74,7 +74,7 @@ def _docx_text(data: bytes) -> str:
 
 def _render_docx_text(session_factory, eng_id) -> str:
     with session_factory() as db:
-        return _docx_text(render_report_docx(build_report_context(db.get(Engagement, eng_id))))
+        return _docx_text(render_report_docx(build_report_context(db.get(ReportBoard, eng_id))))
 
 
 # ── regression: the dormant path ─────────────────────────────────────────────────────────────────

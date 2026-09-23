@@ -19,11 +19,11 @@ UI = "/scribble"
 
 def _finding(session_factory):
     with session_factory() as db:
-        eng = fm.Engagement(name="Retest Co", scope_type="external")
+        eng = fm.ReportBoard(name="Retest Co", scope_type="external")
         db.add(eng)
         db.commit()
         tmpl = db.query(fm.VulnerabilityTemplate).first()
-        finding = fm.EngagementFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
+        finding = fm.BoardFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
         db.add(finding)
         db.commit()
         return finding.id
@@ -38,7 +38,7 @@ def test_record_retest_remediated_transitions_status(client, stub_host, session_
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, fid)
+        f = db.get(fm.BoardFinding, fid)
         assert f.status == FindingStatus.fixed  # remediated -> fixed, via the ONE writer
         rounds = list(f.retests)
         assert len(rounds) == 1
@@ -52,12 +52,12 @@ def test_record_retest_remediated_transitions_status(client, stub_host, session_
 def test_record_retest_not_tested_leaves_status(client, stub_host, session_factory):
     fid = _finding(session_factory)
     with session_factory() as db:
-        before = db.get(fm.EngagementFinding, fid).status
+        before = db.get(fm.BoardFinding, fid).status
 
     resp = client.post(f"{UI}/findings/{fid}/retest", data={"outcome": "not_tested"})
     assert resp.status_code == 302
     with session_factory() as db:
-        f = db.get(fm.EngagementFinding, fid)
+        f = db.get(fm.BoardFinding, fid)
         assert f.status == before  # not_tested records a round but is no verdict on the fix
         assert len(list(f.retests)) == 1
 
@@ -67,7 +67,7 @@ def test_record_retest_rejects_unknown_outcome(client, stub_host, session_factor
     resp = client.post(f"{UI}/findings/{fid}/retest", data={"outcome": "totally-bogus"})
     assert resp.status_code == 400
     with session_factory() as db:
-        assert list(db.get(fm.EngagementFinding, fid).retests) == []  # nothing recorded
+        assert list(db.get(fm.BoardFinding, fid).retests) == []  # nothing recorded
 
 
 def test_record_retest_missing_finding_404(client, stub_host):
@@ -81,7 +81,7 @@ def test_record_retest_refused_for_viewer(client, stub_host, session_factory):
     resp = client.post(f"{UI}/findings/{fid}/retest", data={"outcome": "remediated"})
     assert resp.status_code == 403
     with session_factory() as db:
-        assert list(db.get(fm.EngagementFinding, fid).retests) == []
+        assert list(db.get(fm.BoardFinding, fid).retests) == []
 
 
 def test_finding_page_renders_retest_card_and_history(client, stub_host, session_factory):
@@ -116,6 +116,6 @@ def test_record_retest_caps_tested_by_to_column_width(client, stub_host, session
                        data={"outcome": "remediated", "tested_by": "x" * 200})
     assert resp.status_code == 302
     with session_factory() as db:
-        rounds = list(db.get(fm.EngagementFinding, fid).retests)
+        rounds = list(db.get(fm.BoardFinding, fid).retests)
         assert len(rounds) == 1
         assert len(rounds[0].tested_by) == 128

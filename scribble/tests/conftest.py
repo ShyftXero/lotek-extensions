@@ -43,7 +43,7 @@ def _stamp_core_engagement_id(_mapper, _connection, target):
     This makes the harness match production rather than being kinder than it. Every engagement a
     deployment creates goes through a create path that obtains a CORE engagement first — evidence has
     to be filed under one (`objects.engagement_id` is NOT NULL; INV-OBJSTORE-01) — so a row without an
-    anchor is not a state the product produces. Around thirty fixtures construct `Engagement(...)`
+    anchor is not a state the product produces. Around thirty fixtures construct `ReportBoard(...)`
     straight, bypassing that path, and each would otherwise carry a shape prod never has.
 
     Registered at IMPORT time, not from a fixture. It was a function-scoped autouse fixture first, and
@@ -58,7 +58,7 @@ def _stamp_core_engagement_id(_mapper, _connection, target):
         target.core_engagement_id = uuid.uuid7()
 
 
-event.listen(_scribble_models.Engagement, "before_insert", _stamp_core_engagement_id)
+event.listen(_scribble_models.ReportBoard, "before_insert", _stamp_core_engagement_id)
 
 
 @pytest.fixture(autouse=True)

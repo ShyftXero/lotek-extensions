@@ -37,8 +37,8 @@ def _clients_and_engagements(session_factory) -> None:
     with session_factory() as db:
         db.add(fm.Client(id=ACME, name="Acme Corp"))
         db.add(fm.Client(id=OTHER_CLIENT, name="Umbrella Corp"))
-        db.add(fm.Engagement(name="Ours Q3", client_id=ACME))
-        db.add(fm.Engagement(name="Theirs Q3", client_id=OTHER_CLIENT))
+        db.add(fm.ReportBoard(name="Ours Q3", client_id=ACME))
+        db.add(fm.ReportBoard(name="Theirs Q3", client_id=OTHER_CLIENT))
         db.commit()
 
 
@@ -82,7 +82,7 @@ def test_sql_path_returns_only_the_actors_clients(app, stub_host, session_factor
     _wire_set_hook(app, {ACME})
 
     with app.test_request_context(), session_factory() as db:
-        rows = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        rows = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     assert [e.name for e in rows] == ["Ours Q3"]
 
 
@@ -93,13 +93,13 @@ def test_empty_set_scopes_everything_away(app, stub_host, session_factory):
     _wire_set_hook(app, set())
 
     with app.test_request_context(), session_factory() as db:
-        rows = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        rows = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     assert rows == []
 
 
 def test_sql_path_works_with_uuid_client_ids(app, stub_host, session_factory):
     """The shape PRODUCTION actually uses. Every other test here uses int client ids (standalone
-    Scribble's own table), but a mounted v2 host's client PKs are UUIDv7, and `Engagement.client_id` is
+    Scribble's own table), but a mounted v2 host's client PKs are UUIDv7, and `ReportBoard.client_id` is
     `SoftHostId` — TEXT-backed, with `process_bind_param` stringifying on the way in.
 
     That makes `.in_({uuid, …})` depend on the type's bind processor being applied to each element of the
@@ -112,15 +112,15 @@ def test_sql_path_works_with_uuid_client_ids(app, stub_host, session_factory):
     held = _uuid.UUID("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
     not_held = _uuid.UUID("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a99")
     with session_factory() as db:
-        db.add(fm.Engagement(name="UUID ours", client_id=held))
-        db.add(fm.Engagement(name="UUID theirs", client_id=not_held))
+        db.add(fm.ReportBoard(name="UUID ours", client_id=held))
+        db.add(fm.ReportBoard(name="UUID theirs", client_id=not_held))
         db.commit()
 
     stub_host.current_user = StubUser(id=63, username="uuid-member", role=_StubRole("operator"))
     _wire_set_hook(app, {held})
 
     with app.test_request_context(), session_factory() as db:
-        rows = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        rows = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     assert [e.name for e in rows] == ["UUID ours"], (
         "a UUID client id did not survive the IN bind — the SQL path would silently show nothing"
     )
@@ -141,16 +141,16 @@ def test_client_less_engagement_matches_the_predicate_on_both_paths(app, stub_ho
     """
     _clients_and_engagements(session_factory)
     with session_factory() as db:
-        db.add(fm.Engagement(name="No client", client_id=None))
+        db.add(fm.ReportBoard(name="No client", client_id=None))
         db.commit()
 
     # Admin: the stub host grants a NULL client -> visible on BOTH paths.
     stub_host.current_user = StubUser(id=1, username="admin", role=_StubRole("admin"))
     with app.test_request_context(), session_factory() as db:
-        fallback = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        fallback = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     _wire_set_hook(app, {ACME, OTHER_CLIENT})
     with app.test_request_context(), session_factory() as db:
-        sql = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        sql = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     assert "No client" in [e.name for e in fallback]
     assert sorted(e.name for e in fallback) == sorted(e.name for e in sql)
 
@@ -158,7 +158,7 @@ def test_client_less_engagement_matches_the_predicate_on_both_paths(app, stub_ho
     _member(stub_host)
     _wire_set_hook(app, {ACME})
     with app.test_request_context(), session_factory() as db:
-        sql_member = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        sql_member = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     assert [e.name for e in sql_member] == ["Ours Q3"]
 
 
@@ -168,10 +168,10 @@ def test_both_paths_agree(app, stub_host, session_factory):
     _member(stub_host)
 
     with app.test_request_context(), session_factory() as db:
-        fallback = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        fallback = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
     _wire_set_hook(app, {ACME})
     with app.test_request_context(), session_factory() as db:
-        sql = visible_engagements(db, select(fm.Engagement), stub_host.current_user)
+        sql = visible_engagements(db, select(fm.ReportBoard), stub_host.current_user)
 
     assert [e.name for e in fallback] == [e.name for e in sql] == ["Ours Q3"]
 

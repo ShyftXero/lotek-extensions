@@ -12,7 +12,7 @@ Per RAILS §4, these assert the real end-state, not a proxy for it:
 - ``test_persist_and_reload_recovers_prior_content`` -- ``CollabDoc.ydoc_state`` durably round-trips
   through a simulated room eviction (server restart / idle recycle).
 - ``test_close_room_reconciles_content_json_and_html`` -- closing a room writes the CRDT doc's rendered
-  ProseMirror JSON/HTML into ``EngagementFinding.content_json``/``content_html``.
+  ProseMirror JSON/HTML into ``BoardFinding.content_json``/``content_html``.
 - ``test_persist_alone_does_not_reconcile_content`` -- the guard test: it exercises ``persist()`` in
   isolation (exactly what's left if ``reconcile()`` were accidentally dropped from ``close_room``) and
   proves the "content_json reflects the merged doc" assertion goes red in that case, then proves the real
@@ -35,7 +35,7 @@ from scribble.api import api_bp
 from scribble.blueprint import bp
 from scribble.collab import crdt, pm_yjs
 from scribble.content.render_html import render_block
-from scribble.models import CollabDoc, Engagement, EngagementFinding
+from scribble.models import BoardFinding, CollabDoc, ReportBoard
 from scribble.seed import seed_defaults
 
 BLOCK = "description"
@@ -124,8 +124,8 @@ def session_factory(app):
 @pytest.fixture
 def finding_id(session_factory) -> int:
     with session_factory() as db:
-        engagement = Engagement(name="Collab Test", company_name="Acme")
-        finding = EngagementFinding(
+        engagement = ReportBoard(name="Collab Test", company_name="Acme")
+        finding = BoardFinding(
             engagement=engagement, title="Collab finding", content_json={}, content_html={}
         )
         db.add(engagement)
@@ -520,7 +520,7 @@ def test_open_room_seeds_from_existing_content_json_when_never_persisted(session
     """Opening live collab on a block that already has authored content (via Phase A autosave, say)
     should start the CRDT doc from that content, not blank it out."""
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         finding.content_json = {BLOCK: SAMPLE_DOC}
         session.commit()
 
@@ -559,7 +559,7 @@ def test_autosave_between_collab_sessions_survives_reopen(session_factory, findi
         manager.close_room(session, finding_id, BLOCK)
 
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         assert finding.content_json[BLOCK] == session1_doc  # reconciled
         stored = session.execute(
             select(CollabDoc).where(CollabDoc.finding_id == finding_id, CollabDoc.block == BLOCK)
@@ -568,7 +568,7 @@ def test_autosave_between_collab_sessions_survives_reopen(session_factory, findi
 
     # --- Phase A autosave edits the block out-of-band (content_json only, never ydoc_state) ---
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         finding.content_json = {**(finding.content_json or {}), BLOCK: autosave_doc}
         session.commit()
 
@@ -581,7 +581,7 @@ def test_autosave_between_collab_sessions_survives_reopen(session_factory, findi
     with session_factory() as session:
         manager.close_room(session, finding_id, BLOCK)
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         assert finding.content_json[BLOCK] == autosave_doc
 
 
@@ -637,7 +637,7 @@ def test_close_room_reconciles_content_json_and_html(session_factory, finding_id
     assert manager.get_room(finding_id, BLOCK) is None  # evicted
 
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         assert finding.content_json[BLOCK] == expected_doc
         assert finding.content_html[BLOCK] == expected_html
 
@@ -655,7 +655,7 @@ def test_persist_alone_does_not_reconcile_content(session_factory, finding_id):
         "content": [{"type": "paragraph", "content": [{"type": "text", "text": "STALE pre-existing"}]}],
     }
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         finding.content_json = {BLOCK: stale_doc}
         session.commit()
 
@@ -678,7 +678,7 @@ def test_persist_alone_does_not_reconcile_content(session_factory, finding_id):
         manager.persist(session, finding_id, BLOCK)
 
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         # Still the STALE doc -- persist didn't touch content_json.
         assert finding.content_json[BLOCK] == stale_doc
         with pytest.raises(AssertionError):
@@ -689,7 +689,7 @@ def test_persist_alone_does_not_reconcile_content(session_factory, finding_id):
         manager.close_room(session, finding_id, BLOCK)
 
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         assert finding.content_json[BLOCK] == merged  # GREEN: reconcile overwrote the stale value
         assert finding.content_json[BLOCK] != stale_doc
         assert finding.content_html[BLOCK] == render_block(merged, artifact_url=crdt._artifact_url)
@@ -880,7 +880,7 @@ def test_disconnect_flushes_and_reconciles_on_last_leave(session_factory, findin
         assert manager.disconnect(session, finding_id, BLOCK, "conn-1") is True
 
     with session_factory() as session:
-        finding = session.get(EngagementFinding, finding_id)
+        finding = session.get(BoardFinding, finding_id)
         assert finding.content_json[BLOCK] == expected  # reconciled on last-leave
         stored = session.execute(
             select(CollabDoc).where(CollabDoc.finding_id == finding_id, CollabDoc.block == BLOCK)

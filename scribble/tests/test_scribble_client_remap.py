@@ -1,6 +1,6 @@
 """Report-authz IDOR regression.
 
-``Engagement.client_id`` is a *soft* int reference with no id-space: in a standalone->mounted Scribble DB
+``ReportBoard.client_id`` is a *soft* int reference with no id-space: in a standalone->mounted Scribble DB
 a ``scribble_clients`` id is misread as a host ``clients`` id and can collide with a real host client an
 attacker owns a job under, exposing that client's report. ``scribble.db._remap_standalone_client_ids``
 (run at the end of ``create_all``) remaps those ids to host space by client NAME so the host authz
@@ -57,7 +57,7 @@ def _seed_standalone(engine, host_model):
             "created_at DATETIME, updated_at DATETIME)"
         ))
         conn.execute(text(
-            "CREATE TABLE scribble_engagements (id INTEGER PRIMARY KEY, client_id VARCHAR(64), "
+            "CREATE TABLE scribble_report_boards (id INTEGER PRIMARY KEY, client_id VARCHAR(64), "
             "name VARCHAR(255), scope_type VARCHAR(64), status VARCHAR(32), "
             "created_at DATETIME, updated_at DATETIME)"
         ))
@@ -70,7 +70,7 @@ def _seed_standalone(engine, host_model):
             f"(1, 'Acme', '{ts}', '{ts}'), (2, 'Beta', '{ts}', '{ts}'), (3, 'Gamma', '{ts}', '{ts}')"
         ))
         conn.execute(text(
-            "INSERT INTO scribble_engagements "
+            "INSERT INTO scribble_report_boards "
             "(id, client_id, name, scope_type, status, created_at, updated_at) VALUES "
             f"(10, 1, 'e-acme', 'external', 'in_progress', '{ts}', '{ts}'), "
             f"(11, 2, 'e-beta', 'external', 'in_progress', '{ts}', '{ts}'), "
@@ -86,10 +86,10 @@ def _client_ids(engine):
     back e.g. ``'5'`` for what was written as the plain int ``5``. This test operates at the raw-SQL
     level deliberately (see module docstring), but the ids it's asserting on are genuinely int-shaped in
     every case here (a legacy standalone->mounted int host) -- coerce back to what any real ORM read
-    (``Engagement.client_id``) would hand back, rather than asserting on SQLite's storage class.
+    (``ReportBoard.client_id``) would hand back, rather than asserting on SQLite's storage class.
     """
     with engine.begin() as conn:
-        rows = conn.execute(text("SELECT id, client_id FROM scribble_engagements ORDER BY id")).fetchall()
+        rows = conn.execute(text("SELECT id, client_id FROM scribble_report_boards ORDER BY id")).fetchall()
     return {eid: (int(cid) if cid is not None else None) for eid, cid in rows}
 
 

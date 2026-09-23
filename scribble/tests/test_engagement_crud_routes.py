@@ -1,4 +1,4 @@
-"""Engagement CRUD on scribble's OWN browser (`bp`) blueprint (`scribble/engagement_ui.py`) — create,
+"""ReportBoard CRUD on scribble's OWN browser (`bp`) blueprint (`scribble/engagement_ui.py`) — create,
 edit, delete + the viewer read-only nudge.
 
 Ported from the deleted lotek `tests/test_engagements_crud.py` (the `/engagements` lotek-level surface
@@ -34,7 +34,7 @@ def test_create_edit_delete_engagement(client, stub_host, session_factory):
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        eng = db.query(fm.Engagement).filter_by(name="Physical Assessment").one()
+        eng = db.query(fm.ReportBoard).filter_by(name="Physical Assessment").one()
         eid = eng.id
         assert eng.client_id == cid
         assert eng.owner_id == stub_host.current_user.id
@@ -53,7 +53,7 @@ def test_create_edit_delete_engagement(client, stub_host, session_factory):
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        eng = db.get(fm.Engagement, eid)
+        eng = db.get(fm.ReportBoard, eid)
         assert eng.name == "Physical Pentest" and eng.status == "review"
         assert eng.strategic_recommendations == ["Adopt MFA", "Patch program"]
     # the edit page GET renders the recs back into the textarea (one per line)
@@ -69,19 +69,19 @@ def test_create_edit_delete_engagement(client, stub_host, session_factory):
     resp = client.post(f"{UI}/engagements/{eid}/delete")
     assert resp.status_code == 302
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid) is None
+        assert db.get(fm.ReportBoard, eid) is None
 
 
 def test_edit_requires_a_name(client, stub_host, session_factory):
     with session_factory() as db:
-        eng = fm.Engagement(name="Keep me", scope_type="external")
+        eng = fm.ReportBoard(name="Keep me", scope_type="external")
         db.add(eng)
         db.commit()
         eid = eng.id
     resp = client.post(f"{UI}/engagements/{eid}/edit", data={"name": ""})
     assert resp.status_code == 400
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).name == "Keep me"  # unchanged
+        assert db.get(fm.ReportBoard, eid).name == "Keep me"  # unchanged
 
 
 def test_edit_and_delete_missing_engagement_404(client, stub_host):
@@ -92,11 +92,11 @@ def test_edit_and_delete_missing_engagement_404(client, stub_host):
 
 def test_delete_cascades_findings(client, stub_host, session_factory):
     with session_factory() as db:
-        eng = fm.Engagement(name="Cascade Co", scope_type="external")
+        eng = fm.ReportBoard(name="Cascade Co", scope_type="external")
         db.add(eng)
         db.commit()
         tmpl = db.query(fm.VulnerabilityTemplate).first()
-        finding = fm.EngagementFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
+        finding = fm.BoardFinding.from_template(tmpl, engagement_id=eng.id, order_index=0)
         db.add(finding)
         db.commit()
         eid, fid = eng.id, finding.id
@@ -104,8 +104,8 @@ def test_delete_cascades_findings(client, stub_host, session_factory):
     resp = client.post(f"{UI}/engagements/{eid}/delete")
     assert resp.status_code == 302
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid) is None
-        assert db.get(fm.EngagementFinding, fid) is None  # cascaded, not orphaned
+        assert db.get(fm.ReportBoard, eid) is None
+        assert db.get(fm.BoardFinding, fid) is None  # cascaded, not orphaned
 
 
 # ── viewer read-only nudge (scribble_can_write) ─────────────────────────────────────────────────
@@ -127,7 +127,7 @@ def test_viewer_nudge_hides_mutating_form(client, stub_host):
 
 def test_engagements_list_edit_delete_controls_gated_on_can_write(client, stub_host, session_factory):
     with session_factory() as db:
-        eng = fm.Engagement(name="Gated Co", scope_type="external")
+        eng = fm.ReportBoard(name="Gated Co", scope_type="external")
         db.add(eng)
         db.commit()
         eid = eng.id
@@ -152,7 +152,7 @@ def test_edit_toggles_threat_intel_consent(client, stub_host, session_factory):
         db.add(c)
         db.commit()
         cid = c.id
-        eng = fm.Engagement(name="TI Co", scope_type="external", client_id=cid)
+        eng = fm.ReportBoard(name="TI Co", scope_type="external", client_id=cid)
         db.add(eng)
         db.commit()
         eid = eng.id
@@ -165,13 +165,13 @@ def test_edit_toggles_threat_intel_consent(client, stub_host, session_factory):
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).threat_intel_egress_consent is True
+        assert db.get(fm.ReportBoard, eid).threat_intel_egress_consent is True
 
     # box absent (unchecked HTML checkboxes send no key) -> consent cleared back off
     resp = client.post(f"{UI}/engagements/{eid}/edit", data=base)
     assert resp.status_code == 302
     with session_factory() as db:
-        assert db.get(fm.Engagement, eid).threat_intel_egress_consent is False
+        assert db.get(fm.ReportBoard, eid).threat_intel_egress_consent is False
 
 
 def test_edit_page_reflects_threat_intel_consent(client, stub_host, session_factory):
@@ -183,9 +183,9 @@ def test_edit_page_reflects_threat_intel_consent(client, stub_host, session_fact
         db.add(c)
         db.commit()
         cid = c.id
-        on = fm.Engagement(name="On", scope_type="external", client_id=cid,
+        on = fm.ReportBoard(name="On", scope_type="external", client_id=cid,
                            threat_intel_egress_consent=True)
-        off = fm.Engagement(name="Off", scope_type="external", client_id=cid,
+        off = fm.ReportBoard(name="Off", scope_type="external", client_id=cid,
                             threat_intel_egress_consent=False)
         db.add_all([on, off])
         db.commit()

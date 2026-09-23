@@ -25,7 +25,7 @@ from werkzeug.serving import make_server
 import scribble
 from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, OrderMode, Severity
-from scribble.models import Artifact, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, FindingGroup
 from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
 from scribble.testing import register_kit_assets_shim, store_evidence, wire_mock_host
@@ -101,7 +101,7 @@ def live_app(tmp_path_factory):
         )
         session.add(group)
         session.flush()
-        low = EngagementFinding(
+        low = BoardFinding(
             engagement=engagement,
             group=group,
             title="QA Low Severity Finding",
@@ -109,7 +109,7 @@ def live_app(tmp_path_factory):
             order_index=0,
             content_json={"description": schema.doc_from_text("Low severity QA fixture.")},
         )
-        critical = EngagementFinding(
+        critical = BoardFinding(
             engagement=engagement,
             group=group,
             title="QA Critical Finding",

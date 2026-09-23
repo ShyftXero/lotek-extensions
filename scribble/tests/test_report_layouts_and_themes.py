@@ -22,7 +22,7 @@ import pytest
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.layouts import get_layout, list_layouts
 from scribble.reporting.render_html import render_report_html
@@ -39,12 +39,12 @@ def _build(session_factory, *, remediation: bool = True) -> int:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Templated Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Templated Assessment", client_id=client.id, company_name="Acme Corp")
         group = FindingGroup(engagement=eng, name="Internal", order_index=0)
         content = {"description": _block("SQL injection in the portal.")}
         if remediation:
             content["remediation"] = _block("Use parameterized queries.")
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="SQL Injection",
@@ -63,7 +63,7 @@ def _build(session_factory, *, remediation: bool = True) -> int:
 def _render(session_factory, *, remediation: bool = True, **kw) -> str:
     eng_id = _build(session_factory, remediation=remediation)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         return render_report_html(ctx, **kw)
 

@@ -1,6 +1,6 @@
 """Drift guard: every ``FindingDTO`` field carries an explicit disposition (map #616 / #617).
 
-``EngagementFinding`` is a LOSSLESS SUPERSET of the scan ``FindingDTO``. ``scribble.dispositions``
+``BoardFinding`` is a LOSSLESS SUPERSET of the scan ``FindingDTO``. ``scribble.dispositions``
 declares exactly one considered disposition per DTO field (typed column / snapshot-only / reasoned drop).
 This guard fails when a field appears with no disposition, or a disposition names a field the DTO no
 longer has — so a future DTO change forces a deliberate decision instead of silently losing data.
@@ -37,7 +37,7 @@ def test_no_duplicate_dispositions():
 
 
 def test_home_column_consistency():
-    """A COLUMN disposition names its EngagementFinding column; a SOURCE_FACTS/DROP one names none."""
+    """A COLUMN disposition names its BoardFinding column; a SOURCE_FACTS/DROP one names none."""
     for d in DISPOSITIONS:
         if d.home is Home.column:
             assert d.column, f"{d.field}: home=column but no column named"

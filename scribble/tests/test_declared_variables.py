@@ -26,7 +26,7 @@ from tests.conftest import FakeFindingDTO
 def test_new_tool_fact_populates_DOMAIN_and_AFFECTED_with_zero_python(app, session_factory):
     # 1. A VulnerabilityTemplate whose write-up references the two DoD-gating tokens (CONTRACT.md C4).
     with session_factory() as db:
-        eng = fm.Engagement(name="Synthprobe Engagement", scope_type="internal")
+        eng = fm.ReportBoard(name="Synthprobe ReportBoard", scope_type="internal")
         tmpl = fm.VulnerabilityTemplate(
             name="Synthetic DC Probe Finding",
             category="identity",
@@ -50,12 +50,12 @@ def test_new_tool_fact_populates_DOMAIN_and_AFFECTED_with_zero_python(app, sessi
         facts={"domain": "corp.example", "accounts": ["alice", "bob"]},
     )
     with session_factory() as db:
-        engagement = db.get(fm.Engagement, eng_id)
+        engagement = db.get(fm.ReportBoard, eng_id)
         result = promote.promote_job(db, engagement=engagement, findings=[dto], actor_username="tester")
         db.commit()
         assert result == {"promoted": 1, "skipped": 0, "parents": 1}
 
-        parent = db.query(fm.EngagementFinding).filter_by(
+        parent = db.query(fm.BoardFinding).filter_by(
             engagement_id=eng_id, template_id=tmpl_id, parent_id=None
         ).one()
         # 3. The DB-declared mapping resolved the neutral facts into real report variables -- no code
@@ -68,7 +68,7 @@ def test_new_tool_fact_populates_DOMAIN_and_AFFECTED_with_zero_python(app, sessi
     # empty `.findings` collection; every other test in this suite re-fetches for the same reason).
     # The literal `{{DOMAIN}}`/`{{AFFECTED}}` tokens must be ABSENT and the real values PRESENT.
     with session_factory() as db:
-        engagement = db.get(fm.Engagement, eng_id)
+        engagement = db.get(fm.ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html_doc = render_report_html(ctx)
     assert "{{DOMAIN}}" not in html_doc

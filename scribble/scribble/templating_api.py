@@ -35,7 +35,7 @@ from scribble.artifacts_api import _as_uuid
 from scribble.authz import can_view_engagement
 from scribble.content.render_html import render_block
 from scribble.deps import current_actor, open_session
-from scribble.models import Engagement, EngagementFinding
+from scribble.models import BoardFinding, ReportBoard
 from scribble.templating import (
     build_full_context,
     known_variable_keys,
@@ -81,7 +81,7 @@ def register(api_bp, bp) -> None:
             return jsonify(error="engagement_id is required"), 400
 
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             # Tenancy: ``engagement_id`` is a body field, not a URL view arg, so the blueprint-wide
             # before_request gate (scribble/authz.py) can't reach this route -- it resolves purely off
             # view args. Without this, any authenticated actor could render (and read back) another
@@ -98,7 +98,7 @@ def register(api_bp, bp) -> None:
             finding = None
             finding_id = _as_uuid(payload.get("finding_id"))
             if finding_id is not None:
-                finding = db.get(EngagementFinding, finding_id)
+                finding = db.get(BoardFinding, finding_id)
                 if finding is None or finding.engagement_id != engagement.id:
                     return (
                         jsonify(error=f"finding {finding_id} not found on engagement {engagement_id}"),

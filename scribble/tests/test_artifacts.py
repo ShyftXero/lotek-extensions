@@ -23,7 +23,7 @@ from scribble.artifacts_api import register as register_artifacts
 from scribble.artifacts_storage import SAFE_NAME_MAX, artifact_bytes, guess_content_type
 from scribble.blueprint import bp
 from scribble.enums import ArtifactPlacement, Severity
-from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.seed import seed_defaults
 from scribble.testing import read_evidence
@@ -67,19 +67,19 @@ def cfg(app):
     return app.extensions["scribble"]
 
 
-def _make_engagement(db, *, client_name: str = "Acme") -> Engagement:
+def _make_engagement(db, *, client_name: str = "Acme") -> ReportBoard:
     c = Client(name=client_name)
     db.add(c)
     db.flush()
-    eng = Engagement(name="Q3", client_id=c.id, company_name=f"{client_name} Corp")
+    eng = ReportBoard(name="Q3", client_id=c.id, company_name=f"{client_name} Corp")
     db.add(eng)
     db.commit()
     return eng
 
 
-def _make_finding(db, engagement) -> EngagementFinding:
+def _make_finding(db, engagement) -> BoardFinding:
     group = FindingGroup(engagement=engagement, name="External", order_index=0)
-    finding = EngagementFinding(engagement=engagement, group=group, title="xss", severity=Severity.high)
+    finding = BoardFinding(engagement=engagement, group=group, title="xss", severity=Severity.high)
     db.add(group)
     db.add(finding)
     db.commit()
@@ -752,7 +752,7 @@ def test_excluded_artifact_filtered_from_report_context(session_factory, app):
     with session_factory() as db:
         eng = _make_engagement(db)
         group = FindingGroup(engagement=eng, name="External", order_index=0)
-        finding = EngagementFinding(engagement=eng, group=group, title="xss", severity=Severity.high)
+        finding = BoardFinding(engagement=eng, group=group, title="xss", severity=Severity.high)
         db.add(group)
         db.add(finding)
         db.commit()
@@ -797,7 +797,7 @@ def test_foreign_engagement_artifact_excluded_from_finding_gallery(session_facto
         eng_a = _make_engagement(db, client_name="Acme A")
         eng_b = _make_engagement(db, client_name="Acme B")
         group = FindingGroup(engagement=eng_a, name="External", order_index=0)
-        finding = EngagementFinding(engagement=eng_a, group=group, title="xss", severity=Severity.high)
+        finding = BoardFinding(engagement=eng_a, group=group, title="xss", severity=Severity.high)
         db.add(group)
         db.add(finding)
         db.commit()
@@ -876,7 +876,7 @@ def test_upload_with_cross_engagement_finding_id_is_nulled_and_flagged(client, s
     precedent elsewhere in this package): the association is dropped, not the whole request."""
     with session_factory() as db:
         eng_a = _make_engagement(db)
-        eng_b = Engagement(name="Other Co Engagement")
+        eng_b = ReportBoard(name="Other Co ReportBoard")
         db.add(eng_b)
         db.commit()
         foreign_finding = _make_finding(db, eng_b)

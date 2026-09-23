@@ -10,7 +10,7 @@ from __future__ import annotations
 from scribble.api_pat import _PATCH_CONTENT_FIELDS, _author_content_json
 from scribble.content import schema
 from scribble.content.render_html import render_block
-from scribble.models import EngagementFinding
+from scribble.models import BoardFinding
 from scribble.reporting.render_html import _BLOCK_LABELS, _BLOCK_ORDER
 from tests.conftest import FakeFindingDTO
 
@@ -44,12 +44,12 @@ def test_reproduction_is_a_first_class_block_after_details():
     assert _BLOCK_ORDER.index("reproduction") > _BLOCK_ORDER.index("details")
 
 
-# ── auto-fill on promotion (EngagementFinding.from_lotek_finding is the single home) ──────────────
+# ── auto-fill on promotion (BoardFinding.from_lotek_finding is the single home) ──────────────
 
 
 def test_promoted_finding_with_a_curl_fact_gets_a_reproduction_block():
     dto = FakeFindingDTO(id=1, title="Exposed endpoint", facts={"curl": "curl https://h/api"})
-    finding = EngagementFinding.from_lotek_finding(dto)
+    finding = BoardFinding.from_lotek_finding(dto)
     repro = finding.content_json.get("reproduction")
     assert repro is not None, "a promoted finding carrying a curl PoC must gain a reproduction block"
     assert repro["content"][0]["type"] == schema.CODE_BLOCK
@@ -58,7 +58,7 @@ def test_promoted_finding_with_a_curl_fact_gets_a_reproduction_block():
 
 def test_promoted_finding_without_a_poc_has_no_reproduction_block():
     dto = FakeFindingDTO(id=2, title="Plain finding", facts={"host": "h", "cwe": "CWE-200"})
-    finding = EngagementFinding.from_lotek_finding(dto)
+    finding = BoardFinding.from_lotek_finding(dto)
     assert "reproduction" not in finding.content_json  # empty -> absent -> omitted from the report
 
 
@@ -66,7 +66,7 @@ def test_auto_fill_does_not_suppress_the_details_fallback():
     # A finding with raw evidence AND a PoC keeps BOTH: details (from evidence) and reproduction.
     dto = FakeFindingDTO(id=3, title="Both", evidence="anonymous share found",
                          facts={"curl": "smbclient -N //h/share"})
-    finding = EngagementFinding.from_lotek_finding(dto)
+    finding = BoardFinding.from_lotek_finding(dto)
     assert "details" in finding.content_json
     assert "reproduction" in finding.content_json
 
@@ -89,7 +89,7 @@ def test_reproduction_ssti_payload_renders_verbatim_not_evaluated(session_factor
     """A curl PoC carrying a template-injection payload ({{7*7}}) must render VERBATIM in the
     reproduction block — the report's Jinja resolver must NOT evaluate it to 49, or the copy-pastable
     repro stops reproducing the bug (and the report becomes an SSTI sink)."""
-    from scribble.models import Engagement, FindingGroup
+    from scribble.models import FindingGroup, ReportBoard
     from scribble.promote import promote_one
     from scribble.reporting import build_report_context
     from scribble.reporting.render_html import render_report_html
@@ -98,7 +98,7 @@ def test_reproduction_ssti_payload_renders_verbatim_not_evaluated(session_factor
     dto = FakeFindingDTO(id=1, title="SSTI", severity="high",
                          facts={"curl": "curl 'https://h/?q={{7*7}}'"})
     with session_factory() as db:
-        eng = Engagement(name="Co", company_name="Acme")
+        eng = ReportBoard(name="Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Findings", order_index=0)
         db.add(eng)
         db.flush()
@@ -106,7 +106,7 @@ def test_reproduction_ssti_payload_renders_verbatim_not_evaluated(session_factor
         db.commit()
         eng_id = eng.id
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eng_id)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eng_id)))
     assert "q={{7*7}}" in html, "the SSTI payload must survive verbatim in the reproduction block"
     assert "q=49" not in html, "the reproduction block must not be Jinja-evaluated"
 

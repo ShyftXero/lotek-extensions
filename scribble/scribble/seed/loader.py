@@ -56,7 +56,7 @@ _DEFAULT_TYPES = [
 
 _BUILTIN_LABELS = {
     "COMPANY_NAME": "Company name",
-    "ENGAGEMENT_NAME": "Engagement name",
+    "ENGAGEMENT_NAME": "ReportBoard name",
     "TARGET_HOST": "Target host",
     "TARGET_PORT": "Target port",
     "TARGET_URL": "Target URL",
@@ -146,7 +146,7 @@ _DEFAULT_VULN_MAP_JSON = Path(__file__).parent / "lotek_vuln_map.json"
 def seed_vuln_map(session, json_path: str | Path | None = None) -> int:
     """Seed ``ScribbleVulnMap`` rows mapping a lotek scan-finding signature to a library
     ``VulnerabilityTemplate``, so the promote step auto-selects the polished write-up instead of
-    bridging the raw finding verbatim (``EngagementFinding.from_lotek_finding``'s plain-text fallback).
+    bridging the raw finding verbatim (``BoardFinding.from_lotek_finding``'s plain-text fallback).
 
     Ported from lotek core's ``ensure_vuln_map_seed`` (``src/app/seed.py``) now that promotion is
     entirely Scribble's own concern and the mapping table (``ScribbleVulnMap``) lives here instead of

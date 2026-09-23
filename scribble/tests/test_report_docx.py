@@ -19,7 +19,7 @@ from docxtpl import DocxTemplate
 from scribble.content import schema
 from scribble.content.render_docx import html_to_richtext
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 
@@ -103,11 +103,11 @@ def _build_engagement(session_factory) -> int:
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Q3 Combined Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Q3 Combined Assessment", client_id=client.id, company_name="Acme Corp")
         internal = FindingGroup(engagement=eng, name="Internal", order_index=0)
         external = FindingGroup(engagement=eng, name="External", order_index=1)
 
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=internal,
             title="Weak SMB Signing",
@@ -115,7 +115,7 @@ def _build_engagement(session_factory) -> int:
             order_index=0,
             content_json={"description": _block("SMB signing is not required on several hosts.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=internal,
             title="Domain Admin Compromise",
@@ -126,7 +126,7 @@ def _build_engagement(session_factory) -> int:
                 "remediation": _rich_block(),
             },
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=external,
             title="Reflected XSS",
@@ -136,7 +136,7 @@ def _build_engagement(session_factory) -> int:
             target_port="443",
             content_json={"description": _target_host_block()},
         )
-        hidden = EngagementFinding(
+        hidden = BoardFinding(
             engagement=eng,
             group=external,
             title="Excluded Finding",
@@ -184,7 +184,7 @@ def _para_index(doc: docx.Document, text: str) -> int:
 def test_render_report_docx_contract(session_factory):
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -241,7 +241,7 @@ def test_render_report_docx_applies_real_paragraph_styles(session_factory):
     """
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -271,9 +271,9 @@ def test_render_report_docx_renders_nested_children_compactly(session_factory):
     renders once, in its own table row; its children render as an "Affected Hosts" list appended
     INLINE into that same finding's body -- they never get their own top-level finding table."""
     with session_factory() as db:
-        eng = Engagement(name="Nested Docx Report", company_name="Acme")
+        eng = ReportBoard(name="Nested Docx Report", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -284,7 +284,7 @@ def test_render_report_docx_renders_nested_children_compactly(session_factory):
         db.add(eng)
         db.flush()
 
-        child_a = EngagementFinding(
+        child_a = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -295,11 +295,11 @@ def test_render_report_docx_renders_nested_children_compactly(session_factory):
             # ``content_json`` verbatim with its parent (see ``scribble.promote.promote_job``) -- these
             # per-child blocks are deliberately DIFFERENT text here to prove the renderer does NOT read
             # them for the per-host row; the real per-host evidence comes from ``variables`` instead
-            # (``EngagementFinding.variables``, filled by promote from the host's own facts).
+            # (``BoardFinding.variables``, filled by promote from the host's own facts).
             content_json={"description": _block("Should not get its own table.")},
             variables={"AFFECTED": "svc_sql"},
         )
-        child_b = EngagementFinding(
+        child_b = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -316,7 +316,7 @@ def test_render_report_docx_renders_nested_children_compactly(session_factory):
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -347,7 +347,7 @@ def test_render_report_docx_includes_narrative(session_factory):
     as real text in the executive-summary paragraph the template's ``build_default_docx.py`` adds."""
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -359,13 +359,13 @@ def test_render_report_docx_includes_narrative(session_factory):
 
 def test_render_report_docx_empty_engagement(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Clean Sweep", company_name="Acme")
+        eng = ReportBoard(name="Clean Sweep", company_name="Acme")
         db.add(eng)
         db.commit()
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -377,9 +377,9 @@ def test_render_report_docx_empty_engagement(session_factory):
 
 def test_render_report_docx_no_content_block_degrades_gracefully(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Bare Finding Co", company_name="Acme")
+        eng = ReportBoard(name="Bare Finding Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="Untitled Content Finding",
@@ -392,7 +392,7 @@ def test_render_report_docx_no_content_block_degrades_gracefully(session_factory
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)  # must not raise
 
@@ -407,9 +407,9 @@ def test_evidence_image_embeds_as_inline_shape(session_factory):
         client = Client(name="Acme")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Assets Engagement", client_id=client.id, company_name="Acme")
+        eng = ReportBoard(name="Assets ReportBoard", client_id=client.id, company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=eng,
             group=group,
             title="Stored XSS",
@@ -437,7 +437,7 @@ def test_evidence_image_embeds_as_inline_shape(session_factory):
     fake_files = {"poc.png": _PNG_BYTES}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         embedded_payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
         not_embedded_payload = render_report_docx(ctx)  # artifact_bytes=None -> graceful skip
@@ -459,9 +459,9 @@ def test_oversized_evidence_image_degrades_to_caption(session_factory, monkeypat
     import scribble.reporting.render_docx as rdx
 
     with session_factory() as db:
-        eng = Engagement(name="Big Assets", company_name="Acme")
+        eng = ReportBoard(name="Big Assets", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        finding = EngagementFinding(
+        finding = BoardFinding(
             engagement=eng,
             group=group,
             title="Huge Screenshot Finding",
@@ -492,7 +492,7 @@ def test_oversized_evidence_image_degrades_to_caption(session_factory, monkeypat
     oversized = {"huge.png": _PNG_BYTES}  # > 8 bytes
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx, artifact_bytes=oversized.get)
 
@@ -554,9 +554,9 @@ def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_facto
     and a screenshot attached to a promoted per-host instance never appeared in the docx deliverable
     at all."""
     with session_factory() as db:
-        eng = Engagement(name="Child Evidence Docx", company_name="Acme")
+        eng = ReportBoard(name="Child Evidence Docx", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -566,7 +566,7 @@ def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_facto
         )
         db.add(eng)
         db.flush()
-        child = EngagementFinding(
+        child = BoardFinding(
             engagement=eng,
             group=g,
             title="Kerberoastable Account",
@@ -597,7 +597,7 @@ def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_facto
     fake_files = {"child-shot.png": _PNG_BYTES}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
 
@@ -612,9 +612,9 @@ def test_engagement_level_evidence_appendix_in_docx(session_factory):
     ``finding_id``) must appear in the docx report -- before this, ``render_docx`` never read
     ``ReportContext.artifacts`` at all."""
     with session_factory() as db:
-        eng = Engagement(name="Engagement Evidence Docx", company_name="Acme")
+        eng = ReportBoard(name="ReportBoard Evidence Docx", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="Some Finding",
@@ -642,7 +642,7 @@ def test_engagement_level_evidence_appendix_in_docx(session_factory):
     fake_files = {"network-diagram.png": _PNG_BYTES}
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         assert len(ctx.artifacts) == 1
         payload = render_report_docx(ctx, artifact_bytes=fake_files.get)

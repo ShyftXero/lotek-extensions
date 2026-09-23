@@ -1,7 +1,7 @@
 """Structured finding metadata — references + CVE/CWE/OWASP + threat-intel (map #616, #624/#625).
 
 Pure, offline, no-network helpers that turn the loose values #617 preserved only in the verbatim
-``source_facts`` snapshot into the TYPED shapes ``EngagementFinding`` now stores and the renderers show:
+``source_facts`` snapshot into the TYPED shapes ``BoardFinding`` now stores and the renderers show:
 
   * **references** (#624) — a list of ``{label, url, source, suppressed}`` VALUE OBJECTS (not a child
     entity). Promote unions the matched library template's refs + the scan ``DTO.references``, deduped by

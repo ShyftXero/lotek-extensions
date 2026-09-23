@@ -13,7 +13,7 @@ import re
 from types import SimpleNamespace
 
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.layouts import ReportLayout
 from scribble.reporting.render_html import (
@@ -32,11 +32,11 @@ _WITHOUT_ACTIVITY = ReportLayout("no-activity", "No activity", ("cover", "toc", 
 
 def _engagement_with_activity(session_factory) -> int:
     with session_factory() as db:
-        eng = Engagement(name="Activity Co Assessment")
+        eng = ReportBoard(name="Activity Co Assessment")
         grp = FindingGroup(engagement=eng, name="Findings", order_index=0)
-        EngagementFinding(engagement=eng, group=grp, title="SMB signing not required",
+        BoardFinding(engagement=eng, group=grp, title="SMB signing not required",
                           severity=Severity.medium, order_index=0)
-        EngagementFinding(engagement=eng, group=grp, title="Anonymous FTP enabled",
+        BoardFinding(engagement=eng, group=grp, title="Anonymous FTP enabled",
                           severity=Severity.low, order_index=1)
         db.add_all([eng, grp])
         db.flush()
@@ -56,14 +56,14 @@ def _toc_targets(html: str) -> list[str]:
 def test_activity_log_built_from_engagement_timestamps(session_factory):
     eid = _engagement_with_activity(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     summaries = [e.summary for e in ctx.activity_log]
-    assert "Engagement created: Activity Co Assessment" in summaries
+    assert "ReportBoard created: Activity Co Assessment" in summaries
     assert "Finding added: SMB signing not required" in summaries
     assert "Finding added: Anonymous FTP enabled" in summaries
     assert "Evidence uploaded: capture.png" in summaries
     # chronological: engagement creation is the earliest event, so it sorts first
-    assert ctx.activity_log[0].summary.startswith("Engagement created")
+    assert ctx.activity_log[0].summary.startswith("ReportBoard created")
     # every row carries a kind + a rendered timestamp string
     assert {e.kind for e in ctx.activity_log} <= {"engagement", "finding", "evidence", "diagram"}
     assert all(e.timestamp for e in ctx.activity_log)
@@ -72,7 +72,7 @@ def test_activity_log_built_from_engagement_timestamps(session_factory):
 def test_appendix_and_toc_entry_appear_only_when_opted_in(session_factory):
     eid = _engagement_with_activity(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     with_html = _render_document(ctx, _AssetResolver("none", None), layout=_WITH_ACTIVITY)
     assert 'id="sec-activity_log"' in with_html
     assert "Activity Log" in with_html
@@ -97,15 +97,15 @@ def test_summaries_are_escaped(session_factory):
     """Finding titles / filenames are engagement-controlled and land in the appendix, so they must be
     HTML-escaped — a title with a tag must not inject markup."""
     with session_factory() as db:
-        eng = Engagement(name="XSS Co")
+        eng = ReportBoard(name="XSS Co")
         grp = FindingGroup(engagement=eng, name="Findings", order_index=0)
-        EngagementFinding(engagement=eng, group=grp, title="<script>alert(1)</script>",
+        BoardFinding(engagement=eng, group=grp, title="<script>alert(1)</script>",
                           severity=Severity.high, order_index=0)
         db.add_all([eng, grp])
         db.commit()
         eid = eng.id
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     html = _render_document(ctx, _AssetResolver("none", None), layout=_WITH_ACTIVITY)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html

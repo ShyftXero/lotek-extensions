@@ -20,18 +20,18 @@ from alembic.runtime.migration import MigrationContext
 from scribble.content import schema
 from scribble.enums import FindingStatus, RetestOutcome
 from scribble.findings_service import record_retest
-from scribble.models import Artifact, EngagementFinding, Retest, VulnerabilityTemplate
+from scribble.models import Artifact, BoardFinding, Retest, VulnerabilityTemplate
 
 
 def _engagement_with_finding(db):
     import uuid
 
-    from scribble.models import Client, Engagement
+    from scribble.models import Client, ReportBoard
 
     client = Client(name=f"Retest Client {uuid.uuid4()}")  # Client.name is UNIQUE; keep each call distinct
     db.add(client)
     db.flush()
-    eng = Engagement(name="Retest Engagement", client_id=client.id)
+    eng = ReportBoard(name="Retest ReportBoard", client_id=client.id)
     db.add(eng)
     db.flush()
     tmpl = VulnerabilityTemplate(
@@ -40,7 +40,7 @@ def _engagement_with_finding(db):
     )
     db.add(tmpl)
     db.flush()
-    finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+    finding = BoardFinding.from_template(tmpl, engagement_id=eng.id)
     db.add(finding)
     db.flush()
     return eng, finding
@@ -68,7 +68,7 @@ def test_retest_round_trips(session_factory):
         assert r.tested_by == "alice"
         assert r.tested_on == date(2026, 9, 4)
         # readable back through the finding relationship the report renderer walks
-        assert [x.id for x in db.get(EngagementFinding, finding_id).retests] == [r.id]
+        assert [x.id for x in db.get(BoardFinding, finding_id).retests] == [r.id]
 
 
 def test_record_retest_transitions_status_and_appends_a_row(session_factory):
@@ -83,7 +83,7 @@ def test_record_retest_transitions_status_and_appends_a_row(session_factory):
         finding_id = finding.id
 
     with session_factory() as db:
-        finding = db.get(EngagementFinding, finding_id)
+        finding = db.get(BoardFinding, finding_id)
         assert finding.status is FindingStatus.fixed
         assert len(finding.retests) == 1
 

@@ -34,11 +34,11 @@ from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import (
     Artifact,
     AssessmentType,
+    BoardFinding,
     ChecklistTemplate,
     Client,
-    Engagement,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context
 from scribble.reporting.layouts import ReportLayout, list_layouts
@@ -62,7 +62,7 @@ def _full_engagement(session_factory) -> int:
         client = Client(name="TeamsPlus")
         db.add(client)
         db.flush()
-        eng = Engagement(
+        eng = ReportBoard(
             name="Web Portal Assessment",
             client_id=client.id,
             company_name="TeamsPlus Inc",
@@ -74,23 +74,23 @@ def _full_engagement(session_factory) -> int:
         web = db.query(AssessmentType).filter_by(slug="web-app").one()
         grp = FindingGroup(engagement=eng, name="Web Application", order_index=0, assessment_type=web)
         grp2 = FindingGroup(engagement=eng, name="Supporting Infrastructure", order_index=1)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=grp, title="Exposed Admin Console", severity=Severity.critical,
             order_index=0, content_json={"description": _block("Unauthenticated admin console.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=1,
             target_host="portal.teamsplus.example",
             content_json={"description": _block("Reflected XSS in the search parameter.")},
         )
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp2, title="Weak TLS Configuration", severity=Severity.low,
             order_index=0, content_json={"description": _block("TLS 1.0 still offered.")},
         )
         db.add_all([eng, grp, grp2, parent])
         db.flush()
         db.add(
-            EngagementFinding(
+            BoardFinding(
                 engagement=eng, group=grp, title="CHILD per-host instance", severity=Severity.critical,
                 order_index=0, parent_id=parent.id, target_host="admin.teamsplus.example",
                 content_json={"description": _block("Child instance.")},
@@ -116,9 +116,9 @@ def _bare_engagement(session_factory, **kw) -> int:
     """The opposite pole: a name and one finding, no client, no dates, no assessor, no checklist, no
     engagement-level evidence. Everything optional must be ABSENT rather than rendered empty."""
     with session_factory() as db:
-        eng = Engagement(name="Nameless Co Assessment", **kw)
+        eng = ReportBoard(name="Nameless Co Assessment", **kw)
         grp = FindingGroup(engagement=eng, name="Findings", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Missing Security Headers", severity=Severity.low,
             order_index=0, content_json={"description": _block("No CSP.")},
         )
@@ -129,13 +129,13 @@ def _bare_engagement(session_factory, **kw) -> int:
 
 def _render(session_factory, eng_id: int, **kw) -> str:
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     return render_report_html(ctx, **kw)
 
 
 def _render_with_layout(session_factory, eng_id: int, layout: ReportLayout) -> str:
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     return _render_document(ctx, _AssetResolver("none", None), layout=layout)
 
 
@@ -190,7 +190,7 @@ def test_the_cover_omits_facts_the_engagement_does_not_record(session_factory):
     assert "Client" not in cover
     # the two facts that are always true of a rendered report stay
     assert "Report date" in cover
-    assert "Engagement reference" in cover
+    assert "ReportBoard reference" in cover
 
 
 def test_the_cover_escapes_engagement_and_client_names(session_factory):
@@ -255,7 +255,7 @@ def test_every_contents_link_targets_an_anchor_in_the_document(session_factory, 
     """Half one of the two-way guard: the contents may not link a section the document does not have."""
     eid = _full_engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), layout=layout)
     targets = _toc_targets(html)
     assert targets, "the contents have no entries at all"
     for target in targets:
@@ -273,7 +273,7 @@ def test_every_anchored_section_in_the_document_appears_in_the_contents(session_
     """
     eid = _full_engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), layout=layout)
     anchored = {
         m.group(1)
         for m in re.finditer(r'<section class="[^"]*" id="([^"]+)"', html)
@@ -318,9 +318,9 @@ def test_no_engagement_evidence_means_no_evidence_entry(session_factory):
 
 def test_the_contents_escape_a_finding_title(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Escaping", company_name="Acme")
+        eng = ReportBoard(name="Escaping", company_name="Acme")
         grp = FindingGroup(engagement=eng, name="Findings", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title='<img src=x onerror="alert(1)">', severity=Severity.low,
             order_index=0, content_json={"description": _block("x")},
         )
@@ -336,8 +336,8 @@ def test_the_synthetic_ungrouped_bucket_is_listed_and_linkable(session_factory):
     """``build_report_context`` appends a synthetic *Ungrouped* group (``id is None``) for findings with no
     group. Its anchor is ``group-ungrouped``, which is the one anchor not derived from a database id."""
     with session_factory() as db:
-        eng = Engagement(name="Loose findings", company_name="Acme")
-        EngagementFinding(
+        eng = ReportBoard(name="Loose findings", company_name="Acme")
+        BoardFinding(
             engagement=eng, title="Directory Listing Enabled", severity=Severity.low, order_index=0,
             content_json={"description": _block("Listing on /assets.")},
         )
@@ -354,7 +354,7 @@ def test_an_engagement_with_no_findings_has_no_dangling_contents_entries(session
     """``_render_groups`` emits an id-less placeholder section when there are no groups; the contents must
     not invent a link for it."""
     with session_factory() as db:
-        eng = Engagement(name="Clean Sweep", company_name="Acme")
+        eng = ReportBoard(name="Clean Sweep", company_name="Acme")
         db.add(eng)
         db.commit()
         eid = eng.id
@@ -372,7 +372,7 @@ def test_the_summary_leads_with_prose_and_not_the_dashboard(session_factory):
     html = _render(session_factory, _full_engagement(session_factory))
     assert 'class="frontmatter"' in html
     assert html.index('class="frontmatter"') < html.index('<div class="risk ')
-    assert "Engagement overview" in html
+    assert "ReportBoard overview" in html
     assert "Scope and limitations" in html
     # the overview's factual clauses come from real fields
     assert "This report covers a web-app assessment of TeamsPlus Inc." in html
@@ -412,7 +412,7 @@ def test_severity_ratings_are_defined_under_the_bar_that_uses_them(session_facto
 def test_a_clean_engagement_defines_no_ratings(session_factory):
     """No findings, no bar, nothing to explain — the same rule ``_sev_bar`` already follows."""
     with session_factory() as db:
-        eng = Engagement(name="Clean Sweep", company_name="Acme")
+        eng = ReportBoard(name="Clean Sweep", company_name="Acme")
         db.add(eng)
         db.commit()
         eid = eng.id

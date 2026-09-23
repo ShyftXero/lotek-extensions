@@ -38,17 +38,17 @@ PG_URL = os.environ.get("SCRIBBLE_TEST_PG_URL")
 
 def test_create_all_adds_missing_columns_to_existing_table(tmp_path):
     eng = create_engine(f"sqlite:///{tmp_path / 'm.db'}")
-    # simulate a scribble_engagements table from an older schema (missing owner_id, client_id, ...)
+    # simulate a scribble_report_boards table from an older schema (missing owner_id, client_id, ...)
     with eng.begin() as c:
-        c.execute(text("CREATE TABLE scribble_engagements (id INTEGER PRIMARY KEY, name VARCHAR)"))
+        c.execute(text("CREATE TABLE scribble_report_boards (id INTEGER PRIMARY KEY, name VARCHAR)"))
     create_all(eng)  # must additively add the new columns, not choke on the existing table
     insp = inspect(eng)
-    cols = {col["name"] for col in insp.get_columns("scribble_engagements")}
+    cols = {col["name"] for col in insp.get_columns("scribble_report_boards")}
     assert "owner_id" in cols  # the new attribution column is migrated in
     assert "client_id" in cols  # other model columns are added too
     # the DECLARED index on a newly added column must also be created on the upgraded table —
     # create_all skipped the pre-existing table, so only this migration can add it (regression guard).
-    indexed = {c for idx in insp.get_indexes("scribble_engagements") for c in idx["column_names"]}
+    indexed = {c for idx in insp.get_indexes("scribble_report_boards") for c in idx["column_names"]}
     assert "owner_id" in indexed
     # idempotent: a second run is a no-op (no duplicate-column / duplicate-index error)
     create_all(eng)
@@ -57,7 +57,7 @@ def test_create_all_adds_missing_columns_to_existing_table(tmp_path):
 def test_create_all_fresh_db_has_owner_id(tmp_path):
     eng = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
     create_all(eng)
-    cols = {col["name"] for col in inspect(eng).get_columns("scribble_engagements")}
+    cols = {col["name"] for col in inspect(eng).get_columns("scribble_report_boards")}
     assert "owner_id" in cols
 
 
@@ -106,7 +106,7 @@ def test_create_all_widens_a_legacy_integer_column_on_postgres():
     from sqlalchemy.exc import ProgrammingError
 
     from scribble.db import Base, make_session_factory
-    from scribble.models import Engagement, EngagementFinding
+    from scribble.models import BoardFinding, ReportBoard
 
     eng = create_engine(PG_URL)
     Base.metadata.drop_all(eng)
@@ -118,13 +118,13 @@ def test_create_all_widens_a_legacy_integer_column_on_postgres():
 
     session_factory = make_session_factory(eng)
     with session_factory() as db:
-        db.add(Engagement(name="E"))
+        db.add(ReportBoard(name="E"))
         db.commit()
-        eid = db.query(Engagement).one().id
+        eid = db.query(ReportBoard).one().id
 
     # RED: a minimal finding — nothing UUID-shaped anywhere in it — is refused by the integer column.
     with session_factory() as db, pytest.raises(ProgrammingError, match="source_finding_id"):
-        db.add(EngagementFinding(engagement_id=eid, title="minimal", severity="info"))
+        db.add(BoardFinding(engagement_id=eid, title="minimal", severity="info"))
         db.commit()
 
     create_all(eng)  # the repair
@@ -137,14 +137,14 @@ def test_create_all_widens_a_legacy_integer_column_on_postgres():
     # GREEN: the minimal finding lands, AND so does a core UUID ref — the shape the column exists for.
     core_id = uuid.uuid4()
     with session_factory() as db:
-        db.add(EngagementFinding(engagement_id=eid, title="minimal", severity="info"))
-        db.add(EngagementFinding(
+        db.add(BoardFinding(engagement_id=eid, title="minimal", severity="info"))
+        db.add(BoardFinding(
             engagement_id=eid, title="promoted", severity="info", source_finding_id=core_id
         ))
         db.commit()
     with session_factory() as db:
         # SoftHostId round-trips the ORIGINAL type: a uuid.UUID back out, not its string spelling
-        promoted = db.query(EngagementFinding).filter_by(title="promoted").one()
+        promoted = db.query(BoardFinding).filter_by(title="promoted").one()
         assert promoted.source_finding_id == core_id
 
     create_all(eng)  # idempotent: nothing left to widen, no error on the next mount

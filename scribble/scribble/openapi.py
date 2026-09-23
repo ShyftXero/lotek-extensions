@@ -68,7 +68,7 @@ COMPONENTS: dict[str, Any] = {
         description="The uniform refusal envelope. A missing row and a row outside the caller's grants "
         "answer the SAME 404, byte for byte — a distinguishable refusal would be an existence oracle.",
     ),
-    "Engagement": _obj(
+    "ReportBoard": _obj(
         {
             "id": _UUID,
             "name": {"type": "string"},
@@ -227,15 +227,15 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
     # engagements
     "scribble_create_engagement": (201, _obj({"id": _UUID, "name": {"type": "string"},
                                               "core_engagement_id": _STR_N})),
-    "scribble_list_engagements": (200, _obj({"count": _COUNT, "items": _array("Engagement")})),
+    "scribble_list_engagements": (200, _obj({"count": _COUNT, "items": _array("ReportBoard")})),
     "scribble_get_engagement": (200, {
-        "allOf": [_ref("Engagement"), _obj({"finding_count": {"type": "integer"},
+        "allOf": [_ref("ReportBoard"), _obj({"finding_count": {"type": "integer"},
                                             "group_count": {"type": "integer"},
                                             "artifact_count": {"type": "integer"}})],
     }),
-    # lotek#620: PATCH returns the updated engagement summary (same shape as the Engagement component,
+    # lotek#620: PATCH returns the updated engagement summary (same shape as the ReportBoard component,
     # now carrying risk_override + risk_override_rationale).
-    "scribble_update_engagement": (200, _ref("Engagement")),
+    "scribble_update_engagement": (200, _ref("ReportBoard")),
     # NOT JSON — see `_RESPONSE_MEDIA_TYPES`, which overrides the content type for this one operation.
     "scribble_engagement_report": (200, {
         "type": "string",

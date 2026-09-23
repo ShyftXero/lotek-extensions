@@ -13,11 +13,11 @@ import uuid
 
 from scribble.enums import Severity
 from scribble.models import (
+    BoardFinding,
     Client,
-    Engagement,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     ScribbleVulnMap,
     VulnerabilityTemplate,
 )
@@ -39,7 +39,7 @@ def _make_engagement(db, name="Q3"):
     c = Client(name=f"{name} Client")
     db.add(c)
     db.flush()
-    eng = Engagement(name=name, client_id=c.id, company_name=f"{name} Corp")
+    eng = ReportBoard(name=name, client_id=c.id, company_name=f"{name} Corp")
     db.add(eng)
     db.commit()
     return eng
@@ -60,7 +60,7 @@ def test_batch_move_moves_several_findings_into_a_group(client, session_factory)
         a = _make_group(db, eng, "A", 0)
         b = _make_group(db, eng, "B", 1)
         t = _make_template(db)
-        fs = [EngagementFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=i)
+        fs = [BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=i)
               for i in range(3)]
         for f in fs:
             db.add(f)
@@ -73,7 +73,7 @@ def test_batch_move_moves_several_findings_into_a_group(client, session_factory)
     assert resp.status_code == 200, resp.get_data(as_text=True)
     with session_factory() as db:
         for fid in ids:
-            assert db.get(EngagementFinding, uuid.UUID(fid)).group_id == b_id
+            assert db.get(BoardFinding, uuid.UUID(fid)).group_id == b_id
 
 
 def test_batch_move_is_atomic_a_foreign_id_moves_nothing(client, session_factory):
@@ -82,7 +82,7 @@ def test_batch_move_is_atomic_a_foreign_id_moves_nothing(client, session_factory
         a = _make_group(db, eng, "A", 0)
         b = _make_group(db, eng, "B", 1)
         t = _make_template(db)
-        f = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0)
         db.add(f)
         db.commit()
         eng_id, b_id, a_id, f_id = eng.id, b.id, a.id, f.id
@@ -92,7 +92,7 @@ def test_batch_move_is_atomic_a_foreign_id_moves_nothing(client, session_factory
                        json={"finding_ids": [str(f_id), foreign], "group_id": str(b_id), "order_index": 0})
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(EngagementFinding, f_id).group_id == a_id, "nothing moves when any id is foreign"
+        assert db.get(BoardFinding, f_id).group_id == a_id, "nothing moves when any id is foreign"
 
 
 def test_batch_move_group_null_goes_ungrouped(client, session_factory):
@@ -100,7 +100,7 @@ def test_batch_move_group_null_goes_ungrouped(client, session_factory):
         eng = _make_engagement(db)
         a = _make_group(db, eng, "A", 0)
         t = _make_template(db)
-        f = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0)
         db.add(f)
         db.commit()
         eng_id, f_id = eng.id, f.id
@@ -109,7 +109,7 @@ def test_batch_move_group_null_goes_ungrouped(client, session_factory):
                        json={"finding_ids": [str(f_id)], "group_id": None, "order_index": 0})
     assert resp.status_code == 200
     with session_factory() as db:
-        assert db.get(EngagementFinding, f_id).group_id is None
+        assert db.get(BoardFinding, f_id).group_id is None
 
 
 def test_board_renders_multiselect_checkboxes(client, session_factory):
@@ -117,7 +117,7 @@ def test_board_renders_multiselect_checkboxes(client, session_factory):
         eng = _make_engagement(db)
         a = _make_group(db, eng, "A", 0)
         t = _make_template(db)
-        db.add(EngagementFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0))
+        db.add(BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0))
         db.commit()
         eng_id = eng.id
     body = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
@@ -136,7 +136,7 @@ def test_link_attack_path_creates_a_diagram(client, session_factory):
                        json={"embed_html": "<p>diagram</p>", "diagram_ref": "vec-1", "caption": "Path A"})
     assert resp.status_code == 200, resp.get_data(as_text=True)
     with session_factory() as db:
-        rows = list(db.get(Engagement, eng_id).diagrams)
+        rows = list(db.get(ReportBoard, eng_id).diagrams)
         assert len(rows) == 1 and rows[0].caption == "Path A" and rows[0].embed_html == "<p>diagram</p>"
 
 

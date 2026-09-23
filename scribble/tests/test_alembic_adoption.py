@@ -47,7 +47,7 @@ def test_fresh_database_migrates_to_head():
 
     insp = inspect(eng)
     names = set(insp.get_table_names())
-    assert "scribble_engagements" in names and "scribble_findings" in names
+    assert "scribble_report_boards" in names and "scribble_findings" in names
     assert VERSION_TABLE in names, "Scribble must keep its OWN version table"
     assert "alembic_version" not in names, (
         "Scribble must NOT create or write the host's version table — sharing one makes each project "
@@ -62,7 +62,7 @@ def test_a_preexisting_database_is_stamped_not_rebuilt_and_keeps_its_rows():
     from alembic import command
 
     from scribble.db import BASELINE_REVISION, _alembic_config, make_session_factory, run_migrations
-    from scribble.models import Engagement
+    from scribble.models import ReportBoard
 
     eng = _fresh_engine()
 
@@ -76,7 +76,7 @@ def test_a_preexisting_database_is_stamped_not_rebuilt_and_keeps_its_rows():
         command.upgrade(_alembic_config(conn), BASELINE_REVISION)
     with eng.begin() as c:
         c.execute(text(
-            "INSERT INTO scribble_engagements (id, name, scope_type, status, created_at, updated_at) "
+            "INSERT INTO scribble_report_boards (id, name, scope_type, status, created_at, updated_at) "
             "VALUES (1, 'pre-existing engagement', 'external', 'active', now(), now())"
         ))
         c.execute(text(f"DROP TABLE {VERSION_TABLE}"))  # a legacy DB has no revision pointer
@@ -89,7 +89,7 @@ def test_a_preexisting_database_is_stamped_not_rebuilt_and_keeps_its_rows():
         stamped = c.execute(text(f"SELECT version_num FROM {VERSION_TABLE}")).scalar_one()
     assert stamped is not None
     with session_factory() as db:
-        rows = db.query(Engagement).all()
+        rows = db.query(ReportBoard).all()
     assert [e.name for e in rows] == ["pre-existing engagement"], (
         "adoption must STAMP a populated database, never rebuild it — the rows are the point"
     )

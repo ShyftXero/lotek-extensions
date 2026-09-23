@@ -34,7 +34,7 @@ Architecture
 - :class:`RoomManager` — process-wide registry + the DB-facing lifecycle: loading a room's prior
   ``CollabDoc.ydoc_state`` (or seeding from the finding's existing ``content_json[block]``), debounced
   *persistence* (durability: CRDT bytes -> ``CollabDoc.ydoc_state``), and *reconciliation* on room close
-  (render the CRDT doc to ProseMirror JSON and write it into ``EngagementFinding.content_json``/
+  (render the CRDT doc to ProseMirror JSON and write it into ``BoardFinding.content_json``/
   ``content_html`` via ``content/render_html.render_block`` — the same walker Phase A's autosave uses).
 - The ProseMirror JSON <-> Yjs mapping lives in ``scribble/collab/pm_yjs.py``.
 
@@ -78,7 +78,7 @@ from sqlalchemy.exc import IntegrityError
 from scribble.collab import pm_yjs
 from scribble.content.render_html import render_block
 from scribble.deps import get_config, open_session
-from scribble.models import CollabDoc, EngagementFinding
+from scribble.models import BoardFinding, CollabDoc
 
 _REGISTERED = False
 
@@ -284,7 +284,7 @@ class RoomManager:
             if room is not None:
                 return room
 
-            finding = session.get(EngagementFinding, finding_id)
+            finding = session.get(BoardFinding, finding_id)
             if finding is None:
                 raise LookupError(f"finding {finding_id} does not exist")
             if len(self._rooms) >= self.max_rooms:
@@ -383,7 +383,7 @@ class RoomManager:
 
     def persist(self, session, finding_id: int, block: str) -> CollabDoc | None:
         """Durability only: write the room's current CRDT state to ``CollabDoc.ydoc_state``. Does
-        **not** touch ``EngagementFinding.content_json``/``content_html`` — see :meth:`reconcile`."""
+        **not** touch ``BoardFinding.content_json``/``content_html`` — see :meth:`reconcile`."""
         with self._lock:
             room = self._rooms.get((finding_id, block))
             if room is None:
@@ -434,11 +434,11 @@ class RoomManager:
 
     def _reconcile_room(self, session, room: Room) -> bool:
         """Render the room's CRDT doc to ProseMirror JSON and write it back into
-        ``EngagementFinding.content_json[block]`` / ``content_html[block]`` so the autosave/report
+        ``BoardFinding.content_json[block]`` / ``content_html[block]`` so the autosave/report
         pipeline sees the final, merged document. ``content_json``/``content_html`` are plain ``JSON``
         columns (not ``MutableDict``) — SQLAlchemy only detects a *new* object assigned, so we reassign
         the whole dict rather than mutating a key in place (RAILS §8)."""
-        finding = session.get(EngagementFinding, room.finding_id)
+        finding = session.get(BoardFinding, room.finding_id)
         if finding is None:
             return False
 

@@ -1,6 +1,6 @@
 """Autosave API for rich-text content blocks (WS4 Phase A).
 
-Canonical storage is ProseMirror JSON, one doc per named block, in ``EngagementFinding.content_json``
+Canonical storage is ProseMirror JSON, one doc per named block, in ``BoardFinding.content_json``
 (a dict keyed by block name — see ``scribble/content/schema.py``). This module adds the block
 read/write endpoints on top of that: the client (the kit's ``reporting-editor.js``) debounces edits and
 PUTs/POSTs the current doc; the server validates it's a ProseMirror ``doc``, stores it, and re-derives +
@@ -28,7 +28,7 @@ from flask import jsonify, request
 from scribble.content import schema
 from scribble.content.render_html import render_block
 from scribble.deps import get_config, open_session
-from scribble.models import EngagementFinding
+from scribble.models import BoardFinding
 
 _REGISTERED = False
 
@@ -57,7 +57,7 @@ def register(api_bp, bp) -> None:
             )
 
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 return jsonify(ok=False, error="finding not found"), 404
 
@@ -79,7 +79,7 @@ def register(api_bp, bp) -> None:
     @api_bp.get("/findings/<uuid:finding_id>/blocks/<string:block>")
     def get_block(finding_id: int, block: str):
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 return jsonify(ok=False, error="finding not found"), 404
 

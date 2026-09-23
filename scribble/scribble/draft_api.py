@@ -23,7 +23,7 @@ from flask import Response
 
 from scribble import host
 from scribble.deps import open_session
-from scribble.models import EngagementFinding
+from scribble.models import BoardFinding
 
 _REGISTERED = False
 _PLAIN = "text/plain; charset=utf-8"
@@ -94,7 +94,7 @@ def register(api_bp, bp) -> None:
             )
 
         with open_session() as db:
-            finding = db.get(EngagementFinding, finding_id)
+            finding = db.get(BoardFinding, finding_id)
             if finding is None:
                 return Response("[finding not found]", status=404, mimetype=_PLAIN)
             title = getattr(finding, "title", "") or ""

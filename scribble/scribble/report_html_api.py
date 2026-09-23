@@ -24,7 +24,7 @@ from sqlalchemy import select
 from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
 from scribble.deps import host_user_setting, open_session
-from scribble.models import Engagement, ScribbleSettings, ScribbleThemeOverride
+from scribble.models import ReportBoard, ScribbleSettings, ScribbleThemeOverride
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
 
@@ -33,7 +33,7 @@ from scribble.reporting.render_html import export_zip, make_inline_artifact_url,
 # ``report_docx_api.py`` imports it from there directly, not from this module.
 
 
-def _artifact_url_factory(engagement: Engagement) -> Callable[[int], str]:
+def _artifact_url_factory(engagement: ReportBoard) -> Callable[[int], str]:
     """``artifact_url`` for ``build_report_context``: resolves inline-image nodes to a placeholder
     that bakes in the artifact's storage_path (see ``render_html.make_inline_artifact_url``)."""
     # Key by str(id): content_json's inlineImage ``artifactId`` is authored in the browser and arrives
@@ -136,7 +136,7 @@ def register(api_bp, bp) -> None:
     @bp.get("/engagements/<uuid:engagement_id>/report")
     def engagement_report(engagement_id: int):
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)
@@ -160,7 +160,7 @@ def register(api_bp, bp) -> None:
     def engagement_report_export(engagement_id: int):
         fmt = (request.args.get("format") or "html").strip().lower()
         with open_session() as db:
-            engagement = db.get(Engagement, engagement_id)
+            engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)

@@ -1,4 +1,4 @@
-"""Engagement checklists: seeding, snapshot assignment, status rollup, and import/export.
+"""ReportBoard checklists: seeding, snapshot assignment, status rollup, and import/export.
 
 Checklists are non-blocking visual reminders (plans/SCRIBBLE_CHECKLISTS.md). These pin the behaviour that
 matters: the seven builtins seed, seeding never clobbers an edited builtin, assignment SNAPSHOTS the
@@ -11,8 +11,8 @@ from scribble import checklists as C
 from scribble.enums import ChecklistKind
 from scribble.models import (
     ChecklistTemplate,
-    Engagement,
     EngagementChecklist,
+    ReportBoard,
 )
 from scribble.seed import import_checklist_templates
 
@@ -82,8 +82,8 @@ def test_seed_never_clobbers_an_edited_builtin(session_factory):
 # --------------------------------------------------------------------------- assignment (snapshot)
 
 
-def _engagement(db) -> Engagement:
-    e = Engagement(name="Checklist Eng")
+def _engagement(db) -> ReportBoard:
+    e = ReportBoard(name="Checklist Eng")
     db.add(e)
     db.flush()
     return e

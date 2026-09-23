@@ -19,11 +19,11 @@ from scribble.content import schema
 from scribble.enums import Severity
 from scribble.models import (
     AssessmentType,
+    BoardFinding,
     ChecklistTemplate,
     Client,
-    Engagement,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context
 from scribble.reporting.layouts import ReportLayout, list_layouts
@@ -39,12 +39,12 @@ def _engagement(session_factory, *, type_slug: str | None = None) -> int:
         client = Client(name="TeamsPlus")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Web App Assessment", client_id=client.id, company_name="TeamsPlus")
+        eng = ReportBoard(name="Web App Assessment", client_id=client.id, company_name="TeamsPlus")
         at = None
         if type_slug is not None:
             at = db.query(AssessmentType).filter_by(slug=type_slug).one()
         grp = FindingGroup(engagement=eng, name="Web Application", order_index=0, assessment_type=at)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high, order_index=0,
             content_json={"description": _block("Reflected XSS in the search parameter.")},
         )
@@ -56,7 +56,7 @@ def _engagement(session_factory, *, type_slug: str | None = None) -> int:
 def _render(session_factory, **kw) -> str:
     eid = _engagement(session_factory, **kw)
     with session_factory() as db:
-        return render_report_html(build_report_context(db.get(Engagement, eid)))
+        return render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
 
 def _topbar(html: str) -> str:
@@ -130,7 +130,7 @@ def test_every_toolbar_section_link_LANDS_ON_CONTENT(session_factory, layout):
     placed above the groups — so the region, not the anchor's own markup, is what has to be measured."""
     eid = _engagement(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)), layout=layout)
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)), layout=layout)
     targets = re.findall(r'<a href="#(sec-[a-z]+)"', _topbar(html))
     assert targets, "the toolbar has no section links at all"
     for target in targets:
@@ -148,7 +148,7 @@ def test_a_layout_that_drops_the_methodology_block_emits_no_methodology_link(ses
     drop the link with it — the nav is derived from what rendered, not from a fixed list."""
     eid = _engagement(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     bare = ReportLayout("no-method", "No methodology", ("summary", "findings"))
     html = _render_document(ctx, _AssetResolver("none", None), layout=bare)
     assert 'id="sec-methodology"' not in html
@@ -162,10 +162,10 @@ def test_coverage_checklist_still_owns_the_methodology_section(session_factory):
     now owns the anchor as well (the checklists used to render in a section with no id)."""
     eid = _engagement(session_factory)
     with session_factory() as db:
-        eng = db.get(Engagement, eid)
+        eng = db.get(ReportBoard, eid)
         C.assign_template(db, eng, db.query(ChecklistTemplate).filter_by(slug="web-app-api").one())
         db.commit()
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     assert "Methodology and Coverage" in html
     assert 'id="sec-methodology"' in html
     assert 'href="#sec-methodology"' in html
@@ -194,7 +194,7 @@ def test_back_links_render_in_the_toolbar(session_factory):
     eid = _engagement(session_factory)
     with session_factory() as db:
         html = render_report_html(
-            build_report_context(db.get(Engagement, eid)),
+            build_report_context(db.get(ReportBoard, eid)),
             engagement_url="/scribble/engagements/1",
             dashboard_url="/scribble/",
         )
@@ -209,7 +209,7 @@ def test_back_links_are_not_in_the_document_masthead(session_factory):
     eid = _engagement(session_factory)
     with session_factory() as db:
         html = render_report_html(
-            build_report_context(db.get(Engagement, eid)),
+            build_report_context(db.get(ReportBoard, eid)),
             engagement_url="/scribble/engagements/1",
             dashboard_url="/scribble/",
         )

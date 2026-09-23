@@ -27,7 +27,7 @@ from scribble.enums import (
     finding_status_label,
     report_disposition,
 )
-from scribble.models import Client, Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, Client, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 from scribble.reporting.render_html import render_report_html
@@ -71,10 +71,10 @@ def _engagement(
         client = Client(name=f"Acme Co {uuid.uuid4().hex[:8]}")
         db.add(client)
         db.flush()
-        eng = Engagement(name="Q3 Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="Q3 Assessment", client_id=client.id, company_name="Acme Corp")
         group = FindingGroup(engagement=eng, name="External", order_index=0)
         for i, (title, severity, status, included) in enumerate(findings):
-            EngagementFinding(
+            BoardFinding(
                 engagement=eng,
                 group=group,
                 title=title,
@@ -116,7 +116,7 @@ def test_a_remediated_or_false_positive_finding_does_not_inflate_the_risk_rating
         ],
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
 
     assert ctx.rollup is not None
     assert ctx.rollup.overall == "high", "a fixed/false-positive Critical must not set the overall risk"
@@ -136,7 +136,7 @@ def test_the_narrative_counts_only_live_findings(session_factory):
         ],
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
 
     assert "1 finding" in ctx.narrative
     assert "3 findings" not in ctx.narrative
@@ -165,7 +165,7 @@ def test_every_status_agrees_across_context_and_rollup(status, session_factory):
         session_factory, [("Weak TLS configuration", Severity.medium, status, True)]
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
 
     present = "Weak TLS configuration" in _titles(ctx)
     assert present is rendered, f"{status}: expected rendered={rendered}"
@@ -187,7 +187,7 @@ def test_include_in_report_remains_an_independent_veto(status, session_factory):
         session_factory, [("Weak TLS configuration", Severity.medium, status, False)]
     )
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
 
     assert "Weak TLS configuration" not in _titles(ctx)
     assert ctx.rollup is not None
@@ -205,7 +205,7 @@ def test_html_shows_a_status_column_and_badges_only_when_some_finding_is_not_new
         ],
     )
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, mixed)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, mixed)))
 
     assert "<th>Status</th>" in html
     assert "Remediated" in html
@@ -214,7 +214,7 @@ def test_html_shows_a_status_column_and_badges_only_when_some_finding_is_not_new
         session_factory, [("SMB signing not required", Severity.high, FindingStatus.new, True)]
     )
     with session_factory() as db:
-        html_plain = render_report_html(build_report_context(db.get(Engagement, plain)))
+        html_plain = render_report_html(build_report_context(db.get(ReportBoard, plain)))
 
     assert "<th>Status</th>" not in html_plain
     # MARKUP, not the class name: the report is one self-contained document, so its stylesheet is
@@ -236,7 +236,7 @@ def test_docx_carries_the_same_labels_as_the_html(session_factory):
         ],
     )
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eng_id)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eng_id)))
 
     text = _all_text(docx.Document(io.BytesIO(payload)))
     assert "Awaiting retest" in text
@@ -264,7 +264,7 @@ def test_no_label_asserts_a_verification_or_a_client_decision(session_factory):
         ],
     )
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eng_id)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eng_id)))
 
     assert "Fixed (verified)" not in html
     assert "client decision" not in html.lower()

@@ -31,10 +31,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
-from scribble.models import Engagement
+from scribble.models import ReportBoard
 from scribble.reporting.context import build_report_context
 
-__all__ = ["open_readonly_session", "build_sidecar_dict", "select", "Engagement", "main"]
+__all__ = ["open_readonly_session", "build_sidecar_dict", "select", "ReportBoard", "main"]
 
 
 def _readonly_engine(db_path: str | Path):
@@ -81,11 +81,11 @@ def open_readonly_session(db_path: str | Path) -> Iterator[Session]:
         engine.dispose()
 
 
-def _find_engagement(session: Session, *, engagement_id=None, engagement_name=None) -> Engagement:
+def _find_engagement(session: Session, *, engagement_id=None, engagement_name=None) -> ReportBoard:
     if engagement_id is not None:
-        engagement = session.get(Engagement, engagement_id)
+        engagement = session.get(ReportBoard, engagement_id)
     elif engagement_name is not None:
-        engagement = session.scalar(select(Engagement).where(Engagement.name == engagement_name))
+        engagement = session.scalar(select(ReportBoard).where(ReportBoard.name == engagement_name))
     else:
         raise LookupError("build_sidecar_dict requires engagement_id or engagement_name")
     if engagement is None:
@@ -102,7 +102,7 @@ def build_sidecar_dict(
     Shaped exactly like ``scribble.reporting.context.ReportContext`` (the same object the HTML/DOCX
     renderers build from) -- ``engagement_id``/``engagement_name`` at the top, a ``groups`` list (each
     with ``id``/``name``/``type_slug``/``findings``), a severity ``rollup`` (``counts``/``total``/
-    ``overall``), and the resolved template ``variables``. Every ``EngagementFinding``'s ``severity``,
+    ``overall``), and the resolved template ``variables``. Every ``BoardFinding``'s ``severity``,
     ``cvss_score``/``cvss_vector``, and ``artifacts`` come through untouched from the database -- this
     function performs no write of any kind, and raises ``LookupError`` rather than returning ``None``
     or an empty dict when neither identifier resolves to a real engagement.
@@ -148,11 +148,11 @@ def main(args: list[str]) -> int:
     )
     parser.add_argument("--db", required=True, help="Path to the Scribble SQLite database file.")
     # UUIDv7 since lotek#335 — `type=int` made the CLI reject every real id with SystemExit(2).
-    parser.add_argument("--engagement-id", type=str, default=None, help="Engagement id to look up.")
+    parser.add_argument("--engagement-id", type=str, default=None, help="ReportBoard id to look up.")
     parser.add_argument(
         "--engagement-name",
         default=None,
-        help="Engagement name to look up (alternative to --engagement-id).",
+        help="ReportBoard name to look up (alternative to --engagement-id).",
     )
     parser.add_argument("--out", required=True, help="Path to write the sidecar JSON file to.")
     ns = parser.parse_args(args)

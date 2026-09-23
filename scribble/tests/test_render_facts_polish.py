@@ -16,7 +16,7 @@ from docx.oxml.ns import qn
 
 from scribble.content import schema
 from scribble.enums import Severity
-from scribble.models import Engagement, EngagementFinding, FindingGroup
+from scribble.models import BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 
@@ -29,9 +29,9 @@ def test_docx_hides_empty_cvss_and_target_labels(session_factory):
     """A finding with NO `cvss_score` and NO `target_host`/`target_url` must not leak a bare
     `CVSS: `/`Target: ` label with nothing after it."""
     with session_factory() as db:
-        eng = Engagement(name="Bare Meta Co", company_name="Acme")
+        eng = ReportBoard(name="Bare Meta Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Internal", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="No CVSS, No Target",
@@ -44,7 +44,7 @@ def test_docx_hides_empty_cvss_and_target_labels(session_factory):
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 
@@ -58,9 +58,9 @@ def test_docx_hides_empty_cvss_and_target_labels(session_factory):
 def test_docx_shows_cvss_and_target_labels_when_present(session_factory):
     """The converse: when a finding DOES carry a score/target, the (non-empty) label renders."""
     with session_factory() as db:
-        eng = Engagement(name="Scored Co", company_name="Acme")
+        eng = ReportBoard(name="Scored Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="External", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng,
             group=group,
             title="Scored And Targeted",
@@ -75,7 +75,7 @@ def test_docx_shows_cvss_and_target_labels_when_present(session_factory):
         eng_id = eng.id
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         payload = render_report_docx(ctx)
 

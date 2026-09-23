@@ -31,7 +31,7 @@ import scribble
 from scribble import assessment_types_ui
 from scribble.api import api_bp
 from scribble.blueprint import bp
-from scribble.models import AssessmentType, Client, Engagement, FindingGroup
+from scribble.models import AssessmentType, Client, FindingGroup, ReportBoard
 from scribble.seed import seed_defaults
 
 _FORCED_ID = uuid.uuid7()  # a well-formed id that is not in the table
@@ -80,7 +80,7 @@ def _make_engagement_with_group(db, assessment_type: AssessmentType) -> FindingG
     client_row = Client(name="zzAcme")
     db.add(client_row)
     db.flush()
-    engagement = Engagement(name="zzQ3", client_id=client_row.id, company_name="zzAcme Corp")
+    engagement = ReportBoard(name="zzQ3", client_id=client_row.id, company_name="zzAcme Corp")
     group = FindingGroup(
         engagement=engagement, assessment_type=assessment_type, name="zzSection", order_index=0
     )

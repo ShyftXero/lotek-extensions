@@ -20,7 +20,7 @@ from scribble import autosave_api
 from scribble.api import api_bp
 from scribble.blueprint import bp
 from scribble.content import schema
-from scribble.models import Engagement, EngagementFinding
+from scribble.models import BoardFinding, ReportBoard
 from scribble.seed import seed_defaults
 
 API_PREFIX = "/scribble/api"
@@ -85,8 +85,8 @@ def session_factory(app):
 @pytest.fixture
 def finding_id(session_factory) -> int:
     with session_factory() as db:
-        engagement = Engagement(name="Autosave Test", company_name="Acme")
-        finding = EngagementFinding(engagement=engagement, title="XSS", content_json={}, content_html={})
+        engagement = ReportBoard(name="Autosave Test", company_name="Acme")
+        finding = BoardFinding(engagement=engagement, title="XSS", content_json={}, content_html={})
         db.add(engagement)
         db.add(finding)
         db.commit()
@@ -107,7 +107,7 @@ def test_autosave_stores_json_and_caches_html(client, session_factory, finding_i
     assert "{{TARGET_HOST}}" in data["html"]
 
     with session_factory() as db:
-        finding = db.get(EngagementFinding, finding_id)
+        finding = db.get(BoardFinding, finding_id)
         assert finding.content_json["description"] == SAMPLE_DOC
         assert "Affected host" in finding.content_html["description"]
 
@@ -118,7 +118,7 @@ def test_autosave_only_touches_target_block(client, session_factory, finding_id)
     client.post(_url(finding_id, "remediation"), json=other_doc)
 
     with session_factory() as db:
-        finding = db.get(EngagementFinding, finding_id)
+        finding = db.get(BoardFinding, finding_id)
         assert finding.content_json["description"] == SAMPLE_DOC
         assert finding.content_json["remediation"] == other_doc
         assert "Remediate" in finding.content_html["remediation"]

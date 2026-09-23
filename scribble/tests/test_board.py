@@ -34,10 +34,10 @@ from scribble.enums import Confidence, FindingStatus, OrderMode, Severity
 from scribble.models import (
     Artifact,
     AssessmentType,
+    BoardFinding,
     Client,
-    Engagement,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     VulnerabilityTemplate,
 )
 from scribble.reporting import build_report_context
@@ -61,11 +61,11 @@ def _make_template(db, name: str, severity: Severity = Severity.medium) -> Vulne
     return tmpl
 
 
-def _make_engagement(db, name: str = "Q3 Assessment") -> Engagement:
+def _make_engagement(db, name: str = "Q3 Assessment") -> ReportBoard:
     client = Client(name=f"{name} Client")
     db.add(client)
     db.flush()
-    eng = Engagement(name=name, client_id=client.id, company_name=f"{name} Corp")
+    eng = ReportBoard(name=name, client_id=client.id, company_name=f"{name} Corp")
     db.add(eng)
     db.commit()
     return eng
@@ -96,7 +96,7 @@ def test_create_engagement_with_new_client(client, session_factory):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        eng = db.query(Engagement).filter_by(name="New Co Pentest").one()
+        eng = db.query(ReportBoard).filter_by(name="New Co Pentest").one()
         resolved_client = eng.resolve_client(db)
         assert resolved_client is not None
         assert resolved_client.name == "New Co"
@@ -111,14 +111,14 @@ def test_create_engagement_with_existing_client_allows_concurrent_engagements(cl
         db.commit()
         existing_id = existing.id
 
-    client.post(f"{UI}/engagements/new", data={"name": "First Engagement", "client_id": str(existing_id)})
+    client.post(f"{UI}/engagements/new", data={"name": "First ReportBoard", "client_id": str(existing_id)})
     resp = client.post(
-        f"{UI}/engagements/new", data={"name": "Second Engagement", "client_id": str(existing_id)}
+        f"{UI}/engagements/new", data={"name": "Second ReportBoard", "client_id": str(existing_id)}
     )
     assert resp.status_code == 302
 
     with session_factory() as db:
-        count = db.query(Engagement).filter_by(client_id=existing_id).count()
+        count = db.query(ReportBoard).filter_by(client_id=existing_id).count()
     assert count == 2
 
 
@@ -126,7 +126,7 @@ def test_create_engagement_requires_name(client, session_factory):
     resp = client.post(f"{UI}/engagements/new", data={"name": ""})
     assert resp.status_code == 400
     with session_factory() as db:
-        assert db.query(Engagement).count() == 0
+        assert db.query(ReportBoard).count() == 0
 
 
 def test_engagement_board_404_for_missing_engagement(client):
@@ -195,7 +195,7 @@ def test_delete_group_detaches_findings_instead_of_deleting_them(client, session
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         tmpl = _make_template(db, "Plaintext Creds")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
         db.add(finding)
         db.commit()
         eng_id, group_id, finding_id = eng.id, group.id, finding.id
@@ -205,7 +205,7 @@ def test_delete_group_detaches_findings_instead_of_deleting_them(client, session
 
     with session_factory() as db:
         assert db.get(FindingGroup, group_id) is None
-        finding = db.get(EngagementFinding, finding_id)
+        finding = db.get(BoardFinding, finding_id)
         assert finding is not None
         assert finding.group_id is None
 
@@ -238,7 +238,7 @@ def test_add_finding_from_template_into_group(client, session_factory):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        finding = db.query(EngagementFinding).filter_by(engagement_id=eng_id).one()
+        finding = db.query(BoardFinding).filter_by(engagement_id=eng_id).one()
         assert finding.group_id == group_id
         assert finding.template_id == tmpl_id
         assert finding.title == "SQL Injection"
@@ -268,7 +268,7 @@ def test_add_findings_into_two_groups(client, session_factory):
     )
 
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         by_group = {g.name: [f.title for f in g.findings] for g in eng.groups}
     assert by_group["Internal"] == ["Weak Kerberos"]
     assert by_group["External"] == ["Reflected XSS"]
@@ -283,7 +283,7 @@ def test_add_finding_without_group_is_ungrouped(client, session_factory):
     client.post(f"{UI}/engagements/{eng_id}/findings", data={"template_id": str(tmpl_id)})
 
     with session_factory() as db:
-        finding = db.query(EngagementFinding).filter_by(engagement_id=eng_id).one()
+        finding = db.query(BoardFinding).filter_by(engagement_id=eng_id).one()
         assert finding.group_id is None
 
 
@@ -301,7 +301,7 @@ def test_add_finding_rejects_group_from_another_engagement(client, session_facto
     )
 
     with session_factory() as db:
-        finding = db.query(EngagementFinding).filter_by(engagement_id=eng_id).one()
+        finding = db.query(BoardFinding).filter_by(engagement_id=eng_id).one()
         # Never attach to a group belonging to a different engagement -- falls back to ungrouped.
         assert finding.group_id is None
 
@@ -313,7 +313,7 @@ def test_finding_detail_get_renders_editor_and_gallery(app, client, session_fact
     with session_factory() as db:
         eng = _make_engagement(db)
         t = _make_template(db, "XSS", Severity.high)
-        f = EngagementFinding.from_template(t, engagement_id=eng.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id)
         db.add(f)
         db.commit()
         f_id = f.id
@@ -362,7 +362,7 @@ def test_finding_detail_update_meta(client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
         t = _make_template(db, "XSS", Severity.medium)
-        f = EngagementFinding.from_template(t, engagement_id=eng.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id)
         db.add(f)
         db.commit()
         f_id = f.id
@@ -385,7 +385,7 @@ def test_finding_detail_update_meta(client, session_factory):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        finding = db.get(EngagementFinding, f_id)
+        finding = db.get(BoardFinding, f_id)
         assert finding.title == "Stored XSS in comments"
         assert finding.severity == Severity.critical
         assert finding.confidence == Confidence.high
@@ -412,7 +412,7 @@ def test_reorder_groups_persists_new_order(client, session_factory):
     assert resp.status_code == 200
 
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         assert [g.id for g in eng.groups] == new_order
         assert [g.order_index for g in eng.groups] == [0, 1, 2]
 
@@ -436,7 +436,7 @@ def test_reorder_groups_ignores_stale_and_foreign_ids_and_appends_missing(client
     assert resp.status_code == 200
 
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         ordered_ids = [g.id for g in eng.groups]
         # g2 honored first (explicitly requested); g1 (unmentioned) appended after. The
         # nonexistent/foreign ids never leak into this engagement's ordering.
@@ -480,8 +480,8 @@ def test_move_finding_across_groups_updates_group_and_reindexes_both_sides(clien
         internal = _make_group(db, eng, "Internal", order_index=0)
         external = _make_group(db, eng, "External", order_index=1)
         t = _make_template(db, "Weak SMB Signing", Severity.low)
-        f1 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=internal.id, order_index=0)
-        f2 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=internal.id, order_index=1)
+        f1 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=internal.id, order_index=0)
+        f2 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=internal.id, order_index=1)
         db.add(f1)
         db.add(f2)
         db.commit()
@@ -497,12 +497,12 @@ def test_move_finding_across_groups_updates_group_and_reindexes_both_sides(clien
     assert uuid.UUID(body["previous_group"]["id"]) == internal_id
 
     with session_factory() as db:
-        moved = db.get(EngagementFinding, f1_id)
+        moved = db.get(BoardFinding, f1_id)
         assert moved.group_id == external_id
         assert moved.order_index == 0
 
         # The source group's remaining finding is reindexed with no gap left behind.
-        remaining = db.get(EngagementFinding, f2_id)
+        remaining = db.get(BoardFinding, f2_id)
         assert remaining.group_id == internal_id
         assert remaining.order_index == 0
 
@@ -512,7 +512,7 @@ def test_move_finding_into_nonexistent_group_404(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         t = _make_template(db, "X")
-        f = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id)
         db.add(f)
         db.commit()
         f_id = f.id
@@ -521,7 +521,7 @@ def test_move_finding_into_nonexistent_group_404(client, session_factory):
     assert resp.status_code == 404
     with session_factory() as db:
         # The finding must not have moved when the target group doesn't exist.
-        assert db.get(EngagementFinding, f_id).group_id is not None
+        assert db.get(BoardFinding, f_id).group_id is not None
 
 
 def test_move_finding_into_group_from_another_engagement_rejected(client, session_factory):
@@ -530,7 +530,7 @@ def test_move_finding_into_group_from_another_engagement_rejected(client, sessio
         other_eng = _make_engagement(db, name="Other")
         other_group = _make_group(db, other_eng, "Other Group")
         t = _make_template(db, "X")
-        f = EngagementFinding.from_template(t, engagement_id=eng.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id)
         db.add(f)
         db.commit()
         f_id, other_group_id = f.id, other_group.id
@@ -538,7 +538,7 @@ def test_move_finding_into_group_from_another_engagement_rejected(client, sessio
     resp = client.post(f"{API}/findings/{f_id}/move", json={"group_id": other_group_id, "order_index": 0})
     assert resp.status_code == 404
     with session_factory() as db:
-        assert db.get(EngagementFinding, f_id).group_id is None
+        assert db.get(BoardFinding, f_id).group_id is None
 
 
 def test_move_nonexistent_finding_404(client, session_factory):
@@ -554,7 +554,7 @@ def test_move_finding_requires_group_id_key(client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
         t = _make_template(db, "X")
-        f = EngagementFinding.from_template(t, engagement_id=eng.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id)
         db.add(f)
         db.commit()
         f_id = f.id
@@ -567,7 +567,7 @@ def test_move_finding_to_ungrouped(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         t = _make_template(db, "X")
-        f = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id)
         db.add(f)
         db.commit()
         f_id = f.id
@@ -577,7 +577,7 @@ def test_move_finding_to_ungrouped(client, session_factory):
     assert resp.get_json()["group"] is None
 
     with session_factory() as db:
-        finding = db.get(EngagementFinding, f_id)
+        finding = db.get(BoardFinding, f_id)
         assert finding.group_id is None
 
 
@@ -586,9 +586,9 @@ def test_move_finding_within_same_group_reorders(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         t = _make_template(db, "X")
-        f1 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=0)
-        f2 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=1)
-        f3 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=2)
+        f1 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=0)
+        f2 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=1)
+        f3 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=2)
         db.add_all([f1, f2, f3])
         db.commit()
         group_id = group.id
@@ -614,8 +614,8 @@ def test_first_manual_drag_flips_group_to_manual(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal", order_mode=OrderMode.auto_severity)
         t = _make_template(db, "X")
-        f1 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=0)
-        f2 = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=1)
+        f1 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=0)
+        f2 = BoardFinding.from_template(t, engagement_id=eng.id, group_id=group.id, order_index=1)
         db.add_all([f1, f2])
         db.commit()
         group_id, f2_id = group.id, f2.id
@@ -648,9 +648,9 @@ def test_manual_drag_persists_the_visual_order_not_order_index_order(client, ses
         t_med = _make_template(db, "Medium Finding", Severity.medium)
         t_crit = _make_template(db, "Critical Finding", Severity.critical)
         t_low = _make_template(db, "Low Finding", Severity.low)
-        med = EngagementFinding.from_template(t_med, engagement_id=eng.id, group_id=group.id, order_index=0)
-        crit = EngagementFinding.from_template(t_crit, engagement_id=eng.id, group_id=group.id, order_index=1)
-        low = EngagementFinding.from_template(t_low, engagement_id=eng.id, group_id=group.id, order_index=2)
+        med = BoardFinding.from_template(t_med, engagement_id=eng.id, group_id=group.id, order_index=0)
+        crit = BoardFinding.from_template(t_crit, engagement_id=eng.id, group_id=group.id, order_index=1)
+        low = BoardFinding.from_template(t_low, engagement_id=eng.id, group_id=group.id, order_index=2)
         db.add_all([med, crit, low])
         db.commit()
         eng_id, group_id = eng.id, group.id
@@ -658,7 +658,7 @@ def test_manual_drag_persists_the_visual_order_not_order_index_order(client, ses
 
     # What the board actually renders (auto_severity, worst-first): [Critical, Medium, Low].
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     displayed = [f.title for f in next(g for g in ctx.groups if g.name == "Internal").findings]
     assert displayed == ["Critical Finding", "Medium Finding", "Low Finding"]
 
@@ -675,7 +675,7 @@ def test_manual_drag_persists_the_visual_order_not_order_index_order(client, ses
         group = db.get(FindingGroup, group_id)
         ordered = sorted(group.findings, key=lambda f: f.order_index)
         assert [f.id for f in ordered] == [crit_id, low_id, med_id]
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
     result = [f.title for f in next(g for g in ctx.groups if g.name == "Internal").findings]
     assert result == ["Critical Finding", "Low Finding", "Medium Finding"]
 
@@ -686,7 +686,7 @@ def test_move_into_a_different_group_flips_destination_not_source(client, sessio
         internal = _make_group(db, eng, "Internal", order_mode=OrderMode.auto_severity)
         external = _make_group(db, eng, "External", order_mode=OrderMode.auto_severity)
         t = _make_template(db, "X")
-        f = EngagementFinding.from_template(t, engagement_id=eng.id, group_id=internal.id)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=internal.id)
         db.add(f)
         db.commit()
         internal_id, external_id, f_id = internal.id, external.id, f.id
@@ -774,10 +774,10 @@ def test_board_order_matches_report_context_order_end_to_end(client, session_fac
         external = _make_group(db, eng, "External", order_index=1)
         t_low = _make_template(db, "Low Sev Finding", Severity.low)
         t_crit = _make_template(db, "Critical Finding", Severity.critical)
-        low = EngagementFinding.from_template(
+        low = BoardFinding.from_template(
             t_low, engagement_id=eng.id, group_id=internal.id, order_index=0
         )
-        crit = EngagementFinding.from_template(
+        crit = BoardFinding.from_template(
             t_crit, engagement_id=eng.id, group_id=internal.id, order_index=1
         )
         db.add_all([low, crit])
@@ -788,7 +788,7 @@ def test_board_order_matches_report_context_order_end_to_end(client, session_fac
 
     # Sanity: before any manual intervention, auto_severity would put Critical before Low.
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
     internal_ctx = next(g for g in ctx.groups if g.name == "Internal")
     assert [f.title for f in internal_ctx.findings] == ["Critical Finding", "Low Sev Finding"]
@@ -806,7 +806,7 @@ def test_board_order_matches_report_context_order_end_to_end(client, session_fac
     assert resp.get_json()["group"]["order_mode"] == "manual"
 
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
 
     # Group order reflects the reorder call (External first) -- board order == document order.
@@ -836,7 +836,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         tmpl = _make_template(db, "Stored XSS")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
         db.add(finding)
         db.commit()
         eng_id, finding_id = eng.id, finding.id
@@ -866,7 +866,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
     assert resp.headers["Location"].endswith(f"/engagements/{eng_id}")
 
     with session_factory() as db:
-        assert db.get(EngagementFinding, finding_id) is None
+        assert db.get(BoardFinding, finding_id) is None
         assert db.get(Artifact, artifact_id) is None
     assert read_evidence(app, evidence_ref) is None
 
@@ -874,7 +874,7 @@ def test_delete_finding_removes_finding_and_its_artifacts(client, session_factor
 def test_delete_finding_detaches_its_nested_children(client, session_factory):
     """The cookie board's delete hit the same self-FK wall as the machine route (both call
     `findings_service.delete_finding`): deleting a promoted PARENT raised `IntegrityError` and the request
-    500'd, because `EngagementFinding.parent_id` has no `ondelete` and no ORM relationship to clear it.
+    500'd, because `BoardFinding.parent_id` has no `ondelete` and no ORM relationship to clear it.
 
     Children are detached, not deleted — see `findings_service.detach_children`. Driven through the HTTP
     route rather than the service so it proves the surface a user actually clicks.
@@ -883,11 +883,11 @@ def test_delete_finding_detaches_its_nested_children(client, session_factory):
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Active Directory")
         tmpl = _make_template(db, "Kerberoasting")
-        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        parent = BoardFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
         db.add(parent)
         db.flush()
         children = [
-            EngagementFinding.from_template(
+            BoardFinding.from_template(
                 tmpl, engagement_id=eng.id, group_id=group.id, parent_id=parent.id,
                 target_host=host, order_index=index + 1,
             )
@@ -902,9 +902,9 @@ def test_delete_finding_detaches_its_nested_children(client, session_factory):
     assert resp.status_code == 302
 
     with session_factory() as db:
-        assert db.get(EngagementFinding, parent_id) is None
+        assert db.get(BoardFinding, parent_id) is None
         for child_id in child_ids:
-            child = db.get(EngagementFinding, child_id)
+            child = db.get(BoardFinding, child_id)
             assert child is not None and child.parent_id is None
 
 
@@ -912,7 +912,7 @@ def test_engagement_delete_survives_a_promoted_parent_child_cluster(client, sess
     """Deleting an ENGAGEMENT that holds a promoted aggregation must work.
 
     Pre-existing defect of the same class as the parent-delete one, found while fixing it and not reported:
-    `Engagement.findings` cascades `delete-orphan`, and with no ORM relationship on the self-FK SQLAlchemy
+    `ReportBoard.findings` cascades `delete-orphan`, and with no ORM relationship on the self-FK SQLAlchemy
     has no dependency to order those DELETEs by — it emits them in one batch and the child rows' `parent_id`
     FK fails. So an engagement holding ANY promoted finding could not be deleted at all (`IntegrityError`
     here, `ForeignKeyViolation` on prod Postgres). `findings_service.flatten_nesting` clears the links first.
@@ -920,11 +920,11 @@ def test_engagement_delete_survives_a_promoted_parent_child_cluster(client, sess
     with session_factory() as db:
         eng = _make_engagement(db)
         tmpl = _make_template(db, "SMB signing not required")
-        parent = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        parent = BoardFinding.from_template(tmpl, engagement_id=eng.id)
         db.add(parent)
         db.flush()
         db.add_all([
-            EngagementFinding.from_template(
+            BoardFinding.from_template(
                 tmpl, engagement_id=eng.id, parent_id=parent.id, target_host=f"10.0.0.{n}"
             )
             for n in (5, 6, 7)
@@ -936,9 +936,9 @@ def test_engagement_delete_survives_a_promoted_parent_child_cluster(client, sess
     assert resp.status_code == 302
 
     with session_factory() as db:
-        assert db.get(Engagement, eng_id) is None
+        assert db.get(ReportBoard, eng_id) is None
         assert db.scalars(
-            select(EngagementFinding).where(EngagementFinding.engagement_id == eng_id)
+            select(BoardFinding).where(BoardFinding.engagement_id == eng_id)
         ).all() == []
 
 
@@ -947,7 +947,7 @@ def test_engagement_delete_survives_rows_that_reference_a_finding_from_OUTSIDE_t
 ):
     """Deleting an engagement must work when something outside its ORM cascade graph references a finding.
 
-    `Engagement` cascades `delete-orphan` to groups/findings/artifacts/variable_values/checklists — the rows
+    `ReportBoard` cascades `delete-orphan` to groups/findings/artifacts/variable_values/checklists — the rows
     the ORM knows are the engagement's. It knows nothing about a `CollabDoc` (which has no engagement column
     at all, and which the live co-editing room writes the moment a human opens a block), a finding-scoped
     `VariableValue` whose `engagement_id` is NULL, or the ORDER of an `EngagementChecklistItem`'s DELETE
@@ -970,7 +970,7 @@ def test_engagement_delete_survives_rows_that_reference_a_finding_from_OUTSIDE_t
     with session_factory() as db:
         eng = _make_engagement(db)
         tmpl = _make_template(db, "SMB signing not required")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id)
         db.add(finding)
         db.flush()
         variable = TemplateVariable(key="PER_FINDING_HOST", label="Host")  # not a seeded key
@@ -991,8 +991,8 @@ def test_engagement_delete_survives_rows_that_reference_a_finding_from_OUTSIDE_t
     assert resp.status_code == 302
 
     with session_factory() as db:
-        assert db.get(Engagement, eng_id) is None
-        assert db.get(EngagementFinding, finding_id) is None
+        assert db.get(ReportBoard, eng_id) is None
+        assert db.get(BoardFinding, finding_id) is None
         assert db.scalars(select(CollabDoc)).all() == []
         assert db.scalars(select(VariableValue)).all() == []
         # The checklist went with the engagement (it IS the engagement's), items and all.
@@ -1004,7 +1004,7 @@ def test_engagement_delete_clears_the_one_referrer_no_relationship_cascades(clie
     ORM relationship covers — must not block the delete either.
 
     NOT reported by either review round: found by asking the enumeration question ONE TABLE OVER, which is the
-    lesson round 2 was about. Five of the six referrers are reached by an `Engagement` relationship cascading
+    lesson round 2 was about. Five of the six referrers are reached by an `ReportBoard` relationship cascading
     `delete-orphan`; `ReportRender` has no relationship at all, so a single row made this route a 500
     (reproduced) — an FK violation that deletes nothing.
 
@@ -1019,7 +1019,7 @@ def test_engagement_delete_clears_the_one_referrer_no_relationship_cascades(clie
     with session_factory() as db:
         eng = _make_engagement(db)
         tmpl = _make_template(db, "Missing HSTS")
-        db.add(EngagementFinding.from_template(tmpl, engagement_id=eng.id))
+        db.add(BoardFinding.from_template(tmpl, engagement_id=eng.id))
         db.add(ReportRender(engagement_id=eng.id, format=ReportFormat.html, path="renders/1.html"))
         db.commit()
         eng_id = eng.id
@@ -1028,7 +1028,7 @@ def test_engagement_delete_clears_the_one_referrer_no_relationship_cascades(clie
     assert resp.status_code == 302
 
     with session_factory() as db:
-        assert db.get(Engagement, eng_id) is None
+        assert db.get(ReportBoard, eng_id) is None
         assert db.scalars(select(ReportRender)).all() == []
 
 
@@ -1037,29 +1037,29 @@ def test_every_column_referencing_an_engagement_is_cascaded_or_declared():
 
     A guard that enumerates the columns pointing at ONE table and stops is the same shape as a fix applied to
     one member of a set: it certifies the area it was written for and says nothing about its neighbour. So
-    this derives the referrers of `scribble_engagements.id` from `Base.metadata` and requires each to be
-    reachable by an `Engagement` relationship that cascades `delete-orphan` OR declared in
+    this derives the referrers of `scribble_report_boards.id` from `Base.metadata` and requires each to be
+    reachable by an `ReportBoard` relationship that cascades `delete-orphan` OR declared in
     `findings_service._ENGAGEMENT_UNCASCADED` (which `prepare_engagement_delete` clears by hand). A new table
     referencing an engagement fails this until someone decides which it is.
     """
     from scribble import findings_service as svc
-    from scribble.models import Base, Engagement
+    from scribble.models import Base, ReportBoard
 
     referrers = {
         (table.name, column.name)
         for table in Base.metadata.tables.values()
         for column in table.columns
         for fk in column.foreign_keys
-        if fk.column.table.name == "scribble_engagements" and fk.column.name == "id"
+        if fk.column.table.name == "scribble_report_boards" and fk.column.name == "id"
     }
     cascaded = {
         (rel.mapper.local_table.name, "engagement_id")
-        for rel in Engagement.__mapper__.relationships
+        for rel in ReportBoard.__mapper__.relationships
         if rel.cascade.delete_orphan
     }
     declared = cascaded | {(m.__tablename__, "engagement_id") for m in svc._ENGAGEMENT_UNCASCADED}
     assert referrers == declared, (
-        "a column referencing scribble_engagements.id is neither cascade-covered nor cleared by hand: "
+        "a column referencing scribble_report_boards.id is neither cascade-covered nor cleared by hand: "
         f"{referrers ^ declared} — give it a relationship with cascade='all, delete-orphan' or add it to "
         "findings_service._ENGAGEMENT_UNCASCADED, or deleting an engagement will 500"
     )
@@ -1070,7 +1070,7 @@ def test_delete_finding_wrong_engagement_404(client, session_factory):
         eng = _make_engagement(db)
         other = _make_engagement(db, name="Other")
         tmpl = _make_template(db, "CSRF")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=other.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=other.id)
         db.add(finding)
         db.commit()
         eng_id, finding_id = eng.id, finding.id
@@ -1080,7 +1080,7 @@ def test_delete_finding_wrong_engagement_404(client, session_factory):
 
     with session_factory() as db:
         # Never touched -- a 404 on the wrong-engagement guard must not delete anything.
-        assert db.get(EngagementFinding, finding_id) is not None
+        assert db.get(BoardFinding, finding_id) is not None
 
 
 def test_delete_finding_missing_404(client, session_factory):
@@ -1098,7 +1098,7 @@ def test_delete_finding_ungrouped_has_no_artifacts_is_a_noop_delete(client, sess
     with session_factory() as db:
         eng = _make_engagement(db)
         tmpl = _make_template(db, "Open Redirect")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id)
         db.add(finding)
         db.commit()
         eng_id, finding_id = eng.id, finding.id
@@ -1107,7 +1107,7 @@ def test_delete_finding_ungrouped_has_no_artifacts_is_a_noop_delete(client, sess
     assert resp.status_code == 302
 
     with session_factory() as db:
-        assert db.get(EngagementFinding, finding_id) is None
+        assert db.get(BoardFinding, finding_id) is None
 
 
 # ------------------------------------------------------------------------------- created_by threading
@@ -1120,7 +1120,7 @@ def test_engagement_created_by_none_without_host_hook(client, session_factory):
     )
     assert resp.status_code == 302
     with session_factory() as db:
-        eng = db.query(Engagement).filter_by(name="No Host Co Pentest").one()
+        eng = db.query(ReportBoard).filter_by(name="No Host Co Pentest").one()
         assert eng.created_by is None
 
 
@@ -1134,7 +1134,7 @@ def test_engagement_created_by_set_from_host_current_actor_hook(client, session_
         )
         assert resp.status_code == 302
         with session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Hosted Co Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Hosted Co Pentest").one()
             assert eng.created_by == "j.analyst"
     finally:
         cfg.extras.pop("current_actor", None)
@@ -1149,7 +1149,7 @@ def test_finding_created_by_none_without_host_hook(client, session_factory):
     client.post(f"{UI}/engagements/{eng_id}/findings", data={"template_id": str(tmpl_id)})
 
     with session_factory() as db:
-        finding = db.query(EngagementFinding).filter_by(engagement_id=eng_id).one()
+        finding = db.query(BoardFinding).filter_by(engagement_id=eng_id).one()
         assert finding.created_by is None
 
 
@@ -1165,7 +1165,7 @@ def test_finding_created_by_set_from_host_current_actor_hook(client, session_fac
         client.post(f"{UI}/engagements/{eng_id}/findings", data={"template_id": str(tmpl_id)})
 
         with session_factory() as db:
-            finding = db.query(EngagementFinding).filter_by(engagement_id=eng_id).one()
+            finding = db.query(BoardFinding).filter_by(engagement_id=eng_id).one()
             assert finding.created_by == "j.analyst"
     finally:
         cfg.extras.pop("current_actor", None)
@@ -1185,7 +1185,7 @@ def test_created_by_none_when_current_actor_hook_raises(client, session_factory,
         )
         assert resp.status_code == 302
         with session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Flaky Host Co Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Flaky Host Co Pentest").one()
             # A misbehaving host hook is an attribution nicety failure, never a write failure.
             assert eng.created_by is None
     finally:
@@ -1216,7 +1216,7 @@ def test_board_hides_mutating_controls_for_read_only_viewer(client, session_fact
         eng = _make_engagement(db)
         group = _make_group(db, eng, "Internal")
         tmpl = _make_template(db, "Weak TLS Config")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id, group_id=group.id)
         db.add(finding)
         db.commit()
         eng_id = eng.id
@@ -1265,7 +1265,7 @@ def test_finding_meta_form_disabled_for_read_only_viewer(client, session_factory
     with session_factory() as db:
         eng = _make_engagement(db)
         tmpl = _make_template(db, "Missing Rate Limiting")
-        finding = EngagementFinding.from_template(tmpl, engagement_id=eng.id)
+        finding = BoardFinding.from_template(tmpl, engagement_id=eng.id)
         db.add(finding)
         db.commit()
         finding_id = finding.id

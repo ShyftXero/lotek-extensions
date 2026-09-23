@@ -65,7 +65,7 @@ def token(stub_host):
 
 def _engagement(session_factory, *, client_id=ACME, name="Q3 external") -> str:
     with session_factory() as db:
-        eng = fm.Engagement(name=name, scope_type="external", client_id=client_id)
+        eng = fm.ReportBoard(name=name, scope_type="external", client_id=client_id)
         db.add(eng)
         db.commit()
         # str(): lotek#335 -- ids are UUIDv7, and the JSON responses this file compares against
@@ -92,7 +92,7 @@ def _finding(
     **kw,
 ) -> str:
     with session_factory() as db:
-        finding = fm.EngagementFinding(
+        finding = fm.BoardFinding(
             engagement_id=engagement_id,
             group_id=group_id,
             title=title,
@@ -252,7 +252,7 @@ def test_top_level_count_matches_what_the_renderer_produces(client, token, sessi
     reported = client.get(f"{M}/engagements/{eid}/findings").get_json()["top_level_count"]
 
     with session_factory() as db:
-        engagement = db.get(fm.Engagement, eid)
+        engagement = db.get(fm.ReportBoard, eid)
         rendered = sum(len(group.findings) for group in build_report_context(engagement).groups)
     assert reported == rendered, "the listing's top_level_count disagrees with the renderer"
 
@@ -312,7 +312,7 @@ def test_patch_updates_only_the_fields_supplied(client, token, session_factory):
     assert body["target_port"] == "445"  # coerced to the column's string type
 
     with session_factory() as db:
-        row = db.get(fm.EngagementFinding, fid)
+        row = db.get(fm.BoardFinding, fid)
         assert row.title == "Weak SMB signing"
         assert row.category == "Network"      # untouched
         assert row.target_host == "10.0.0.1"  # untouched
@@ -327,7 +327,7 @@ def test_patch_null_clears_a_nullable_field(client, token, session_factory):
     resp = client.patch(f"{M}/findings/{fid}", json={"category": None, "cvss_score": None})
     assert resp.status_code == 200, resp.get_json()
     with session_factory() as db:
-        row = db.get(fm.EngagementFinding, fid)
+        row = db.get(fm.BoardFinding, fid)
         assert row.category is None
         assert row.cvss_score is None
 
@@ -340,7 +340,7 @@ def test_patch_merges_content_blocks_and_sanitizes_them(client, token, session_f
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid)
     with session_factory() as db:
-        row = db.get(fm.EngagementFinding, fid)
+        row = db.get(fm.BoardFinding, fid)
         row.content_json = {"description": schema.doc_from_text("keep me"),
                             "remediation": schema.doc_from_text("old remediation")}
         db.commit()
@@ -360,8 +360,8 @@ def test_patch_merges_content_blocks_and_sanitizes_them(client, token, session_f
     assert resp.status_code == 200, resp.get_json()
 
     with session_factory() as db:
-        content = db.get(fm.EngagementFinding, fid).content_json
-        html = db.get(fm.EngagementFinding, fid).content_html
+        content = db.get(fm.BoardFinding, fid).content_json
+        html = db.get(fm.BoardFinding, fid).content_html
     assert "keep me" in str(content["description"])              # untouched block survived
     assert "Enable SMB signing" in str(content["remediation"])   # plain text was wrapped into a doc
     assert "javascript:" not in str(content["impact"])           # sanitized on the way in
@@ -393,7 +393,7 @@ def test_patch_clears_a_prose_block_when_the_value_is_empty(
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid)
     with session_factory() as db:
-        finding = db.get(fm.EngagementFinding, fid)
+        finding = db.get(fm.BoardFinding, fid)
         finding.content_json = {block: schema.doc_from_text("PLACEHOLDER — replace me")}
         db.commit()
 
@@ -402,7 +402,7 @@ def test_patch_clears_a_prose_block_when_the_value_is_empty(
     assert resp.get_json()["content_json"][block] == schema.empty_doc()
 
     with session_factory() as db:
-        stored = db.get(fm.EngagementFinding, fid)
+        stored = db.get(fm.BoardFinding, fid)
         assert stored.content_json[block] == schema.empty_doc(), "the block was reported cleared but is not"
         assert stored.content_html[block] in ("", None) or "PLACEHOLDER" not in str(
             stored.content_html[block]
@@ -418,7 +418,7 @@ def test_patch_clearing_a_block_alone_is_not_a_no_op_400(client, token, session_
     resp = client.patch(f"{M}/findings/{fid}", json={"description": ""})
     assert resp.status_code == 200, resp.get_json()
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).content_json["description"] == schema.empty_doc()
+        assert db.get(fm.BoardFinding, fid).content_json["description"] == schema.empty_doc()
 
 
 def test_patch_rejects_an_unknown_field(client, token, session_factory):
@@ -433,7 +433,7 @@ def test_patch_rejects_an_unknown_field(client, token, session_factory):
     detail = resp.get_json()["detail"]
     assert "sevrity" in detail and "titel" in detail
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).title == "Original"
+        assert db.get(fm.BoardFinding, fid).title == "Original"
 
 
 def test_patch_points_group_id_and_order_index_at_the_move_route(client, token, session_factory):
@@ -449,7 +449,7 @@ def test_patch_points_group_id_and_order_index_at_the_move_route(client, token, 
         assert resp.status_code == 400, resp.get_json()
         assert "/move" in resp.get_json()["detail"]
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).group_id is None
+        assert db.get(fm.BoardFinding, fid).group_id is None
 
 
 @pytest.mark.parametrize(
@@ -547,7 +547,7 @@ def test_create_coerces_an_integer_target_port_to_text_at_the_boundary():
 @pytest.mark.parametrize(
     "path,body,field,cap",
     [
-        ("/engagements", {"client_id": ACME}, "name", 255),              # Engagement.name     String(255)
+        ("/engagements", {"client_id": ACME}, "name", 255),              # ReportBoard.name     String(255)
         ("/engagements", {"client_id": ACME, "name": "Q3"}, "scope_type", 64),
         ("/engagements", {"client_id": ACME, "name": "Q3"}, "company_name", 255),
         ("/templates", {}, "name", 512),                                 # …Template.name      String(512)
@@ -706,7 +706,7 @@ def test_patch_rejects_malformed_input(client, token, session_factory, body):
     assert resp.status_code == 400, (body, resp.get_json())
     assert resp.get_json()["error"] == "bad_request"
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).title == "Original"
+        assert db.get(fm.BoardFinding, fid).title == "Original"
 
 
 def test_patch_refuses_a_non_doc_block_INSTEAD_of_emptying_the_prose(client, token, session_factory):
@@ -727,7 +727,7 @@ def test_patch_refuses_a_non_doc_block_INSTEAD_of_emptying_the_prose(client, tok
     eid = _engagement(session_factory)
     fid = _finding(session_factory, eid)
     with session_factory() as db:
-        before = db.get(fm.EngagementFinding, fid).content_json["description"]
+        before = db.get(fm.BoardFinding, fid).content_json["description"]
     assert schema.plain_text(before) == "original prose"
 
     resp = client.patch(f"{M}/findings/{fid}", json={"content_json": {"description": "Updated text"}})
@@ -741,7 +741,7 @@ def test_patch_refuses_a_non_doc_block_INSTEAD_of_emptying_the_prose(client, tok
 
     with session_factory() as db:
         # Nothing was written: the prose is byte-identical to what the author had.
-        assert db.get(fm.EngagementFinding, fid).content_json["description"] == before
+        assert db.get(fm.BoardFinding, fid).content_json["description"] == before
 
 
 def test_patch_still_accepts_a_real_prosemirror_doc_for_a_NON_default_block(
@@ -761,7 +761,7 @@ def test_patch_still_accepts_a_real_prosemirror_doc_for_a_NON_default_block(
     )
     assert resp.status_code == 200, resp.get_json()
     with session_factory() as db:
-        stored = db.get(fm.EngagementFinding, fid).content_json
+        stored = db.get(fm.BoardFinding, fid).content_json
     assert schema.plain_text(stored["impact"]) == "Full domain compromise."
     assert schema.plain_text(stored["description"]) == "original prose"  # untouched
 
@@ -783,7 +783,7 @@ def test_create_routes_refuse_a_non_doc_block_too(client, token, session_factory
     assert template.status_code == 400 and "ProseMirror doc" in template.get_json()["detail"]
 
     with session_factory() as db:
-        assert db.scalars(select(fm.EngagementFinding)).all() == []
+        assert db.scalars(select(fm.BoardFinding)).all() == []
 
 
 def test_every_content_writer_bounds_the_content_json_BLOCK_COUNT(client, token, session_factory):
@@ -822,8 +822,8 @@ def test_every_content_writer_bounds_the_content_json_BLOCK_COUNT(client, token,
     # against zero: `seed_defaults` ships a vuln-template library, so an == [] assertion here would fail
     # for a reason that has nothing to do with the guard.
     with session_factory() as db:
-        assert len(db.get(fm.EngagementFinding, fid).content_json) == 1  # the seeded "description"
-        assert len(db.scalars(select(fm.EngagementFinding)).all()) == 1  # no finding was created
+        assert len(db.get(fm.BoardFinding, fid).content_json) == 1  # the seeded "description"
+        assert len(db.scalars(select(fm.BoardFinding)).all()) == 1  # no finding was created
         assert len(db.scalars(select(fm.VulnerabilityTemplate)).all()) == templates_before
 
 
@@ -857,10 +857,10 @@ def test_every_content_writer_bounds_the_REFERENCES_LIST(client, token, session_
 
     with session_factory() as db:
         assert schema.plain_text(
-            db.get(fm.EngagementFinding, fid).content_json["description"]
+            db.get(fm.BoardFinding, fid).content_json["description"]
         ) == "original prose"
-        assert "references" not in db.get(fm.EngagementFinding, fid).content_json
-        assert len(db.scalars(select(fm.EngagementFinding)).all()) == 1  # no finding was created
+        assert "references" not in db.get(fm.BoardFinding, fid).content_json
+        assert len(db.scalars(select(fm.BoardFinding)).all()) == 1  # no finding was created
         assert len(db.scalars(select(fm.VulnerabilityTemplate)).all()) == templates_before
 
 
@@ -884,7 +884,7 @@ def test_a_body_AT_the_content_caps_is_ACCEPTED_and_stored(client, token, sessio
     assert resp.status_code == 200, resp.get_json()
 
     with session_factory() as db:
-        finding = db.get(fm.EngagementFinding, fid)
+        finding = db.get(fm.BoardFinding, fid)
         stored = finding.content_json
         assert "references" not in stored  # references are a typed column now, not a prose block
         assert finding.references  # the column was written
@@ -921,7 +921,7 @@ def test_patch_authors_structured_references_and_metadata(client, token, session
     cleared = client.patch(f"{M}/findings/{fid}", json={"threat_intel": None})
     assert cleared.status_code == 200
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).threat_intel is None
+        assert db.get(fm.BoardFinding, fid).threat_intel is None
 
 
 @pytest.mark.parametrize("field", ["title", "analyst_notes", "target_host"])
@@ -943,7 +943,7 @@ def test_patch_escapes_a_NUL_byte_that_postgres_would_refuse(client, token, sess
     resp = client.patch(f"{M}/findings/{fid}", json={field: "scan\x00banner"})
     assert resp.status_code == 200, resp.get_json()
     with session_factory() as db:
-        stored = getattr(db.get(fm.EngagementFinding, fid), field)
+        stored = getattr(db.get(fm.BoardFinding, fid), field)
     assert "\x00" not in stored, stored
     assert stored.startswith("scan\u2400banner")
     assert "1 NUL byte replaced" in stored
@@ -978,7 +978,7 @@ def test_delete_finding_takes_its_evidence_rows_and_files(client, token, session
     }
 
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid) is None
+        assert db.get(fm.BoardFinding, fid) is None
         assert db.get(fm.Artifact, artifact_id) is None
     assert read_evidence(app, evidence_ref) is None
 
@@ -989,7 +989,7 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
     """Deleting a PROMOTED PARENT must succeed, keep its per-host children, and say that it did.
 
     This was a 500 — the single operation ext#41 was filed about, on the shape this very API produces by
-    default. `EngagementFinding.parent_id` is a self-FK with no `ondelete` and no ORM relationship, so
+    default. `BoardFinding.parent_id` is a self-FK with no `ondelete` and no ORM relationship, so
     nothing cleared it: the DELETE raised `IntegrityError` (SQLite) / `ForeignKeyViolation` (prod
     Postgres), nothing was deleted, and the audit row rolled back with it. `promote_job` builds exactly
     this shape for every finding that resolves to a vuln-DB template, so "an agent's only recovery is
@@ -1025,9 +1025,9 @@ def test_delete_a_parent_detaches_its_children_instead_of_violating_the_self_FK(
     }
 
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, parent) is None
+        assert db.get(fm.BoardFinding, parent) is None
         for cid in (child_a, child_b):
-            child = db.get(fm.EngagementFinding, cid)
+            child = db.get(fm.BoardFinding, cid)
             assert child is not None, "a per-host child must survive its parent's delete"
             assert child.parent_id is None, "a surviving child must be detached, not dangling"
             assert str(child.group_id) == gid  # stays where the board already showed it
@@ -1072,7 +1072,7 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
     artifact + its bytes); the checklist item SURVIVES with `finding_id` NULL, because a coverage checklist
     must not lose an item just because the finding documenting it was deleted; the child is detached, not
     deleted. `FindingTag` is here to VERIFY, not to assume, that the ORM's `secondary` cascade on
-    `EngagementFinding.tags` really does remove the association row — it is the one referrer that was already
+    `BoardFinding.tags` really does remove the association row — it is the one referrer that was already
     safe, and the only way to know that is to assert it.
     """
     eid = _engagement(session_factory)
@@ -1112,7 +1112,7 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
     }
 
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid) is None
+        assert db.get(fm.BoardFinding, fid) is None
         # Owned state died with it — rows AND, for the artifact, the bytes.
         assert db.scalars(select(fm.CollabDoc)).all() == []
         assert db.scalars(select(fm.VariableValue)).all() == []
@@ -1122,7 +1122,7 @@ def test_delete_finding_clears_every_row_that_references_it(client, token, sessi
         item = db.get(fm.EngagementChecklistItem, item_id)
         assert item is not None and item.finding_id is None
         # The child survived, detached and top-level.
-        child = db.get(fm.EngagementFinding, child_id)
+        child = db.get(fm.BoardFinding, child_id)
         assert child is not None and child.parent_id is None
     assert read_evidence(app, evidence_ref) is None
 
@@ -1151,7 +1151,7 @@ def test_every_column_referencing_a_finding_has_a_declared_delete_disposition():
     }
     assert len(referrers) == 7, referrers  # pinned: a change here is a schema change, read it
     # (7th: scribble_retests.finding_id, lotek#621 — retests die with the finding via the
-    #  EngagementFinding.retests delete-orphan cascade; classified in _FINDING_FK_HANDLED_ELSEWHERE.)
+    #  BoardFinding.retests delete-orphan cascade; classified in _FINDING_FK_HANDLED_ELSEWHERE.)
 
     declared = (
         {(m.__tablename__, "finding_id") for m in svc._FINDING_OWNED_STATE}
@@ -1208,7 +1208,7 @@ def test_move_finding_to_ungrouped(client, token, session_factory):
     assert resp.status_code == 200, resp.get_json()
     assert resp.get_json()["group_id"] is None
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, fid).group_id is None
+        assert db.get(fm.BoardFinding, fid).group_id is None
 
 
 def test_move_requires_the_group_id_key(client, token, session_factory):
@@ -1238,7 +1238,7 @@ def test_move_into_a_foreign_engagements_group_is_404_and_moves_nothing(client, 
     resp = client.post(f"{M}/findings/{fid}/move", json={"group_id": foreign_group})
     assert resp.status_code == 404
     with session_factory() as db:
-        assert str(db.get(fm.EngagementFinding, fid).group_id) == home  # still where it was
+        assert str(db.get(fm.BoardFinding, fid).group_id) == home  # still where it was
 
 
 def test_the_group_refusal_is_identical_for_foreign_and_nonexistent(client, token, session_factory):
@@ -1309,7 +1309,7 @@ def test_bulk_move_reports_the_order_index_it_actually_persisted(client, token, 
         persisted = {
             str(f.id): f.order_index
             for f in db.scalars(
-                select(fm.EngagementFinding).where(fm.EngagementFinding.engagement_id == eid)
+                select(fm.BoardFinding).where(fm.BoardFinding.engagement_id == eid)
             )
         }
     reported = {m["finding_id"]: m["order_index"] for m in body["moved"]}
@@ -1349,7 +1349,7 @@ def test_move_refuses_a_negative_order_index(client, token, session_factory, ord
     assert resp.get_json()["error"] == "bad_request"
     with session_factory() as db:
         assert [f.group_id for f in db.scalars(
-            select(fm.EngagementFinding).where(fm.EngagementFinding.engagement_id == eid)
+            select(fm.BoardFinding).where(fm.BoardFinding.engagement_id == eid)
         )] == [None, None, None], "a refused move must not have moved anything"
 
 
@@ -1374,8 +1374,8 @@ def test_bulk_move_with_a_foreign_finding_id_moves_nothing(client, token, sessio
     assert resp.status_code == 404
     assert resp.get_json() == {"error": "not_found", "detail": "finding not found"}
     with session_factory() as db:
-        assert db.get(fm.EngagementFinding, mine).group_id is None  # the legal one did NOT move
-        assert db.get(fm.EngagementFinding, theirs).group_id is None
+        assert db.get(fm.BoardFinding, mine).group_id is None  # the legal one did NOT move
+        assert db.get(fm.BoardFinding, theirs).group_id is None
 
 
 def test_bulk_move_collapses_duplicate_ids(client, token, session_factory):
@@ -1469,8 +1469,8 @@ def test_bulk_move_refuses_an_unbounded_id_list_and_pre_checks_in_ONE_query(
     # …and nothing moved: the refusal happens before any placement.
     with session_factory() as db:
         assert [f.order_index for f in db.scalars(
-            select(fm.EngagementFinding).where(fm.EngagementFinding.id.in_(real_ids)).order_by(
-                fm.EngagementFinding.id)
+            select(fm.BoardFinding).where(fm.BoardFinding.id.in_(real_ids)).order_by(
+                fm.BoardFinding.id)
         ).all()] == list(range(20))
 
 
@@ -1536,7 +1536,7 @@ def test_delete_group_detaches_its_findings_instead_of_deleting_them(client, tok
     assert resp.get_json()["detached_finding_ids"] == [fid]
     with session_factory() as db:
         assert db.get(fm.FindingGroup, gid) is None
-        survivor = db.get(fm.EngagementFinding, fid)
+        survivor = db.get(fm.BoardFinding, fid)
         assert survivor is not None and survivor.group_id is None
 
 
@@ -1611,7 +1611,7 @@ def test_every_findings_route_denies_a_foreign_finding(client, token, session_fa
     assert resp.status_code == 404, resp.get_json()
     assert resp.get_json() == {"error": "not_found", "detail": "finding not found"}
     with session_factory() as db:
-        survivor = db.get(fm.EngagementFinding, fid)
+        survivor = db.get(fm.BoardFinding, fid)
         assert survivor is not None and survivor.title == "Their finding"
 
 
@@ -1835,9 +1835,9 @@ def test_machine_and_cookie_moves_produce_the_same_board(client, token, session_
     with session_factory() as db:  # reset to the pre-move state for the cookie run
         group = db.get(fm.FindingGroup, gid)
         group.order_mode = OrderMode.auto_severity
-        db.get(fm.EngagementFinding, machine_moved).group_id = None
+        db.get(fm.BoardFinding, machine_moved).group_id = None
         for finding_id, index in ((a, 0), (b, 1)):
-            db.get(fm.EngagementFinding, finding_id).order_index = index
+            db.get(fm.BoardFinding, finding_id).order_index = index
         db.commit()
     assert client.post(f"/scribble/api/findings/{cookie_moved}/move",
                        json={"group_id": gid, "order_index": 1}).status_code == 200

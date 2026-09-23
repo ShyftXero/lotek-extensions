@@ -21,7 +21,7 @@ import io
 import json
 
 from scribble.enums import ArtifactKind, ArtifactPlacement, ReportFormat, Severity
-from scribble.models import Artifact, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_csv import render_report_csv
 from scribble.reporting.render_json import render_report_json
@@ -35,9 +35,9 @@ M = "/scribble/machine"
 
 def _engagement(session_factory) -> int:
     with session_factory() as db:
-        eng = Engagement(name="Export Eng", company_name="Acme Corp", scope_type="external")
+        eng = ReportBoard(name="Export Eng", company_name="Acme Corp", scope_type="external")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=group, title="Weak SMB signing", severity=Severity.high,
             order_index=0, content_json={}, target_host="10.0.0.5", cvss_score=7.5,
         )
@@ -60,7 +60,7 @@ def test_report_format_enum_has_json_and_csv():
 def test_json_export_is_valid_and_carries_the_finding(session_factory):
     eid = _engagement(session_factory)
     with session_factory() as db:
-        doc = json.loads(render_report_json(build_report_context(db.get(Engagement, eid))))
+        doc = json.loads(render_report_json(build_report_context(db.get(ReportBoard, eid))))
     assert doc["engagement"]["name"] == "Export Eng"
     assert doc["rollup"]["overall"] == "high"
     titles = [f["title"] for f in doc["findings"]]
@@ -75,7 +75,7 @@ def test_json_export_is_valid_and_carries_the_finding(session_factory):
 def test_csv_export_is_valid_and_carries_the_finding(session_factory):
     eid = _engagement(session_factory)
     with session_factory() as db:
-        text = render_report_csv(build_report_context(db.get(Engagement, eid)))
+        text = render_report_csv(build_report_context(db.get(ReportBoard, eid)))
     rows = list(csv.DictReader(io.StringIO(text)))
     assert len(rows) == 1
     row = rows[0]
@@ -88,20 +88,20 @@ def test_csv_export_is_valid_and_carries_the_finding(session_factory):
 
 def test_child_finding_nests_in_json_and_flattens_in_csv(session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Nested Eng", company_name="Acme", scope_type="external")
+        eng = ReportBoard(name="Nested Eng", company_name="Acme", scope_type="external")
         group = FindingGroup(engagement=eng, name="Hosts", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=group, title="TLS weakness", severity=Severity.medium,
             order_index=0, content_json={},
         )
         db.add(eng)
         db.flush()  # assigns parent.id (Python-side uuid7 default fires at flush)
-        db.add(EngagementFinding(
+        db.add(BoardFinding(
             engagement=eng, group=group, title="TLS weakness", severity=Severity.medium,
             order_index=1, content_json={}, parent_id=parent.id, target_host="host-b",
         ))
         db.commit()
-        ctx = build_report_context(db.get(Engagement, eng.id))
+        ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     doc = json.loads(render_report_json(ctx))
     top = doc["findings"]
@@ -117,8 +117,8 @@ def test_child_finding_nests_in_json_and_flattens_in_csv(session_factory):
 
 def test_machine_route_streams_json_and_csv(client, stub_host, session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Route Eng", scope_type="external", company_name="Acme")
-        EngagementFinding(
+        eng = ReportBoard(name="Route Eng", scope_type="external", company_name="Acme")
+        BoardFinding(
             engagement=eng, title="Open Redirect", severity=Severity.low, order_index=0,
             content_json={},
         )
@@ -142,7 +142,7 @@ def test_machine_route_streams_json_and_csv(client, stub_host, session_factory):
 
 def test_machine_route_json_of_foreign_engagement_is_404(client, stub_host, session_factory):
     with session_factory() as db:
-        eng = Engagement(name="Foreign", scope_type="external", company_name="Acme", client_id=999)
+        eng = ReportBoard(name="Foreign", scope_type="external", company_name="Acme", client_id=999)
         db.add(eng)
         db.commit()
         eid = eng.id

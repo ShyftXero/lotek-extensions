@@ -16,7 +16,7 @@ import io
 import zipfile
 
 import scribble.reporting.render_html as rh
-from scribble.models import Engagement, normalize_strategic_recommendations
+from scribble.models import ReportBoard, normalize_strategic_recommendations
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 from scribble.reporting.render_html import render_report_html
@@ -24,7 +24,7 @@ from scribble.reporting.render_html import render_report_html
 
 def _engagement(session_factory, recs) -> int:
     with session_factory() as db:
-        eng = Engagement(name="Strategic Case", company_name="Acme Corp", scope_type="external")
+        eng = ReportBoard(name="Strategic Case", company_name="Acme Corp", scope_type="external")
         eng.strategic_recommendations = recs
         db.add(eng)
         db.commit()
@@ -33,7 +33,7 @@ def _engagement(session_factory, recs) -> int:
 
 def _html(session_factory, eid) -> str:
     with session_factory() as db:
-        return render_report_html(build_report_context(db.get(Engagement, eid)))
+        return render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
 
 def _docx_text(data: bytes) -> str:
@@ -80,14 +80,14 @@ def test_removing_the_empty_short_circuit_breaks_backward_compat(session_factory
         rh, "_render_strategic_recommendations", lambda ctx: '<section id="sec-strategic"></section>'
     )
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     assert 'id="sec-strategic"' in html
 
 
 def test_docx_mirrors_the_section(session_factory):
     eid = _engagement(session_factory, ["Fund a security-awareness program"])
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     text = _docx_text(payload)
     assert "Strategic Recommendations" in text
     assert "Fund a security-awareness program" in text
@@ -96,5 +96,5 @@ def test_docx_mirrors_the_section(session_factory):
 def test_docx_without_recommendations_has_no_heading(session_factory):
     eid = _engagement(session_factory, [])
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     assert "Strategic Recommendations" not in _docx_text(payload)

@@ -1,6 +1,6 @@
 """Task V proof: the rewritten lotek vuln-DB templates (scribble/seed/lotek_vulnerabilities.json)
 render real, specific prose end-to-end -- through the REAL promote path (facts -> declared
-TemplateVariable rules -> EngagementFinding.variables), not a hand-built shortcut -- for both HTML and
+TemplateVariable rules -> BoardFinding.variables), not a hand-built shortcut -- for both HTML and
 DOCX, with (a) realistic populated facts and (b) a deliberately empty/absent fact set.
 
 Regression context: an earlier draft of this content wrapped {{DOMAIN}}/{{TARGET_HOST}} in <code> tags
@@ -18,7 +18,7 @@ import re
 import docx
 from docx.oxml.ns import qn
 
-from scribble.models import Engagement, FindingGroup
+from scribble.models import FindingGroup, ReportBoard
 from scribble.promote import promote_one
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
@@ -31,7 +31,7 @@ _EMPTY_TAG_RE = re.compile(r"<(\w+)>\s*</\1>")
 
 def _promote(session_factory, dtos):
     with session_factory() as db:
-        eng = Engagement(name="Proof Co", company_name="Acme")
+        eng = ReportBoard(name="Proof Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Findings", order_index=0)
         db.add(eng)
         db.flush()
@@ -43,7 +43,7 @@ def _promote(session_factory, dtos):
 
 def _render(session_factory, eng_id):
     with session_factory() as db:
-        engagement = db.get(Engagement, eng_id)
+        engagement = db.get(ReportBoard, eng_id)
         ctx = build_report_context(engagement)
         html = render_report_html(ctx)
         docx_bytes = render_report_docx(ctx)
@@ -89,7 +89,7 @@ def test_asrep_kerberoast_certipy_secretsdump_render_with_real_facts(session_fac
     assert not _EMPTY_TAG_RE.search(html)
 
     # A matched ScribbleVulnMap entry promotes with the LIBRARY TEMPLATE's own name (not the raw scan
-    # finding's title) -- see EngagementFinding.from_template.
+    # finding's title) -- see BoardFinding.from_template.
     findings = {f.title: f for f in ctx.groups[0].findings}
     assert findings["AS-REP Roasting"].variables["DOMAIN"] == "cheddarsale.local"
     assert findings["AS-REP Roasting"].variables["AFFECTED"] == "krbtgt_svc, svc_backup"

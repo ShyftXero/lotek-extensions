@@ -19,7 +19,7 @@ import docx
 from docx.oxml.ns import qn
 
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
-from scribble.models import Artifact, Engagement, EngagementFinding, FindingGroup
+from scribble.models import Artifact, BoardFinding, FindingGroup, ReportBoard
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 from scribble.reporting.render_html import render_report_html
@@ -30,9 +30,9 @@ KNOWN_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 def _engagement_with_hashed_evidence(session_factory) -> int:
     with session_factory() as db:
-        eng = Engagement(name="Integrity Eng", company_name="Acme")
+        eng = ReportBoard(name="Integrity Eng", company_name="Acme")
         group = FindingGroup(engagement=eng, name="Web App", order_index=0)
-        EngagementFinding(
+        BoardFinding(
             engagement=eng, group=group, title="A finding", severity=Severity.medium,
             order_index=0, content_json={},
         )
@@ -51,14 +51,14 @@ def _engagement_with_hashed_evidence(session_factory) -> int:
 def test_artifact_ctx_carries_the_sha256(session_factory):
     eid = _engagement_with_hashed_evidence(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     assert ctx.artifacts[0].sha256 == KNOWN_SHA
 
 
 def test_html_evidence_appendix_renders_the_integrity_manifest(session_factory):
     eid = _engagement_with_hashed_evidence(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     assert KNOWN_SHA in html, "the SHA-256 manifest is missing from the report"
     assert "proof.png" in html
     assert "integrity" in html.lower(), "manifest should be labelled, not just a bare hash in a caption"
@@ -67,7 +67,7 @@ def test_html_evidence_appendix_renders_the_integrity_manifest(session_factory):
 def test_docx_evidence_appendix_lists_the_sha256(session_factory):
     eid = _engagement_with_hashed_evidence(session_factory)
     with session_factory() as db:
-        payload = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     text = "".join(
         t.text or "" for t in docx.Document(io.BytesIO(payload)).element.body.iter(qn("w:t"))
     )
@@ -79,6 +79,6 @@ def test_machine_artifact_surfaces_include_sha256(app, session_factory):
 
     eid = _engagement_with_hashed_evidence(session_factory)
     with session_factory() as db, app.test_request_context():
-        artifact = db.get(Engagement, eid).artifacts[0]
+        artifact = db.get(ReportBoard, eid).artifacts[0]
         assert _machine_artifact_dict(artifact)["sha256"] == KNOWN_SHA
         assert _artifact_summary(artifact)["sha256"] == KNOWN_SHA

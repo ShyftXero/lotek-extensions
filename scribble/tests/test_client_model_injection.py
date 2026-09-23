@@ -2,8 +2,8 @@
 (PLAN.md §19, docs/LOTEK_ADOPTION.md §3.1/§3.2) -- the actual write/read sites, not just the resolvers
 unit-tested in ``tests/test_deps.py``.
 
-``Engagement.client_id`` is a soft reference (no FK, no static ``.client`` relationship -- see
-``scribble/models.py::Engagement``): standalone it points at ``scribble_clients``; mounted, it should
+``ReportBoard.client_id`` is a soft reference (no FK, no static ``.client`` relationship -- see
+``scribble/models.py::ReportBoard``): standalone it points at ``scribble_clients``; mounted, it should
 point at the HOST's own client table instead, with nothing ever written to ``scribble_clients``. These
 tests build a tiny stand-in "host" client model + table on the SAME engine (mirroring how Lotek's real
 ``Client`` would be injected) to prove the repoint is real, not a shadow-table sync.
@@ -22,7 +22,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 import scribble
 from scribble.enums import Severity
-from scribble.models import Client, Engagement, EngagementFinding
+from scribble.models import BoardFinding, Client, ReportBoard
 from scribble.seed import seed_defaults
 
 UI = "/scribble"
@@ -46,7 +46,7 @@ class HostClient(_HostBase):
 class HostClientUuid(_HostBase):
     """Stand-in for a Lotek v2 host's ``Client`` model: a UUIDv7 surrogate PK, not a sequential int (see
     plans/v2-rearchitecture-decision.md). Same shared-engine setup as ``HostClient`` above -- this is the
-    exact shape that made ``Engagement.client_id``'s old ``Integer`` column and ``engagement_ui._as_int``
+    exact shape that made ``ReportBoard.client_id``'s old ``Integer`` column and ``engagement_ui._as_int``
     silently drop a v2 host's client link (they assumed every host client id is an int)."""
 
     __tablename__ = "host_clients_uuid"
@@ -89,7 +89,7 @@ def session_factory(app):
 
 def test_engagement_create_resolves_scribbles_own_client_standalone(client, session_factory):
     """No client_model injected (the default): engagement_new's select-or-create writes to
-    scribble_clients, and Engagement.resolve_client reads it back -- the pre-existing behavior,
+    scribble_clients, and ReportBoard.resolve_client reads it back -- the pre-existing behavior,
     unchanged by the refactor (also covered end-to-end in tests/test_board.py)."""
     resp = client.post(
         f"{UI}/engagements/new",
@@ -98,7 +98,7 @@ def test_engagement_create_resolves_scribbles_own_client_standalone(client, sess
     assert resp.status_code == 302
 
     with session_factory() as db:
-        eng = db.query(Engagement).filter_by(name="Standalone Co Pentest").one()
+        eng = db.query(ReportBoard).filter_by(name="Standalone Co Pentest").one()
         resolved = eng.resolve_client(db)
         assert isinstance(resolved, Client)
         assert resolved.name == "Standalone Co"
@@ -110,7 +110,7 @@ def test_engagement_create_resolves_scribbles_own_client_standalone(client, sess
 
 def test_engagement_create_repoints_to_injected_host_client_model(client, session_factory, app):
     """With client_model injected: engagement_new's select-or-create writes to the HOST's table (not
-    scribble_clients), and Engagement.resolve_client reads a HostClient back -- proving a real repoint,
+    scribble_clients), and ReportBoard.resolve_client reads a HostClient back -- proving a real repoint,
     not a scribble_clients shadow sync (docs/LOTEK_ADOPTION.md §3.1, "option a", the clean end-state)."""
     cfg = app.extensions["scribble"]
     cfg.client_model = HostClient
@@ -126,7 +126,7 @@ def test_engagement_create_repoints_to_injected_host_client_model(client, sessio
         # request. Push an app context here to mirror that (client_model()'s RuntimeError guard is a
         # standalone-safety fallback, not something a real read site hits).
         with app.app_context(), session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Hosted Co Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Hosted Co Pentest").one()
             resolved = eng.resolve_client(db)
             assert isinstance(resolved, HostClient)
             assert resolved.name == "Hosted Co"
@@ -158,7 +158,7 @@ def test_engagement_create_reuses_existing_injected_host_client_by_id(client, se
         assert resp.status_code == 302
 
         with app.app_context(), session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Reuse Hosted Co Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Reuse Hosted Co Pentest").one()
             assert eng.client_id == existing_id
             resolved = eng.resolve_client(db)
             assert isinstance(resolved, HostClient)
@@ -191,7 +191,7 @@ def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(
         assert resp.status_code == 302
 
         with app.app_context(), session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Hosted Co v2 Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Hosted Co v2 Pentest").one()
             assert eng.client_id == existing_id, "the UUID client link must NOT be dropped"
             assert isinstance(eng.client_id, uuid.UUID)
             resolved = eng.resolve_client(db)
@@ -204,7 +204,7 @@ def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(
 def test_engagement_create_persists_uuid_owner_id_when_mounted_host_uses_uuid_ids(
     client, session_factory, app
 ):
-    """The other half of the same bug: ``scribble.deps.current_actor_id()`` fed ``Engagement.owner_id``
+    """The other half of the same bug: ``scribble.deps.current_actor_id()`` fed ``ReportBoard.owner_id``
     attribution. Its old ``isinstance(ident, int)`` check silently turned a v2 host's UUID actor id into
     ``None`` -- ``owner_id`` NULL on every mounted create, no error, attribution just gone. Proves it now
     persists as the real UUID, not None."""
@@ -216,7 +216,7 @@ def test_engagement_create_persists_uuid_owner_id_when_mounted_host_uses_uuid_id
         assert resp.status_code == 302
 
         with session_factory() as db:
-            eng = db.query(Engagement).filter_by(name="Attributed v2 Pentest").one()
+            eng = db.query(ReportBoard).filter_by(name="Attributed v2 Pentest").one()
             assert eng.owner_id is not None, "owner_id must not be silently dropped for a UUID actor id"
             assert eng.owner_id == actor_id
             assert isinstance(eng.owner_id, uuid.UUID)
@@ -261,7 +261,7 @@ def _host_severity_enum():
 def test_from_lotek_finding_uses_scribbles_own_severity_standalone(app):
     fake_finding = SimpleNamespace(title="SQLi", severity=SimpleNamespace(value="high"))
     with app.app_context():
-        finding = EngagementFinding.from_lotek_finding(fake_finding)
+        finding = BoardFinding.from_lotek_finding(fake_finding)
     assert finding.severity == Severity.high
     assert isinstance(finding.severity, Severity)
 
@@ -273,7 +273,7 @@ def test_from_lotek_finding_uses_injected_host_severity_when_mounted(app):
     try:
         fake_finding = SimpleNamespace(title="SQLi", severity=SimpleNamespace(value="high"))
         with app.app_context():
-            finding = EngagementFinding.from_lotek_finding(fake_finding)
+            finding = BoardFinding.from_lotek_finding(fake_finding)
         # Value-identical (docs/LOTEK_ADOPTION.md §3.2) so this still equals scribble's own Severity.high
         # by value/hash -- the real assertion is the OBJECT IDENTITY of the constructed enum member.
         assert finding.severity == Severity.high
@@ -287,7 +287,7 @@ def test_from_lotek_finding_defaults_safely_with_no_app_context_at_all():
     """No Flask app pushed at all (e.g. a script driving scribble.models directly): severity_enum()'s
     RuntimeError guard falls back to scribble.enums.Severity rather than raising."""
     fake_finding = SimpleNamespace(title="SQLi", severity=SimpleNamespace(value="critical"))
-    finding = EngagementFinding.from_lotek_finding(fake_finding)
+    finding = BoardFinding.from_lotek_finding(fake_finding)
     assert finding.severity == Severity.critical
     assert isinstance(finding.severity, Severity)
 
@@ -296,7 +296,7 @@ def test_from_lotek_finding_sets_source_finding_id_from_the_lotek_finding():
     """Promoting a Lotek scan finding stamps ``source_finding_id`` from the source's own id, so the
     promote flow can later dedup (has this Lotek finding already been promoted here?)."""
     fake_finding = SimpleNamespace(id=42, title="SQLi", severity=SimpleNamespace(value="high"))
-    finding = EngagementFinding.from_lotek_finding(fake_finding)
+    finding = BoardFinding.from_lotek_finding(fake_finding)
     assert finding.source_finding_id == 42
 
 
@@ -304,5 +304,5 @@ def test_from_lotek_finding_source_finding_id_override_wins():
     """An explicit ``source_finding_id=`` override (e.g. re-pointing at a different id) beats the
     finding's own id, matching the general override-merge pattern of ``from_lotek_finding``."""
     fake_finding = SimpleNamespace(id=42, title="SQLi", severity=SimpleNamespace(value="high"))
-    finding = EngagementFinding.from_lotek_finding(fake_finding, source_finding_id=99)
+    finding = BoardFinding.from_lotek_finding(fake_finding, source_finding_id=99)
     assert finding.source_finding_id == 99

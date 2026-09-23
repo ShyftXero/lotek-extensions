@@ -26,11 +26,11 @@ from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import (
     Artifact,
+    BoardFinding,
     Client,
-    Engagement,
     EngagementDiagram,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
 )
 from scribble.reporting import build_report_context, figure_caption, number_figures
 from scribble.reporting.context import ArtifactCtx, DiagramCtx, FindingCtx, GroupCtx
@@ -99,15 +99,15 @@ def _engagement(session_factory, tmp_path):
         client = Client(name="Acme Co")
         db.add(client)
         db.flush()
-        eng = Engagement(name="TeamsPlus Assessment", client_id=client.id, company_name="Acme Corp")
+        eng = ReportBoard(name="TeamsPlus Assessment", client_id=client.id, company_name="Acme Corp")
         grp = FindingGroup(engagement=eng, name="External", order_index=0)
-        parent = EngagementFinding(
+        parent = BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
             order_index=0, content_json={"description": _block("Reflected XSS on /search.")},
         )
         db.add(eng)
         db.flush()
-        child = EngagementFinding(
+        child = BoardFinding(
             engagement=eng, group=grp, title="Reflected XSS host b", severity=Severity.high,
             order_index=1, parent_id=parent.id,
             content_json={"description": _block("Same issue, host b.")},
@@ -118,7 +118,7 @@ def _engagement(session_factory, tmp_path):
             (parent.id, "alpha.png", "Payload firing in the browser", 0),
             (parent.id, "bravo.png", "Burp request and response", 1),
             (child.id, "charlie.png", "Host b payload", 0),
-            (None, "delta.png", "Engagement wide network capture", 0),
+            (None, "delta.png", "ReportBoard wide network capture", 0),
         ]
         for finding_id, filename, caption, order_index in rows:
             db.add(Artifact(
@@ -152,7 +152,7 @@ def test_html_and_docx_number_the_same_figures_the_same_way(session_factory, tmp
     eng_id, store = _engagement(session_factory, tmp_path)
     reader = _read(store)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx, inline_assets=True, artifact_bytes=reader)
         raw = render_report_docx(ctx, artifact_bytes=reader)
 
@@ -168,7 +168,7 @@ def test_html_and_docx_number_the_same_figures_the_same_way(session_factory, tmp
         "Payload firing in the browser",
         "Burp request and response",
         "Domain compromise chain",
-        "Engagement wide network capture",
+        "ReportBoard wide network capture",
     ]
 
 
@@ -180,7 +180,7 @@ def test_figure_numbers_ascend_down_the_page_in_both_deliverables(session_factor
     eng_id, store = _engagement(session_factory, tmp_path)
     reader = _read(store)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html_numbers = [n for n, _ in _figures(
             render_report_html(ctx, inline_assets=True, artifact_bytes=reader))]
         docx_numbers = [n for n, _ in _figures(
@@ -198,7 +198,7 @@ def test_numbering_does_not_depend_on_whether_the_bytes_embedded(session_factory
     chip and the numbers must be unchanged."""
     eng_id, store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         embedded = _figures(render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store)))
         bare = _figures(render_report_html(ctx))
     assert bare == embedded
@@ -209,7 +209,7 @@ def test_figures_carry_stable_cross_reference_anchors(session_factory, tmp_path)
     derived from the number, so a cross-reference written as ``#fig-3`` lands on Figure 3."""
     eng_id, store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store))
     for n in range(1, 6):
         assert f'id="fig-{n}"' in html, f"no anchor for figure {n}"
@@ -220,7 +220,7 @@ def test_the_attack_path_diagram_is_numbered_in_the_same_sequence(session_factor
     ambiguous — the thing #117 says must not happen."""
     eng_id, store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store))
     assert "Figure 4 — Domain compromise chain" in html
     assert '<figure class="attack-path-item" id="fig-4">' in html
@@ -230,10 +230,10 @@ def test_an_uncaptioned_diagram_is_still_numbered(session_factory, tmp_path):
     """The NUMBER is what body text cross-references, so a blank caption may not skip a figure."""
     eng_id, _store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         eng.diagrams[0].caption = ""
         db.commit()
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx)
     assert "Figure 4 — Attack path" in html
 
@@ -292,10 +292,10 @@ def test_an_uncaptioned_diagram_reads_the_SAME_in_both_deliverables(session_fact
     test file is exactly how that shipped."""
     eng_id, store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         eng.diagrams[0].caption = ""  # the model still carries meta.title = "Acme compromise chain"
         db.commit()
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store))
         raw = render_report_docx(ctx, artifact_bytes=_read(store))
     html_fig = dict(_figures(html))
@@ -310,7 +310,7 @@ def test_every_numbered_figure_has_its_anchor_even_when_the_bytes_are_absent(ses
     a stable anchor."""
     eng_id, _store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         html = render_report_html(ctx)  # no reader: every artifact degrades to a "not embedded" chip
     numbers = [n for n, _ in _figures(html)]
     assert numbers, "expected numbered figures even with nothing embedded"
@@ -328,11 +328,11 @@ def test_an_uncaptioned_figure_reads_the_same_whether_or_not_its_bytes_embedded(
     "over the inlining budget" is a routine reason for the un-embedded path to be the delivered one."""
     eng_id, store = _engagement(session_factory, tmp_path)
     with session_factory() as db:
-        eng = db.get(Engagement, eng_id)
+        eng = db.get(ReportBoard, eng_id)
         for artifact in eng.artifacts:
             artifact.caption = ""  # the operator attached evidence and never typed a caption
         db.commit()
-        ctx = build_report_context(db.get(Engagement, eng_id))
+        ctx = build_report_context(db.get(ReportBoard, eng_id))
         embedded = _figures(render_report_html(ctx, inline_assets=True, artifact_bytes=_read(store)))
         bare = _figures(render_report_html(ctx))
         in_docx = _figures(_docx_text(render_report_docx(ctx, artifact_bytes=_read(store))))

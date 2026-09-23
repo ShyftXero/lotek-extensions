@@ -3,7 +3,7 @@ page and the engagement coverage panel are present and wired to their JS + the A
 
 from __future__ import annotations
 
-from scribble.models import Engagement
+from scribble.models import ReportBoard
 
 
 def test_library_page_renders(client):
@@ -17,7 +17,7 @@ def test_library_page_renders(client):
 
 def test_engagement_page_has_coverage_panel(client, session_factory):
     with session_factory() as db:
-        e = Engagement(name="Panel Eng")
+        e = ReportBoard(name="Panel Eng")
         db.add(e)
         db.commit()
         eid = e.id

@@ -38,11 +38,11 @@ from scribble.enums import (
     severity_rank,
 )
 from scribble.models import (
+    BoardFinding,
     CollabDoc,
-    Engagement,
     EngagementChecklistItem,
-    EngagementFinding,
     FindingGroup,
+    ReportBoard,
     ReportRender,
     Retest,
     VariableValue,
@@ -73,7 +73,7 @@ from scribble.models import (
 #                                            survive), or :func:`flatten_nesting` on the engagement path.
 #   scribble_artifacts.finding_id         -> DELETE, by :func:`delete_finding` itself, which also hands the
 #                                            on-disk paths back to its caller to unlink post-commit.
-#   scribble_finding_tags.finding_id      -> DELETE, by the ORM: ``EngagementFinding.tags`` is a
+#   scribble_finding_tags.finding_id      -> DELETE, by the ORM: ``BoardFinding.tags`` is a
 #                                            ``secondary`` relationship, and SQLAlchemy removes the
 #                                            association rows when the parent goes. VERIFIED, not assumed
 #                                            (``test_delete_finding_clears_every_referring_row``); it is the
@@ -87,13 +87,13 @@ _FINDING_CROSSLINKS = (EngagementChecklistItem,)
 _FINDING_FK_HANDLED_ELSEWHERE = frozenset({
     ("scribble_findings", "parent_id"),          # detach_children / flatten_nesting
     ("scribble_artifacts", "finding_id"),        # delete_finding, explicitly (rows AND files)
-    ("scribble_finding_tags", "finding_id"),     # ORM secondary cascade on EngagementFinding.tags
-    ("scribble_retests", "finding_id"),          # ORM delete-orphan cascade on EngagementFinding.retests
+    ("scribble_finding_tags", "finding_id"),     # ORM secondary cascade on BoardFinding.tags
+    ("scribble_retests", "finding_id"),          # ORM delete-orphan cascade on BoardFinding.retests
 })
 
 # …and the SAME question one table over, asked because asking it about ``scribble_findings`` and stopping
 # there would repeat the exact mistake this enumeration exists to fix. Six columns reference
-# ``scribble_engagements.id``; five are covered by an ``Engagement`` relationship cascading
+# ``scribble_report_boards.id``; five are covered by an ``ReportBoard`` relationship cascading
 # ``delete-orphan`` (groups, findings, artifacts, variable_values, checklists). The sixth,
 # ``scribble_report_renders.engagement_id``, has NO relationship and NO cascade, so a single row made
 # ``POST /engagements/<id>/delete`` an FK violation — reproduced at 500. It is LATENT today (nothing
@@ -114,7 +114,7 @@ def _coerce_uuid(value) -> uuid.UUID | None:
     return _as_uuid(value)
 
 
-def display_order(findings, order_mode: OrderMode) -> list[EngagementFinding]:
+def display_order(findings, order_mode: OrderMode) -> list[BoardFinding]:
     """Board display order for one group's findings.
 
     Mirrors ``reporting/context.py::_order_findings`` (auto_severity = worst-first then order_index;
@@ -127,7 +127,7 @@ def display_order(findings, order_mode: OrderMode) -> list[EngagementFinding]:
     return sorted(items, key=lambda f: (severity_rank(f.severity), f.order_index))
 
 
-def ungrouped_display_order(engagement: Engagement, *, exclude_id: uuid.UUID | None = None) -> list:
+def ungrouped_display_order(engagement: ReportBoard, *, exclude_id: uuid.UUID | None = None) -> list:
     """The ungrouped bucket in the order the board shows it: severity-first, then ``order_index``.
 
     The bucket has no ``order_mode`` of its own (it is not a ``FindingGroup``), which is exactly why this
@@ -160,7 +160,7 @@ def nested_child_ids(findings) -> set[uuid.UUID]:
     return nested
 
 
-def rendered_top_level_count(engagement: Engagement) -> int:
+def rendered_top_level_count(engagement: ReportBoard) -> int:
     """How many findings the REPORT renders at TOP level — the number to quote as "N findings".
 
     A flat count of ``engagement.findings`` is NOT that number: promotion produces a parent per vuln type
@@ -194,7 +194,7 @@ def reindex(items) -> None:
 
 
 def place_finding(
-    finding: EngagementFinding, target_group: FindingGroup | None, requested_index: int
+    finding: BoardFinding, target_group: FindingGroup | None, requested_index: int
 ) -> FindingGroup | None:
     """Move ``finding`` into ``target_group`` (``None`` = the ungrouped bucket) at ``requested_index``.
 
@@ -266,7 +266,7 @@ def place_finding(
     return None if same_group else old_group
 
 
-def reorder_groups(engagement: Engagement, requested_order) -> list[uuid.UUID]:
+def reorder_groups(engagement: ReportBoard, requested_order) -> list[uuid.UUID]:
     """Apply a client-supplied group order to ``engagement``; returns the ids in their new order.
 
     Defensive by design: an id that is unparseable, duplicated, or belongs to another engagement is
@@ -294,7 +294,7 @@ def reorder_groups(engagement: Engagement, requested_order) -> list[uuid.UUID]:
     return ordered_ids
 
 
-def create_group(db, engagement: Engagement, *, name: str, assessment_type=None) -> FindingGroup:
+def create_group(db, engagement: ReportBoard, *, name: str, assessment_type=None) -> FindingGroup:
     """Append a new ``FindingGroup`` to ``engagement`` (last position). Flushed, not committed, so the
     caller can read the assigned PK and still roll the whole request back."""
     group = FindingGroup(
@@ -319,10 +319,10 @@ def delete_group(db, group: FindingGroup) -> None:
     db.delete(group)
 
 
-def detach_children(db, finding: EngagementFinding) -> list[uuid.UUID]:
+def detach_children(db, finding: BoardFinding) -> list[uuid.UUID]:
     """NULL the ``parent_id`` of every finding nested under ``finding``; returns their ids in board order.
 
-    Nothing else clears that column. ``EngagementFinding.parent_id`` is a self-FK with **no** ``ondelete``
+    Nothing else clears that column. ``BoardFinding.parent_id`` is a self-FK with **no** ``ondelete``
     and **no** ORM relationship (the model keeps the self-ref config deliberately trivial), so neither the
     database nor the unit of work detaches a child for us: deleting a parent while a child still points at
     it raises ``IntegrityError`` on SQLite and ``ForeignKeyViolation`` on Postgres, and the whole
@@ -342,9 +342,9 @@ def detach_children(db, finding: EngagementFinding) -> list[uuid.UUID]:
     would make an FK violation an implementation detail away.
     """
     children = db.scalars(
-        select(EngagementFinding)
-        .where(EngagementFinding.parent_id == finding.id)
-        .order_by(EngagementFinding.order_index, EngagementFinding.id)
+        select(BoardFinding)
+        .where(BoardFinding.parent_id == finding.id)
+        .order_by(BoardFinding.order_index, BoardFinding.id)
     ).all()
     for child in children:
         child.parent_id = None
@@ -380,10 +380,10 @@ def clear_finding_referrers(db, finding_ids) -> None:
     db.flush()
 
 
-def prepare_engagement_delete(db, engagement: Engagement) -> None:
+def prepare_engagement_delete(db, engagement: ReportBoard) -> None:
     """Everything that must happen BEFORE ``db.delete(engagement)`` — call this, not the pieces.
 
-    ``Engagement`` cascades ``delete-orphan`` to its groups/findings/artifacts/variable_values/checklists,
+    ``ReportBoard`` cascades ``delete-orphan`` to its groups/findings/artifacts/variable_values/checklists,
     which covers the rows the ORM knows are the engagement's. It does NOT cover a row that references a
     FINDING from outside that graph: a ``CollabDoc`` (no engagement column at all — the live co-editing room
     writes one the moment a human opens a block), a finding-scoped ``VariableValue`` whose ``engagement_id``
@@ -391,8 +391,9 @@ def prepare_engagement_delete(db, engagement: Engagement) -> None:
     order against the findings'. Each of those made ``POST /engagements/<id>/delete`` a 500 — the engagement
     could not be deleted at all, the same shape :func:`flatten_nesting` was added for one referrer earlier.
 
-    It also clears ``_ENGAGEMENT_UNCASCADED`` — the one column referencing ``scribble_engagements.id`` that no
-    relationship covers (see that constant). Latent today, and fixed anyway: the enumeration above would be
+    It also clears ``_ENGAGEMENT_UNCASCADED`` — the one column referencing
+    ``scribble_report_boards.id`` that no relationship covers (see that constant). Latent today, and
+    fixed anyway: the enumeration above would be
     theatre if it were only ever applied to the table that had already bitten us.
 
     So it is one named entry point rather than three calls a future engagement-delete route has to remember,
@@ -405,11 +406,11 @@ def prepare_engagement_delete(db, engagement: Engagement) -> None:
     db.flush()
 
 
-def flatten_nesting(db, engagement: Engagement) -> None:
+def flatten_nesting(db, engagement: ReportBoard) -> None:
     """Clear every ``parent_id`` in ``engagement`` so a cascade delete of the whole engagement is
     ordering-independent.
 
-    ``Engagement.findings`` cascades ``delete-orphan``, and with no ORM relationship on the self-FK (see
+    ``ReportBoard.findings`` cascades ``delete-orphan``, and with no ORM relationship on the self-FK (see
     :func:`detach_children`) SQLAlchemy has no dependency to sort those DELETEs by — it emits them in one
     executemany batch and the child rows' ``parent_id`` FK fails. So deleting an engagement that holds ANY
     promoted aggregation raised ``IntegrityError``/``ForeignKeyViolation``: the engagement could not be
@@ -421,10 +422,10 @@ def flatten_nesting(db, engagement: Engagement) -> None:
     FK would fail anyway.
     """
     db.execute(
-        update(EngagementFinding)
+        update(BoardFinding)
         .where(
-            EngagementFinding.engagement_id == engagement.id,
-            EngagementFinding.parent_id.isnot(None),
+            BoardFinding.engagement_id == engagement.id,
+            BoardFinding.parent_id.isnot(None),
         )
         .values(parent_id=None)
     )
@@ -442,12 +443,12 @@ class DeletedFinding(NamedTuple):
     detached_child_ids: list[uuid.UUID]
 
 
-def delete_finding(db, finding: EngagementFinding) -> DeletedFinding:
+def delete_finding(db, finding: BoardFinding) -> DeletedFinding:
     """Delete a finding AND its artifact rows, DETACHING any children; returns the artifacts'
     ``storage_path``s for the caller to unlink after it commits, plus the detached children's ids.
 
     Unlike :func:`delete_group`, a finding IS its content: deleting it must take its evidence with it.
-    ``EngagementFinding.artifacts`` carries no delete/delete-orphan cascade and ``Artifact.finding_id`` is
+    ``BoardFinding.artifacts`` carries no delete/delete-orphan cascade and ``Artifact.finding_id`` is
     nullable, so a bare ``db.delete(finding)`` would silently NULL out each artifact's ``finding_id``
     (orphaning the row and leaking the file) instead of removing it. The rows go explicitly, here.
 
@@ -486,7 +487,7 @@ _RETEST_OUTCOME_STATUS: dict[RetestOutcome, FindingStatus | None] = {
 
 def record_retest(
     db,
-    finding: EngagementFinding,
+    finding: BoardFinding,
     outcome: RetestOutcome,
     *,
     notes: str | None = None,

@@ -35,7 +35,7 @@ def _engagement(session_factory):
     The conftest `before_insert` listener stamps a distinct `core_engagement_id` on every directly-built
     engagement, so E1 and E2 differ on the exact key `can_operate_on` is asked about."""
     with session_factory() as db:
-        eng = fm.Engagement(name="E", client_id=CLIENT)
+        eng = fm.ReportBoard(name="E", client_id=CLIENT)
         db.add(eng)
         db.commit()
         return eng.id, eng.core_engagement_id
@@ -43,7 +43,7 @@ def _engagement(session_factory):
 
 def _finding_on(session_factory, engagement_id):
     with session_factory() as db:
-        finding = fm.EngagementFinding(engagement_id=engagement_id, title="F", order_index=0)
+        finding = fm.BoardFinding(engagement_id=engagement_id, title="F", order_index=0)
         db.add(finding)
         db.commit()
         return finding.id
@@ -70,7 +70,7 @@ def test_operator_on_sibling_cannot_write_the_other_engagement(client, stub_host
     denied = client.post(f"{M}/engagements/{e2}/groups", json={"name": "Section"})
     assert denied.status_code == 403, denied.get_json()
     with session_factory() as db:
-        assert db.get(fm.Engagement, e2).groups == []
+        assert db.get(fm.ReportBoard, e2).groups == []
 
 
 def test_observer_cannot_write_even_its_own_engagement(client, stub_host, session_factory):
@@ -82,7 +82,7 @@ def test_observer_cannot_write_even_its_own_engagement(client, stub_host, sessio
     denied = client.post(f"{M}/engagements/{e1}/groups", json={"name": "Section"})
     assert denied.status_code == 403, denied.get_json()
     with session_factory() as db:
-        assert db.get(fm.Engagement, e1).groups == []
+        assert db.get(fm.ReportBoard, e1).groups == []
 
 
 def test_operator_on_sibling_can_still_view_the_sibling(client, stub_host, session_factory):
@@ -129,7 +129,7 @@ def test_operate_gate_holds_across_the_resolution_paths(client, stub_host, sessi
     assert landed == [], f"sibling-engagement write(s) were NOT refused 403: {landed}"
 
     with session_factory() as db:
-        e2_row = db.get(fm.Engagement, e2)
+        e2_row = db.get(fm.ReportBoard, e2)
         assert e2_row.findings and e2_row.findings[0].title == "F"  # untouched
         assert e2_row.groups == []
         assert e2_row.risk_override is None

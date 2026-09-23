@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 
 from scribble import checklists as C
-from scribble.models import ChecklistTemplate, Engagement, EngagementFinding
+from scribble.models import BoardFinding, ChecklistTemplate, ReportBoard
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 from scribble.reporting.render_html import render_report_html
@@ -18,10 +18,10 @@ def _template(db, slug):
 
 def _setup(session_factory):
     with session_factory() as db:
-        e = Engagement(name="Report Eng", company_name="Acme")
+        e = ReportBoard(name="Report Eng", company_name="Acme")
         db.add(e)
         db.flush()
-        finding = EngagementFinding(engagement_id=e.id, title="Egress leak to Internet")
+        finding = BoardFinding(engagement_id=e.id, title="Egress leak to Internet")
         db.add(finding)
         db.flush()
         # coverage: mark one item failed + link the finding
@@ -42,7 +42,7 @@ def _setup(session_factory):
 def test_report_context_excludes_reminder(session_factory):
     eid, _ = _setup(session_factory)
     with session_factory() as db:
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     kinds = sorted(c.kind for c in ctx.checklists)
     assert kinds == ["compliance", "coverage"]  # reminder excluded by default
 
@@ -50,18 +50,18 @@ def test_report_context_excludes_reminder(session_factory):
 def test_report_context_toggle_includes_reminder(session_factory):
     eid, _ = _setup(session_factory)
     with session_factory() as db:
-        e = db.get(Engagement, eid)
+        e = db.get(ReportBoard, eid)
         rem = next(c for c in e.checklists if c.kind.value == "reminder")
         rem.include_in_report = True
         db.commit()
-        ctx = build_report_context(db.get(Engagement, eid))
+        ctx = build_report_context(db.get(ReportBoard, eid))
     assert "reminder" in {c.kind for c in ctx.checklists}
 
 
 def test_report_html_renders_coverage_and_attestation(session_factory):
     eid, fid = _setup(session_factory)
     with session_factory() as db:
-        html = render_report_html(build_report_context(db.get(Engagement, eid)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)))
     assert "Methodology and Coverage" in html
     assert "Compliance Attestation" in html
     assert "PCI-DSS" in html  # framework grouping heading
@@ -78,7 +78,7 @@ def test_report_docx_renders_checklists(session_factory):
 
     eid, _ = _setup(session_factory)
     with session_factory() as db:
-        data = render_report_docx(build_report_context(db.get(Engagement, eid)))
+        data = render_report_docx(build_report_context(db.get(ReportBoard, eid)))
     doc = Document(io.BytesIO(data))
     text = "\n".join(p.text for p in doc.paragraphs)
     table_text = "\n".join(c.text for t in doc.tables for row in t.rows for c in row.cells)
@@ -91,9 +91,9 @@ def test_report_docx_renders_checklists(session_factory):
 
 def test_report_html_no_checklists_section_when_none(session_factory):
     with session_factory() as db:
-        e = Engagement(name="Bare", company_name="X")
+        e = ReportBoard(name="Bare", company_name="X")
         db.add(e)
         db.commit()
-        html = render_report_html(build_report_context(db.get(Engagement, e.id)))
+        html = render_report_html(build_report_context(db.get(ReportBoard, e.id)))
     assert "Methodology and Coverage" not in html
     assert "Compliance Attestation" not in html

@@ -1,5 +1,5 @@
 """Promote populates the typed ``references`` (#624) + CVE/CWE/OWASP metadata (#625) columns on
-``EngagementFinding`` (map #616).
+``BoardFinding`` (map #616).
 
 Driven through the REAL machine promote route against ``stub_host`` ``FakeFindingDTO``s — inputs are
 simulated, the promote + merge logic runs for real (EDD: simulate inputs, never outputs).
@@ -55,7 +55,7 @@ def test_unmapped_promote_seeds_scan_refs_and_metadata(client, stub_host, sessio
     assert client.post(f"{M}/engagements/{eid}/promote-job/job-1").get_json()["promoted"] == 1
 
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         # references: scan-sourced, deduped by url.
         assert [(r["url"], r["source"]) for r in row.references] == [("https://scan/x", "scan")]
         # #625 metadata seeded + derived.
@@ -83,8 +83,8 @@ def test_template_match_promote_unions_template_and_scan_refs(
 
     with session_factory() as db:
         child = (
-            db.query(fm.EngagementFinding)
-            .filter(fm.EngagementFinding.engagement_id == eid, fm.EngagementFinding.parent_id.isnot(None))
+            db.query(fm.BoardFinding)
+            .filter(fm.BoardFinding.engagement_id == eid, fm.BoardFinding.parent_id.isnot(None))
             .one()
         )
         by_url = {r["url"]: r["source"] for r in child.references}
@@ -99,7 +99,7 @@ def test_template_match_promote_unions_template_and_scan_refs(
         assert child.cwe_ids == ["CWE-89"]
         assert child.owasp_categories == ["A03:2021"]   # CWE-89 SQLi -> A03
         # the PARENT (built from the template) carries the template refs only.
-        parent = db.get(fm.EngagementFinding, child.parent_id)
+        parent = db.get(fm.BoardFinding, child.parent_id)
         assert {r["url"] for r in parent.references} == {"https://tmpl/a", "https://shared/dup"}
 
 
@@ -117,7 +117,7 @@ def test_repromote_preserves_operator_reference_and_metadata_edits(
 
     # Operator suppresses the scan ref, adds an author ref, and edits cve_ids.
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         row.references = [
             {"label": "one", "url": "https://scan/one", "source": "scan", "suppressed": True},
             {"label": "vendor advisory", "url": "https://vendor/adv", "source": "author",
@@ -131,7 +131,7 @@ def test_repromote_preserves_operator_reference_and_metadata_edits(
     assert body["promoted"] == 0 and body["skipped"] == 1
 
     with session_factory() as db:
-        row = db.query(fm.EngagementFinding).filter_by(engagement_id=eid).one()
+        row = db.query(fm.BoardFinding).filter_by(engagement_id=eid).one()
         assert [r["url"] for r in row.references] == ["https://scan/one", "https://vendor/adv"]
         assert row.references[0]["suppressed"] is True     # operator suppress preserved
         assert row.cve_ids == ["CVE-2020-0001", "CVE-2020-9999"]   # operator edit not clobbered
