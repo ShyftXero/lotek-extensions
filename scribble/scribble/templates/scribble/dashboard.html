@@ -25,7 +25,8 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No engagements yet. The engagement board (drag-and-drop finding groups) lands in WS3.</p>
+  <p class="muted">No reports yet.
+    <a href="{{ url_for('scribble.engagements') }}">Import an engagement</a> to start its finding board.</p>
   {% endif %}
 </div>
 {% endblock %}
