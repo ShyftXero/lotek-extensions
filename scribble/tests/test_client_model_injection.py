@@ -84,66 +84,33 @@ def session_factory(app):
     return app.extensions["scribble"].session_factory
 
 
-# ------------------------------------------------------------------------- client_model: standalone
-
-
-def test_engagement_create_resolves_scribbles_own_client_standalone(client, session_factory):
-    """No client_model injected (the default): engagement_new's select-or-create writes to
-    scribble_clients, and ReportBoard.resolve_client reads it back -- the pre-existing behavior,
-    unchanged by the refactor (also covered end-to-end in tests/test_board.py)."""
-    resp = client.post(
-        f"{UI}/engagements/new",
-        data={"name": "Standalone Co Pentest", "new_client_name": "Standalone Co"},
-    )
-    assert resp.status_code == 302
-
-    with session_factory() as db:
-        eng = db.query(ReportBoard).filter_by(name="Standalone Co Pentest").one()
-        resolved = eng.resolve_client(db)
-        assert isinstance(resolved, Client)
-        assert resolved.name == "Standalone Co"
-        assert db.scalar(select(func.count()).select_from(Client)) == 1
-
-
 # --------------------------------------------------------------------------- client_model: mounted
+#
+# Scribble no longer CREATES clients: the one board-create path (Import-to-Scribble) links a board to a
+# core engagement and DERIVES its client_id from the host's own scoped summary. So the old "select-or-
+# create writes to the host table, not a scribble_clients shadow" tests are gone with the create form
+# they exercised — there is nothing to shadow-sync when scribble writes no client at all. What still
+# matters, and is proven below, is that a host client id (int or UUID) linked via import round-trips
+# through SoftHostId and resolves the real host-table row, and that owner_id (a UUID actor id) persists.
 
 
-def test_engagement_create_repoints_to_injected_host_client_model(client, session_factory, app):
-    """With client_model injected: engagement_new's select-or-create writes to the HOST's table (not
-    scribble_clients), and ReportBoard.resolve_client reads a HostClient back -- proving a real repoint,
-    not a scribble_clients shadow sync (docs/LOTEK_ADOPTION.md §3.1, "option a", the clean end-state)."""
+def _import(client, cfg, *, core_id, name, client_id):
+    """Drive the one create path (Import-to-Scribble) on this unmounted test app: inject the two host
+    hooks import_board reads (the operator gate + the scoped summary it derives name/client from), then
+    POST the core id. Caller pops the two hooks in a finally."""
+    cfg.extras["can_operate_on"] = lambda _id: True
+    cfg.extras["engagement_summaries"] = lambda: [
+        {"id": core_id, "name": name, "client_id": client_id, "client_name": name}
+    ]
+    return client.post(f"{UI}/engagements/import", data={"core_engagement_id": str(core_id)})
+
+
+def test_import_links_an_existing_host_client_by_id(client, session_factory, app):
+    """The core summary carries an existing host client id; import stores it and resolve_client reads the
+    HostClient back, with nothing written to scribble_clients."""
     cfg = app.extensions["scribble"]
     cfg.client_model = HostClient
-    try:
-        resp = client.post(
-            f"{UI}/engagements/new",
-            data={"name": "Hosted Co Pentest", "new_client_name": "Hosted Co"},
-        )
-        assert resp.status_code == 302
-
-        # resolve_client() calls client_model(), which reads the mounted config off `current_app` --
-        # exactly like the real read sites (engagement_board, build_report_context) do from inside a
-        # request. Push an app context here to mirror that (client_model()'s RuntimeError guard is a
-        # standalone-safety fallback, not something a real read site hits).
-        with app.app_context(), session_factory() as db:
-            eng = db.query(ReportBoard).filter_by(name="Hosted Co Pentest").one()
-            resolved = eng.resolve_client(db)
-            assert isinstance(resolved, HostClient)
-            assert resolved.name == "Hosted Co"
-
-            # The real proof this is a REPOINT, not a shadow table: nothing landed in scribble_clients,
-            # and exactly one row landed in the host's own table.
-            assert db.scalar(select(func.count()).select_from(Client)) == 0
-            assert db.scalar(select(func.count()).select_from(HostClient)) == 1
-    finally:
-        cfg.client_model = None
-
-
-def test_engagement_create_reuses_existing_injected_host_client_by_id(client, session_factory, app):
-    """``client_id`` (an existing host client, selected from the dropdown rather than typed as a new
-    name) round-trips through the same select-or-create path when a host model is injected."""
-    cfg = app.extensions["scribble"]
-    cfg.client_model = HostClient
+    core = uuid.uuid7()
     try:
         with session_factory() as db:
             existing = HostClient(name="Existing Hosted Co")
@@ -151,10 +118,7 @@ def test_engagement_create_reuses_existing_injected_host_client_by_id(client, se
             db.commit()
             existing_id = existing.id
 
-        resp = client.post(
-            f"{UI}/engagements/new",
-            data={"name": "Reuse Hosted Co Pentest", "client_id": str(existing_id)},
-        )
+        resp = _import(client, cfg, core_id=core, name="Reuse Hosted Co Pentest", client_id=existing_id)
         assert resp.status_code == 302
 
         with app.app_context(), session_factory() as db:
@@ -164,18 +128,21 @@ def test_engagement_create_reuses_existing_injected_host_client_by_id(client, se
             assert isinstance(resolved, HostClient)
             assert resolved.name == "Existing Hosted Co"
             assert db.scalar(select(func.count()).select_from(HostClient)) == 1
+            assert db.scalar(select(func.count()).select_from(Client)) == 0  # nothing in scribble_clients
     finally:
         cfg.client_model = None
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
-def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(client, session_factory, app):
-    """Lotek v2 host client ids are UUIDs, not ints (see plans/v2-rearchitecture-decision.md). The old
-    ``engagement_ui._as_int(form.get("client_id"))`` parsed a UUID string to ``None`` -- a valid,
-    intentionally-selected client link silently dropped on create. This proves the create form's
-    ``client_id`` field now round-trips a UUID AND that the link is real -- ``resolve_client`` actually
-    resolves the HostClientUuid row, not just an id sitting unresolved in the column."""
+def test_import_links_uuid_client_id_when_mounted_host_uses_uuid_ids(client, session_factory, app):
+    """Lotek v2 host client ids are UUIDs, not ints (see plans/v2-rearchitecture-decision.md). import_board
+    stores ``summ["client_id"]`` through SoftHostId; this proves a UUID client link round-trips (not parsed
+    to ``None``) AND that the link is real -- ``resolve_client`` resolves the HostClientUuid row, not just
+    an id sitting unresolved in the column."""
     cfg = app.extensions["scribble"]
     cfg.client_model = HostClientUuid
+    core = uuid.uuid7()
     try:
         with session_factory() as db:
             existing = HostClientUuid(name="Hosted Co (v2)")
@@ -184,10 +151,7 @@ def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(
             existing_id = existing.id
         assert isinstance(existing_id, uuid.UUID)
 
-        resp = client.post(
-            f"{UI}/engagements/new",
-            data={"name": "Hosted Co v2 Pentest", "client_id": str(existing_id)},
-        )
+        resp = _import(client, cfg, core_id=core, name="Hosted Co v2 Pentest", client_id=existing_id)
         assert resp.status_code == 302
 
         with app.app_context(), session_factory() as db:
@@ -199,20 +163,26 @@ def test_engagement_create_links_uuid_client_id_when_mounted_host_uses_uuid_ids(
             assert resolved.name == "Hosted Co (v2)"
     finally:
         cfg.client_model = None
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
-def test_engagement_create_persists_uuid_owner_id_when_mounted_host_uses_uuid_ids(
-    client, session_factory, app
-):
-    """The other half of the same bug: ``scribble.deps.current_actor_id()`` fed ``ReportBoard.owner_id``
-    attribution. Its old ``isinstance(ident, int)`` check silently turned a v2 host's UUID actor id into
-    ``None`` -- ``owner_id`` NULL on every mounted create, no error, attribution just gone. Proves it now
-    persists as the real UUID, not None."""
+def test_import_persists_uuid_owner_id_when_mounted_host_uses_uuid_ids(client, session_factory, app):
+    """The other half of the same bug: ``scribble.deps.current_actor_id()`` feeds ``ReportBoard.owner_id``
+    attribution on import. Its old ``isinstance(ident, int)`` check silently turned a v2 host's UUID actor
+    id into ``None`` -- ``owner_id`` NULL on every mounted create, no error, attribution just gone. Proves
+    it now persists as the real UUID, not None."""
     cfg = app.extensions["scribble"]
     actor_id = uuid.uuid4()
+    core = uuid.uuid7()
     cfg.extras["current_actor"] = lambda: SimpleNamespace(id=actor_id, username="v2.operator")
+    with session_factory() as db:
+        c = Client(name="Attributed Co")
+        db.add(c)
+        db.commit()
+        cid = c.id
     try:
-        resp = client.post(f"{UI}/engagements/new", data={"name": "Attributed v2 Pentest"})
+        resp = _import(client, cfg, core_id=core, name="Attributed v2 Pentest", client_id=cid)
         assert resp.status_code == 302
 
         with session_factory() as db:
@@ -222,6 +192,8 @@ def test_engagement_create_persists_uuid_owner_id_when_mounted_host_uses_uuid_id
             assert isinstance(eng.owner_id, uuid.UUID)
     finally:
         cfg.extras.pop("current_actor", None)
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
 def test_dashboard_and_health_client_counts_reflect_injected_host_model(client, session_factory, app):

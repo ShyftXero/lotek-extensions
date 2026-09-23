@@ -27,19 +27,21 @@ def test_create_edit_delete_engagement(client, stub_host, session_factory):
         db.commit()
         cid = client_row.id
 
-    # create — owner_id/created_by stamped from the host's current_actor hook
-    resp = client.post(
-        f"{UI}/engagements/new",
-        data={"name": "Physical Assessment", "client_id": str(cid), "scope_type": "physical"},
-    )
+    # create — the ONLY create path is Import-to-Scribble (standalone create is retired). Name + client
+    # DERIVE from the core engagement summary; owner_id/created_by stamp from the host's current_actor.
+    core = uuid.uuid7()
+    stub_host.engagement_summaries_value = [
+        {"id": core, "name": "Physical Assessment", "client_id": cid, "client_name": "Women's Health"}
+    ]
+    resp = client.post(f"{UI}/engagements/import", data={"core_engagement_id": str(core)})
     assert resp.status_code == 302
     with session_factory() as db:
         eng = db.query(fm.ReportBoard).filter_by(name="Physical Assessment").one()
         eid = eng.id
         assert eng.client_id == cid
+        assert eng.core_engagement_id == core
         assert eng.owner_id == stub_host.current_user.id
         assert eng.created_by == stub_host.current_user.username
-        assert eng.scope_type == "physical"
 
     # edit — rename + change status + set strategic recommendations (one per textarea line, blanks dropped)
     resp = client.post(
@@ -111,26 +113,36 @@ def test_delete_cascades_findings(client, stub_host, session_factory):
 # ── viewer read-only nudge (scribble_can_write) ─────────────────────────────────────────────────
 
 
-def test_viewer_nudge_hides_mutating_form(client, stub_host):
-    """A writer sees the create-engagement form; a viewer sees it gated away
-    (`scribble_can_write` False), proving the host's `can_write` injection reaches Scribble's
-    templates. The REAL enforcement (a viewer's POST is refused) is the host's own role gate --
-    already proven end-to-end in the lotek repo."""
+def test_viewer_nudge_hides_import_control(client, stub_host):
+    """A writer sees the Import-to-Scribble control on a not-yet-imported core engagement; a viewer sees
+    it gated away (`scribble_can_write` False), proving the host's `can_write` injection reaches
+    Scribble's templates. The REAL enforcement (a viewer's POST is refused) is the host's own role gate --
+    already proven end-to-end in the lotek repo. (The standalone create form is retired; Import is the
+    only create control.)"""
+    core = uuid.uuid7()
+    stub_host.engagement_summaries_value = [
+        {"id": core, "name": "Importable", "client_id": uuid.uuid7(), "client_name": "C"}
+    ]
     stub_host.can_write_value = True
-    body = client.get(f"{UI}/engagements/new").get_data(as_text=True)
-    assert "Create engagement" in body
+    body = client.get(f"{UI}/engagements").get_data(as_text=True)
+    assert "Import to Scribble" in body
 
     stub_host.can_write_value = False
-    body = client.get(f"{UI}/engagements/new").get_data(as_text=True)
-    assert "Create engagement" not in body
+    body = client.get(f"{UI}/engagements").get_data(as_text=True)
+    assert "Import to Scribble" not in body
 
 
 def test_engagements_list_edit_delete_controls_gated_on_can_write(client, stub_host, session_factory):
+    # The list is a VIEW over core summaries, so a board appears only when a summary carries its core id.
+    core = uuid.uuid7()
     with session_factory() as db:
-        eng = fm.ReportBoard(name="Gated Co", scope_type="external")
+        eng = fm.ReportBoard(name="Gated Co", scope_type="external", core_engagement_id=core)
         db.add(eng)
         db.commit()
         eid = eng.id
+    stub_host.engagement_summaries_value = [
+        {"id": core, "name": "Gated Co", "client_id": uuid.uuid7(), "client_name": "C"}
+    ]
 
     stub_host.can_write_value = True
     body = client.get(f"{UI}/engagements").get_data(as_text=True)

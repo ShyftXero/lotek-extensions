@@ -287,6 +287,13 @@ class StubHost:
         # returns None and every call is a silent no-op, which is exactly how the missing audit rows
         # shipped unnoticed.
         self.audit_calls: list[tuple[str, dict]] = []
+        # Core engagement summaries the Report Boards list proxies (host.engagement_summaries). The real
+        # host scopes this to the principal's visible engagements; the stub just returns what a test sets,
+        # so an ext test drives the list content directly. Each item: {id, name, client_id, client_name}.
+        self.engagement_summaries_value: list[dict] = []
+
+    def engagement_summaries(self) -> list[dict]:
+        return list(self.engagement_summaries_value)
 
     def can_operate_on(self, engagement_id) -> bool:
         """The host's per-engagement OPERATOR gate (`app/extensions.py` injects the real one, built on
@@ -484,6 +491,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     # fail-closed False and refused. Same shape as the missing `objects` field: a harness that claims
     # to mirror the bundle and is one key short.
     cfg.extras["can_operate_on"] = stub.can_operate_on
+    cfg.extras["engagement_summaries"] = stub.engagement_summaries
     # AI seam (core app.ai.stream): a fake streamer so a mounted route can exercise the AI-draft path.
     # Absent this key, draft_api fails closed (503) — that fail-closed path has its own test.
     cfg.extras["ai_stream"] = lambda messages, **_kw: iter(["stub AI draft."])  # noqa: ARG005

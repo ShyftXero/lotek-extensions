@@ -132,7 +132,8 @@ class MockCoreEngagements:
         return engagement_id
 
 
-def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None, verdicts_for_cves=None):
+def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None, verdicts_for_cves=None,
+                   engagement_summaries=None):
     """Fill ``cfg.extras`` with the minimum a host must provide for Scribble to accept a file.
 
     Deliberately ADDITIVE — it never clears keys another harness already set, so a richer stub host can
@@ -150,6 +151,11 @@ def wire_mock_host(cfg, *, actor=None, objects=None, engagements=None, verdicts_
     extras = cfg.extras
     extras["objects"] = objects
     extras["create_engagement"] = engagements.create_engagement
+    # Report Boards list proxies the core engagement list via this hook. Default: none visible (a
+    # standalone Scribble has no core engagements). A test wanting the list populated passes
+    # ``engagement_summaries=[{"id":..,"name":..,"client_id":..,"client_name":..}, ...]``.
+    _summaries = list(engagement_summaries or [])
+    extras.setdefault("engagement_summaries", lambda: _summaries)
     if verdicts_for_cves is not None:
         extras["verdicts_for_cves"] = verdicts_for_cves
     # Deliberately NOT `extras["host"]`. That key is the truthy marker `authz.host_is_mounted()` reads

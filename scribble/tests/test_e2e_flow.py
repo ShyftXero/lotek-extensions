@@ -36,6 +36,7 @@ from scribble.enums import Severity
 from scribble.models import (
     AssessmentType,
     BoardFinding,
+    Client,
     FindingGroup,
     ReportBoard,
     VulnerabilityTemplate,
@@ -90,7 +91,7 @@ def _target_host_block() -> dict:
     }
 
 
-def _make_template(db, name: str, severity: Severity, *, target_host_block: bool = False) -> int:
+def _make_template(db, name: str, severity: Severity, *, target_host_block: bool = False) -> uuid.UUID:
     content = (
         {"description": _target_host_block()}
         if target_host_block
@@ -113,20 +114,22 @@ def flow(client, session_factory, cfg, app):
     artifact bytes it uploaded, so every test below asserts against the SAME arranged state rather
     than re-deriving it (and risking the test and the fixture drifting apart)."""
 
-    # --- 1. client + engagement (POST /engagements/new) -------------------------------------
-    resp = client.post(
-        f"{UI}/engagements/new",
-        data={
-            "name": "E2E Flow ReportBoard",
-            "new_client_name": "E2E Flow Client",
-            "scope_type": "combined",
-            "company_name": "E2E Flow Corp",
-        },
-    )
-    assert resp.status_code == 302
-
+    # --- 1. client + engagement -------------------------------------------------------------
+    # Built directly: standalone UI board-creation is retired (the one create path is now
+    # Import-to-Scribble, which needs a mounted host — covered in test_scribble_list_tenancy /
+    # test_engagement_crud_routes). This fixture only needs the arranged state, not the create UX.
     with session_factory() as db:
-        eng = db.query(ReportBoard).filter_by(name="E2E Flow ReportBoard").one()
+        client_row = Client(name="E2E Flow Client")
+        db.add(client_row)
+        db.flush()
+        eng = ReportBoard(
+            name="E2E Flow ReportBoard",
+            client_id=client_row.id,
+            scope_type="combined",
+            company_name="E2E Flow Corp",
+        )
+        db.add(eng)
+        db.commit()
         eng_id = eng.id
         resolved_client = eng.resolve_client(db)
         assert resolved_client is not None
