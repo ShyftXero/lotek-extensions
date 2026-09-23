@@ -67,8 +67,9 @@ _RECOGNIZED_KEYS = frozenset(_DIRECT_KEYS) | frozenset(_CHILD_RESOLVERS)
 # engagement data, and conflating the two is precisely how `dashboard`/`engagements`/`engagement_new`
 # sat here while enumerating every tenant's engagements and accepting any client id from the form. They
 # are still gate-exempt (nothing for a view-arg resolver to resolve) and are now scoped by their own
-# means -- `authz.filter_visible_engagements` and `engagement_ui._resolve_client`, proven in
-# `tests/test_scribble_list_tenancy.py`.
+# means -- the dashboard/list by `authz.filter_visible_engagements` (over the host's scoped
+# `engagement_summaries`), and `import_board` by a direct `host.can_operate_on` on the supplied CORE id
+# -- proven in `tests/test_scribble_list_tenancy.py`.
 #
 # The rest are genuinely tenant-free: every route on a library-wide table shared across all tenants
 # (VulnerabilityTemplate/ChecklistTemplate/AssessmentType) rather than one engagement's data. Plus the
@@ -82,6 +83,11 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         "scribble.dashboard",
         "scribble.engagements",
         "scribble.engagement_new",
+        # Import-to-Scribble (the one create path): POST carries a CORE engagement id in the body, not a
+        # scribble board id, so the view-arg gate has nothing to resolve. Tenancy is a direct
+        # `host.can_operate_on(core_id)` inside the route (every failure collapsed to one 404) — proven in
+        # `tests/test_scribble_list_tenancy.py::test_import_refuses_an_engagement_the_actor_cannot_operate`.
+        "scribble.import_board",
         # Reverse-link resolver: keyed on a CORE engagement id (core_id), authorized by the HOST seam
         # (host.can_operate_on) and collapsing every failure to one 404 — not scoped by a scribble
         # board id, so it is declared non-scoped here (lotek-extensions #227).
@@ -158,7 +164,7 @@ def _http_methods(rule) -> list[str]:
     return sorted((rule.methods or set()) - {"HEAD", "OPTIONS"})
 
 
-def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
+def _make_tree(session_factory, app, client_id: uuid.UUID) -> dict[str, uuid.UUID | str]:
     """One fully-linked engagement + one child row of every kind the gate resolves, all under
     `client_id`. Returns ``{view_arg_name: id}``.
 
@@ -222,7 +228,7 @@ def _make_tree(session_factory, app, client_id: int) -> dict[str, int]:
         }
 
 
-def _build_url(app, rule, ids: dict[str, int]) -> str:
+def _build_url(app, rule, ids: dict[str, uuid.UUID | str]) -> str:
     values = {}
     for arg in rule.arguments:
         if arg in ids:
@@ -368,7 +374,7 @@ def test_every_scoped_route_write_blocks_a_writeless_viewer(app, stub_host, sess
 # ── explicit per-class DENY/ALLOW tests (the named routes from the audit) ───────────────────────────
 
 
-def _make_engagement(session_factory, *, client_id) -> int:
+def _make_engagement(session_factory, *, client_id) -> uuid.UUID:
     with session_factory() as db:
         eng = fm.ReportBoard(name="Named-route target", client_id=client_id)
         db.add(eng)

@@ -83,50 +83,65 @@ def _make_group(
 # ------------------------------------------------------------------------------- engagement CRUD
 
 
-def test_create_engagement_with_new_client(client, session_factory):
-    resp = client.post(
-        f"{UI}/engagements/new",
-        data={
-            "name": "New Co Pentest",
-            "new_client_name": "New Co",
-            "scope_type": "external",
-            "company_name": "New Co Inc",
-        },
+def _import(client, cfg, summaries):
+    """Drive the ONE create path (Import-to-Scribble) on an unmounted test app: inject the two host hooks
+    import_board consults (the operator gate + the scoped summaries it derives name/client from). Returns
+    a `post(core_id)` callable; caller pops the hooks in a finally."""
+    cfg.extras["can_operate_on"] = lambda _id: True
+    cfg.extras["engagement_summaries"] = lambda: summaries
+    return lambda core_id: client.post(
+        f"{UI}/engagements/import", data={"core_engagement_id": str(core_id)}
     )
-    assert resp.status_code == 302
 
+
+def test_import_creates_a_board_from_a_core_engagement(client, session_factory, app):
+    """Import-to-Scribble is the ONE create path (standalone UI create is retired): name + client DERIVE
+    from the core engagement summary, never a form field, so a board can't be an orphan."""
+    cfg = app.extensions["scribble"]
+    core = uuid.uuid7()
     with session_factory() as db:
-        eng = db.query(ReportBoard).filter_by(name="New Co Pentest").one()
-        resolved_client = eng.resolve_client(db)
-        assert resolved_client is not None
-        assert resolved_client.name == "New Co"
-        assert eng.company_name == "New Co Inc"
-        assert eng.scope_type == "external"
+        c = Client(name="New Co")
+        db.add(c)
+        db.commit()
+        cid = c.id
+    post = _import(
+        client, cfg, [{"id": core, "name": "New Co Pentest", "client_id": cid, "client_name": "New Co"}]
+    )
+    try:
+        assert post(core).status_code == 302
+        with session_factory() as db:
+            eng = db.query(ReportBoard).filter_by(name="New Co Pentest").one()
+            assert eng.client_id == cid
+            assert eng.core_engagement_id == core
+            assert eng.resolve_client(db).name == "New Co"
+    finally:
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
-def test_create_engagement_with_existing_client_allows_concurrent_engagements(client, session_factory):
+def test_import_allows_concurrent_boards_under_one_client(client, session_factory, app):
+    """Two core engagements under one client -> two report boards. The 1:1 rule is board:core-engagement,
+    not board:client, so a client can carry many boards."""
+    cfg = app.extensions["scribble"]
     with session_factory() as db:
         existing = Client(name="Existing Co")
         db.add(existing)
         db.commit()
         existing_id = existing.id
-
-    client.post(f"{UI}/engagements/new", data={"name": "First ReportBoard", "client_id": str(existing_id)})
-    resp = client.post(
-        f"{UI}/engagements/new", data={"name": "Second ReportBoard", "client_id": str(existing_id)}
-    )
-    assert resp.status_code == 302
-
-    with session_factory() as db:
-        count = db.query(ReportBoard).filter_by(client_id=existing_id).count()
-    assert count == 2
-
-
-def test_create_engagement_requires_name(client, session_factory):
-    resp = client.post(f"{UI}/engagements/new", data={"name": ""})
-    assert resp.status_code == 400
-    with session_factory() as db:
-        assert db.query(ReportBoard).count() == 0
+    core_a, core_b = uuid.uuid7(), uuid.uuid7()
+    post = _import(client, cfg, [
+        {"id": core_a, "name": "First ReportBoard", "client_id": existing_id, "client_name": "Existing Co"},
+        {"id": core_b, "name": "Second ReportBoard", "client_id": existing_id, "client_name": "Existing Co"},
+    ])
+    try:
+        assert post(core_a).status_code == 302
+        assert post(core_b).status_code == 302
+        with session_factory() as db:
+            count = db.query(ReportBoard).filter_by(client_id=existing_id).count()
+        assert count == 2
+    finally:
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
 def test_engagement_board_404_for_missing_engagement(client):
@@ -1113,31 +1128,11 @@ def test_delete_finding_ungrouped_has_no_artifacts_is_a_noop_delete(client, sess
 # ------------------------------------------------------------------------------- created_by threading
 
 
-def test_engagement_created_by_none_without_host_hook(client, session_factory):
-    resp = client.post(
-        f"{UI}/engagements/new",
-        data={"name": "No Host Co Pentest", "new_client_name": "No Host Co"},
-    )
-    assert resp.status_code == 302
-    with session_factory() as db:
-        eng = db.query(ReportBoard).filter_by(name="No Host Co Pentest").one()
-        assert eng.created_by is None
-
-
-def test_engagement_created_by_set_from_host_current_actor_hook(client, session_factory, app):
-    cfg = app.extensions["scribble"]
-    cfg.extras["current_actor"] = lambda: SimpleNamespace(username="j.analyst")
-    try:
-        resp = client.post(
-            f"{UI}/engagements/new",
-            data={"name": "Hosted Co Pentest", "new_client_name": "Hosted Co"},
-        )
-        assert resp.status_code == 302
-        with session_factory() as db:
-            eng = db.query(ReportBoard).filter_by(name="Hosted Co Pentest").one()
-            assert eng.created_by == "j.analyst"
-    finally:
-        cfg.extras.pop("current_actor", None)
+# Engagement-level created_by/owner attribution now lives on the Import-to-Scribble create path and is
+# proven there (test_engagement_crud_routes.test_create_edit_delete_engagement asserts both stamped from
+# the host actor; test_client_model_injection proves the UUID owner_id round-trip). The shared
+# current_actor helper's resilience (missing / raising hook -> None, write still succeeds) is proven by
+# the finding tests below, which call the very same helper.
 
 
 def test_finding_created_by_none_without_host_hook(client, session_factory):
@@ -1173,16 +1168,22 @@ def test_finding_created_by_set_from_host_current_actor_hook(client, session_fac
 
 def test_created_by_none_when_current_actor_hook_raises(client, session_factory, app):
     cfg = app.extensions["scribble"]
+    core = uuid.uuid7()
+    with session_factory() as db:
+        c = Client(name="Flaky Host Co")
+        db.add(c)
+        db.commit()
+        cid = c.id
 
     def boom():
         raise RuntimeError("host session backend down")
 
     cfg.extras["current_actor"] = boom
+    post = _import(client, cfg, [
+        {"id": core, "name": "Flaky Host Co Pentest", "client_id": cid, "client_name": "Flaky Host Co"}
+    ])
     try:
-        resp = client.post(
-            f"{UI}/engagements/new",
-            data={"name": "Flaky Host Co Pentest", "new_client_name": "Flaky Host Co"},
-        )
+        resp = post(core)
         assert resp.status_code == 302
         with session_factory() as db:
             eng = db.query(ReportBoard).filter_by(name="Flaky Host Co Pentest").one()
@@ -1190,6 +1191,8 @@ def test_created_by_none_when_current_actor_hook_raises(client, session_factory,
             assert eng.created_by is None
     finally:
         cfg.extras.pop("current_actor", None)
+        cfg.extras.pop("can_operate_on", None)
+        cfg.extras.pop("engagement_summaries", None)
 
 
 # ------------------------------------------------------------------------------- scribble_can_write gating
@@ -1249,15 +1252,9 @@ def test_board_hides_mutating_controls_for_read_only_viewer(client, session_fact
         cfg.extras.pop("can_write", None)
 
 
-def test_engagement_new_form_hidden_for_read_only_viewer(client, app):
-    cfg = app.extensions["scribble"]
-    cfg.extras["can_write"] = lambda: False
-    try:
-        body = client.get(f"{UI}/engagements/new").data.decode()
-        assert "You have read-only access" in body
-        assert "Create engagement" not in body
-    finally:
-        cfg.extras.pop("can_write", None)
+# The standalone create form is retired (engagement_new redirects to the list). Its read-only gate moved
+# to the Import-to-Scribble control on the Report Boards list, proven in
+# test_engagement_crud_routes.test_viewer_nudge_hides_import_control.
 
 
 def test_finding_meta_form_disabled_for_read_only_viewer(client, session_factory, app):
