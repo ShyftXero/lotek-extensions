@@ -6,6 +6,16 @@
   {% if error %}<p class="scribble-form-error">{{ error }}</p>{% endif %}
   {% if scribble_can_write %}
   <form method="post" class="scribble-stack-form">
+    {# Reverse link (lotek#632 pair): the core engagement's "Report board" button lands here with
+       ?core_engagement_id=… when no board exists yet. Carry it through so the POST LINKS the new
+       board to that existing engagement instead of creating a second one. request.values is the ONE
+       source (covers both the GET query param and a POST re-render after a validation error), so the
+       route needs to pass nothing extra. #}
+    {% set linked_core = request.values.get('core_engagement_id') %}
+    {% if linked_core %}
+    <input type="hidden" name="core_engagement_id" value="{{ linked_core }}" />
+    <p class="muted">Linking this report board to an existing lotek engagement.</p>
+    {% endif %}
     <label>Name
       <input type="text" name="name" placeholder="Acme Q3 External Assessment" required autofocus />
     </label>
@@ -27,7 +37,7 @@
     </div>
 
     <div class="scribble-form-row">
-      <label>Company name <span class="muted">({{ '{{COMPANY_NAME}}' }})</span>
+      <label>Company name <span class="muted">fills the {{ '{{COMPANY_NAME}}' }} report placeholder</span>
         <input type="text" name="company_name" placeholder="Defaults to the client name" />
       </label>
       <label>Scope type
