@@ -52,6 +52,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "cover",
     "toc",
     "summary",
+    "rollups",
     "findings",
     "diagrams",
     "chains",
@@ -82,8 +83,8 @@ class ReportLayout:
 # ``evidence`` sits LAST: it is an appendix of engagement-level material, so it belongs after everything
 # else rather than interrupting it.
 _STANDARD_BLOCKS = (
-    "cover", "toc", "summary", "findings", "diagrams", "chains", "retest", "strategic", "methodology",
-    "evidence",
+    "cover", "toc", "summary", "rollups", "findings", "diagrams", "chains", "retest", "strategic",
+    "methodology", "evidence",
 )
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
@@ -95,7 +96,7 @@ _LAYOUTS: tuple[ReportLayout, ...] = (
     ReportLayout(
         "compliance",
         "Compliance-first",
-        ("cover", "toc", "summary", "methodology", "findings", "diagrams", "chains", "retest",
+        ("cover", "toc", "summary", "methodology", "rollups", "findings", "diagrams", "chains", "retest",
          "strategic", "evidence"),
     ),
 )

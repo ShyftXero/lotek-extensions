@@ -98,6 +98,7 @@ _BLOCK_ORDER = ("description", "remediation", "details", "reproduction")
 # link into an empty anchor, which is why the on-screen toolbar must not offer them at all.
 _NAV_LABELS = {
     "summary": "Summary",
+    "rollups": "By Vulnerability",
     "findings": "Findings",
     "diagrams": "Attack Paths",
     "chains": "Attack Chains",
@@ -1509,6 +1510,78 @@ def _render_chains(ctx: ReportContext) -> str:
     )
 
 
+def _render_rollups(ctx: ReportContext) -> str:
+    """By-vulnerability / by-host rollup block (finding-grouping Phase 1b): the SAME grouped views the
+    board shows, over the REPORT-VISIBLE findings, so a fleet-wide vulnerability (self-signed cert,
+    EternalBlue, LLMNR) reads as one row with a host count instead of one card per host.
+
+    Static tables on purpose — this is the print/PDF deliverable, so a JS-only toggle (as on the board)
+    would vanish from the PDF. Jump links live in the exec-summary "Findings at a glance" index; these
+    tables ADD the aggregation the index lacks, so they carry no in-doc anchors (which would dangle on a
+    nested per-host child anyway). Reuses the themed ``.index`` table styling — no new CSS, theme-aware
+    and print-safe for free. Returns ``""`` when both rollups are empty (the seam returns [] off-mount,
+    e.g. the offline render tests) — combined with ``_render_document``'s empty-block filter, a report
+    with no grouping data renders BYTE-IDENTICALLY to before this block existed."""
+    if not ctx.findings_by_kind and not ctx.findings_by_host:
+        return ""
+
+    def _sev_pill(sev: str) -> str:
+        return f'<span class="sev-tag sev-{_esc(sev)}">{_esc(_SEV_LABELS.get(sev, sev))}</span>'
+
+    def _cves(cves) -> str:
+        return ", ".join(_esc(c) for c in cves) or "—"
+
+    kind_tbl = ""
+    if ctx.findings_by_kind:
+        rows = "".join(
+            "<tr>"
+            f'<td class="rl-vuln">{_esc(b.label)}</td>'
+            f'<td class="rl-sev">{_sev_pill(b.severity)}</td>'
+            f'<td class="rl-num" style="text-align:right">{len(b.hosts)}</td>'
+            f'<td class="rl-hosts">{", ".join(_esc(h) for h in b.hosts) or "—"}</td>'
+            f'<td class="rl-cve">{_cves(b.cves)}</td>'
+            "</tr>"
+            for b in ctx.findings_by_kind
+        )
+        kind_tbl = (
+            '<div class="index-wrap"><div class="cap">Findings by vulnerability</div>'
+            '<table class="index"><thead><tr><th>Vulnerability</th><th>Severity</th>'
+            '<th style="text-align:right">Hosts</th><th>Affected hosts</th><th>CVEs</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+        )
+
+    host_tbl = ""
+    if ctx.findings_by_host:
+        rows = "".join(
+            "<tr>"
+            f'<td class="rl-host">{_esc(b.key)}</td>'
+            f'<td class="rl-sev">{_sev_pill(b.severity)}</td>'
+            f'<td class="rl-num" style="text-align:right">{b.count}</td>'
+            f'<td class="rl-vulns">'
+            f'{", ".join(_esc(v) for v in sorted({it.label for it in b.items})) or "—"}</td>'
+            f'<td class="rl-cve">{_cves(b.cves)}</td>'
+            "</tr>"
+            for b in ctx.findings_by_host
+        )
+        host_tbl = (
+            '<div class="index-wrap"><div class="cap">Findings by host</div>'
+            '<table class="index"><thead><tr><th>Host</th><th>Severity</th>'
+            '<th style="text-align:right">Vulns</th><th>Vulnerabilities</th><th>CVEs</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+        )
+
+    n = len(ctx.findings_by_kind)
+    return (
+        '<section class="sec group" id="sec-rollups">'
+        '<h2 class="sec-h">Findings by Vulnerability <span class="chev">▾</span>'
+        f'<span class="count">{n} vulnerabilit{"y" if n == 1 else "ies"}</span></h2>'
+        '<div class="sec-body"><p class="muted evidence-intro">The same findings grouped by vulnerability '
+        'and by host — a fleet-wide issue collapses to one row spanning every affected host. Full details '
+        'are in the findings below.</p>'
+        f"{kind_tbl}{host_tbl}</div></section>"
+    )
+
+
 def _render_retest_closeout(ctx: ReportContext) -> str:
     """Retest Closeout block (#622): a finding → most-recent retest outcome table, so a reader sees the
     remediation state of the engagement in one place.
@@ -1698,6 +1771,11 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
     for key in blocks:
         if key == "summary":
             entries.append((1, "sec-summary", "Executive Summary", ""))
+        elif key == "rollups":
+            # Same condition as _render_rollups's render/short-circuit, so the TOC entry appears iff the
+            # section does (test_report_cover_and_toc pins this completeness against the rendered doc).
+            if ctx.findings_by_kind or ctx.findings_by_host:
+                entries.append((1, "sec-rollups", "Findings by Vulnerability", ""))
         elif key == "findings":
             for group in ctx.groups:
                 entries.append((1, _group_anchor(group), group.name, ""))
@@ -1769,6 +1847,8 @@ def _render_block_by_key(
         return _render_toc(ctx, blocks)
     if key == "summary":
         return _render_summary(ctx)
+    if key == "rollups":
+        return _render_rollups(ctx)
     if key == "findings":
         return (
             f"{_render_filter_bar(ctx)}\n"
