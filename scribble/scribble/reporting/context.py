@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import object_session
 
-from scribble import findings_service, metadata
+from scribble import finding_grouping_adapter, findings_service, host, metadata
 from scribble.content import render_html
 from scribble.enums import (
     DISPOSITION_LIVE,
@@ -292,6 +292,16 @@ class ReportContext:
     # authored judgement, never a silent replacement (see render_html._render_summary / render_docx).
     risk_override: str | None = None
     risk_override_rationale: str | None = None
+    # ADDITIVE (finding-grouping Phase 1b): the by-vulnerability / by-host rollups of the
+    # REPORT-VISIBLE findings, bucketed through the ONE shared core bucketer via the host seam
+    # (`host.group_findings` -> `app.finding_grouping`) — the SAME grouping the board shows, so the
+    # deliverable and the board can't drift. Each is a list of core `Bucket` objects. Defaults empty:
+    # the seam returns [] off-mount (the ~20 offline render tests), and `render_html`'s rollup block
+    # omits-when-empty, so an unmounted render is BYTE-IDENTICAL to before this field existed. Built over
+    # the visible/ordered ORM findings (NOT `engagement.findings`) so excluded findings never leak into
+    # the client rollup, then `flatten_for_grouping` drops promotion shell-parents.
+    findings_by_kind: list = field(default_factory=list)
+    findings_by_host: list = field(default_factory=list)
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -764,6 +774,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
 
     groups_out: list[GroupCtx] = []
     counts: dict[Severity, int] = {}
+    # The report-visible ORM findings, accumulated as they are ordered per group (and ungrouped), to
+    # feed the by-vulnerability / by-host rollups below. Report-visible ONLY (excluded groups/findings
+    # never enter here), unlike the board which groups ALL of engagement.findings.
+    visible_findings: list = []
 
     disposition_counts: dict[str, int] = {d: 0 for d in DISPOSITIONS}
 
@@ -787,6 +801,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         if not group.include_in_report:
             continue
         ordered = _order_findings(group.findings, group.order_mode)
+        visible_findings.extend(ordered)
         _tally(ordered)
         _tally_dispositions(group.findings)
         at = group.assessment_type
@@ -811,6 +826,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         # existed, ``ungrouped`` being non-empty implied that; now a bucket holding nothing but
         # false positives would render an empty "Ungrouped" heading in a client deliverable.
         if ordered:
+            visible_findings.extend(ordered)
             _tally(ordered)
             groups_out.append(
                 GroupCtx(
@@ -849,6 +865,16 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     # links never dangle and a per-host child is not a separate line) — collect those ids from the
     # assembled groups rather than re-deriving the nesting rule.
     rendered_finding_ids = {f.id for g in groups_out for f in g.findings}
+    # By-vulnerability / by-host rollups of the REPORT-VISIBLE findings (finding-grouping Phase 1b),
+    # through the SAME core bucketer the board uses (host seam -> app.finding_grouping), so the two
+    # surfaces group identically. flatten_for_grouping drops promotion shell-parents, keeping the
+    # per-host children. [] off-mount -> render_html's rollup block omits (byte-identical).
+    group_rows = [
+        finding_grouping_adapter.board_finding_to_group_row(f)
+        for f in findings_service.flatten_for_grouping(visible_findings)
+    ]
+    findings_by_kind = host.group_findings(group_rows, by="kind")
+    findings_by_host = host.group_findings(group_rows, by="host")
     return ReportContext(
         engagement_id=engagement.id,
         engagement_name=engagement.name,
@@ -872,4 +898,6 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         # None when unset; the renderers keep ``rollup.overall`` as the honest computed band.
         risk_override=engagement.risk_override.value if engagement.risk_override else None,
         risk_override_rationale=engagement.risk_override_rationale,
+        findings_by_kind=findings_by_kind,
+        findings_by_host=findings_by_host,
     )
