@@ -47,7 +47,7 @@
         <option value="{{ g }}">{{ g }}</option>
         {% endfor %}
       </select>
-      <select name="assessment_type_id">
+      <select name="assessment_type_id" aria-label="Assessment type for this group">
         <option value="">No assessment type</option>
         {% for at in assessment_types %}
         <option value="{{ at.id }}">{{ at.name }}</option>
@@ -61,13 +61,13 @@
     {% if templates %}
     <form method="post" action="{{ url_for('scribble.add_finding', engagement_id=engagement.id) }}"
           class="scribble-inline-form">
-      <select name="template_id" required>
+      <select name="template_id" required aria-label="Finding template">
         <option value="" disabled selected>Choose a template…</option>
         {% for t in templates %}
         <option value="{{ t.id }}">{{ t.name }} ({{ t.default_severity.value }})</option>
         {% endfor %}
       </select>
-      <select name="group_id">
+      <select name="group_id" aria-label="Add finding to group">
         <option value="">Ungrouped</option>
         {% for g in engagement.groups %}
         <option value="{{ g.id }}">{{ g.name }}</option>
@@ -114,7 +114,7 @@
   </ul>
   {% if scribble_can_write %}
   <div class="scribble-attack-link">
-    <select id="scribble-diagram-select"><option value="">Loading Vector diagrams…</option></select>
+    <select id="scribble-diagram-select" aria-label="Attack-path diagram to link"><option value="">Loading Vector diagrams…</option></select>
     <input type="text" id="scribble-diagram-caption" placeholder="Caption (optional)" />
     <button type="button" class="btn" id="scribble-diagram-link-btn">Link diagram</button>
     <span id="scribble-diagram-link-msg" class="muted"></span>
@@ -179,7 +179,7 @@
 <div class="scribble-bulk-bar" id="scribble-bulk-bar" hidden>
   <span class="scribble-bulk-count"><strong id="scribble-bulk-n">0</strong> selected</span>
   <label>Move to
-    <select class="scribble-bulk-group" id="scribble-bulk-group">
+    <select class="scribble-bulk-group" id="scribble-bulk-group" aria-label="Move selected findings to group">
       {% for entry in board_groups %}<option value="{{ entry.group.id }}">{{ entry.group.name }}</option>{% endfor %}
       <option value="">Ungrouped</option>
     </select>
