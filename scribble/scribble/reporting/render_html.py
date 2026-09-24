@@ -1034,55 +1034,72 @@ def _index_ids_cell(ids: list) -> str:
 
 
 def _findings_index(ctx: ReportContext) -> str:
-    """A scan-then-jump index of every top-level finding (severity · title→its card · host · [status] ·
-    [CWE] · [CVE] · CVSS), in board order. Nested children stay out of this list, matching the finding
-    cards below.
+    """A scan-then-jump index for the executive summary — ONE ROW PER VULNERABILITY (grouped by title),
+    not per host. A fleet-wide issue (default creds on 27 hosts, self-signed certs) is a single line with
+    a host COUNT, linking to its finding card; the per-host detail lives in the finding cards below and in
+    the By-host rollup. Listing every host here made the "at a glance" index 400+ rows / ~18k px on a real
+    engagement — the opposite of at-a-glance.
 
-    Every optional column is omit-when-empty and independent of the others: the Status column (lotek#618)
-    appears only when SOMETHING has a status worth printing, and the CWE/CVE columns + KEV flag (#625's
-    skimmable metadata — OWASP/EPSS stay chip-only per #625 Q3, to keep the index narrow) only when at
-    least one rendered finding carries that data. So an untriaged, unenriched report's index is
-    BYTE-IDENTICAL to before either feature existed (the omit-when-empty invariant, #625 Q4), while a
-    report that has the data gains exactly the columns it needs."""
+    Grouped locally by title (not the seam), so it behaves identically mounted or offline. Worst severity
+    per vulnerability, worst-first. CVE column is omit-when-empty (union of the group's CVEs); a report
+    with no CVE data renders the two-column index."""
     findings = [f for group in ctx.groups for f in group.findings]
     if not findings:
         return ""
-    show_status = any(f.status_label for f in findings)
-    show_cwe = any(f.cwe_ids for f in findings)
-    show_cve = any(f.cve_ids or (f.threat_intel and f.threat_intel.get("kev")) for f in findings)
-    rows = []
+    order = list(_SEV_LABELS)  # ["critical", "high", ... "info"]
+
+    def _rank(sev: str) -> int:
+        return order.index(sev) if sev in order else len(order)
+
+    class _Kind:
+        __slots__ = ("sev", "hosts", "cves", "kev", "id")
+
+        def __init__(self, sev: str, fid) -> None:
+            self.sev = sev
+            self.hosts: set[str] = set()
+            self.cves: set[str] = set()
+            self.kev = False
+            self.id = fid
+
+    grouped: dict[str, _Kind] = {}
     for f in findings:
+        g = grouped.get(f.title)
+        if g is None:
+            g = grouped[f.title] = _Kind(f.severity, f.id)
+        if _rank(f.severity) < _rank(g.sev):
+            g.sev = f.severity  # keep the worst severity seen for this vulnerability
         host = f.target_host or ""
         if host and f.target_port:
             host = f"{host}:{f.target_port}"
         if not host and f.target_url:
             host = f.target_url
-        cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
-        sev, sev_label = _esc(f.severity), _esc(f.severity.title())
+        if host:
+            g.hosts.add(host)
+        for c in (f.cve_ids or []):
+            g.cves.add(c)
+        if f.threat_intel and f.threat_intel.get("kev"):
+            g.kev = True
+
+    ordered = sorted(grouped.items(), key=lambda kv: (_rank(kv[1].sev), kv[0].lower()))
+    show_cve = any(g.cves or g.kev for _, g in ordered)
+    rows = []
+    for title, g in ordered:
+        sev = _esc(g.sev)
+        sev_label = _esc(_SEV_LABELS.get(g.sev, g.sev.title()))
+        n = len(g.hosts)
         cells = [
             f'<td class="ix-sev"><span class="sev-tag sev-{sev}">{sev_label}</span></td>',
-            f'<td class="ix-title"><a href="#finding-{f.id}">{_esc(f.title)}</a></td>',
-            f'<td class="ix-host">{_esc(host) or "—"}</td>',
+            f'<td class="ix-title"><a href="#finding-{g.id}">{_esc(title)}</a></td>',
+            f'<td class="ix-host" style="text-align:right">{n if n else "—"}</td>',
         ]
-        if show_status:
-            label = _esc(f.status_label) or "—"
-            cells.append(f'<td class="ix-status st-{_esc(f.disposition)}">{label}</td>')
-        if show_cwe:
-            cells.append(f'<td class="ix-cwe">{_index_ids_cell(f.cwe_ids)}</td>')
         if show_cve:
-            kev_flag = ' <span class="ix-kev" title="CISA KEV-listed">KEV</span>' \
-                if (f.threat_intel and f.threat_intel.get("kev")) else ""
-            cells.append(f'<td class="ix-cve">{_index_ids_cell(f.cve_ids)}{kev_flag}</td>')
-        cells.append(f'<td class="ix-cvss">{_esc(cvss)}</td>')
+            kev_flag = ' <span class="ix-kev" title="CISA KEV-listed">KEV</span>' if g.kev else ""
+            cells.append(f'<td class="ix-cve">{_index_ids_cell(sorted(g.cves))}{kev_flag}</td>')
         rows.append("<tr>" + "".join(cells) + "</tr>")
-    headers = "<th>Severity</th><th>Finding</th><th>Host</th>"
-    if show_status:
-        headers += "<th>Status</th>"
-    if show_cwe:
-        headers += "<th>CWE</th>"
+    headers = ('<th>Severity</th><th>Finding</th>'
+               '<th style="text-align:right">Hosts</th>')
     if show_cve:
         headers += "<th>CVE</th>"
-    headers += '<th style="text-align:right">CVSS</th>'
     return (
         '<div class="index-wrap"><div class="cap">Findings at a glance</div>'
         f'<table class="index"><thead><tr>{headers}</tr></thead>'

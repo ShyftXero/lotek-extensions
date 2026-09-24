@@ -60,9 +60,10 @@ def test_enriched_finding_renders_refs_block_and_chips(session_factory):
     assert 'class="chip owasp"' in html and "A03:2021" in html
     assert 'class="chip kev"' in html and "KEV as of 2026-09-04" in html
     assert 'class="chip epss"' in html and "EPSS 0.97" in html
-    # index columns.
-    assert "<th>CWE</th>" in html and "<th>CVE</th>" in html
-    assert 'class="ix-kev"' in html                  # KEV flag in the index row
+    # index column: the by-vulnerability "at a glance" index keeps a CVE column (+ KEV flag); CWE is a
+    # card chip only now (it doesn't collapse per-vulnerability, and the index is deliberately narrow).
+    assert "<th>CVE</th>" in html
+    assert 'class="ix-kev"' in html                  # KEV flag in the index CVE cell
 
 
 def test_all_suppressed_references_omit_the_block(session_factory):
