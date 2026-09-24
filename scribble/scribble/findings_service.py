@@ -160,6 +160,23 @@ def nested_child_ids(findings) -> set[uuid.UUID]:
     return nested
 
 
+def flatten_for_grouping(findings) -> list[BoardFinding]:
+    """The findings to feed the by-vulnerability / by-host rollups (Phase 1b).
+
+    Promotion aggregation produces a SHELL PARENT per vuln type with the per-host instances as CHILDREN
+    (see ``BoardFinding.parent_id``). For a re-pivot by vulnerability/host we want the leaves — the
+    children carry ``target_host``, so an N-host vuln reports N hosts, not N+1 with an empty "Unknown
+    host" contributed by the aggregation shell. So drop the shell parents (a finding some other finding
+    nests under) and keep their children plus every childless finding. Uses the ONE nesting rule
+    (:func:`nested_child_ids`) rather than re-deriving parent/child membership.
+    """
+    items = list(findings)
+    nested = nested_child_ids(items)
+    by_id = {f.id: f for f in items}
+    shell_parent_ids = {by_id[c].parent_id for c in nested}
+    return [f for f in items if f.id not in shell_parent_ids]
+
+
 def rendered_top_level_count(engagement: ReportBoard) -> int:
     """How many findings the REPORT renders at TOP level — the number to quote as "N findings".
 

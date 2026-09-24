@@ -69,7 +69,7 @@ from datetime import date
 from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
-from scribble import findings_service, host
+from scribble import finding_grouping_adapter, findings_service, host
 from scribble.artifacts_storage import delete_file
 from scribble.authz import can_view_client_id, host_is_mounted
 from scribble.content import schema
@@ -582,12 +582,26 @@ def register(api_bp, bp) -> None:
             # applies its own `user_can_view_job` to the session actor; [] standalone / unmounted.
             source_jobs = host.list_jobs(engagement, current_actor())
 
+            # By-vulnerability / by-host rollups (Phase 1b, lotek #829): a re-pivot of the SAME board
+            # findings through core's shared bucketer via the host seam, so an adopted job with a
+            # fleet-wide vuln (EternalBlue on every host, self-signed certs, LLMNR) collapses to one row
+            # per kind instead of flooding the board. Flatten promotion shells to their per-host children
+            # first. Empty off-mount -> the template hides the extra tabs (assessment-group view stands).
+            group_rows = [
+                finding_grouping_adapter.board_finding_to_group_row(f)
+                for f in findings_service.flatten_for_grouping(engagement.findings)
+            ]
+            findings_by_kind = host.group_findings(group_rows, by="kind")
+            findings_by_host = host.group_findings(group_rows, by="host")
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
                 client_name=(client.name if client is not None else None),
                 board_groups=board_groups,
                 ungrouped=ungrouped,
+                findings_by_kind=findings_by_kind,
+                findings_by_host=findings_by_host,
                 templates=templates,
                 assessment_types=assessment_types,
                 engagement_artifacts=engagement_artifacts,
