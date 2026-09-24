@@ -7,20 +7,20 @@
 {% block content %}
 <div class="card">
   <form class="fr-lib-filters" method="get" action="{{ url_for('scribble.library') }}">
-    <input type="text" name="q" value="{{ q }}" placeholder="Search name…" />
-    <select name="category">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search name…" aria-label="Search templates by name" />
+    <select name="category" aria-label="Filter by category">
       <option value="">All categories</option>
       {% for c in categories %}
       <option value="{{ c }}" {% if c == category %}selected{% endif %}>{{ c }}</option>
       {% endfor %}
     </select>
-    <select name="severity">
+    <select name="severity" aria-label="Filter by severity">
       <option value="">All severities</option>
       {% for s in severities %}
       <option value="{{ s.value }}" {% if s.value == severity %}selected{% endif %}>{{ s.value }}</option>
       {% endfor %}
     </select>
-    <select name="tag">
+    <select name="tag" aria-label="Filter by tag">
       <option value="">All tags</option>
       {% for t in all_tags %}
       <option value="{{ t.name }}" {% if t.name == tag %}selected{% endif %}>{{ t.name }}</option>
