@@ -79,14 +79,9 @@
     <p class="muted">No active templates in the library yet — add some from the Vuln Library.</p>
     {% endif %}
   </div>
-  <div class="scribble-board-toolbar-section">
-    <h3>Promote a scan job</h3>
-    <form method="post" action="{{ url_for('scribble.promote_job', engagement_id=engagement.id) }}"
-          class="scribble-inline-form">
-      <input type="text" name="job_id" placeholder="Scan job id" required />
-      <button class="btn btn-primary" type="submit">Promote job</button>
-    </form>
-  </div>
+  {# "Promote a scan job" (raw job_id field) was removed here — adopting a job is now a single searchable
+     picker in the Source jobs panel below (#234). Both always routed through the same _adopt_job_onto_board,
+     so this was a redundant second affordance that made you paste an opaque UUID. #}
 </div>
 {% endif %}
 
@@ -165,10 +160,18 @@
   </p>
   {% endif %}
   {% if scribble_can_write %}
-  {# Adopt-a-job picker (#630): enter an unadopted scan job's id and link it into this engagement. The
-     link is refuse-on-conflict server-side, so a job already adopted elsewhere surfaces a 409 here. #}
+  {# Adopt-a-job picker (#630/#234): a searchable dropdown of the scan jobs you can adopt for this
+     engagement's client (name/target/status/date), instead of pasting an opaque UUID. Backed by core's
+     combobox widget in data-search-url mode -> scribble.adoptable_jobs_json (host.adoptable_jobs, scoped).
+     Picking commits the job id onto the native <select>; board.js reads it and POSTs the adopt (link is
+     refuse-on-conflict server-side, so a job already adopted elsewhere surfaces a 409). #}
   <div class="scribble-adopt-job">
-    <input type="text" id="scribble-adopt-job-id" placeholder="Scan job id to adopt" />
+    <select id="scribble-adopt-job-id" data-combobox data-min-chars="0"
+            data-search-url="{{ url_for('scribble.adoptable_jobs_json', engagement_id=engagement.id) }}"
+            data-placeholder="Search a scan job to adopt (name / target)…"
+            aria-label="Scan job to adopt">
+      <option value=""></option>
+    </select>
     <button type="button" class="btn" id="scribble-adopt-job-btn">Adopt job</button>
     <span id="scribble-adopt-job-msg" class="muted"></span>
   </div>
