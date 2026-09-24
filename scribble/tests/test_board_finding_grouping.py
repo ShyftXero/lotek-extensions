@@ -123,26 +123,111 @@ def test_board_passes_adapted_rows_to_the_seam(client, stub_host, session_factor
     assert all(set(r) == {"id", "host", "cves", "severity", "kind_key", "label", "payload"} for r in rows)
 
 
-def test_board_renders_the_three_tabs_and_a_rollup_when_buckets_come_back(
-    client, stub_host, session_factory
-):
+def _stub_bucket(**kw):
+    """A rollup bucket the pivot template can render. `items` default to two per-host findings."""
+    from types import SimpleNamespace
+
+    kw.setdefault("severity", "critical")
+    kw.setdefault("cves", ["CVE-2017-0144"])
+    if "items" not in kw:
+        hosts = kw.get("hosts") or ["10.0.0.1", "10.0.0.2"]
+        kw["items"] = [SimpleNamespace(id=str(uuid.uuid7()), host=h,
+                                       payload={"f": SimpleNamespace(title=kw.get("label", "V"))})
+                       for h in hosts]
+    kw.setdefault("hosts", sorted({it.host for it in kw["items"]}))
+    kw.setdefault("count", len(kw["items"]))
+    kw.setdefault("key", kw["items"][0].host if kw["items"] else "")
+    kw.setdefault("label", "EternalBlue")
+    return SimpleNamespace(**kw)
+
+
+def test_board_renders_the_group_by_tabs_and_a_rollup(client, stub_host, session_factory):
+    eng_id = _engagement_with_findings(session_factory)
+    stub_host.group_findings_value = [_stub_bucket(label="EternalBlue", hosts=["10.0.0.1", "10.0.0.2"])]
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    assert 'role="tablist"' in html
+    assert 'data-view="kind"' in html and 'data-view="host"' in html
+    # Q1: the axis is named, and the tabs are Section / Vulnerability / Host (not the old "Board" / "By …").
+    assert "Group by:" in html
+    assert ">Section<" in html and ">Vulnerability<" in html and ">Host<" in html
+    assert "By vulnerability" not in html and ">Board<" not in html
+    assert "scribble-kind-table" in html
+    assert "https://nvd.nist.gov/vuln/detail/CVE-2017-0144" in html
+
+
+def test_rollup_hosts_are_links_and_findings_column_is_dropped(client, stub_host, session_factory):
+    """Q3/Q4: affected hosts ARE the finding links; the redundant per-host 'Findings' column is gone."""
     from types import SimpleNamespace
 
     eng_id = _engagement_with_findings(session_factory)
-    it = SimpleNamespace(id=str(uuid.uuid7()), host="10.0.0.1",
-                         payload={"f": SimpleNamespace(title="EternalBlue")})
-    stub_host.group_findings_value = [
-        SimpleNamespace(label="EternalBlue", severity="critical", hosts=["10.0.0.1", "10.0.0.2"],
-                        cves=["CVE-2017-0144"], count=2, key="EternalBlue", items=[it])
-    ]
+    fid = str(uuid.uuid7())
+    it = SimpleNamespace(id=fid, host="10.9.9.9", payload={"f": SimpleNamespace(title="EternalBlue")})
+    stub_host.group_findings_value = [_stub_bucket(label="EternalBlue", items=[it])]
     html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
-    # data-view="kind" / role="tablist" appear ONLY in the rendered toggle markup — the bare class name
-    # also lives in the always-present <style>/<script>, so it is not a presence signal.
-    assert 'role="tablist"' in html
-    assert 'data-view="kind"' in html and 'data-view="host"' in html
-    assert "By vulnerability" in html and "By host" in html
-    assert "scribble-kind-table" in html
-    assert "https://nvd.nist.gov/vuln/detail/CVE-2017-0144" in html
+    kind = html.split('id="scribble-kind-table"', 1)[1].split("</table>", 1)[0]
+    # Column set: Affected hosts + Assign present; Findings column removed.
+    assert ">Affected hosts<" in kind and ">Assign<" in kind
+    assert ">Findings<" not in kind
+    # The host itself is a link to ITS finding.
+    assert f"/findings/{fid}" in kind
+    assert ">10.9.9.9<" in kind
+
+
+def test_rollup_see_more_collapses_long_host_lists(client, stub_host, session_factory):
+    """Q3: beyond the threshold, extra hosts are pre-rendered but hidden behind a '+N more…' reveal."""
+    eng_id = _engagement_with_findings(session_factory)
+    hosts = [f"10.0.0.{i}" for i in range(1, 13)]  # 12 > the 8 threshold
+    stub_host.group_findings_value = [_stub_bucket(label="LLMNR", hosts=hosts)]
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    kind = html.split('id="scribble-kind-table"', 1)[1].split("</table>", 1)[0]
+    assert "rl-overflow" in kind          # the hidden extra hosts exist in the DOM (DataTables-searchable)
+    assert 'class="btn-link rl-more"' in kind
+    assert "more…" in kind
+
+
+def test_rollup_assign_control_carries_the_buckets_finding_ids(client, stub_host, session_factory):
+    """Q2: each bucket can bulk-assign ALL its findings to a report section (cross-axis move)."""
+    from types import SimpleNamespace
+
+    eng_id = _engagement_with_findings(session_factory)
+    a, b_ = str(uuid.uuid7()), str(uuid.uuid7())
+    items = [SimpleNamespace(id=a, host="10.0.0.1", payload={"f": SimpleNamespace(title="X")}),
+             SimpleNamespace(id=b_, host="10.0.0.2", payload={"f": SimpleNamespace(title="X")})]
+    stub_host.group_findings_value = [_stub_bucket(label="X", items=items)]
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    assert "rl-assign-btn" in html and "rl-assign-sel" in html
+    assert f'data-finding-ids="{a},{b_}"' in html
+    assert ">No section</option>" in html   # the null-section target
+
+
+def test_rollup_multi_finding_host_shows_the_plus_edge(client, stub_host, session_factory):
+    """Q4 edge: a host carrying two findings of one vuln links the first + a '·+N' to the next, so
+    neither finding is dropped from the affected-hosts list."""
+    from types import SimpleNamespace
+
+    eng_id = _engagement_with_findings(session_factory)
+    a, b_ = str(uuid.uuid7()), str(uuid.uuid7())
+    items = [SimpleNamespace(id=a, host="10.0.0.7", payload={"f": SimpleNamespace(title="Dup")}),
+             SimpleNamespace(id=b_, host="10.0.0.7", payload={"f": SimpleNamespace(title="Dup")})]
+    stub_host.group_findings_value = [_stub_bucket(label="Dup", items=items, hosts=["10.0.0.7"])]
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    kind = html.split('id="scribble-kind-table"', 1)[1].split("</table>", 1)[0]
+    assert 'class="rl-plus"' in kind                       # the ·+N link for the 2nd finding on the host
+    assert f"/findings/{a}" in kind and f"/findings/{b_}" in kind  # BOTH findings reachable
+    assert "+1" in kind                                    # one extra beyond the first
+
+
+def test_bulk_bar_lives_inside_the_section_panel(client, stub_host, session_factory):
+    """Q4/wedge: the multi-select bulk bar sits INSIDE #scribble-view-board, so it hides in the pivots
+    (where its checkboxes don't exist) instead of rendering as an inert control across every tab."""
+    eng_id = _engagement_with_findings(session_factory)
+    stub_host.group_findings_value = [_stub_bucket()]
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    board_open = html.index('id="scribble-view-board"')
+    board_close = html.index("<!-- /#scribble-view-board -->")
+    bar = html.index('id="scribble-bulk-bar"')
+    assert board_open < bar < board_close, "bulk bar must be inside the Section panel"
+    assert "data-dt" in html  # the pivot tables opt into DataTables (sort/filter/paginate when mounted)
 
 
 def test_board_hides_the_toggle_when_no_groupable_findings(client, stub_host, session_factory):

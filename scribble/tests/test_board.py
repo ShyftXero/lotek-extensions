@@ -155,7 +155,7 @@ def test_engagement_board_renders_empty_engagement(client, session_factory):
         eng_id = eng.id
     resp = client.get(f"{UI}/engagements/{eng_id}")
     assert resp.status_code == 200
-    assert b"No groups yet" in resp.data
+    assert b"No sections yet" in resp.data
 
 
 # ------------------------------------------------------------------------------- groups
@@ -1227,12 +1227,12 @@ def test_board_hides_mutating_controls_for_read_only_viewer(client, session_fact
     # Markers unique to the RENDERED controls (not to the page's static <style> block, which declares
     # e.g. `.scribble-board-group-delete { margin: 0; }` unconditionally -- asserting on a CSS class
     # name alone would pass even if the gate were broken and the button always rendered).
-    group_delete_confirm = "Delete this group? Its findings become ungrouped, not deleted."
+    group_delete_confirm = "Delete this section? Its findings become unsectioned (kept, not deleted)."
     finding_delete_confirm = "Delete this finding? This also deletes its artifacts and cannot be undone."
 
     # Writable (default, no host hook): every mutating control renders.
     body = client.get(f"{UI}/engagements/{eng_id}").data.decode()
-    assert "Add group" in body
+    assert "Add section" in body
     assert "Add finding" in body
     assert group_delete_confirm in body
     assert finding_delete_confirm in body
@@ -1244,7 +1244,7 @@ def test_board_hides_mutating_controls_for_read_only_viewer(client, session_fact
     try:
         body = client.get(f"{UI}/engagements/{eng_id}").data.decode()
         assert "You have read-only access" in body
-        assert "Add group" not in body
+        assert "Add section" not in body
         assert "Add finding" not in body
         assert group_delete_confirm not in body
         assert finding_delete_confirm not in body
