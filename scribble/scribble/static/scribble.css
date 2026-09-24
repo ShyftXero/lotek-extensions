@@ -79,6 +79,19 @@ h1, h2, h3 { margin: 0 0 .6rem; }
 .sev-low { background: var(--sev-low); color: #1a1a1a; }
 .sev-info { background: var(--sev-info); }
 
+/* Default field styling for scribble form controls. Many templates omit class="input", which left
+   native/unstyled <select>/<input>/<textarea> (e.g. the Attack-paths diagram picker) sitting next to
+   styled controls. Element selectors are LOW specificity, so class-based/scoped rules (.input,
+   .scribble-inline-form select, .combobox-input) still win — this is only the fallback for the controls
+   nothing else styles. scribble.css loads only on scribble pages, so this never touches a pure core page;
+   `.card` (present on every scribble surface) keeps it off the mounted host's own chrome/sidebar. */
+.card input[type="text"], .card input[type="search"], .card select, .card textarea,
+.scribble-bulk-bar select, .scribble-bulk-bar input {
+  background: var(--field-bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 10px;
+  font: inherit; max-width: 100%;
+}
+
 .btn {
   display: inline-block; padding: 7px 14px; border-radius: 10px; border: 1px solid var(--line-strong);
   background: var(--field-bg); color: var(--ink); cursor: pointer; font: inherit;
