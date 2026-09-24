@@ -295,12 +295,22 @@ class StubHost:
         # the caller's visible jobs for the engagement's client; the stub returns what a test sets. Each
         # item: {id, name, targets, status, created_at}.
         self.adoptable_jobs_value: list[dict] = []
+        # By-vuln / by-host bucketer seam (host.group_findings). The REAL host delegates to core's
+        # app.finding_grouping; the stub can't import core, so it CAPTURES the adapted rows (a test
+        # asserts their shape) and returns whatever `group_findings_value` a test sets (default []).
+        # End-to-end collapse against the real bucketer is proven mounted in core's suite.
+        self.group_findings_calls: list[tuple[list, str]] = []
+        self.group_findings_value: list = []
 
     def engagement_summaries(self) -> list[dict]:
         return list(self.engagement_summaries_value)
 
     def adoptable_jobs(self, core_engagement_id, query="", limit=50) -> list[dict]:  # noqa: ARG002
         return list(self.adoptable_jobs_value)
+
+    def group_findings(self, rows, *, by) -> list:
+        self.group_findings_calls.append((list(rows), by))
+        return list(self.group_findings_value)
 
     def can_operate_on(self, engagement_id) -> bool:
         """The host's per-engagement OPERATOR gate (`app/extensions.py` injects the real one, built on
@@ -500,6 +510,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["can_operate_on"] = stub.can_operate_on
     cfg.extras["engagement_summaries"] = stub.engagement_summaries
     cfg.extras["adoptable_jobs"] = stub.adoptable_jobs
+    cfg.extras["group_findings"] = stub.group_findings
     # AI seam (core app.ai.stream): a fake streamer so a mounted route can exercise the AI-draft path.
     # Absent this key, draft_api fails closed (503) — that fail-closed path has its own test.
     cfg.extras["ai_stream"] = lambda messages, **_kw: iter(["stub AI draft."])  # noqa: ARG005

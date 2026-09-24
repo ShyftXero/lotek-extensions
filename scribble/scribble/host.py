@@ -134,6 +134,18 @@ def adoptable_jobs(core_engagement_id, query: str = "", limit: int = 50) -> list
     return list(hook(core_engagement_id, query, limit)) if hook is not None else []
 
 
+def group_findings(rows: list, *, by: str) -> list:
+    """Bucket finding rows through core's ONE shared bucketer (``app.finding_grouping``), reached via the
+    host seam so the scribble board and the core per-job report can never drift (Phase 1b, lotek #829).
+
+    ``rows`` are plain dicts from :func:`scribble.finding_grouping_adapter.board_finding_to_group_row`;
+    ``by`` is ``"kind"`` (by vulnerability) or ``"host"``. Returns the core ``Bucket`` objects the board
+    template renders. Empty when unmounted — standalone scribble has no core bucketer, so the board's
+    by-vulnerability / by-host tabs hide and the assessment-group view stands alone."""
+    hook = host_hook("group_findings")
+    return list(hook(rows, by=by)) if hook is not None else []
+
+
 def findings():
     """The host's read-only findings namespace (``get_job``/``list_findings``/``get_finding``), or
     None when unmounted. Callers treat None like an empty host (no scan data reachable)."""

@@ -19,20 +19,29 @@ CVE is an attribute of a kind, not its own axis (user steer; a By-CVE view was b
 ## Done
 - [x] Bulk-bar unstyled-control CSS fix (rider): `.scribble-bulk-bar select/input` now inherit the field
       base rule — the last straggler the `ux-eval/walk.py` unstyled-control detector flagged (0 left).
+- [x] `scribble/finding_grouping_adapter.py` — pure `board_finding_to_group_row(f) -> dict`.
+- [x] `scribble/findings_service.py` — `flatten_for_grouping` (drops promotion shell parents, keeps
+      per-host children) via the one nesting rule (`nested_child_ids`).
+- [x] `scribble/host.py` — `group_findings(rows, by)` wrapper over `host_hook("group_findings")`;
+      `[]` when unmounted (board tabs hide).
+- [x] `engagement_ui.py` board route — builds rows from the flattened findings → `host.group_findings`;
+      passes `findings_by_kind` / `findings_by_host`.
+- [x] `templates/scribble/engagement.html` — three client-side tabs (Board / By vulnerability / By host)
+      mirroring core `report.html`; rollup tables link to the finding detail page; print stacks all.
+- [x] `tests/test_board_finding_grouping.py` + conftest stub `group_findings` — adapter, flatten,
+      fail-closed wrapper, route-passes-adapted-rows, tabs render / hide. 8 passed.
 
 ## Remaining
-- [ ] `scribble/finding_grouping_adapter.py` — pure `board_finding_to_group_row(f) -> dict` (id, host,
-      cves, severity, kind_key=`source_facts["dedupe_key"] or source:title`, label, payload).
-- [ ] `scribble/host.py` — `group_findings(rows, by)` wrapper over `host_hook("group_findings")`;
-      returns `[]` when unmounted (board tabs hide).
-- [ ] `engagement_ui.py` board route — build rows from the FLATTENED finding set (parents' per-host
-      children incl., via findings_service) → `host.group_findings(rows, by=...)`; pass
-      `findings_by_kind` / `findings_by_host` to the template.
-- [ ] `templates/scribble/engagement.html` — three client-side tabs (Board groups / By vulnerability /
-      By host) mirroring core `report.html`; bucket rollup tables link to `#finding-<id>`.
 - [ ] Cross-surface behavioural drift test — one input set through the core adapter (reporting.py) AND
       the scribble adapter → identical buckets. Lives in **core** tests (`test_scribble_ui_mounted.py`),
-      the one place both adapters + the bucketer are importable. Ships with the core re-pin.
+      the one place both adapters + the bucketer are importable. Ships with the core re-pin (core branch).
+- [ ] Core companion: `group_findings` seam (done on core branch) + re-pin to this branch's release tag +
+      mounted eval (N EternalBlue across N hosts → 1 by-vuln bucket).
+
+## Reviews / gate
+- pyrefly baseline: `engagement_ui.py` carries 3 PRE-EXISTING errors (lines 300/302/714 — `findings_ns`
+  NoneType, `mark_job_promoted` ref_id) on `origin/main`, outside this diff's hunks. RAILS_OVERRIDE used
+  for the commit that stages that file, baseline only. `ruff` clean; scribble board smoke green.
 
 ## Notes / gotchas
 - **Seam, not lotek-kit.** `finding_grouping` is value-typed to cross the core↔scribble seam. Moving it

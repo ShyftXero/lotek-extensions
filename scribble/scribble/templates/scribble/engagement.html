@@ -192,6 +192,19 @@
 </div>
 {% endif %}
 
+{# View toggle (Phase 1b, lotek#829): re-pivot the SAME findings by vulnerability / by host so a
+   fleet-wide vuln (EternalBlue on every host, self-signed certs, LLMNR) reads as one row, not hundreds.
+   Only shown when there are findings to group (mounted + non-empty); standalone/unmounted the seam
+   returns [] and the assessment-group board stands alone. Mirrors core report.html's tab toggle. #}
+{% if findings_by_kind %}
+<div class="scribble-view-toggle no-print" role="tablist" aria-label="Group findings by">
+  <button type="button" class="vtab on" data-view="board" role="tab" aria-selected="true" aria-controls="scribble-view-board">Board</button>
+  <button type="button" class="vtab" data-view="kind" role="tab" aria-selected="false" aria-controls="scribble-view-kind">By vulnerability</button>
+  <button type="button" class="vtab" data-view="host" role="tab" aria-selected="false" aria-controls="scribble-view-host">By host</button>
+</div>
+{% endif %}
+
+<div class="scribble-fview" id="scribble-view-board" role="tabpanel" aria-label="Board">
 <div class="scribble-board" data-board
      data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}"
      data-batch-move-url="{{ url_for('scribble_api.move_findings', engagement_id=engagement.id) }}">
@@ -286,6 +299,56 @@
   </div>
   {% endif %}
 </div>
+</div><!-- /#scribble-view-board -->
+
+{% if findings_by_kind %}
+<div class="scribble-fview" id="scribble-view-kind" role="tabpanel" aria-label="By vulnerability" hidden>
+  <p class="muted scribble-view-hint">One row per vulnerability — every affected host together. A CVE is
+    just one kind; default creds, missing headers and the like group too.</p>
+  <div class="table-scroll">
+  <table class="table scribble-rollup" id="scribble-kind-table">
+    <thead><tr>
+      <th>Vulnerability</th><th>Severity</th><th>Hosts</th>
+      <th>Affected hosts</th><th>CVEs</th><th>Findings</th>
+    </tr></thead>
+    <tbody>
+    {% for b in findings_by_kind %}
+      <tr>
+        <td>{{ b.label }}</td>
+        <td><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
+        <td>{{ b.hosts|length }}</td>
+        <td>{{ b.hosts|join(", ") if b.hosts else "—" }}</td>
+        <td>{% for c in b.cves %}<a href="https://nvd.nist.gov/vuln/detail/{{ c }}" target="_blank" rel="noopener noreferrer">{{ c }}</a>{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
+        <td>{% for it in b.items %}<a href="{{ url_for('scribble.finding_detail', finding_id=it.id) }}">{{ it.payload.f.title }}</a>{% if it.host %} <span class="muted">({{ it.host }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div><!-- /#scribble-view-kind -->
+
+<div class="scribble-fview" id="scribble-view-host" role="tabpanel" aria-label="By host" hidden>
+  <p class="muted scribble-view-hint">One row per host — every vulnerability applicable to it.</p>
+  <div class="table-scroll">
+  <table class="table scribble-rollup" id="scribble-host-table">
+    <thead><tr>
+      <th>Host</th><th>Severity</th><th>Vulns</th><th>CVEs</th><th>Findings</th>
+    </tr></thead>
+    <tbody>
+    {% for b in findings_by_host %}
+      <tr>
+        <td>{{ b.key }}</td>
+        <td><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
+        <td>{{ b.count }}</td>
+        <td>{{ b.cves|join(", ") if b.cves else "—" }}</td>
+        <td>{% for it in b.items %}<a href="{{ url_for('scribble.finding_detail', finding_id=it.id) }}">{{ it.payload.f.title }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div><!-- /#scribble-view-host -->
+{% endif %}
 
 <style>
   .scribble-board-toolbar { display: flex; flex-wrap: wrap; gap: 24px; }
@@ -299,6 +362,17 @@
     max-width: 100%; min-width: 0;
   }
   .scribble-inline-form select { flex: 1 1 auto; }
+
+  /* Finding-view toggle (Phase 1b) — mirrors core report.html's .view-toggle/.fview. */
+  .scribble-view-toggle { display: inline-flex; gap: 2px; margin: 0 0 14px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 3px; background: var(--field-bg); }
+  .scribble-view-toggle .vtab { border: 0; background: transparent; color: var(--muted); font: inherit; padding: 6px 14px; border-radius: 7px; cursor: pointer; }
+  .scribble-view-toggle .vtab:hover { color: var(--ink); }
+  .scribble-view-toggle .vtab.on { background: var(--accent-strong); color: #fff; }
+  .scribble-fview[hidden] { display: none; }
+  .scribble-view-hint { margin: 0 0 12px; font-size: 13px; }
+  .scribble-rollup td { vertical-align: top; }
+  /* PRINT: stack every view (a hidden tab must still reach a print-to-PDF), mirroring report.html. */
+  @media print { .scribble-view-toggle { display: none; } .scribble-fview[hidden] { display: block !important; } }
 
   .scribble-board { display: flex; flex-direction: column; gap: 14px; }
   .scribble-board-group.is-dragging { opacity: .4; border-style: dashed; }
@@ -425,6 +499,32 @@
   <div id="ckp-body"><p class="muted">Loading checklists…</p></div>
 </section>
 
+<script>
+  // Finding-view toggle (Phase 1b) — Board / By vulnerability / By host. Mirrors core report.html's
+  // client-side tab switch; no server round-trip. Rollup rows link to the finding detail page, so no
+  // in-page hash handling is needed here (unlike report.html's #finding-… anchors).
+  (function () {
+    var toggle = document.querySelector(".scribble-view-toggle");
+    if (!toggle) return;
+    var tabs = Array.prototype.slice.call(toggle.querySelectorAll(".vtab"));
+    var views = {
+      board: document.getElementById("scribble-view-board"),
+      kind: document.getElementById("scribble-view-kind"),
+      host: document.getElementById("scribble-view-host")
+    };
+    function show(name) {
+      tabs.forEach(function (t) {
+        var on = t.getAttribute("data-view") === name;
+        t.classList.toggle("on", on);
+        t.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      Object.keys(views).forEach(function (k) { if (views[k]) views[k].hidden = (k !== name); });
+    }
+    tabs.forEach(function (t) {
+      t.addEventListener("click", function () { show(t.getAttribute("data-view")); });
+    });
+  })();
+</script>
 <script src="{{ url_for('scribble.static', filename='board.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='checklists.js') }}"></script>
 {#
