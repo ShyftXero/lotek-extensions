@@ -32,28 +32,28 @@
 {% if scribble_can_write %}
 <div class="card scribble-board-toolbar">
   <div class="scribble-board-toolbar-section">
-    <h3>Add a group</h3>
+    <h3>Add a section</h3>
     <form method="post" action="{{ url_for('scribble.create_group', engagement_id=engagement.id) }}"
           class="scribble-inline-form">
-      {# Group name: pick a common assessment area or type a custom one. Reuses core's combobox widget
+      {# Section name: pick a common assessment area or type a custom one. Reuses core's combobox widget
          (static/combobox.js) — `data-allow-create` with no `data-search-url` submits the typed text as the
          value (combobox.js createEntry), so a bespoke name still posts as `name`. #}
       {% set default_group_names = ["Internal", "External", "Web Application", "Wireless", "Physical",
                                     "Social Engineering", "Cloud", "Mobile"] %}
       <select name="name" data-combobox data-allow-create
-              data-placeholder="Group name (e.g. Internal, or type your own)" required>
+              data-placeholder="Section name (e.g. Internal, or type your own)" required>
         <option value="" disabled selected></option>
         {% for g in default_group_names %}
         <option value="{{ g }}">{{ g }}</option>
         {% endfor %}
       </select>
-      <select name="assessment_type_id" aria-label="Assessment type for this group">
+      <select name="assessment_type_id" aria-label="Assessment type for this section">
         <option value="">No assessment type</option>
         {% for at in assessment_types %}
         <option value="{{ at.id }}">{{ at.name }}</option>
         {% endfor %}
       </select>
-      <button class="btn btn-primary" type="submit">Add group</button>
+      <button class="btn btn-primary" type="submit">Add section</button>
     </form>
   </div>
   <div class="scribble-board-toolbar-section">
@@ -67,8 +67,8 @@
         <option value="{{ t.id }}">{{ t.name }} ({{ t.default_severity.value }})</option>
         {% endfor %}
       </select>
-      <select name="group_id" aria-label="Add finding to group">
-        <option value="">Ungrouped</option>
+      <select name="group_id" aria-label="Add finding to section">
+        <option value="">No section</option>
         {% for g in engagement.groups %}
         <option value="{{ g.id }}">{{ g.name }}</option>
         {% endfor %}
@@ -178,39 +178,43 @@
   {% endif %}
 </div>
 
+{# View toggle: the SAME findings grouped three ways. "Group by:" names the axis so the section
+   placement (Section / No section) reads as ONE grouping and the derived pivots (Vulnerability / Host)
+   as the others — they no longer compete as unrelated terms. Shown only when there are findings to
+   group (mounted + non-empty); standalone/unmounted the seam returns [] and the Section view stands
+   alone. Mirrors core report.html's tab toggle. #}
+{% if findings_by_kind %}
+<div class="scribble-view-toggle no-print" role="tablist" aria-label="Group findings by">
+  <span class="scribble-view-toggle-label">Group by:</span>
+  <button type="button" class="vtab on" data-view="board" role="tab" aria-selected="true" aria-controls="scribble-view-board">Section</button>
+  <button type="button" class="vtab" data-view="kind" role="tab" aria-selected="false" aria-controls="scribble-view-kind">Vulnerability</button>
+  <button type="button" class="vtab" data-view="host" role="tab" aria-selected="false" aria-controls="scribble-view-host">Host</button>
+</div>
+{% endif %}
+
+<div class="scribble-fview" id="scribble-view-board" role="tabpanel" aria-label="Grouped by section">
 {% if scribble_can_write %}
+{# The multi-select bulk bar lives INSIDE the Section panel — moving a finding means changing its report
+   section, which is only meaningful here; hidden automatically in the Vulnerability/Host pivots (whose
+   own per-bucket "Assign all" control does the cross-axis move). #}
 <div class="scribble-bulk-bar" id="scribble-bulk-bar" hidden>
   <span class="scribble-bulk-count"><strong id="scribble-bulk-n">0</strong> selected</span>
   <label>Move to
-    <select class="scribble-bulk-group" id="scribble-bulk-group" aria-label="Move selected findings to group">
+    <select class="scribble-bulk-group" id="scribble-bulk-group" aria-label="Move selected findings to section">
       {% for entry in board_groups %}<option value="{{ entry.group.id }}">{{ entry.group.name }}</option>{% endfor %}
-      <option value="">Ungrouped</option>
+      <option value="">No section</option>
     </select>
   </label>
   <button type="button" class="btn" id="scribble-bulk-move">Move selected</button>
   <button type="button" class="btn" id="scribble-bulk-clear">Clear</button>
 </div>
 {% endif %}
-
-{# View toggle (Phase 1b, lotek#829): re-pivot the SAME findings by vulnerability / by host so a
-   fleet-wide vuln (EternalBlue on every host, self-signed certs, LLMNR) reads as one row, not hundreds.
-   Only shown when there are findings to group (mounted + non-empty); standalone/unmounted the seam
-   returns [] and the assessment-group board stands alone. Mirrors core report.html's tab toggle. #}
-{% if findings_by_kind %}
-<div class="scribble-view-toggle no-print" role="tablist" aria-label="Group findings by">
-  <button type="button" class="vtab on" data-view="board" role="tab" aria-selected="true" aria-controls="scribble-view-board">Board</button>
-  <button type="button" class="vtab" data-view="kind" role="tab" aria-selected="false" aria-controls="scribble-view-kind">By vulnerability</button>
-  <button type="button" class="vtab" data-view="host" role="tab" aria-selected="false" aria-controls="scribble-view-host">By host</button>
-</div>
-{% endif %}
-
-<div class="scribble-fview" id="scribble-view-board" role="tabpanel" aria-label="Board">
 <div class="scribble-board" data-board
      data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}"
      data-batch-move-url="{{ url_for('scribble_api.move_findings', engagement_id=engagement.id) }}">
 
   {% if not board_groups and not ungrouped %}
-  <div class="card"><p class="muted">No groups yet. Add one above to start organizing findings.</p></div>
+  <div class="card"><p class="muted">No sections yet. Add one above to start organizing findings.</p></div>
   {% endif %}
 
   {% for entry in board_groups %}
@@ -236,7 +240,7 @@
       {% if scribble_can_write %}
       <form method="post"
             action="{{ url_for('scribble.delete_group', engagement_id=engagement.id, group_id=group.id) }}"
-            onsubmit="return confirm('Delete this group? Its findings become ungrouped, not deleted.');">
+            onsubmit="return confirm('Delete this section? Its findings become unsectioned (kept, not deleted).');">
         <button type="submit" class="btn scribble-board-group-delete">Delete</button>
       </form>
       {% endif %}
@@ -270,10 +274,10 @@
   {% if ungrouped %}
   <div class="scribble-board-group scribble-board-group-ungrouped card" data-group-id="">
     <div class="scribble-board-group-head">
-      <span class="pill">Ungrouped</span>
+      <span class="pill">No section</span>
       <span class="muted">
         Not yet assigned to a report section — always severity-ordered (no manual order here).
-        Drag a finding into a group above to place it.
+        Drag a finding into a section above to place it.
       </span>
     </div>
     <ul class="scribble-board-findings" data-group-id="">
@@ -302,24 +306,51 @@
 </div><!-- /#scribble-view-board -->
 
 {% if findings_by_kind %}
-<div class="scribble-fview" id="scribble-view-kind" role="tabpanel" aria-label="By vulnerability" hidden>
-  <p class="muted scribble-view-hint">One row per vulnerability — every affected host together. A CVE is
-    just one kind; default creds, missing headers and the like group too.</p>
+{# Rollup shared bits. `_sevrank` gives DataTables a numeric sort key for the severity pill (alpha would
+   sort critical/high/… wrong). `_seemore` = how many affected-hosts / vulns to show before "+N more…".
+   The affected-hosts / vulnerabilities cells ARE the finding links now (Q3/Q4): each host (by-vuln) or
+   vuln title (by-host) links to ITS finding — the redundant per-host "Findings" column is gone. #}
+{% set _sevrank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4} %}
+{% set _seemore = 8 %}
+<div class="scribble-fview" id="scribble-view-kind" role="tabpanel" aria-label="Grouped by vulnerability" hidden>
+  <p class="muted scribble-view-hint">One row per vulnerability — every affected host together, each
+    host linking to its own finding. A CVE is just one kind; default creds, missing headers and the like
+    group too.</p>
   <div class="table-scroll">
-  <table class="table scribble-rollup" id="scribble-kind-table">
+  <table class="table scribble-rollup" id="scribble-kind-table" data-dt data-dt-page-size="25">
     <thead><tr>
-      <th>Vulnerability</th><th>Severity</th><th>Hosts</th>
-      <th>Affected hosts</th><th>CVEs</th><th>Findings</th>
+      <th data-sort>Vulnerability</th>
+      <th data-sort>Severity</th>
+      <th data-sort data-sort-type="num">Hosts</th>
+      <th>Affected hosts</th>
+      <th>CVEs</th>
+      {% if scribble_can_write %}<th>Assign</th>{% endif %}
     </tr></thead>
     <tbody>
     {% for b in findings_by_kind %}
+      {% set hostgroups = b.items|groupby('host')|list %}
       <tr>
         <td>{{ b.label }}</td>
-        <td><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
+        <td data-sort-value="{{ _sevrank.get(b.severity, 5) }}"><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
         <td>{{ b.hosts|length }}</td>
-        <td>{{ b.hosts|join(", ") if b.hosts else "—" }}</td>
+        <td class="rl-linklist">
+          {%- for host, hits in hostgroups -%}
+            {%- set hits = hits|list -%}
+            <span class="rl-link{% if loop.index0 >= _seemore %} rl-overflow{% endif %}"{% if loop.index0 >= _seemore %} hidden{% endif %}><a href="{{ url_for('scribble.finding_detail', finding_id=hits[0].id) }}">{{ host or "(no host)" }}</a>{% if hits|length > 1 %}<a class="rl-plus" href="{{ url_for('scribble.finding_detail', finding_id=hits[1].id) }}" title="{{ hits|length - 1 }} more finding(s) on this host">·+{{ hits|length - 1 }}</a>{% endif %}{% if not loop.last %}, {% endif %}</span>
+          {%- else -%}—{%- endfor -%}
+          {% if hostgroups|length > _seemore %} <button type="button" class="btn-link rl-more">+{{ hostgroups|length - _seemore }} more…</button>{% endif %}
+        </td>
         <td>{% for c in b.cves %}<a href="https://nvd.nist.gov/vuln/detail/{{ c }}" target="_blank" rel="noopener noreferrer">{{ c }}</a>{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
-        <td>{% for it in b.items %}<a href="{{ url_for('scribble.finding_detail', finding_id=it.id) }}">{{ it.payload.f.title }}</a>{% if it.host %} <span class="muted">({{ it.host }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        {% if scribble_can_write %}
+        <td class="rl-actions">
+          <select class="rl-assign-sel" aria-label="Move all findings of this vulnerability to a section">
+            <option value="__none__" selected>Move all to…</option>
+            {% for entry in board_groups %}<option value="{{ entry.group.id }}">{{ entry.group.name }}</option>{% endfor %}
+            <option value="">No section</option>
+          </select>
+          <button type="button" class="btn rl-assign-btn" data-finding-ids="{{ b.items|map(attribute='id')|join(',') }}">Assign all</button>
+        </td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>
@@ -327,21 +358,42 @@
   </div>
 </div><!-- /#scribble-view-kind -->
 
-<div class="scribble-fview" id="scribble-view-host" role="tabpanel" aria-label="By host" hidden>
-  <p class="muted scribble-view-hint">One row per host — every vulnerability applicable to it.</p>
+<div class="scribble-fview" id="scribble-view-host" role="tabpanel" aria-label="Grouped by host" hidden>
+  <p class="muted scribble-view-hint">One row per host — every vulnerability applicable to it, each
+    linking to its own finding.</p>
   <div class="table-scroll">
-  <table class="table scribble-rollup" id="scribble-host-table">
+  <table class="table scribble-rollup" id="scribble-host-table" data-dt data-dt-page-size="25">
     <thead><tr>
-      <th>Host</th><th>Severity</th><th>Vulns</th><th>CVEs</th><th>Findings</th>
+      <th data-sort>Host</th>
+      <th data-sort>Severity</th>
+      <th data-sort data-sort-type="num">Vulns</th>
+      <th>Vulnerabilities</th>
+      <th>CVEs</th>
+      {% if scribble_can_write %}<th>Assign</th>{% endif %}
     </tr></thead>
     <tbody>
     {% for b in findings_by_host %}
       <tr>
         <td>{{ b.key }}</td>
-        <td><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
+        <td data-sort-value="{{ _sevrank.get(b.severity, 5) }}"><span class="sev sev-{{ b.severity }}">{{ b.severity }}</span></td>
         <td>{{ b.count }}</td>
+        <td class="rl-linklist">
+          {%- for it in b.items -%}
+            <span class="rl-link{% if loop.index0 >= _seemore %} rl-overflow{% endif %}"{% if loop.index0 >= _seemore %} hidden{% endif %}><a href="{{ url_for('scribble.finding_detail', finding_id=it.id) }}">{{ it.payload.f.title }}</a>{% if not loop.last %}, {% endif %}</span>
+          {%- else -%}—{%- endfor -%}
+          {% if b.items|length > _seemore %} <button type="button" class="btn-link rl-more">+{{ b.items|length - _seemore }} more…</button>{% endif %}
+        </td>
         <td>{{ b.cves|join(", ") if b.cves else "—" }}</td>
-        <td>{% for it in b.items %}<a href="{{ url_for('scribble.finding_detail', finding_id=it.id) }}">{{ it.payload.f.title }}</a>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        {% if scribble_can_write %}
+        <td class="rl-actions">
+          <select class="rl-assign-sel" aria-label="Move all findings on this host to a section">
+            <option value="__none__" selected>Move all to…</option>
+            {% for entry in board_groups %}<option value="{{ entry.group.id }}">{{ entry.group.name }}</option>{% endfor %}
+            <option value="">No section</option>
+          </select>
+          <button type="button" class="btn rl-assign-btn" data-finding-ids="{{ b.items|map(attribute='id')|join(',') }}">Assign all</button>
+        </td>
+        {% endif %}
       </tr>
     {% endfor %}
     </tbody>
@@ -370,9 +422,24 @@
   .scribble-view-toggle .vtab.on { background: var(--accent-strong); color: #fff; }
   .scribble-fview[hidden] { display: none; }
   .scribble-view-hint { margin: 0 0 12px; font-size: 13px; }
+  .scribble-view-toggle-label { align-self: center; color: var(--muted); font-size: 12px; margin: 0 6px 0 2px; }
   .scribble-rollup td { vertical-align: top; }
-  /* PRINT: stack every view (a hidden tab must still reach a print-to-PDF), mirroring report.html. */
-  @media print { .scribble-view-toggle { display: none; } .scribble-fview[hidden] { display: block !important; } }
+  /* Affected-hosts / vulnerabilities cell: the links ARE the finding links (the redundant per-host
+     Findings column is gone). Cap width so a long host list wraps instead of blowing the row wide. */
+  .scribble-rollup .rl-linklist { max-width: 560px; line-height: 1.7; }
+  .rl-plus { font-size: 11px; color: var(--muted); margin-left: 1px; }
+  .btn-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+  .btn-link:hover { text-decoration: underline; }
+  .scribble-rollup .rl-actions { white-space: nowrap; }
+  .rl-assign-sel { max-width: 150px; }
+  /* PRINT: stack every view (a hidden tab must still reach a print-to-PDF), mirroring report.html.
+     Reveal any collapsed "see more…" hosts and drop the no-print Assign controls for the printed copy. */
+  @media print {
+    .scribble-view-toggle { display: none; }
+    .scribble-fview[hidden] { display: block !important; }
+    .rl-overflow[hidden] { display: inline !important; }
+    .rl-more, .rl-actions { display: none !important; }
+  }
 
   .scribble-board { display: flex; flex-direction: column; gap: 14px; }
   .scribble-board-group.is-dragging { opacity: .4; border-style: dashed; }
@@ -500,7 +567,7 @@
 </section>
 
 <script>
-  // Finding-view toggle (Phase 1b) — Board / By vulnerability / By host. Mirrors core report.html's
+  // Finding-view toggle — Group by: Section / Vulnerability / Host. Mirrors core report.html's
   // client-side tab switch; no server round-trip. Rollup rows link to the finding detail page, so no
   // in-page hash handling is needed here (unlike report.html's #finding-… anchors).
   (function () {
@@ -522,6 +589,44 @@
     }
     tabs.forEach(function (t) {
       t.addEventListener("click", function () { show(t.getAttribute("data-view")); });
+    });
+  })();
+
+  // Rollup interactions (By-vulnerability / By-host tabs): the per-bucket "see more…" reveal and the
+  // "Assign all → <section>" cross-axis bulk move. Delegated on document so it survives DataTables
+  // pagination (rows on other pages are detached from the DOM). The see-more only unhides spans ALREADY
+  // in the cell (DataTables snapshots tbody at init, so revealing pre-rendered content is safe; adding
+  // rows would not be). Assign reuses the board's batch-move endpoint + the host's CSRF fetch wrapper.
+  (function () {
+    document.addEventListener("click", function (e) {
+      var more = e.target.closest(".rl-more");
+      if (more) {
+        var cell = more.closest("td");
+        if (cell) cell.querySelectorAll(".rl-overflow").forEach(function (s) { s.hidden = false; });
+        more.remove();
+        return;
+      }
+      var btn = e.target.closest(".rl-assign-btn");
+      if (!btn) return;
+      var sel = btn.parentElement.querySelector(".rl-assign-sel");
+      var val = sel ? sel.value : "__none__";
+      if (val === "__none__") return;  // no section chosen
+      var ids = (btn.dataset.findingIds || "").split(",").filter(Boolean);
+      if (!ids.length) return;
+      var label = sel.options[sel.selectedIndex].text;
+      if (!window.confirm("Move " + ids.length + " finding" + (ids.length === 1 ? "" : "s") +
+                          " to “" + label + "”?")) return;
+      var board = document.querySelector("[data-batch-move-url]");
+      if (!board) { window.alert("Cannot move — board URL missing."); return; }
+      btn.disabled = true;
+      fetch(board.dataset.batchMoveUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },  // X-CSRFToken injected by the host fetch wrapper
+        body: JSON.stringify({ finding_ids: ids, group_id: (val === "" ? null : val), order_index: 0 })
+      })
+        .then(function (r) { if (!r.ok) throw new Error("move failed"); return r.json(); })
+        .then(function () { window.location.reload(); })
+        .catch(function () { btn.disabled = false; window.alert("Move failed — please retry."); });
     });
   })();
 </script>
