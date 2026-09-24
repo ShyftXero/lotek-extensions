@@ -405,7 +405,7 @@
 
     btn.addEventListener("click", function () {
       var jobId = (input.value || "").trim();
-      if (!jobId) { setMsg("Enter a scan job id first."); return; }
+      if (!jobId) { setMsg("Pick a scan job first."); return; }
       btn.disabled = true;
       setMsg("Adopting…");
       fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)), { method: "POST" })

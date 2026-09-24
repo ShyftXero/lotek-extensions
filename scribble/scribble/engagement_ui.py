@@ -741,6 +741,31 @@ def register(api_bp, bp) -> None:
             db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
+    @bp.get("/engagements/<uuid:engagement_id>/adoptable-jobs.json", endpoint="adoptable_jobs_json")
+    def adoptable_jobs_json(engagement_id: uuid.UUID):
+        """Searchable source for the Source-jobs adopt picker (#234): the scan jobs the caller may adopt
+        for THIS board's core engagement's client, matching ``?q=``. Returns the combobox contract
+        (``{"items":[{value,label}]}``) so ``combobox.js`` in ``data-search-url`` mode drives it — an
+        operator picks a job by name/target/status/date instead of pasting an opaque UUID.
+
+        Engagement-scoped by the blueprint gate (a non-member 404s before this runs); the host
+        ``adoptable_jobs`` hook scopes to the caller's visible jobs on top (``scope_jobs_query``). No
+        core engagement behind the board (standalone) -> the hook returns nothing.
+        """
+        with open_session() as db:
+            board = db.get(ReportBoard, engagement_id)
+            if board is None:
+                abort(404)
+            core_id = board.core_engagement_id
+        q = (request.args.get("q") or "").strip()
+        items = []
+        for j in host.adoptable_jobs(core_id, q, 50):
+            name = j.get("name") or "(unnamed)"
+            tgt = ((j.get("targets") or "").splitlines() or [""])[0][:40]
+            label = f"{name} — {tgt} · {j.get('status', '')} · {(j.get('created_at') or '')[:10]}"
+            items.append({"value": j["id"], "label": label})
+        return jsonify(items=items)
+
     # =============================================================================== UI: un-adopt (#635)
 
     def _is_source_job(engagement, job_id, actor) -> bool:

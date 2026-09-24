@@ -291,9 +291,16 @@ class StubHost:
         # host scopes this to the principal's visible engagements; the stub just returns what a test sets,
         # so an ext test drives the list content directly. Each item: {id, name, client_id, client_name}.
         self.engagement_summaries_value: list[dict] = []
+        # Scan jobs the board's adopt picker offers (host.adoptable_jobs). The real host scopes these to
+        # the caller's visible jobs for the engagement's client; the stub returns what a test sets. Each
+        # item: {id, name, targets, status, created_at}.
+        self.adoptable_jobs_value: list[dict] = []
 
     def engagement_summaries(self) -> list[dict]:
         return list(self.engagement_summaries_value)
+
+    def adoptable_jobs(self, core_engagement_id, query="", limit=50) -> list[dict]:  # noqa: ARG002
+        return list(self.adoptable_jobs_value)
 
     def can_operate_on(self, engagement_id) -> bool:
         """The host's per-engagement OPERATOR gate (`app/extensions.py` injects the real one, built on
@@ -492,6 +499,7 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     # to mirror the bundle and is one key short.
     cfg.extras["can_operate_on"] = stub.can_operate_on
     cfg.extras["engagement_summaries"] = stub.engagement_summaries
+    cfg.extras["adoptable_jobs"] = stub.adoptable_jobs
     # AI seam (core app.ai.stream): a fake streamer so a mounted route can exercise the AI-draft path.
     # Absent this key, draft_api fails closed (503) — that fail-closed path has its own test.
     cfg.extras["ai_stream"] = lambda messages, **_kw: iter(["stub AI draft."])  # noqa: ARG005

@@ -125,6 +125,15 @@ def engagement_summaries() -> list:
     return list(hook()) if hook is not None else []
 
 
+def adoptable_jobs(core_engagement_id, query: str = "", limit: int = 50) -> list:
+    """Scan jobs ``{id, name, targets, status, created_at}`` the current principal may adopt for the
+    CLIENT that owns ``core_engagement_id`` -- the board's searchable adopt picker (#234), so an operator
+    picks a job by name/target instead of pasting a UUID. Scoped host-side through ``scope_jobs_query``.
+    Empty when unmounted -- standalone Scribble has no host scan jobs."""
+    hook = host_hook("adoptable_jobs")
+    return list(hook(core_engagement_id, query, limit)) if hook is not None else []
+
+
 def findings():
     """The host's read-only findings namespace (``get_job``/``list_findings``/``get_finding``), or
     None when unmounted. Callers treat None like an empty host (no scan data reachable)."""
