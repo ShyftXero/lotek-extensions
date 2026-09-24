@@ -431,7 +431,13 @@
   .btn-link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
   .btn-link:hover { text-decoration: underline; }
   .scribble-rollup .rl-actions { white-space: nowrap; }
-  .rl-assign-sel { max-width: 150px; }
+  /* Field styling: these selects sit in the rollup tables, OUTSIDE any `.card`, so scribble.css's
+     `.card select` base rule never reaches them — without this they render browser-native (a light
+     grey box with a native chevron) against the dark theme, mismatching every other control. */
+  .scribble-rollup .rl-assign-sel {
+    max-width: 150px; background: var(--field-bg); color: var(--ink);
+    border: 1px solid var(--line-strong); border-radius: 8px; padding: 5px 8px; font: inherit;
+  }
   /* PRINT: stack every view (a hidden tab must still reach a print-to-PDF), mirroring report.html.
      Reveal any collapsed "see more…" hosts and drop the no-print Assign controls for the printed copy. */
   @media print {

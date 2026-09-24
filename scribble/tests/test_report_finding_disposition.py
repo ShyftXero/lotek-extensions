@@ -194,9 +194,11 @@ def test_include_in_report_remains_an_independent_veto(status, session_factory):
     assert ctx.rollup.total == 0
 
 
-def test_html_shows_a_status_column_and_badges_only_when_some_finding_is_not_new(session_factory):
-    """E2 + E3. The index gains a Status column and the cards gain badges — but only when there is
-    something to say. An all-``new`` engagement must render exactly as it did before this feature."""
+def test_html_shows_status_badges_on_cards_only_when_some_finding_is_not_new(session_factory):
+    """E2 + E3. The finding CARDS gain status badges when something is not `new`; an all-`new` engagement
+    renders exactly as before. (The exec-summary "Findings at a glance" index is grouped by vulnerability
+    and no longer carries a per-finding Status column — status doesn't collapse per-kind; the badge lives
+    on the card and the disposition counts in the severity rollup.)"""
     mixed = _engagement(
         session_factory,
         [
@@ -207,8 +209,9 @@ def test_html_shows_a_status_column_and_badges_only_when_some_finding_is_not_new
     with session_factory() as db:
         html = render_report_html(build_report_context(db.get(ReportBoard, mixed)))
 
-    assert "<th>Status</th>" in html
-    assert "Remediated" in html
+    assert "Remediated" in html                       # the card badge
+    assert '<span class="status-badge' in html
+    assert "<th>Status</th>" not in html              # the by-vuln index carries no Status column
 
     plain = _engagement(
         session_factory, [("SMB signing not required", Severity.high, FindingStatus.new, True)]

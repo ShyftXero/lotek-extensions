@@ -67,6 +67,34 @@ def test_rollups_block_renders_when_buckets_present_and_omits_when_empty(session
 
 # --------------------------------------------------------------------------- context (visible-only)
 
+def test_findings_at_a_glance_groups_by_vulnerability_not_per_host(session_factory):
+    """The exec-summary "Findings at a glance" index is ONE row per vulnerability with a host COUNT — a
+    fleet-wide issue is a single line, not one row per affected host (which made the index 400+ rows /
+    ~18k px on a real engagement). Grouped by title, so it holds offline too."""
+    with session_factory() as db:
+        client = Client(name="Acme")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="Q3", client_id=client.id, company_name="Acme")
+        grp = FindingGroup(engagement=eng, name="Internal", order_index=0)
+        db.add_all([eng, grp])
+        db.flush()
+        db.add_all([
+            BoardFinding(engagement_id=eng.id, group_id=grp.id, title="Default credentials accepted",
+                         severity=Severity.critical, target_host=h)
+            for h in ("10.0.0.1", "10.0.0.2", "10.0.0.3")
+        ])
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        html = render_report_html(build_report_context(db.get(ReportBoard, eng_id)))
+    idx = html.split('class="index-wrap"', 1)[1].split("</table>", 1)[0]
+    assert idx.count('href="#finding-') == 1, "one index row per vulnerability, not per host"
+    assert "Default credentials accepted" in idx
+    assert ">Hosts<" in idx and ">3<" in idx           # a host COUNT column, reading 3
+    assert "10.0.0.1" not in idx, "individual hosts must NOT be enumerated in the at-a-glance index"
+
+
 def test_deliverable_rollup_feeds_the_seam_report_visible_findings_only(app, stub_host, session_factory):
     # A non-empty return so ctx.findings_by_kind is populated; the assertion of interest is the ROWS
     # the seam was FED (the deliverable's report-visible filter), captured by the stub.
