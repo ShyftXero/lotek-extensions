@@ -98,16 +98,18 @@ def _make_image_resolver(artifact_bytes: ArtifactBytes | None) -> Callable[[str]
     return _resolve
 
 
-# Green small-caps section label, byte-identical to the template's REPRODUCTION/AFFECTED ASSETS labels
-# (build_default_docx: size=9 → sz 18, color ACCENT_INK, bold, caps + letter-spacing 8) so the body-owned
-# labels (Description/Remediation/Details) read the same as the card-owned ones. RichText.add() has no
-# caps/spacing params, so the run is hand-built.
+# Green section label as a bolder "block": caps, ACCENT_INK, on a light-green wash (ACCENT_WASH), 10pt,
+# in the body font — matches the template's REPRODUCTION/AFFECTED ASSETS/EVIDENCE labels
+# (build_default_docx._section_label) so body-owned labels (Description/Remediation/Details) read the same.
+# Font is "Inter" (the body default) so the render-time font remap swaps it with the chosen body face; a
+# stale "Liberation Sans" here previously left the labels in a different font from the body.
 def _label_run_xml(text: str) -> str:
     return (
         '<w:r><w:rPr>'
-        '<w:rFonts w:ascii="Liberation Sans" w:hAnsi="Liberation Sans"/>'
-        '<w:b/><w:caps/><w:spacing w:val="8"/><w:color w:val="0A5B3D"/><w:sz w:val="18"/>'
-        f'</w:rPr><w:t xml:space="preserve">{_html_escape(text)}</w:t></w:r>'
+        '<w:rFonts w:ascii="Inter" w:hAnsi="Inter"/>'
+        '<w:b/><w:caps/><w:spacing w:val="6"/><w:color w:val="0A5B3D"/><w:sz w:val="20"/>'
+        '<w:shd w:val="clear" w:color="auto" w:fill="E7F3ED"/>'
+        f'</w:rPr><w:t xml:space="preserve"> {_html_escape(text)} </w:t></w:r>'
     )
 
 
@@ -1007,6 +1009,61 @@ def _append_strategic_recommendations(doc, ctx: ReportContext) -> None:
         doc.add_paragraph(f"{r.number}. {_xml_safe(r.text)}")
 
 
+def _append_methodology(doc, ctx: ReportContext) -> None:
+    """Append the standing Methodology section (phases + per-section-type framing) and the severity rating
+    definitions — the docx half of ``render_html``'s Methodology section, which the .docx was missing.
+    Reuses render_html's shared standing constants so the two deliverables can't drift. Placed after the
+    strategic recommendations and before the coverage checklists, matching the HTML section order."""
+    from docx.shared import Pt, RGBColor
+
+    from scribble.report_templates.build_default_docx import SEVERITY_COLORS
+    from scribble.reporting.render_html import (
+        _METHODOLOGY_FRAMING,
+        _METHODOLOGY_PHASES,
+        _SEV_LABELS,
+        _SEVERITY_DEFINITIONS,
+    )
+
+    doc.add_heading("Methodology", level=1)
+    doc.add_paragraph(
+        "An assessment of this kind is conducted in the phases below, each feeding the next. This is a "
+        "standing description of method, not a log of what was done on this engagement — what a given "
+        "engagement covered is recorded on its coverage record and on the findings themselves."
+    )
+    for name, text in _METHODOLOGY_PHASES:
+        p = doc.add_paragraph()
+        head = p.add_run(f"{_xml_safe(name)} — ")
+        head.bold = True
+        head.font.color.rgb = RGBColor.from_string("0A5B3D")
+        p.add_run(_xml_safe(text))
+
+    seen: set[str] = set()
+    frames: list[tuple[str, str]] = []
+    for group in ctx.groups:
+        slug = getattr(group, "type_slug", "") or ""
+        if slug and slug not in seen and slug in _METHODOLOGY_FRAMING:
+            seen.add(slug)
+            frames.append(_METHODOLOGY_FRAMING[slug])
+    if frames:
+        doc.add_heading("Framing by section type", level=2)
+        for label, text in frames:
+            p = doc.add_paragraph()
+            p.add_run(f"{_xml_safe(label)} — ").bold = True
+            p.add_run(_xml_safe(text))
+
+    if ctx.rollup and ctx.rollup.total > 0:
+        doc.add_heading("Severity ratings", level=2)
+        for sev in SEVERITY_ORDER:
+            if sev not in _SEVERITY_DEFINITIONS:
+                continue
+            p = doc.add_paragraph()
+            tag = p.add_run(f"{_SEV_LABELS.get(sev, sev.title())}   ")
+            tag.bold = True
+            tag.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[sev])
+            tag.font.size = Pt(10)
+            p.add_run(_xml_safe(_SEVERITY_DEFINITIONS[sev]))
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -1162,6 +1219,7 @@ def render_report_docx(
     _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
     _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
     _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
+    _append_methodology(tpl.docx, ctx)  # standing method + severity ratings (HTML parity)
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
 

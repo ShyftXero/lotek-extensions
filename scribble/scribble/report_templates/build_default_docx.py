@@ -180,6 +180,19 @@ def _chip(paragraph, text, *, fill, color, size=8, caps=False):
     return r
 
 
+def _section_label(paragraph, text):
+    """A bolder green 'block' section label: caps, ACCENT_INK, on a light-green wash, 10pt — matches the
+    body block labels (render_docx._label_run_xml). Padded so the wash reads as a block, not a highlight."""
+    r = _run(paragraph, f" {text} ", size=10, color=ACCENT_INK, bold=True, caps=True)
+    rpr = r._r.get_or_add_rPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), ACCENT_WASH)
+    rpr.append(shd)
+    return r
+
+
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _PILL_ID = [1000]
 
@@ -495,7 +508,7 @@ def _finding_card(doc: Document) -> None:
 
     # Reproduction — the scanner's request(s), in a shaded monospace code box (one per distinct pattern).
     content.add_paragraph("{%p if f.repro %}")
-    _run(content.add_paragraph(), "Reproduction", size=9, color=ACCENT_INK, bold=True, caps=True)
+    _section_label(content.add_paragraph(), "Reproduction")
     content.add_paragraph("{%p for r in f.repro %}")
     rp = content.add_paragraph()
     _shade(rp._p, SURFACE2)
@@ -507,8 +520,7 @@ def _finding_card(doc: Document) -> None:
     # Affected Assets — deduped services (host:port/proto) as a 3-column monospace GRID (f.asset_rows,
     # each a space-padded fixed-width row), so a 50-host fleet vuln is a compact block, not a full page.
     content.add_paragraph("{%p if f.assets %}")
-    _run(content.add_paragraph(), "Affected Assets ({{ f.assets|length }})",
-         size=9, color=ACCENT_INK, bold=True, caps=True)
+    _section_label(content.add_paragraph(), "Affected Assets ({{ f.assets|length }})")
     content.add_paragraph("{%p for row in f.asset_rows %}")
     ap = content.add_paragraph()
     _spacing(ap, before=0, after=0)
@@ -518,7 +530,7 @@ def _finding_card(doc: Document) -> None:
 
     # evidence
     content.add_paragraph("{%p if f.artifacts %}")
-    _run(content.add_paragraph(), "Evidence", size=9, color=ACCENT_INK, bold=True, caps=True)
+    _section_label(content.add_paragraph(), "Evidence")
     content.add_paragraph("{%p for a in f.artifacts %}")
     content.add_paragraph("{%p if a.embedded %}")
     content.add_paragraph().add_run("{{ a.image }}")
