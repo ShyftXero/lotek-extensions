@@ -38,7 +38,7 @@ import zipfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from html import escape as _escape
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import nh3
 
@@ -409,46 +409,107 @@ def _render_artifact_gallery(
     return f'<div class="evidence">{cap}<div class="evidence-grid">{items}</div></div>'
 
 
-def _affected_assets(f: FindingCtx) -> list[tuple[str, str | None]]:
-    """``(label, href)`` for every asset this finding touches: its own target host/url, any per-host
-    child instances, and an ``AFFECTED`` variable overlay. De-duplicated by label, order-preserving.
-    ``href`` is set only for a safe-scheme URL so the renderer can link it."""
-    out: list[tuple[str, str | None]] = []
-    seen: set[str] = set()
+# URL schemes that ride TCP — used only to append an honest ``/tcp`` to a service label. A scheme not
+# here (or no URL) yields ``host:port`` with no proto rather than a guess.
+_TCP_URL_SCHEMES = {"http", "https", "ftp", "ftps", "ssh", "smtp", "smtps", "imap", "imaps",
+                    "pop3", "pop3s", "ldap", "ldaps", "rdp", "telnet", "mysql", "mssql", "vnc"}
 
-    def add(label: str, href: str | None = None) -> None:
-        label = (label or "").strip()
-        if label and label not in seen:
-            seen.add(label)
-            out.append((label, href))
 
-    if f.target_host:
-        add(f.target_host + (f":{f.target_port}" if f.target_port else ""))
-    if f.target_url:
-        add(f.target_url, _safe_href(f.target_url))
-    for c in f.children:
-        add(_child_host_label(c))
+def _asset_label(inst: FindingCtx) -> str | None:
+    """A single affected SERVICE label — ``host:port/proto`` — for one finding instance, from its
+    ``target_host``/``target_port`` and the netloc/scheme of its ``target_url``. NEVER the URL path or
+    query: an exploit URL carries the PoC payload (an XSS string, an LFI path), which belongs in the
+    reproduction block, not the asset list. ``/proto`` is emitted only when the URL scheme implies TCP;
+    otherwise ``host:port`` — an honest ``:port`` beats a guessed ``/proto``. None when no host is known."""
+    host = (inst.target_host or "").strip()
+    port = str(inst.target_port).strip() if inst.target_port else ""
+    proto = ""
+    if inst.target_url:
+        u = urlparse(inst.target_url)
+        if not host:
+            host = (u.hostname or "").strip()
+        if not port and u.port:
+            port = str(u.port)
+        if u.scheme in _TCP_URL_SCHEMES:
+            proto = "tcp"
+    if not host:
+        return None
+    label = host + (f":{port}" if port else "")
+    if port and proto:
+        label += f"/{proto}"
+    return label
+
+
+def _affected_labels(
+    f: FindingCtx,
+) -> tuple[list[str], dict[str, list], dict[str, list[str]]]:
+    """For a finding + its folded per-host instances: the DISTINCT affected-service labels (sorted), the
+    artifacts carried at each, and the per-host facts line(s) at each. One row per distinct service — a
+    host reported by two instances of the same vuln is ONE asset (the dedup the old split "Affected
+    Assets" list + "Affected hosts (N)" table got wrong: 49 rows for 26 hosts). Facts/artifacts carry
+    the per-host detail a promoted instance adds (e.g. ``svc_sql`` on dc01) so collapsing loses nothing."""
+    arts: dict[str, list] = {}
+    facts: dict[str, list[str]] = {}
+    order: list[str] = []
+
+    def _slot(label: str) -> None:
+        if label not in arts:
+            arts[label] = []
+            facts[label] = []
+            order.append(label)
+
+    for inst in (f, *f.children):
+        label = _asset_label(inst)
+        if not label:
+            continue
+        _slot(label)
+        arts[label].extend(inst.artifacts or [])
+        fl = (getattr(inst, "facts_line", "") or "").strip()
+        if fl and fl != label and fl not in facts[label]:
+            facts[label].append(fl)
     affected = f.variables.get("AFFECTED") if isinstance(f.variables, dict) else None
     if affected:
         for piece in str(affected).replace(";", ",").split(","):
-            add(piece.strip())
-    return out
+            lbl = piece.strip()
+            if lbl:
+                _slot(lbl)
+    order.sort()
+    return order, arts, facts
 
 
-def _render_affected_assets(f: FindingCtx) -> str:
-    """Always-present per-finding "Affected Assets" section (empty-state when nothing is recorded)."""
-    assets = _affected_assets(f)
-    if not assets:
-        body = '<span class="muted">Not specified.</span>'
+def _render_affected(f: FindingCtx, resolver: _AssetResolver) -> str:
+    """The ONE "Affected Assets" section per card: a deduplicated ``host:port/proto`` list across the
+    card's own instance and every folded per-host instance. Replaces the old duplicate pair (an
+    "Affected Assets" list AND a separate "Affected hosts (N)" children table — same data twice). A
+    Details column (per-host facts + evidence) appears only when some instance actually carries it, so the
+    bare case is a clean list, not a table of empty cells."""
+    order, arts, facts = _affected_labels(f)
+    n = len(order)
+    if not order:
+        return ('<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
+                '<div class="block-body"><span class="muted">Not specified.</span></div></div>')
+    if any(arts[label] or facts[label] for label in order):
+        rows = []
+        for label in order:
+            parts = []
+            if facts[label]:
+                parts.append(f'<span class="asset-facts">{_esc(", ".join(facts[label]))}</span>')
+            gallery = _render_artifact_gallery(arts[label], resolver, label=None)
+            if gallery:
+                parts.append(gallery)
+            detail = "".join(parts) or '<span class="muted">—</span>'
+            rows.append(f'<tr><td class="asset-host">{_esc(label)}</td>'
+                        f'<td class="asset-detail">{detail}</td></tr>')
+        inner = ('<table class="children-table"><thead><tr><th>Asset</th><th>Details</th></tr></thead>'
+                 f'<tbody>{"".join(rows)}</tbody></table>')
     else:
-        lis = []
-        for label, href in assets:
-            inner = f'<a href="{_esc(href)}">{_esc(label)}</a>' if href else _esc(label)
-            lis.append(f"<li>{inner}</li>")
-        body = f'<ul class="asset-list">{"".join(lis)}</ul>'
+        inner = f'<ul class="asset-list">{"".join(f"<li>{_esc(label)}</li>" for label in order)}</ul>'
+    # Collapsible (open by default): the assets ARE the content, and the print sheet reveals
+    # ``details.children`` regardless of state so a client PDF always shows them.
     return (
-        '<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
-        f'<div class="block-body">{body}</div></div>'
+        '<div class="block affected-assets">'
+        f'<details class="children" open><summary class="block-label">Affected Assets ({n})</summary>'
+        f'{inner}</details></div>'
     )
 
 
@@ -517,41 +578,6 @@ def _child_summary_text(c: FindingCtx) -> str:
     ``scribble.promote.promote_job``), so a per-child excerpt of ``blocks_html`` would just repeat the
     parent's write-up for every host rather than showing what's actually different about this one."""
     return c.facts_line
-
-
-def _render_child_evidence_cell(c: FindingCtx, resolver: _AssetResolver) -> str:
-    """The Evidence cell for one child instance: its per-host facts line AND its own attached artifacts.
-
-    The gallery half is ext#40: ``_render_finding`` gives a top-level finding's artifacts a gallery, but a
-    CHILD was only ever rendered through this table, whose Evidence column was the facts line alone. A
-    screenshot attached to a promoted per-host instance therefore produced an empty cell — and promoted
-    scan findings are exactly where nesting comes from (``scribble.promote.promote_job``), so per-host
-    evidence was the case most likely to be lost. An em-dash keeps a genuinely empty cell scannable
-    instead of blank."""
-    facts = _child_summary_text(c)
-    gallery = _render_artifact_gallery(c.artifacts, resolver, label=None)
-    if not facts and not gallery:
-        return '<span class="muted">—</span>'
-    facts_html = f'<div class="child-facts">{_esc(facts)}</div>' if facts else ""
-    return facts_html + gallery
-
-
-def _render_children(f: FindingCtx, resolver: _AssetResolver) -> str:
-    """A COMPACT per-host list for a parent finding's children -- rendered once, collapsed by default,
-    instead of one full finding card per instance (see module docstring header)."""
-    if not f.children:
-        return ""
-    rows = "".join(
-        f'<tr><td class="child-host">{_esc(_child_host_label(c))}</td>'
-        f'<td class="child-evidence">{_render_child_evidence_cell(c, resolver)}</td></tr>'
-        for c in f.children
-    )
-    n = len(f.children)
-    return (
-        f'<details class="children"><summary>Affected hosts ({n})</summary>'
-        '<table class="children-table"><thead><tr><th>Host</th><th>Evidence</th></tr></thead>'
-        f"<tbody>{rows}</tbody></table></details>"
-    )
 
 
 def _render_metadata_chips(f: FindingCtx) -> str:
@@ -630,14 +656,15 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
     badges += _render_metadata_chips(f)
-    # A card collapsed by vulnerability spans many hosts — show the fleet size up front (matches the
-    # at-a-glance count; same ``_affected_hosts`` source). Only when it is more than its own host.
-    host_count = len(_affected_hosts(f))
-    if host_count > 1:
-        badges += f'<span class="chip hosts">{host_count} affected hosts</span>'
+    # A card collapsed by vulnerability spans many services — show the fleet size up front (same
+    # ``_affected_hosts`` source as the at-a-glance count and the Affected Assets section, so all three
+    # agree). Only when it is more than its own asset.
+    asset_count = len(_affected_hosts(f))
+    if asset_count > 1:
+        badges += f'<span class="chip hosts">{asset_count} affected assets</span>'
     body = (
         _render_blocks(f, resolver)
-        + _render_affected_assets(f)
+        + _render_affected(f, resolver)
         + _render_recommendations(f, resolver)
         + _render_references(f)
     )
@@ -646,11 +673,9 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         f'id="finding-{f.id}">'
         f'<div class="finding-head"><h3>{_esc(f.title)}</h3>'
         f'<div class="finding-badges">{badges}</div></div>'
+        # The Affected Assets table (with per-service evidence) lives INSIDE the body, before the parent's
+        # own gallery, so ``context.number_figures`` counts figures upward as the reader scrolls.
         f'<div class="finding-body">{body}</div>'
-        # Children BEFORE the parent's own gallery, so the figure numbers ``context.number_figures``
-        # assigns count upward as the reader scrolls -- the .docx emits the children's evidence first
-        # (it lives inside ``{{r f.body }}`` in a binary template) and cannot be reordered as cheaply.
-        f"{_render_children(f, resolver)}"
         f"{_render_gallery(f, resolver)}"
         "</article>"
     )
@@ -974,7 +999,7 @@ def _render_front_matter(ctx: ReportContext) -> str:
     narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
     return (
         '<div class="frontmatter">'
-        '<div class="fm-block"><h3>ReportBoard overview</h3>'
+        '<div class="fm-block"><h3>Overview</h3>'
         f'<p class="fm-lead">{_overview_paragraph(ctx)}</p>{narrative}</div>'
         '<div class="fm-block"><h3>Scope and limitations</h3>'
         f'<ul class="fm-limits">{limits}</ul></div>'
@@ -1039,20 +1064,10 @@ def _index_ids_cell(ids: list) -> str:
 
 
 def _affected_hosts(f: FindingCtx) -> set[str]:
-    """Distinct affected-host labels for a finding INCLUDING its folded per-host instances
-    (``children``). One label per instance: ``host:port``, else the ``url``. The SINGLE source the
-    at-a-glance host count AND the card's host-count badge read, so the two can never disagree
-    (one-predicate-one-home)."""
-    hosts: set[str] = set()
-    for inst in (f, *f.children):
-        host = inst.target_host or ""
-        if host and inst.target_port:
-            host = f"{host}:{inst.target_port}"
-        if not host and inst.target_url:
-            host = inst.target_url
-        if host:
-            hosts.add(host)
-    return hosts
+    """Distinct affected-service labels (``host:port/proto``) for a finding INCLUDING its folded per-host
+    instances — the SINGLE source the at-a-glance count, the card badge, AND the Affected Assets section
+    all read (via ``_affected_labels``), so the three can never disagree (one-predicate-one-home)."""
+    return set(_affected_labels(f)[0])
 
 
 def _findings_index(ctx: ReportContext) -> str:
