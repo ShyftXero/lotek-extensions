@@ -440,6 +440,26 @@ def _asset_label(inst: FindingCtx) -> str | None:
     return label
 
 
+def _label_from_text(text: str) -> str | None:
+    """Normalize a free-text asset reference (a URL, or a bare ``host``/``host:port``) to the same
+    ``host:port/proto`` label ``_asset_label`` produces. So an ``AFFECTED`` overlay that is really an
+    exploit URL collapses to its service and dedups against the target-derived asset, instead of leaking
+    the PoC path/payload into the asset list."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if "://" in text:
+        u = urlparse(text)
+        host = (u.hostname or "").strip()
+        if not host:
+            return None
+        label = host + (f":{u.port}" if u.port else "")
+        if u.port and u.scheme in _TCP_URL_SCHEMES:
+            label += "/tcp"
+        return label
+    return text
+
+
 def _affected_labels(
     f: FindingCtx,
 ) -> tuple[list[str], dict[str, list], dict[str, list[str]]]:
@@ -465,12 +485,14 @@ def _affected_labels(
         _slot(label)
         arts[label].extend(inst.artifacts or [])
         fl = (getattr(inst, "facts_line", "") or "").strip()
-        if fl and fl != label and fl not in facts[label]:
+        # A URL-valued facts line is a PoC (AFFECTED is set to the exploit URL for scan findings) — it
+        # belongs in Reproduction, not the asset Details. Per-host facts like "svc_sql" stay.
+        if fl and "://" not in fl and fl != label and fl not in facts[label]:
             facts[label].append(fl)
     affected = f.variables.get("AFFECTED") if isinstance(f.variables, dict) else None
     if affected:
         for piece in str(affected).replace(";", ",").split(","):
-            lbl = piece.strip()
+            lbl = _label_from_text(piece)
             if lbl:
                 _slot(lbl)
     order.sort()
@@ -510,6 +532,43 @@ def _render_affected(f: FindingCtx, resolver: _AssetResolver) -> str:
         '<div class="block affected-assets">'
         f'<details class="children" open><summary class="block-label">Affected Assets ({n})</summary>'
         f'{inner}</details></div>'
+    )
+
+
+def _render_derived_repro(f: FindingCtx) -> str:
+    """Reproduction, when the finding has NO authored reproduction block: surface the scanner's request
+    URL(s) — the implicit PoC (path + payload) — as a copy-pasteable Reproduction section. Where the PoC
+    lives varies by finding (an authored ``reproduction`` codeBlock for some, only ``target_url`` for
+    others), so this fills the gap without duplicating an authored block. Distinct request PATTERNS across
+    the finding + folded instances: one example per (path, query) with a count, so a fleet vuln shows the
+    request once, not per host."""
+    if (f.blocks_html or {}).get("reproduction"):
+        return ""  # an authored reproduction block already renders via _render_blocks
+    variants: dict[tuple[str, str], list] = {}
+    order: list[tuple[str, str]] = []
+    for inst in (f, *f.children):
+        url = (inst.target_url or "").strip()
+        if not url:
+            continue
+        p = urlparse(url)
+        if not (p.path not in ("", "/") or p.query):
+            continue  # a bare host/root URL is not a PoC — it is already in Affected Assets
+        key = (p.path, p.query)
+        if key not in variants:
+            variants[key] = [url, 0]
+            order.append(key)
+        variants[key][1] += 1
+    if not order:
+        return ""
+    lines = []
+    for key in order:
+        example, count = variants[key]
+        suffix = f"    # on {count} affected assets" if count > 1 else ""
+        lines.append(_esc(example) + suffix)
+    return (
+        '<div class="block reproduction"><div class="block-label">Reproduction</div>'
+        '<div class="block-body"><p class="muted repro-note">Request(s) observed by the scanner:</p>'
+        f'<pre class="repro-req"><code>{chr(10).join(lines)}</code></pre></div></div>'
     )
 
 
@@ -664,6 +723,7 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         badges += f'<span class="chip hosts">{asset_count} affected assets</span>'
     body = (
         _render_blocks(f, resolver)
+        + _render_derived_repro(f)
         + _render_affected(f, resolver)
         + _render_recommendations(f, resolver)
         + _render_references(f)
