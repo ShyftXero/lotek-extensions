@@ -1123,12 +1123,22 @@ def _append_sha256_line(doc, a: ArtifactCtx) -> None:
     p.add_run(f"SHA-256: {a.sha256}").italic = True
 
 
-def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:
+def render_report_docx(
+    ctx: ReportContext,
+    *,
+    artifact_bytes: ArtifactBytes | None = None,
+    body_font: str | None = None,
+    code_font: str | None = None,
+) -> bytes:
     """Render ``ctx`` to a ``.docx`` document (bytes) using ``report_templates/default.docx``.
 
     ``artifact_bytes(storage_path) -> bytes | None`` supplies evidence-gallery + inline-content image
     bytes; when ``None`` (or a lookup fails), images degrade to caption-only / bracketed-placeholder
     text rather than the render failing.
+
+    ``body_font`` / ``code_font`` (operator report-font selection) swap the template's baked default
+    faces for the chosen ones after render (``reporting.fonts.remap_fonts``); ``None``/unknown keeps the
+    default. The chosen face must be one the lotek-gotenberg image has, or the PDF substitutes it.
     """
     tpl = DocxTemplate(str(_TEMPLATE_PATH))
     tpl.init_docx()
@@ -1149,6 +1159,11 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
     _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
     _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
     _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
+
+    # Operator report-font selection: swap the template's baked default faces for the chosen ones across
+    # the whole document (styles + runs), so the PDF bakes them in with no raw-docx editing.
+    from scribble.reporting.fonts import remap_fonts
+    remap_fonts(tpl.docx, body_font, code_font)
 
     buf = io.BytesIO()
     tpl.save(buf)

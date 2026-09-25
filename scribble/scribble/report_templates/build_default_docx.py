@@ -26,13 +26,15 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from scribble.reporting.fonts import DEFAULT_BODY_FONT as BODY_FONT
+from scribble.reporting.fonts import DEFAULT_CODE_FONT as MONO_FONT
+
 OUTPUT_PATH = Path(__file__).resolve().parent / "default.docx"
 
-# Report typography. These faces are baked into the lotek-gotenberg image (extensions/scribble/gotenberg),
-# so the PDF renders them instead of substituting; stock gotenberg/gotenberg:8 lacks them and would fall
-# back to Liberation/DejaVu. Inter (modern, dense-legible) for body/headings, JetBrains Mono for code.
-BODY_FONT = "Inter"
-MONO_FONT = "JetBrains Mono"
+# Report typography (BODY_FONT / MONO_FONT are imported at the top from reporting.fonts): Inter for
+# body/headings, JetBrains Mono for code — both baked into the lotek-gotenberg image
+# (extensions/scribble/gotenberg), so the PDF renders them instead of substituting a stock face. Sourced
+# from reporting.fonts so the render-time font remap replaces exactly what the template baked in.
 # Palette = render_html.py's PRINT (light) CSS, so HTML and PDF read the same.
 ACCENT = "0F7A52"
 ACCENT_INK = "0A5B3D"
