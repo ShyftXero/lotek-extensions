@@ -31,6 +31,7 @@ from scribble.content import schema
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
+from scribble.reporting.render_html import render_report_html
 from scribble.seed import seed_defaults
 from scribble.testing import register_kit_assets_shim, wire_mock_host
 
@@ -52,17 +53,39 @@ PATHS = ["/setup", "/contentwebserver", "/etc/mnt_info.csv", "/general/status.ht
          "/RPC2_Login", "/badging/badge_template_print.php?tpl=aa.xml&idt=1337", "/"]
 
 
-def _png(w: int, h: int, rgb: tuple[int, int, int]) -> bytes:
-    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
-
+def _encode_png(w: int, h: int, raw: bytearray) -> bytes:
     def chunk(t: bytes, d: bytes) -> bytes:
         c = t + d
         return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
 
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IDAT", zlib.compress(bytes(raw)))
             + chunk(b"IEND", b""))
+
+
+def _screenshot_png(w: int = 620, h: int = 360) -> bytes:
+    """A synthetic 'terminal screenshot' — a dark console with a title bar and fake text lines (one green
+    'success' line) — so evidence in the preview LOOKS like evidence and the design can be judged. Pure
+    stdlib (no PIL); scanline-encoded truecolor PNG."""
+    base, bar, ink, ok = (16, 24, 36), (34, 48, 66), (150, 170, 190), (90, 200, 140)
+    widths = (0.72, 0.48, 0.86, 0.4, 0.62, 0.78, 0.3, 0.55, 0.82, 0.44, 0.66)
+
+    def color(x: int, y: int) -> tuple[int, int, int]:
+        if y < 26:                                   # title bar
+            return bar
+        li = (y - 40) // 28
+        if 0 <= li < len(widths) and 40 + li * 28 <= y < 40 + li * 28 + 11:
+            if 24 <= x < 24 + int((w - 48) * widths[li]):
+                return ok if li == 4 else ink        # one green 'success' line
+        return base
+
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)                                # PNG filter byte 'none'
+        for x in range(w):
+            raw += bytes(color(x, y))
+    return _encode_png(w, h, raw)
 
 
 def _describe(title: str) -> str:
@@ -95,7 +118,7 @@ def build(out_dir: Path, gotenberg: str | None) -> None:
     wire_mock_host(app.extensions["scribble"])
     register_kit_assets_shim(app)
 
-    shot = _png(560, 300, (18, 34, 52))
+    shot = _screenshot_png()
     shots: dict[str, bytes] = {}
     sf = cfg.session_factory
     with sf() as db:
@@ -128,7 +151,10 @@ def build(out_dir: Path, gotenberg: str | None) -> None:
                     source_facts={"dedupe_key": f"nuclei:{title[:24]}:{idx}", "source": "nuclei"})
                 db.add(bf)
                 db.flush()
-                if idx <= 2:
+                # Attach evidence to three shapes so the render is exercised end to end: the FIRST printer
+                # instance (the collapse REPRESENTATIVE — a parent's own evidence), the SECOND (a CHILD, the
+                # per-host case), and the single-host vsftpd finding (a clean standalone parent).
+                if idx <= 2 or n == 1:
                     sp = f"obj:{uuid.uuid7()}"
                     shots[sp] = shot
                     db.add(M.Artifact(engagement_id=board.id, finding_id=bf.id,
@@ -138,12 +164,17 @@ def build(out_dir: Path, gotenberg: str | None) -> None:
         db.commit()
         bid = board.id
 
+    reader = shots.get
     with sf() as db, app.app_context():
-        docx_bytes = render_report_docx(build_report_context(db.get(M.ReportBoard, bid)),
-                                        artifact_bytes=lambda sp: shots.get(sp))
+        ctx = build_report_context(db.get(M.ReportBoard, bid))
+        docx_bytes = render_report_docx(ctx, artifact_bytes=reader)
+        html_doc = render_report_html(ctx, inline_assets=True, artifact_bytes=reader)
     docx_path = out_dir / "report.docx"
     docx_path.write_bytes(docx_bytes)
     print(f"wrote {docx_path} ({len(docx_bytes)} bytes)")
+    html_path = out_dir / "report.html"
+    html_path.write_text(html_doc, encoding="utf-8")
+    print(f"wrote {html_path} ({len(html_doc)} bytes)")
 
     if gotenberg:
         import requests

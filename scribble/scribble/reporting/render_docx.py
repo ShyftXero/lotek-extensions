@@ -296,15 +296,19 @@ def _target_text(f: FindingCtx) -> str:
     return " · ".join(bits)
 
 
-def _numbered_caption(a: ArtifactCtx) -> str:
+def _numbered_caption(a: ArtifactCtx, host: str | None = None) -> str:
     """``"Figure 3 — Payload firing in the browser"`` (ext#117). The number comes off the CONTEXT
     (``context.number_figures``), never from a counter this renderer keeps, so it is the same number
-    the HTML deliverable prints for the same artifact."""
-    return _xml_safe(figure_caption(a.figure_number, a.caption or a.filename))
+    the HTML deliverable prints for the same artifact. ``host`` prefixes the caption for a per-host
+    (child) screenshot so it's clear which affected asset it documents."""
+    text = a.caption or a.filename
+    if host:
+        text = f"{host} — {text}"
+    return _xml_safe(figure_caption(a.figure_number, text))
 
 
 def _artifact_ctx(
-    a: ArtifactCtx, artifact_bytes: ArtifactBytes | None, tpl: DocxTemplate
+    a: ArtifactCtx, artifact_bytes: ArtifactBytes | None, tpl: DocxTemplate, *, host: str | None = None
 ) -> dict[str, object]:
     is_image = (a.content_type or "").startswith("image/")
     image = None
@@ -321,7 +325,7 @@ def _artifact_ctx(
             except Exception:
                 image = None
     return {
-        "caption": _numbered_caption(a),
+        "caption": _numbered_caption(a, host),
         "filename": a.filename,
         "image": image,
         "embedded": image is not None,
@@ -341,6 +345,16 @@ def _finding_ctx(
 
     image_resolver = _make_image_resolver(artifact_bytes)
     sev = f.severity if f.severity in SEVERITY_ORDER else "info"
+    # Evidence gallery = every child's screenshots (host-captioned) THEN the finding's own — the exact
+    # order context.number_figures stamps, so the DOCX prints "Figure 2 … Figure 3 …" upward like the HTML
+    # does. Without the child pass a promoted (per-host) finding's evidence rendered NOWHERE in the DOCX —
+    # it was numbered but dropped, leaving a hole in the figure sequence. `evidence` suppression drops the
+    # whole section (children included).
+    if "evidence" in f.suppressed:
+        evidence: list[tuple[ArtifactCtx, str | None]] = []
+    else:
+        evidence = [(a, _child_host_label(c)) for c in f.children for a in c.artifacts]
+        evidence += [(a, None) for a in f.artifacts]
     return {
         "title": f.title,
         "severity": sev,
@@ -362,7 +376,7 @@ def _finding_ctx(
             tpl, f.blocks_html, image_resolver, children=None,
             metadata_html=_metadata_line_html(f), references_html=_references_html(f),
         ),
-        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in f.artifacts],
+        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl, host=host) for a, host in evidence],
     }
 
 
