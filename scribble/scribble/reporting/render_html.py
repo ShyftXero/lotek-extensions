@@ -544,8 +544,7 @@ def _render_derived_repro(f: FindingCtx) -> str:
     request once, not per host."""
     if (f.blocks_html or {}).get("reproduction"):
         return ""  # an authored reproduction block already renders via _render_blocks
-    variants: dict[tuple[str, str], list] = {}
-    order: list[tuple[str, str]] = []
+    examples: dict[tuple[str, str], str] = {}
     for inst in (f, *f.children):
         url = (inst.target_url or "").strip()
         if not url:
@@ -553,22 +552,16 @@ def _render_derived_repro(f: FindingCtx) -> str:
         p = urlparse(url)
         if not (p.path not in ("", "/") or p.query):
             continue  # a bare host/root URL is not a PoC — it is already in Affected Assets
-        key = (p.path, p.query)
-        if key not in variants:
-            variants[key] = [url, 0]
-            order.append(key)
-        variants[key][1] += 1
-    if not order:
+        examples.setdefault((p.path, p.query), url)  # one example request per distinct pattern
+    if not examples:
         return ""
-    lines = []
-    for key in order:
-        example, count = variants[key]
-        suffix = f"    # on {count} affected assets" if count > 1 else ""
-        lines.append(_esc(example) + suffix)
+    # Just the request(s), copy-pasteable — NOT annotated with host counts (that is Affected Assets'
+    # job, and a "# on N assets" comment would ride along on a copy-paste).
+    code = "\n".join(_esc(url) for url in examples.values())
     return (
         '<div class="block reproduction"><div class="block-label">Reproduction</div>'
         '<div class="block-body"><p class="muted repro-note">Request(s) observed by the scanner:</p>'
-        f'<pre class="repro-req"><code>{chr(10).join(lines)}</code></pre></div></div>'
+        f'<pre class="repro-req"><code>{code}</code></pre></div></div>'
     )
 
 
