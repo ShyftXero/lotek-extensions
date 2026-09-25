@@ -828,6 +828,26 @@ def scribble_create_engagement():
 
     def _produce() -> tuple[dict, int]:
         with open_session() as db:
+            # Resolve-or-create on core_engagement_id (mirrors the UI's _board_for_core): a report board
+            # is 1:1 with a core engagement (partial-unique index uq_scribble_report_board_core_engagement),
+            # so a second create for the same core id must return the existing board, not insert a duplicate
+            # that trips the index with a 500. Idempotent + oldest-wins, matching the by-core resolver.
+            if core_engagement_id is not None:
+                existing = db.execute(
+                    select(ReportBoard)
+                    .where(ReportBoard.core_engagement_id == core_engagement_id)
+                    .order_by(ReportBoard.id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if existing is not None:
+                    return {
+                        "id": existing.id,
+                        "name": existing.name,
+                        "core_engagement_id": (
+                            str(existing.core_engagement_id)
+                            if existing.core_engagement_id is not None else None
+                        ),
+                    }, 200
             eng = ReportBoard(
                 name=name,
                 scope_type=(scope_type or "external"),
