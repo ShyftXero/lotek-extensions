@@ -31,6 +31,7 @@ from scribble.reporting.exporters import (  # noqa: F401
     PdfExportError,
     configure_gotenberg,
     convert_docx_to_pdf,
+    ensure_pdf_service,
     get_exporter,
     gotenberg_url,
     register_exporter,

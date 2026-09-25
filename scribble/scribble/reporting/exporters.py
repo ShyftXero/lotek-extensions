@@ -24,10 +24,16 @@ with no exporter or route change (see ``plans/feat-report-pdf-deliverable.md``).
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from scribble.reporting.context import ReportContext
+
+# The image + port the auto-provisioned PDF converter runs. Gotenberg's LibreOffice route listens on 3000
+# inside the container; core binds it to 127.0.0.1 and hands back the URL.
+GOTENBERG_IMAGE = "gotenberg/gotenberg:8"
+GOTENBERG_PORT = 3000
 
 ArtifactBytes = Callable[[str], "bytes | None"]
 OverrideLookup = Callable[[str], "str | None"]
@@ -111,6 +117,37 @@ def gotenberg_url() -> str | None:
     return _gotenberg_url
 
 
+def ensure_pdf_service() -> None:
+    """Point the PDF backend at a Gotenberg service, idempotently. No-op once configured.
+
+    This is what makes "install + enable = PDF works" true with zero setup: the FIRST time a PDF is
+    rendered, this asks the host to auto-provision the managed Gotenberg container (idempotent — a no-op
+    once it's running) and configures the backend with the 127.0.0.1 URL it hands back. It runs here,
+    lazily, rather than in ``register()`` because the host seam is injected AFTER an extension registers
+    (the injection-ordering trap).
+
+    An operator running their own Gotenberg sets ``SCRIBBLE_PDF_SERVICE_URL`` (+ optional
+    ``SCRIBBLE_PDF_SERVICE_TOKEN``) and that wins — no container is provisioned. A standalone scribble with
+    no host seam simply stays unconfigured, so a PDF request degrades to ``PdfExportError`` -> 503 rather
+    than crashing."""
+    if _gotenberg_url:
+        return
+    token = os.environ.get("SCRIBBLE_PDF_SERVICE_TOKEN", "").strip() or None
+    external = os.environ.get("SCRIBBLE_PDF_SERVICE_URL", "").strip()
+    if external:
+        configure_gotenberg(external, token)
+        return
+    from scribble.host import host_hook
+
+    ensure = host_hook("ensure_service_container")
+    if ensure is None:
+        return  # standalone / no host — leave unconfigured (PDF then 503s, never crashes)
+    result = ensure("gotenberg", GOTENBERG_IMAGE, GOTENBERG_PORT)
+    url = result.get("url") if isinstance(result, dict) else None
+    if url:
+        configure_gotenberg(url, token)
+
+
 def register_pdf_backend(name: str, fn: PdfConvert) -> None:
     _PDF_BACKENDS[name] = fn
 
@@ -141,9 +178,10 @@ def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
 def _gotenberg_backend(docx_bytes: bytes) -> bytes:
     from scribble.reporting.pdf import gotenberg_convert
 
+    ensure_pdf_service()  # provision/configure on first use (idempotent)
     if not _gotenberg_url:
-        raise PdfExportError("no Gotenberg service configured (set pdf_service_url or enable the "
-                             "managed container)")
+        raise PdfExportError("no Gotenberg service available (auto-provision failed and "
+                             "SCRIBBLE_PDF_SERVICE_URL is unset)")
     return gotenberg_convert(docx_bytes, service_url=_gotenberg_url, token=_gotenberg_token)
 
 
