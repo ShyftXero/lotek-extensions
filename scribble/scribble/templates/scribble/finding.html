@@ -67,6 +67,20 @@
         <input type="checkbox" name="include_in_report" {% if finding.include_in_report %}checked{% endif %} />
         Include in report
       </label>
+      <fieldset class="scribble-compose">
+        <legend>Suppress sections from the report</legend>
+        <p class="muted">Omitting a section is an intentional act — the renderer fills the rest and skips
+          what you suppress. The content stays here; it just doesn't ship.</p>
+        <div class="scribble-compose-grid">
+          {% for section in suppressible_sections %}
+          <label class="scribble-compose-item">
+            <input type="checkbox" name="suppress" value="{{ section }}"
+                   {% if section in suppressed_set %}checked{% endif %} />
+            {{ section.replace('_', ' ') | capitalize }}
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
       <button type="submit" class="btn btn-primary">Save</button>
     </fieldset>
   </form>
@@ -75,6 +89,70 @@
         action="{{ url_for('scribble.delete_finding', engagement_id=finding.engagement_id, finding_id=finding.id) }}"
         onsubmit="return confirm('Delete this finding? This also deletes its artifacts and cannot be undone.');">
     <button type="submit" class="btn scribble-finding-delete">Delete finding</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Affected hosts</h3>
+  <p class="muted">Every asset associated with this finding. <strong>Suppress</strong> a host you can't
+    confirm — it stays here for tracking but drops from the report. <strong>Remove</strong> a false
+    positive — the per-host row is deleted.</p>
+  {% if affected_children %}
+  <table class="scribble-hosts-table">
+    <thead>
+      <tr><th>Host</th><th>Port</th><th>URL</th><th>Report</th>
+        {% if scribble_can_write %}<th>Actions</th>{% endif %}</tr>
+    </thead>
+    <tbody>
+      {% for h in affected_children %}
+      <tr class="{% if not h.include_in_report %}scribble-host-suppressed{% endif %}">
+        <td>{{ h.target_host or '—' }}</td>
+        <td>{{ h.target_port or '—' }}</td>
+        <td class="scribble-host-url">{{ h.target_url or '—' }}</td>
+        <td>
+          {% if h.include_in_report %}<span class="scribble-host-badge inc">Included</span>
+          {% else %}<span class="scribble-host-badge sup">Suppressed</span>{% endif %}
+        </td>
+        {% if scribble_can_write %}
+        {% set disp_url = url_for('scribble.finding_host_disposition', finding_id=finding.id) %}
+        <td class="scribble-host-actions">
+          {% if h.include_in_report %}
+          <form method="post" action="{{ disp_url }}">
+            <input type="hidden" name="host_id" value="{{ h.id }}" />
+            <input type="hidden" name="action" value="suppress" />
+            <button type="submit" class="btn btn-small">Suppress</button>
+          </form>
+          {% else %}
+          <form method="post" action="{{ disp_url }}">
+            <input type="hidden" name="host_id" value="{{ h.id }}" />
+            <input type="hidden" name="action" value="include" />
+            <button type="submit" class="btn btn-small">Include</button>
+          </form>
+          {% endif %}
+          <form method="post" action="{{ disp_url }}"
+                onsubmit="return confirm('Remove this host from the finding? The per-host row is deleted.');">
+            <input type="hidden" name="host_id" value="{{ h.id }}" />
+            <input type="hidden" name="action" value="remove" />
+            <button type="submit" class="btn btn-small scribble-host-remove">Remove</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No per-host rows.{% if finding.target_host %} This finding targets
+    <code>{{ finding.target_host }}</code> directly.{% endif %}</p>
+  {% endif %}
+  {% if scribble_can_write %}
+  <form method="post" action="{{ url_for('scribble.finding_add_host', finding_id=finding.id) }}"
+        class="scribble-host-add">
+    <input type="text" name="target_host" placeholder="host or IP" required />
+    <input type="text" name="target_port" placeholder="port" />
+    <input type="text" name="target_url" placeholder="URL (optional)" />
+    <button type="submit" class="btn">Add host</button>
   </form>
   {% endif %}
 </div>
@@ -195,6 +273,30 @@
   .scribble-block-readonly .fr-editor-toolbar,
   .scribble-block-readonly .fr-editor-varpicker {
     pointer-events: none; opacity: .65;
+  }
+  .scribble-compose { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; }
+  .scribble-compose legend { font-size: 13px; font-weight: 600; color: var(--ink); padding: 0 6px; }
+  .scribble-compose p.muted { margin: 2px 0 8px; font-size: 12px; }
+  .scribble-compose-grid { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .scribble-compose-item { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
+  .scribble-hosts-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }
+  .scribble-hosts-table th, .scribble-hosts-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle;
+  }
+  .scribble-hosts-table th { color: var(--muted); font-weight: 600; }
+  .scribble-host-url { font-family: var(--mono, monospace); font-size: 12px; word-break: break-all; }
+  .scribble-host-suppressed { opacity: .6; }
+  .scribble-host-badge { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; }
+  .scribble-host-badge.inc { background: var(--accent-wash, #e7f3ed); color: var(--accent-ink, #0a5b3d); }
+  .scribble-host-badge.sup { background: var(--line, #e3e8ed); color: var(--muted, #6b7a89); }
+  .scribble-host-actions { display: flex; gap: 6px; }
+  .scribble-host-actions form { margin: 0; }
+  .btn-small { padding: 3px 10px; font-size: 12px; }
+  .scribble-host-remove { color: var(--danger); }
+  .scribble-host-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+  .scribble-host-add input {
+    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 6px 10px; font: inherit;
   }
 </style>
 

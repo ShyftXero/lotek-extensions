@@ -938,6 +938,12 @@ def register(api_bp, bp) -> None:
                 finding.target_port = (request.form.get("target_port") or "").strip() or None
                 finding.target_url = (request.form.get("target_url") or "").strip() or None
                 finding.include_in_report = "include_in_report" in request.form
+                # Report composition: the sections the operator chose to omit from the deliverable. Only
+                # known keys are stored (a stray form value can't invent a section).
+                allowed = {*schema.DEFAULT_BLOCKS, "affected_assets", "evidence", "references"}
+                finding.suppressed_sections = [
+                    s for s in request.form.getlist("suppress") if s in allowed
+                ]
                 db.commit()
                 return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
 
@@ -947,6 +953,15 @@ def register(api_bp, bp) -> None:
                     blocks.append(extra)
             gallery_artifacts = sorted(finding.artifacts, key=lambda a: a.order_index)
             variable_keys = sorted(known_variable_keys(db))
+            # Affected-hosts editor: the finding's per-host CHILD rows (parent_id == this finding). Listed
+            # WITHOUT the include_in_report filter on purpose — a SUPPRESSED host must stay visible here so
+            # the operator can re-include it (the board keeps it too; only the renderers drop it).
+            affected_children = list(db.scalars(
+                select(BoardFinding)
+                .where(BoardFinding.parent_id == finding.id)
+                .order_by(BoardFinding.order_index)
+            ))
+            suppressible_sections = [*schema.DEFAULT_BLOCKS, "affected_assets", "evidence", "references"]
 
             return render_template(
                 "scribble/finding.html",
@@ -961,7 +976,69 @@ def register(api_bp, bp) -> None:
                 scribble_variable_keys=variable_keys,
                 retests=sorted(finding.retests, key=lambda r: r.created_at),
                 retest_outcomes=list(RetestOutcome),
+                affected_children=affected_children,
+                suppressible_sections=suppressible_sections,
+                suppressed_set=set(finding.suppressed_sections or []),
             )
+
+    # ================================================================= POST: per-host report disposition
+
+    @bp.route(
+        "/findings/<uuid:finding_id>/hosts/disposition",
+        methods=["POST"], endpoint="finding_host_disposition",
+    )
+    def finding_host_disposition(finding_id: int):
+        """Include / suppress / remove ONE affected-host child of a finding. suppress = the child's
+        ``include_in_report=False`` (dropped from the report, kept in the editor); remove = delete the
+        child row (the false-positive case); include = re-add it.
+
+        The target child is named in the FORM (``host_id``), not the URL, so the route is scoped by its
+        one ``finding_id`` path arg — the engagement gate resolves membership from that. An unresolvable
+        host id or unknown action is a graceful no-op redirect (like ``adopt_job``'s unknown-job path),
+        never the gate's 404 denial signal."""
+        action = (request.form.get("action") or "").strip()
+        host_id = _as_uuid(request.form.get("host_id"))
+        storage_paths: list[str] = []
+        with open_session() as db:
+            parent = db.get(BoardFinding, finding_id)
+            if parent is None:
+                abort(404)  # the SCOPED id — a real 404, consistent with every other finding route
+            child = db.get(BoardFinding, host_id) if host_id is not None else None
+            if child is not None and child.parent_id == parent.id:
+                if action == "include":
+                    child.include_in_report = True
+                elif action == "suppress":
+                    child.include_in_report = False
+                elif action == "remove":
+                    storage_paths = findings_service.delete_finding(db, child).storage_paths
+                db.commit()
+        for storage_path in storage_paths:
+            delete_file(storage_path)
+        return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
+
+    # =================================================================== POST: add an affected host row
+
+    @bp.route("/findings/<uuid:finding_id>/hosts", methods=["POST"], endpoint="finding_add_host")
+    def finding_add_host(finding_id: int):
+        """Add a per-host child to a finding — the operator manually recording an affected asset that the
+        scan did not associate. Inherits the parent's vuln identity (title/severity/category); carries its
+        own target."""
+        with open_session() as db:
+            parent = db.get(BoardFinding, finding_id)
+            if parent is None:
+                abort(404)
+            host_val = (request.form.get("target_host") or "").strip()
+            if host_val:
+                db.add(BoardFinding(
+                    engagement_id=parent.engagement_id, group_id=parent.group_id, parent_id=parent.id,
+                    title=parent.title, severity=parent.severity, category=parent.category,
+                    target_host=host_val,
+                    target_port=(request.form.get("target_port") or "").strip() or None,
+                    target_url=(request.form.get("target_url") or "").strip() or None,
+                    content_json={}, order_index=(parent.order_index or 0) + 1,
+                ))
+                db.commit()
+        return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
 
     # ============================================================================ POST: record a retest
 
