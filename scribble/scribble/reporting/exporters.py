@@ -31,8 +31,11 @@ from dataclasses import dataclass
 from scribble.reporting.context import ReportContext
 
 # The image + port the auto-provisioned PDF converter runs. Gotenberg's LibreOffice route listens on 3000
-# inside the container; core binds it to 127.0.0.1 and hands back the URL.
-GOTENBERG_IMAGE = "gotenberg/gotenberg:8"
+# inside the container; core binds it to 127.0.0.1 and hands back the URL. Default is lotek-gotenberg — a
+# Gotenberg with the report's fonts (Inter, JetBrains Mono) baked in (extensions/scribble/gotenberg); stock
+# gotenberg/gotenberg:8 would substitute a serif for them. SCRIBBLE_GOTENBERG_IMAGE overrides it (a
+# published registry image in prod, or plain gotenberg/gotenberg:8 to fall back to Liberation/DejaVu).
+GOTENBERG_IMAGE = os.environ.get("SCRIBBLE_GOTENBERG_IMAGE", "lotek-gotenberg:latest")
 GOTENBERG_PORT = 3000
 
 ArtifactBytes = Callable[[str], "bytes | None"]

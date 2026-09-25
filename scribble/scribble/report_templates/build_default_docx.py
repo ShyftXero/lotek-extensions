@@ -28,8 +28,11 @@ from docx.shared import Inches, Pt, RGBColor
 
 OUTPUT_PATH = Path(__file__).resolve().parent / "default.docx"
 
-BODY_FONT = "Liberation Sans"        # Arial-metric; in the Gotenberg image (fonts-liberation2)
-MONO_FONT = "DejaVu Sans Mono"       # in the image (fonts-dejavu)
+# Report typography. These faces are baked into the lotek-gotenberg image (extensions/scribble/gotenberg),
+# so the PDF renders them instead of substituting; stock gotenberg/gotenberg:8 lacks them and would fall
+# back to Liberation/DejaVu. Inter (modern, dense-legible) for body/headings, JetBrains Mono for code.
+BODY_FONT = "Inter"
+MONO_FONT = "JetBrains Mono"
 # Palette = render_html.py's PRINT (light) CSS, so HTML and PDF read the same.
 ACCENT = "0F7A52"
 ACCENT_INK = "0A5B3D"
