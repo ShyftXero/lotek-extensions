@@ -55,7 +55,7 @@ from scribble.reporting.context import (
     figure_anchor,
     figure_caption,
 )
-from scribble.reporting.layouts import ReportLayout, list_layouts
+from scribble.reporting.layouts import DEFAULT_LAYOUT, ReportLayout, list_layouts
 from scribble.reporting.marks import ResolvedMark
 from scribble.reporting.selection import resolve_selection
 from scribble.reporting.theme_css import build_theme_assets
@@ -2049,6 +2049,26 @@ def _render_document(
     )
 
 
+def _effective_layout(
+    ctx: ReportContext, sel_layout: ReportLayout, *, layout: str | None, template: str | None
+) -> ReportLayout:
+    """Which blocks render, in what order. An explicitly-chosen preset PREVIEWS it; with none, the report's
+    OWN persisted section order (``ctx.section_order``, resolved from ``ReportBoard.section_order``) is the
+    truth — the same order the DOCX/PDF deliverable loops, so the HTML preview and the deliverable agree.
+
+    A preset counts as explicitly chosen when ``?layout=`` is given (any value, incl. ``default`` — the
+    switcher's "revert to Standard" preview), OR the legacy single-axis ``?template=`` resolved to a
+    NON-default layout (``template=compliance``). ``template=dark`` selects only a theme, leaves the layout
+    default, and so is NOT a layout choice — the report's own order stands. A report with no saved order has
+    ``ctx.section_order`` defaulted to the standard order, so no selection is byte-identical to the old
+    default-preset behaviour.
+    """
+    explicit = bool(layout) or (bool(template) and sel_layout.name != DEFAULT_LAYOUT)
+    if explicit:
+        return sel_layout
+    return ReportLayout("custom", "This report", tuple(ctx.section_order))
+
+
 def render_report_html(
     ctx: ReportContext,
     *,
@@ -2089,7 +2109,8 @@ def render_report_html(
         layout=layout, theme=theme, template=template, override_lookup=override_lookup
     )
     return _render_document(
-        ctx, resolver, layout=sel_layout, theme=sel_theme,
+        ctx, resolver, theme=sel_theme,
+        layout=_effective_layout(ctx, sel_layout, layout=layout, template=template),
         engagement_url=engagement_url, dashboard_url=dashboard_url,
         override_theme_names=override_theme_names,
     )
@@ -2117,7 +2138,10 @@ def export_zip(
     sel_layout, sel_theme = resolve_selection(
         layout=layout, theme=theme, template=template, override_lookup=override_lookup
     )
-    html_doc = _render_document(ctx, resolver, layout=sel_layout, theme=sel_theme)
+    html_doc = _render_document(
+        ctx, resolver, theme=sel_theme,
+        layout=_effective_layout(ctx, sel_layout, layout=layout, template=template),
+    )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("report.html", html_doc)

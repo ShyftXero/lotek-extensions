@@ -31,6 +31,7 @@ from scribble.enums import (
     severity_rank,
 )
 from scribble.models import normalize_strategic_recommendations
+from scribble.reporting.layouts import enabled_section_keys
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
 
@@ -308,6 +309,12 @@ class ReportContext:
     # the client rollup, then `flatten_for_grouping` drops promotion shell-parents.
     findings_by_kind: list = field(default_factory=list)
     findings_by_host: list = field(default_factory=list)
+    # ADDITIVE: the resolved report SECTION ORDER — enabled block keys in the operator's per-report order
+    # (``ReportBoard.section_order`` via ``layouts.resolve_section_order``; NULL => the default composition).
+    # BOTH renderers loop this so the HTML preview and the DOCX/PDF deliverable render the SAME sections in
+    # the SAME order. Defaults to the standard enabled order, so an off-mount/legacy build (or a renderer
+    # that never sets it) is byte-identical to before this field existed.
+    section_order: tuple[str, ...] = field(default_factory=lambda: enabled_section_keys(None))
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -956,4 +963,5 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         risk_override_rationale=engagement.risk_override_rationale,
         findings_by_kind=findings_by_kind,
         findings_by_host=findings_by_host,
+        section_order=enabled_section_keys(getattr(engagement, "section_order", None)),
     )
