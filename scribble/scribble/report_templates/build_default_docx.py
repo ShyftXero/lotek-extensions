@@ -176,6 +176,30 @@ def _set_styles(doc: Document) -> None:
         rf.set(qn("w:hAnsi"), fname)
         rpr.append(rf)
 
+    # Document-wide default font: RichText body runs (the finding write-ups) carry no explicit font, so
+    # without this LibreOffice falls back to a serif and the body clashes with the sans chrome.
+    rpr_default = doc.styles.element.find(qn("w:docDefaults"))
+    if rpr_default is not None:
+        rpr = rpr_default.find(qn("w:rPrDefault"))
+        if rpr is not None:
+            r = rpr.find(qn("w:rPr"))
+            if r is None:
+                r = OxmlElement("w:rPr")
+                rpr.append(r)
+            # Replace the existing (theme) rFonts in place — Word/LibreOffice honor the FIRST rFonts, so
+            # appending a second is silently ignored and the theme font (an unresolvable minorHAnsi →
+            # Liberation Serif under Gotenberg) wins.
+            rf = r.find(qn("w:rFonts"))
+            if rf is None:
+                rf = OxmlElement("w:rFonts")
+                r.insert(0, rf)
+            for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+                if rf.get(qn(attr)) is not None:
+                    del rf.attrib[qn(attr)]
+            rf.set(qn("w:ascii"), BODY_FONT)
+            rf.set(qn("w:hAnsi"), BODY_FONT)
+            rf.set(qn("w:cs"), BODY_FONT)
+
     style("Normal", size=10, color=INK)
     doc.styles["Normal"].paragraph_format.space_after = Pt(5)
     doc.styles["Normal"].paragraph_format.line_spacing = 1.12
@@ -359,71 +383,71 @@ def _finding_card(doc: Document) -> None:
     _run(meta, "    {{ f.target }}", size=9, color=MUTED, mono=True)
     meta.add_run("{% endif %}")
 
-    content.add_paragraph("{% if f.status_label %}")
+    content.add_paragraph("{%p if f.status_label %}")
     sp = content.add_paragraph()
     _run(sp, "Status: ", size=9, color=MUTED, italic=True)
     _run(sp, "{{ f.status_label }}", size=9, color=INK, bold=True)
-    content.add_paragraph("{% endif %}")
+    content.add_paragraph("{%p endif %}")
 
     body_p = content.add_paragraph()
     body_p.add_run("{{r f.body }}")
 
     # Reproduction — the scanner's request(s), in a shaded monospace code box (one per distinct pattern).
-    content.add_paragraph("{% if f.repro %}")
+    content.add_paragraph("{%p if f.repro %}")
     _run(content.add_paragraph(), "Reproduction", size=9, color=ACCENT_INK, bold=True, caps=True)
-    content.add_paragraph("{% for r in f.repro %}")
+    content.add_paragraph("{%p for r in f.repro %}")
     rp = content.add_paragraph()
     _shade(rp._p, SURFACE2)
     _spacing(rp, before=1, after=1)
     _run(rp, "{{ r }}", size=8.5, color=INK2, mono=True)
-    content.add_paragraph("{% endfor %}")
-    content.add_paragraph("{% endif %}")
+    content.add_paragraph("{%p endfor %}")
+    content.add_paragraph("{%p endif %}")
 
     # Affected Assets — deduped services (host:port/proto), one per line, monospace.
-    content.add_paragraph("{% if f.assets %}")
+    content.add_paragraph("{%p if f.assets %}")
     _run(content.add_paragraph(), "Affected Assets ({{ f.assets|length }})",
          size=9, color=ACCENT_INK, bold=True, caps=True)
-    content.add_paragraph("{% for a in f.assets %}")
+    content.add_paragraph("{%p for a in f.assets %}")
     ap = content.add_paragraph()
     _spacing(ap, before=0, after=0)
     _run(ap, "•  ", size=9, color=MUTED)
     _run(ap, "{{ a }}", size=9, color=INK, mono=True)
-    content.add_paragraph("{% endfor %}")
-    content.add_paragraph("{% endif %}")
+    content.add_paragraph("{%p endfor %}")
+    content.add_paragraph("{%p endif %}")
 
     # evidence
-    content.add_paragraph("{% if f.artifacts %}")
+    content.add_paragraph("{%p if f.artifacts %}")
     _run(content.add_paragraph(), "Evidence", size=9, color=ACCENT_INK, bold=True, caps=True)
-    content.add_paragraph("{% for a in f.artifacts %}")
-    content.add_paragraph("{% if a.embedded %}")
+    content.add_paragraph("{%p for a in f.artifacts %}")
+    content.add_paragraph("{%p if a.embedded %}")
     content.add_paragraph().add_run("{{ a.image }}")
     _run(content.add_paragraph(), "{{ a.caption }}", size=8, color=MUTED, italic=True)
-    content.add_paragraph("{% else %}")
+    content.add_paragraph("{%p else %}")
     _run(content.add_paragraph(), "\U0001f4c4 {{ a.filename }} — {{ a.caption }} (not embedded)",
          size=8, color=MUTED, italic=True)
-    content.add_paragraph("{% endif %}")
-    content.add_paragraph("{% endfor %}")
-    content.add_paragraph("{% endif %}")
+    content.add_paragraph("{%p endif %}")
+    content.add_paragraph("{%p endfor %}")
+    content.add_paragraph("{%p endif %}")
 
 
 def _add_findings_body(doc: Document) -> None:
     _heading1(doc, "Findings")
-    doc.add_paragraph("{% if not groups %}")
+    doc.add_paragraph("{%p if not groups %}")
     doc.add_paragraph("No findings recorded for this engagement.")
-    doc.add_paragraph("{% endif %}")
+    doc.add_paragraph("{%p endif %}")
 
-    doc.add_paragraph("{% for group in groups %}")
+    doc.add_paragraph("{%p for group in groups %}")
     gp = doc.add_paragraph("{{ group.name }}", style="Heading 2")
     _spacing(gp, before=8, after=4)
-    doc.add_paragraph("{% if not group.findings %}")
+    doc.add_paragraph("{%p if not group.findings %}")
     doc.add_paragraph("No findings in this section.")
-    doc.add_paragraph("{% endif %}")
+    doc.add_paragraph("{%p endif %}")
 
-    doc.add_paragraph("{% for f in group.findings %}")
+    doc.add_paragraph("{%p for f in group.findings %}")
     _finding_card(doc)
     doc.add_paragraph()  # spacer between cards
-    doc.add_paragraph("{% endfor %}")
-    doc.add_paragraph("{% endfor %}")
+    doc.add_paragraph("{%p endfor %}")
+    doc.add_paragraph("{%p endfor %}")
 
 
 def build() -> Document:

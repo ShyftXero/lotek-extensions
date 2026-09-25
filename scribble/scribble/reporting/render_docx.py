@@ -98,10 +98,17 @@ def _make_image_resolver(artifact_bytes: ArtifactBytes | None) -> Callable[[str]
     return _resolve
 
 
+# Green small-caps section label, byte-identical to the template's REPRODUCTION/AFFECTED ASSETS labels
+# (build_default_docx: size=9 → sz 18, color ACCENT_INK, bold, caps + letter-spacing 8) so the body-owned
+# labels (Description/Remediation/Details) read the same as the card-owned ones. RichText.add() has no
+# caps/spacing params, so the run is hand-built.
 def _label_run_xml(text: str) -> str:
-    rt = RichText()
-    rt.add(text)
-    return rt.xml
+    return (
+        '<w:r><w:rPr>'
+        '<w:rFonts w:ascii="Liberation Sans" w:hAnsi="Liberation Sans"/>'
+        '<w:b/><w:caps/><w:spacing w:val="8"/><w:color w:val="0A5B3D"/><w:sz w:val="18"/>'
+        f'</w:rPr><w:t xml:space="preserve">{_html_escape(text)}</w:t></w:r>'
+    )
 
 
 def _child_host_label(c: FindingCtx) -> str:
@@ -245,7 +252,7 @@ def _finding_body_richtext(
             continue
         rendered_any = True
         label = _BLOCK_LABELS.get(key, key.replace("_", " ").title())
-        _open(style="Heading3")  # styleId (spaceless) — <w:pStyle> resolves by id, not display name
+        _open()  # green small-caps label on a Normal paragraph — matches the card's REPRODUCTION labels
         parts.append(_label_run_xml(label))
         block_rt = html_to_richtext(fragment, tpl=tpl, image_resolver=image_resolver)
         if block_rt.xml:
