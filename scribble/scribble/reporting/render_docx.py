@@ -359,10 +359,15 @@ def _finding_ctx(
     # full page of IPs. The font is fixed-width, so ljust-padding aligns the columns exactly; the labels
     # are already natural-sorted by _affected_labels.
     assets = [] if "affected_assets" in f.suppressed else _affected_labels(f)[0]
-    _cols = 3
-    _w = max((len(a) for a in assets), default=0) + 3
-    asset_rows = ["".join(a.ljust(_w) for a in assets[i:i + _cols]).rstrip()
-                  for i in range(0, len(assets), _cols)]
+    # Grid columns ADAPT to the widest label: short IPs pack 4 across, long hostnames drop to fewer so a
+    # row never overflows the card. ~76 mono chars fit the content cell at 9pt; +2 for the inter-column gap.
+    if assets:
+        width = max(len(a) for a in assets) + 2
+        cols = max(1, min(4, 76 // width))
+        asset_rows = ["".join(a.ljust(width) for a in assets[i:i + cols]).rstrip()
+                      for i in range(0, len(assets), cols)]
+    else:
+        asset_rows = []
     return {
         "title": f.title,
         "severity": sev,

@@ -166,6 +166,20 @@ def _run(paragraph, text, *, size=10.5, color=INK, bold=False, italic=False, mon
     return r
 
 
+def _chip(paragraph, text, *, fill, color, size=8, caps=False):
+    """A filled chip/badge — bold text on a character-shaded fill, hair-space padded so the fill reads as
+    a chip. docx run shading is SQUARE (Word/LibreOffice can't round a run's background), so it's a square
+    chip, not the HTML's rounded pill — the color + grouping is what carries."""
+    r = _run(paragraph, f" {text} ", size=size, color=color, bold=True, caps=caps)
+    rpr = r._r.get_or_add_rPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill)
+    rpr.append(shd)
+    return r
+
+
 # ----------------------------------------------------------------------------- doc chrome
 
 def _set_styles(doc: Document) -> None:
@@ -238,12 +252,15 @@ def _set_styles(doc: Document) -> None:
 
 
 def _set_margins(doc: Document) -> None:
+    # Tight but not cramped. 0.1" read as goofy — the content ran to the paper edge. ~0.6" keeps the
+    # dense, modern feel while leaving a proper print gutter; the cards' own borders + padding do the
+    # rest of the framing.
     for s in doc.sections:
-        s.left_margin = Inches(0.1)
-        s.right_margin = Inches(0.1)
-        s.top_margin = Inches(0.35)
-        s.bottom_margin = Inches(0.45)   # room for the footer
-        s.footer_distance = Inches(0.18)
+        s.left_margin = Inches(0.6)
+        s.right_margin = Inches(0.6)
+        s.top_margin = Inches(0.5)
+        s.bottom_margin = Inches(0.5)    # room for the footer
+        s.footer_distance = Inches(0.25)
 
 
 def _set_updatefields(doc: Document) -> None:
@@ -333,18 +350,29 @@ def _sev_expr(var: str) -> str:
 def _add_executive_summary(doc: Document) -> None:
     _heading1(doc, "Executive Summary")
 
-    risk_p = doc.add_paragraph()
-    _run(risk_p, "Overall risk: ", bold=True)
+    # Punchy verdict — a small "OVERALL RISK" label over a BIG, severity-colored risk word, then a
+    # dot-separated count line. Fast to read at a glance, the way the HTML exec summary opens.
+    lbl = doc.add_paragraph()
+    _spacing(lbl, before=2, after=0)
+    _run(lbl, "Overall Risk", size=9, color=MUTED, bold=True, caps=True)
+    verdict = doc.add_paragraph()
+    _spacing(verdict, before=0, after=1)
     for i, sev in enumerate(SEVERITY_ORDER):
-        risk_p.add_run(f'{{% {"if" if i == 0 else "elif"} rollup.overall == "{sev}" %}}')
-        _run(risk_p, "{{ rollup.overall_label }}", bold=True, color=SEVERITY_COLORS[sev])
-    risk_p.add_run("{% else %}")
-    _run(risk_p, "{{ rollup.overall_label }}", bold=True, color=MUTED)
-    risk_p.add_run("{% endif %}")
+        verdict.add_run(f'{{% {"if" if i == 0 else "elif"} rollup.overall == "{sev}" %}}')
+        _run(verdict, "{{ rollup.overall_label }}", size=24, color=SEVERITY_COLORS[sev], bold=True)
+    verdict.add_run("{% else %}")
+    _run(verdict, "{{ rollup.overall_label }}", size=24, color=MUTED, bold=True)
+    verdict.add_run("{% endif %}")
+    stat = doc.add_paragraph()
+    _spacing(stat, before=0, after=8)
+    _run(stat, "{{ rollup.counts.critical }} critical   ·   {{ rollup.counts.high }} high   ·   "
+               "{{ rollup.counts.medium }} medium   ·   {{ rollup.counts.low }} low   ·   "
+               "{{ rollup.counts.info }} info", size=11, color=INK2, bold=True)
 
-    _run(doc.add_paragraph(),
-         "{{ groups|length }} section(s), {{ rollup.total }} finding(s) in this report.", color=INK2)
     _run(doc.add_paragraph(), "{{ narrative }}", color=INK2)
+    _run(doc.add_paragraph(),
+         "{{ groups|length }} section(s), {{ rollup.total }} finding(s) in this report.",
+         size=9, color=MUTED)
 
     table = doc.add_table(rows=2, cols=len(SEVERITY_ORDER) + 1)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -376,7 +404,7 @@ def _finding_card(doc: Document) -> None:
     rich body, evidence). Wrapped by the ``{% for f %}`` loop, so each finding gets its own card."""
     table = doc.add_table(rows=1, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
-    _fixed_col_widths(table, [0.09, 8.1])   # thin severity bar + wide content
+    _fixed_col_widths(table, [0.08, 7.12])  # thin severity bar + content, fits the 0.6" page margins
     bar, content = table.rows[0].cells
 
     # left bar = severity color, no text.
@@ -395,19 +423,25 @@ def _finding_card(doc: Document) -> None:
     _spacing(tp, before=0, after=2)
     _run(tp, "{{ f.title }}", size=13, color=INK, bold=True)
 
+    # Chip row: a filled severity badge + a CVSS chip + an affected-count chip (mirrors the HTML card's
+    # badge row). The full target URL is DELIBERATELY not here — it crammed the line and is already in
+    # Reproduction / Affected Assets; the header stays a clean, scannable badge row.
     meta = content.add_paragraph()
-    _spacing(meta, after=4)
+    _spacing(meta, before=1, after=5)
     for i, sev in enumerate(SEVERITY_ORDER):
         meta.add_run(f'{{% {"if" if i == 0 else "elif"} f.severity == "{sev}" %}}')
-        _run(meta, "{{ f.severity_label }}", size=9, color=SEVERITY_COLORS[sev], bold=True, caps=True)
+        _chip(meta, "{{ f.severity_label }}", fill=SEVERITY_COLORS[sev], color=WHITE, caps=True)
     meta.add_run("{% else %}")
-    _run(meta, "{{ f.severity_label }}", size=9, color=MUTED, bold=True, caps=True)
+    _chip(meta, "{{ f.severity_label }}", fill=MUTED, color=WHITE, caps=True)
     meta.add_run("{% endif %}")
     meta.add_run("{% if f.cvss_score %}")
-    _run(meta, "    CVSS {{ f.cvss_score }}", size=9, color=INK2, bold=True)
+    _run(meta, "  ", size=8)
+    _chip(meta, "CVSS {{ f.cvss_score }}", fill=SURFACE2, color=INK2)
     meta.add_run("{% endif %}")
-    meta.add_run("{% if f.target %}")
-    _run(meta, "    {{ f.target }}", size=9, color=MUTED, mono=True)
+    meta.add_run("{% if f.assets %}")
+    _run(meta, "  ", size=8)
+    _chip(meta, "{{ f.assets|length }} affected asset{{ 's' if f.assets|length != 1 else '' }}",
+          fill=SURFACE2, color=MUTED)
     meta.add_run("{% endif %}")
 
     content.add_paragraph("{%p if f.status_label %}")
