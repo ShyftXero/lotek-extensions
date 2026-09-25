@@ -199,7 +199,11 @@ def test_report_context_nests_exactly_one_level_deep(session_factory):
         db.add(child)
         db.flush()
 
-        grandchild = _finding(eng, g, "Weak SMB Signing", Severity.high, 2, target_host="10.0.0.3")
+        # A DIFFERENT vulnerability, so the by-vulnerability card collapse (_collapse_by_kind) does not
+        # fold this top-level grandchild into the "Weak SMB Signing" card — this test isolates the
+        # one-level NESTING rule from the collapse (collapsing same-kind top-level findings is covered by
+        # test_report_card_collapse). With the same title it would correctly become a host of that card.
+        grandchild = _finding(eng, g, "Open Redirect", Severity.high, 2, target_host="10.0.0.3")
         grandchild.parent_id = child.id
         db.add(grandchild)
         db.commit()

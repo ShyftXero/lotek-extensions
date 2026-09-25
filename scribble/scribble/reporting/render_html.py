@@ -630,6 +630,11 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
     badges += _render_metadata_chips(f)
+    # A card collapsed by vulnerability spans many hosts — show the fleet size up front (matches the
+    # at-a-glance count; same ``_affected_hosts`` source). Only when it is more than its own host.
+    host_count = len(_affected_hosts(f))
+    if host_count > 1:
+        badges += f'<span class="chip hosts">{host_count} affected hosts</span>'
     body = (
         _render_blocks(f, resolver)
         + _render_affected_assets(f)
@@ -1033,6 +1038,23 @@ def _index_ids_cell(ids: list) -> str:
     return f"{shown} +{extra}" if extra > 0 else shown
 
 
+def _affected_hosts(f: FindingCtx) -> set[str]:
+    """Distinct affected-host labels for a finding INCLUDING its folded per-host instances
+    (``children``). One label per instance: ``host:port``, else the ``url``. The SINGLE source the
+    at-a-glance host count AND the card's host-count badge read, so the two can never disagree
+    (one-predicate-one-home)."""
+    hosts: set[str] = set()
+    for inst in (f, *f.children):
+        host = inst.target_host or ""
+        if host and inst.target_port:
+            host = f"{host}:{inst.target_port}"
+        if not host and inst.target_url:
+            host = inst.target_url
+        if host:
+            hosts.add(host)
+    return hosts
+
+
 def _findings_index(ctx: ReportContext) -> str:
     """A scan-then-jump index for the executive summary — ONE ROW PER VULNERABILITY (grouped by title),
     not per host. A fleet-wide issue (default creds on 27 hosts, self-signed certs) is a single line with
@@ -1068,17 +1090,15 @@ def _findings_index(ctx: ReportContext) -> str:
             g = grouped[f.title] = _Kind(f.severity, f.id)
         if _rank(f.severity) < _rank(g.sev):
             g.sev = f.severity  # keep the worst severity seen for this vulnerability
-        host = f.target_host or ""
-        if host and f.target_port:
-            host = f"{host}:{f.target_port}"
-        if not host and f.target_url:
-            host = f.target_url
-        if host:
-            g.hosts.add(host)
-        for c in (f.cve_ids or []):
-            g.cves.add(c)
-        if f.threat_intel and f.threat_intel.get("kev"):
-            g.kev = True
+        # The host count is the true fleet size — the card AND its folded per-host instances
+        # (context._collapse_by_kind moved same-vuln hosts into `.children`), via the shared helper so it
+        # matches the card badge exactly. CVE/KEV are likewise unioned across every instance.
+        g.hosts |= _affected_hosts(f)
+        for inst in (f, *f.children):
+            for cve in (inst.cve_ids or []):
+                g.cves.add(cve)
+            if inst.threat_intel and inst.threat_intel.get("kev"):
+                g.kev = True
 
     ordered = sorted(grouped.items(), key=lambda kv: (_rank(kv[1].sev), kv[0].lower()))
     show_cve = any(g.cves or g.kev for _, g in ordered)
@@ -2769,9 +2789,21 @@ table.index td.ix-cwe, table.index td.ix-cve {
   .toc-list li { break-inside: avoid; }
   body.has-cover .masthead { display: none !important; }
   .sec.collapsed .sec-body { display: block !important; }
-  .finding, .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
+  .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
   .mth-phase, .mth-frame { break-inside: avoid; }
-  .children-table { break-inside: avoid; }
+  /* A finding card collapsed by vulnerability can list dozens of affected hosts — taller than a page —
+     so the card and its host table MUST break across pages; keep only small units atomic. */
+  .finding { break-inside: auto; }
+  .finding-head { break-inside: avoid; break-after: avoid; }
+  .children-table { break-inside: auto; }
+  .children-table tr, .children-table thead { break-inside: avoid; }
+  .children-table thead { display: table-header-group; }
+  /* Reveal the collapsed host-list disclosure in print -- those hosts are the deliverable's content
+     now, so a client PDF must show them whether or not the on-screen disclosure was expanded. (No
+     summary text or tag literals in this comment: the stylesheet ships in the document, so either would
+     be grep-matched in the rendered HTML and break a report test -- see the masthead note above.) */
+  details.children > .children-table { display: table !important; }
+  details.children > summary { list-style: none; color: var(--ink-2); font-weight: 600; }
   .sec-h { break-after: avoid; }
   .finding-body .block-body pre { max-height: none; overflow: visible; }
   a { color: #10202e; text-decoration: underline; }
