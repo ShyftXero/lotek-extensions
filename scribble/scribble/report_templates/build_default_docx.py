@@ -184,6 +184,31 @@ def _chip(paragraph, text, *, fill, color, size=8, caps=False):
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _PILL_ID = [1000]
 
+# Invisible section markers — an empty paragraph carrying a uniquely-named Word bookmark
+# ``scribble-section:<key>`` — let render_docx._reorder_sections find where each report section begins and
+# re-emit the sections in the operator's per-report order (ReportBoard.section_order). The marker survives
+# docxtpl render (it has no Jinja) and the marker paragraphs are removed during the reorder, so they never
+# appear in the delivered document. ``key`` is a reporting.layouts.BLOCK_KEYS value.
+SECTION_MARKER_PREFIX = "scribble-section:"
+_BOOKMARK_ID = [5000]
+
+
+def add_section_marker(container, key: str):
+    """Append an invisible ``scribble-section:<key>`` bookmark paragraph to ``container`` (a Document or a
+    cell). See :data:`SECTION_MARKER_PREFIX`."""
+    p = container.add_paragraph()
+    _spacing(p, before=0, after=0)
+    _BOOKMARK_ID[0] += 1
+    bid = str(_BOOKMARK_ID[0])
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), bid)
+    start.set(qn("w:name"), f"{SECTION_MARKER_PREFIX}{key}")
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), bid)
+    p._p.append(start)
+    p._p.append(end)
+    return p
+
 
 def _visible_len(text: str) -> int:
     """Rendered length of a label that may carry a Jinja expression: a ``{{ … }}`` fills to a short value
@@ -650,9 +675,15 @@ def build() -> Document:
     _set_margins(doc)
     _set_updatefields(doc)
     _add_footer(doc)
+    # Each template-authored section is preceded by its invisible section marker, so the post-render
+    # reorder (render_docx._reorder_sections) can move/drop it like any programmatically-appended section.
+    add_section_marker(doc, "cover")
     _add_cover(doc)
+    add_section_marker(doc, "toc")
     _add_toc(doc)
+    add_section_marker(doc, "summary")
     _add_executive_summary(doc)
+    add_section_marker(doc, "findings")
     _add_findings_body(doc)
     return doc
 

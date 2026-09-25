@@ -35,6 +35,7 @@ from html import escape as _html_escape
 from pathlib import Path
 from urllib.parse import quote, unquote
 
+from docx.oxml.ns import qn
 from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage, RichText
 
@@ -1180,6 +1181,58 @@ def _append_sha256_line(doc, a: ArtifactCtx) -> None:
     p.add_run(f"SHA-256: {a.sha256}").italic = True
 
 
+def _section_marker_key(el) -> str | None:
+    """The section key of an invisible section-marker paragraph (build_default_docx.add_section_marker), or
+    None if ``el`` is not a marker."""
+    from scribble.report_templates.build_default_docx import SECTION_MARKER_PREFIX
+
+    if el.tag != qn("w:p"):
+        return None
+    for bm in el.iter(qn("w:bookmarkStart")):
+        name = bm.get(qn("w:name")) or ""
+        if name.startswith(SECTION_MARKER_PREFIX):
+            return name[len(SECTION_MARKER_PREFIX):]
+    return None
+
+
+def _reorder_sections(doc, order) -> None:
+    """Re-emit the document body's marked sections in ``order`` (BLOCK_KEYS, the resolved
+    ``ctx.section_order``), DROPPING any section not listed (disabled, or absent from the order). Each
+    section spans from its invisible marker paragraph up to the next marker; the marker paragraphs
+    themselves are removed. The trailing ``<w:sectPr>`` (page geometry / header-footer link) always stays
+    last. A key with no marked content contributes nothing, so an unimplemented or empty section is a no-op.
+
+    This is what makes the DOCX/PDF deliverable honor the operator's per-report section order — the same
+    order the HTML preview loops (render_html._effective_layout), from the one resolver
+    (layouts.resolve_section_order)."""
+    body = doc.element.body
+    children = list(body)
+    sect_pr = children[-1] if children and children[-1].tag == qn("w:sectPr") else None
+
+    groups: dict[str, list] = {}
+    pre: list = []  # anything before the first marker (defensive; normally nothing)
+    current: str | None = None
+    for el in children:
+        if el is sect_pr:
+            continue
+        key = _section_marker_key(el)
+        if key is not None:
+            current = key
+            groups.setdefault(key, [])
+            continue  # the marker paragraph itself is dropped
+        (groups[current] if current is not None else pre).append(el)
+
+    for el in children:  # detach everything, including sect_pr, then rebuild in order
+        body.remove(el)
+    for el in pre:
+        body.append(el)
+    for key in order:
+        for el in groups.get(key, []):
+            body.append(el)
+    if sect_pr is not None:
+        body.append(sect_pr)  # page geometry must remain the final body child
+
+
 def render_report_docx(
     ctx: ReportContext,
     *,
@@ -1207,21 +1260,33 @@ def render_report_docx(
 
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
-    # Section order mirrors the HTML templates' block order (findings -> diagrams -> methodology ->
-    # evidence, reporting/layouts.py), which is what makes context.number_figures' single figure
-    # sequence come out the same in both deliverables.
-    _append_attack_paths(tpl.docx, ctx)  # ext#115
-    _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
-    _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
-    _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
-    _append_methodology(tpl.docx, ctx)  # standing method + severity ratings (HTML parity)
-    _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
-    _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
+    doc = tpl.docx
+    # The template rendered the marked cover/toc/summary/findings sections; now append the rest, each
+    # preceded by its own section marker, so EVERY section is a movable unit. Order and drops are applied
+    # afterwards by _reorder_sections(ctx.section_order) — the DOCX honors the operator's per-report order
+    # exactly as the HTML preview does (one resolver, layouts.resolve_section_order). A section that renders
+    # nothing (its appender short-circuits) leaves an empty marked group and is a harmless no-op.
+    from scribble.report_templates.build_default_docx import add_section_marker
+
+    def _section(key: str, render) -> None:
+        add_section_marker(doc, key)
+        render()
+
+    _section("diagrams", lambda: _append_attack_paths(doc, ctx))  # ext#115
+    _section("chains", lambda: _append_attack_chains(doc, ctx))  # #628
+    _section("retest", lambda: _append_retest_closeout(doc, ctx))  # #622
+    _section("strategic", lambda: _append_strategic_recommendations(doc, ctx))  # #623
+    # methodology = the standing method text + the coverage/compliance checklists (one movable section;
+    # the DOCX splits authoring across two appenders, unlike the HTML which folds checklists in).
+    _section("methodology", lambda: (_append_methodology(doc, ctx), _append_checklists(doc, ctx)))
+    _section("evidence", lambda: _append_evidence_appendix(doc, ctx, artifact_bytes=artifact_bytes))
+
+    _reorder_sections(doc, ctx.section_order)
 
     # Operator report-font selection: swap the template's baked default faces for the chosen ones across
     # the whole document (styles + runs), so the PDF bakes them in with no raw-docx editing.
     from scribble.reporting.fonts import remap_fonts
-    remap_fonts(tpl.docx, body_font, code_font)
+    remap_fonts(doc, body_font, code_font)
 
     buf = io.BytesIO()
     tpl.save(buf)
