@@ -17,14 +17,14 @@ Two coupling facts drive the shape:
   carry the #626 hashes rather than bytes, so they need none.
 
 PDF is the swap point: it composes the docx exporter and hands the bytes to a **pluggable conversion
-backend** (:data:`_PDF_BACKENDS`). Today the only backend is local headless LibreOffice (``pdf.py``);
-the Gotenberg HTTP client registers itself the same way once the managed-container seam lands
-(see ``plans/feat-report-pdf-deliverable.md``) — flip the default with :func:`set_pdf_backend`, no
-exporter or route change.
+backend** (:data:`_PDF_BACKENDS`). The default is ``gotenberg`` — a containerized LibreOffice reached over
+HTTP (``pdf.gotenberg_convert``), configured via :func:`configure_gotenberg`. A different engine
+(a local soffice, a hosted converter) is another :func:`register_pdf_backend` + :func:`set_pdf_backend`,
+with no exporter or route change (see ``plans/feat-report-pdf-deliverable.md``).
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from scribble.reporting.context import ReportContext
@@ -49,6 +49,10 @@ class ExportOptions:
     template: str | None = None
     override_lookup: OverrideLookup | None = None
     override_theme_names: tuple[str, ...] = ()
+    # Optional provider of the engagement's RAW job loot for the zip bundle: called (once, lazily) by the
+    # zip exporter and yields ``(arcname, bytes)`` streamed from the object store. Only the route sets it
+    # (it holds the host objects seam + actor); other formats ignore it.
+    loot: Callable[[], Iterable[tuple[str, bytes]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +213,7 @@ def _render_zip(ctx: ReportContext, opts: ExportOptions) -> bytes:
         theme=opts.theme,
         template=opts.template,
         override_lookup=opts.override_lookup,
+        loot=opts.loot() if opts.loot else None,
     )
 
 

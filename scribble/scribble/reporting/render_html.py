@@ -35,7 +35,7 @@ import io
 import mimetypes
 import re
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from html import escape as _escape
 from urllib.parse import quote, unquote, urlparse
@@ -2097,9 +2097,16 @@ def export_zip(
     theme: str | None = None,
     template: str | None = None,
     override_lookup: OverrideLookup | None = None,
+    loot: Iterable[tuple[str, bytes]] | None = None,
 ) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
-    ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7)."""
+    ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7).
+
+    ``loot`` is an optional lazy iterable of ``(arcname, bytes)`` — the engagement's RAW scan-tool output
+    (nmap/winpeas/sslyze/…) streamed straight from the object store, written under ``loot/``. The report's
+    own attached evidence is ``artifacts/``; this is everything the tools produced, so the bundle is the
+    whole engagement, not just what a finding cited. The route supplies it (it holds the host objects seam
+    + the actor); ``None`` omits it (e.g. the exporter used with no host)."""
     resolver = _AssetResolver("zip", artifact_bytes)
     sel_layout, sel_theme = resolve_selection(
         layout=layout, theme=theme, template=template, override_lookup=override_lookup
@@ -2117,6 +2124,9 @@ def export_zip(
                 data = None
             if data:
                 zf.writestr(f"artifacts/{name}", data)
+        for arcname, data in (loot or ()):
+            if data is not None:
+                zf.writestr(f"loot/{arcname}", data)
     return buf.getvalue()
 
 

@@ -58,6 +58,40 @@ def _slugify(value: str) -> str:
     return slug or "report"
 
 
+def _engagement_loot(engagement: ReportBoard):
+    """A lazy provider of the engagement's RAW job loot — every scan-tool output blob (nmap/winpeas/
+    sslyze/…) core stored for this engagement's jobs — as ``(arcname, bytes)`` for the zip bundle.
+
+    Reads through the host objects seam (``host.objects().list(kind="artifact")`` + ``.open``), which is
+    tenancy-scoped to the current actor by core, so an operator only ever bundles loot they may view. The
+    report's own attached evidence rides in ``artifacts/``; this is everything the tools produced, so the
+    ZIP is the whole engagement. Empty (yields nothing) when no object store is mounted or the engagement
+    carries no core anchor — a standalone scribble with no host has no job loot to gather."""
+    def _gen():
+        from scribble import host
+        from scribble.deps import current_actor
+        objs = host.objects()
+        core_id = engagement.core_engagement_id
+        if objs is None or core_id is None:
+            return
+        actor = current_actor()
+        used: set[str] = set()
+        for ref in objs.list(actor, engagement_id=core_id, kind="artifact"):
+            stem = f"{ref.job_id or 'engagement'}/{ref.filename or ref.id}"
+            arcname, n = stem, 1
+            while arcname in used:          # two jobs can produce a same-named file; keep both
+                arcname = f"{ref.job_id or 'engagement'}/{n}_{ref.filename or ref.id}"
+                n += 1
+            used.add(arcname)
+            try:
+                with objs.open(actor, ref.id) as fh:
+                    data = fh.read()
+            except Exception:               # noqa: BLE001 — one unreadable blob must not sink the bundle
+                continue
+            yield (arcname, data)
+    return _gen
+
+
 
 def _override_theme_sources(db):
     """``(lookup, names, install_default)`` for this install's Theme configuration.
@@ -192,6 +226,9 @@ def register(api_bp, bp) -> None:
                 template=request.args.get("template"),
                 override_lookup=override_lookup,
                 override_theme_names=override_names,
+                # The zip bundle includes the whole engagement's raw job loot by default; `?loot=0` opts
+                # out for a lighter report-only archive. Only the zip exporter calls this.
+                loot=None if request.args.get("loot") == "0" else _engagement_loot(engagement),
             )
             try:
                 payload = exporter.render(ctx, opts)
