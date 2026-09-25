@@ -22,7 +22,7 @@ from pathlib import Path
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
@@ -168,8 +168,8 @@ def _run(paragraph, text, *, size=10.5, color=INK, bold=False, italic=False, mon
 
 def _chip(paragraph, text, *, fill, color, size=8, caps=False):
     """A filled chip/badge — bold text on a character-shaded fill, hair-space padded so the fill reads as
-    a chip. docx run shading is SQUARE (Word/LibreOffice can't round a run's background), so it's a square
-    chip, not the HTML's rounded pill — the color + grouping is what carries."""
+    a chip. SQUARE (run shading can't round); kept for non-pill uses. Prefer :func:`_pill` for the card
+    badges — verified to render rounded through LibreOffice."""
     r = _run(paragraph, f" {text} ", size=size, color=color, bold=True, caps=caps)
     rpr = r._r.get_or_add_rPr()
     shd = OxmlElement("w:shd")
@@ -178,6 +178,44 @@ def _chip(paragraph, text, *, fill, color, size=8, caps=False):
     shd.set(qn("w:fill"), fill)
     rpr.append(shd)
     return r
+
+
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_PILL_ID = [1000]
+
+
+def _pill(paragraph, text_markup, *, fill, color, width_in, caps=False, size=15):
+    """A ROUNDED pill badge: an inline DrawingML ``roundRect`` shape (fully rounded, ``adj=50000``) with
+    centered bold text. Verified to render rounded through Gotenberg/LibreOffice — the HTML card's pill,
+    in the docx. ``text_markup`` may contain Jinja ({{ f.severity_label }}), filled by docxtpl at render.
+    Width is FIXED (a shape can't autosize to a template variable), so each caller sizes generously for its
+    longest content and the centered text pads out; height is a fixed 0.24\"."""
+    _PILL_ID[0] += 1
+    did = _PILL_ID[0]
+    cx, cy = int(width_in * 914400), int(0.24 * 914400)
+    caps_xml = '<w:caps w:val="true"/>' if caps else ""
+    xml = (
+        f'<w:r xmlns:w="{_W_NS}"><w:drawing>'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        ' distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{did}" name="pill{did}"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:cNvSpPr txBox="0"/>'
+        f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>'
+        f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr>'
+        '<wps:txbx><w:txbxContent><w:p><w:pPr><w:jc w:val="center"/>'
+        '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+        f'<w:r><w:rPr><w:b/>{caps_xml}<w:color w:val="{color}"/><w:sz w:val="{size}"/>'
+        f'<w:rFonts w:ascii="{BODY_FONT}" w:hAnsi="{BODY_FONT}"/></w:rPr>'
+        f'<w:t xml:space="preserve">{text_markup}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+        '<wps:bodyPr rot="0" anchor="ctr" anchorCtr="1" lIns="45720" tIns="0" rIns="45720" bIns="0"/>'
+        '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+    )
+    paragraph._p.append(parse_xml(xml))
 
 
 # ----------------------------------------------------------------------------- doc chrome
@@ -423,25 +461,27 @@ def _finding_card(doc: Document) -> None:
     _spacing(tp, before=0, after=2)
     _run(tp, "{{ f.title }}", size=13, color=INK, bold=True)
 
-    # Chip row: a filled severity badge + a CVSS chip + an affected-count chip (mirrors the HTML card's
-    # badge row). The full target URL is DELIBERATELY not here — it crammed the line and is already in
-    # Reproduction / Affected Assets; the header stays a clean, scannable badge row.
+    # Chip row: a filled severity badge + a CVSS chip + an affected-count chip, as ROUNDED pills
+    # (mirrors the HTML card's badge row). The full target URL is DELIBERATELY not here — it crammed the
+    # line and is already in Reproduction / Affected Assets; the header stays a clean, scannable row.
+    # Per-severity fill: one pill variant per severity, wrapped in a Jinja if/elif so only the match renders.
     meta = content.add_paragraph()
-    _spacing(meta, before=1, after=5)
+    _spacing(meta, before=2, after=5)
     for i, sev in enumerate(SEVERITY_ORDER):
         meta.add_run(f'{{% {"if" if i == 0 else "elif"} f.severity == "{sev}" %}}')
-        _chip(meta, "{{ f.severity_label }}", fill=SEVERITY_COLORS[sev], color=WHITE, caps=True)
+        _pill(meta, "{{ f.severity_label }}", fill=SEVERITY_COLORS[sev], color=WHITE,
+              caps=True, width_in=0.95)
     meta.add_run("{% else %}")
-    _chip(meta, "{{ f.severity_label }}", fill=MUTED, color=WHITE, caps=True)
+    _pill(meta, "{{ f.severity_label }}", fill=MUTED, color=WHITE, caps=True, width_in=0.95)
     meta.add_run("{% endif %}")
     meta.add_run("{% if f.cvss_score %}")
-    _run(meta, "  ", size=8)
-    _chip(meta, "CVSS {{ f.cvss_score }}", fill=SURFACE2, color=INK2)
+    _run(meta, " ", size=8)
+    _pill(meta, "CVSS {{ f.cvss_score }}", fill=SURFACE2, color=INK2, width_in=0.9)
     meta.add_run("{% endif %}")
     meta.add_run("{% if f.assets %}")
-    _run(meta, "  ", size=8)
-    _chip(meta, "{{ f.assets|length }} affected asset{{ 's' if f.assets|length != 1 else '' }}",
-          fill=SURFACE2, color=MUTED)
+    _run(meta, " ", size=8)
+    _pill(meta, "{{ f.assets|length }} affected asset{{ 's' if f.assets|length != 1 else '' }}",
+          fill=SURFACE2, color=MUTED, width_in=1.7)
     meta.add_run("{% endif %}")
 
     content.add_paragraph("{%p if f.status_label %}")
