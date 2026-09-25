@@ -214,3 +214,80 @@ def test_docx_default_order_is_the_standard_sequence(session_factory):
     leftover = [bm.get(qn("w:name")) for bm in d.element.body.iter(qn("w:bookmarkStart"))
                 if (bm.get(qn("w:name")) or "").startswith("scribble-section:")]
     assert leftover == [], "section-marker bookmarks must be removed by the reorder"
+
+
+# --- severity_ratings is its own movable block; rollups + activity_log render in the DOCX (#Q1 / parity) --
+
+def _docx_alltext(payload: bytes) -> str:
+    import io
+
+    import docx
+    from docx.oxml.ns import qn
+    d = docx.Document(io.BytesIO(payload))
+    return "".join(t.text or "" for t in d.element.body.iter(qn("w:t")))
+
+
+def _built_ctx(session_factory):
+    from scribble.content import schema
+    from scribble.enums import Severity
+    from scribble.reporting import build_report_context
+
+    with session_factory() as db:
+        eng = fm.ReportBoard(name="Parity Eng", client_id=uuid.uuid7(), company_name="Acme")
+        grp = fm.FindingGroup(engagement=eng, name="G", order_index=0)
+        db.add_all([eng, grp])
+        db.flush()
+        db.add(fm.BoardFinding(engagement_id=eng.id, group_id=grp.id, order_index=0, title="V",
+                               severity=Severity.high,
+                               content_json={"description": schema.doc_from_text("x")}))
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        return build_report_context(db.get(fm.ReportBoard, eng_id))
+
+
+def test_severity_ratings_is_its_own_movable_html_block(session_factory):
+    # default -> its own section with its own anchor, after summary (not folded into it)
+    html = _render_html_for(session_factory, None)
+    assert 'id="sec-severity_ratings"' in html
+    assert html.index('id="sec-summary"') < html.index('id="sec-severity_ratings"')
+    # ...and it can be moved before summary
+    order = [{"key": "severity_ratings", "enabled": True}, {"key": "summary", "enabled": True},
+             {"key": "findings", "enabled": True}]
+    html2 = _render_html_for(session_factory, order)
+    assert html2.index('id="sec-severity_ratings"') < html2.index('id="sec-summary"')
+
+
+def test_docx_severity_ratings_is_a_standalone_movable_heading(session_factory):
+    order = [{"key": "severity_ratings", "enabled": True}, {"key": "summary", "enabled": True},
+             {"key": "findings", "enabled": True}]
+    headings = _docx_headings(_render_docx_for(session_factory, order))
+    assert "Severity Ratings" in headings
+    assert headings.index("Severity Ratings") < headings.index("Executive Summary")
+
+
+def test_docx_rollups_render_when_grouping_present(session_factory):
+    from types import SimpleNamespace
+
+    from scribble.reporting.render_docx import render_report_docx
+    ctx = _built_ctx(session_factory)
+    ctx.findings_by_kind = [SimpleNamespace(label="Self-signed certificate", severity="medium",
+                                            hosts=["10.0.0.1", "10.0.0.2"], cves=["CVE-2021-0001"])]
+    text = _docx_alltext(render_report_docx(ctx))
+    assert "Findings Rollups" in text
+    assert "Self-signed certificate" in text
+    assert "CVE-2021-0001" in text
+
+
+def test_docx_activity_log_renders_only_when_enabled(session_factory):
+    from scribble.reporting.context import ActivityEntry
+    from scribble.reporting.render_docx import render_report_docx
+    ctx = _built_ctx(session_factory)
+    ctx.activity_log = [ActivityEntry(timestamp="2026-01-01 00:00 UTC", kind="finding",
+                                      summary="Finding added: V")]
+    # off by default -> the appender runs but the reorder drops it
+    assert "Activity Log" not in _docx_alltext(render_report_docx(ctx))
+    # enabled -> renders
+    ctx.section_order = (*ctx.section_order, "activity_log")
+    text = _docx_alltext(render_report_docx(ctx))
+    assert "Activity Log" in text and "Finding added: V" in text

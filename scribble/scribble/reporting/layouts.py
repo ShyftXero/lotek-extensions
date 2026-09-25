@@ -19,6 +19,10 @@ Blocks (keys dispatched in ``render_html._render_block_by_key``):
 - ``toc``          — print-only table of contents; follows the Layout, so it lists whatever this Layout
                      actually renders, in this Layout's order, without knowing anything about it.
 - ``summary``      — Executive Summary (risk banner, narrative, severity bar, metrics, findings index).
+- ``severity_ratings`` — what the severity ratings MEAN (Critical = …, High = …). Split out of ``summary``
+                     so it is independently movable (e.g. to the very top, or to an appendix). Empty when
+                     there are no findings.
+- ``rollups``      — by-vulnerability / by-host severity rollups of the report-visible findings.
 - ``findings``     — the filter bar + the finding groups.
 - ``diagrams``     — embedded attack-path diagrams.
 - ``chains``       — authored attack-chain narratives (#628).
@@ -52,6 +56,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "cover",
     "toc",
     "summary",
+    "severity_ratings",
     "rollups",
     "findings",
     "diagrams",
@@ -69,6 +74,7 @@ BLOCK_LABELS: dict[str, str] = {
     "cover": "Cover",
     "toc": "Table of Contents",
     "summary": "Executive Summary",
+    "severity_ratings": "Severity Ratings",
     "rollups": "Findings Rollups",
     "findings": "Findings",
     "diagrams": "Attack-Path Diagrams",
@@ -101,8 +107,8 @@ class ReportLayout:
 # ``evidence`` sits LAST: it is an appendix of engagement-level material, so it belongs after everything
 # else rather than interrupting it.
 _STANDARD_BLOCKS = (
-    "cover", "toc", "summary", "rollups", "findings", "diagrams", "chains", "retest", "strategic",
-    "methodology", "evidence",
+    "cover", "toc", "summary", "severity_ratings", "rollups", "findings", "diagrams", "chains", "retest",
+    "strategic", "methodology", "evidence",
 )
 
 # Ordered so the switcher lists them predictably; ``default`` is first / the fallback.
@@ -114,8 +120,8 @@ _LAYOUTS: tuple[ReportLayout, ...] = (
     ReportLayout(
         "compliance",
         "Compliance-first",
-        ("cover", "toc", "summary", "methodology", "rollups", "findings", "diagrams", "chains", "retest",
-         "strategic", "evidence"),
+        ("cover", "toc", "summary", "severity_ratings", "methodology", "rollups", "findings", "diagrams",
+         "chains", "retest", "strategic", "evidence"),
     ),
 )
 

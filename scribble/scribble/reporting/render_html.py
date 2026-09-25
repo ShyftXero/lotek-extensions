@@ -1088,6 +1088,20 @@ def _render_severity_definitions(rollup) -> str:
     )
 
 
+def _render_severity_ratings(ctx: ReportContext) -> str:
+    """The Severity Ratings block — what Critical/High/… MEAN. Split out of the Executive Summary (#Q1) so
+    it is an independently movable section. Empty when there are no findings (nothing to rate), so a clean
+    report omits it and leaves no dangling anchor/nav link — the same rule it followed inside the summary."""
+    defs = _render_severity_definitions(ctx.rollup)
+    if not defs:
+        return ""
+    return (
+        '<section class="sec" id="sec-severity_ratings">'
+        '<h2 class="sec-h">Severity Ratings <span class="chev">▾</span></h2>'
+        f'<div class="sec-body">{defs}</div></section>'
+    )
+
+
 def _sev_bar(rollup) -> str:
     """A single stacked severity-distribution bar + legend from the rollup counts -- the summary's one
     chart. Empty string when there are no findings (a clean report shows no bar)."""
@@ -1265,7 +1279,8 @@ def _render_summary(ctx: ReportContext) -> str:
         f'<div class="level">{_esc(banner_label)}{adjusted_flag}</div>{computed_note}</div>'
         f'<div class="narr">{_esc(banner_sub)}</div>{override_note}</div>'
         f"{_sev_bar(rollup)}"
-        f"{_render_severity_definitions(rollup)}"
+        # Severity RATINGS (what Critical/High mean) moved to their own movable `severity_ratings` block
+        # (#Q1); the summary keeps the severity BAR chart. See _render_severity_ratings.
         '<div class="metrics">'
         f'<div class="metric"><div class="k">Total Findings</div><div class="v">{total}</div></div>'
         f'<div class="metric"><div class="k">Sections</div><div class="v">{n_groups}</div></div>'
@@ -1887,6 +1902,11 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
     for key in blocks:
         if key == "summary":
             entries.append((1, "sec-summary", "Executive Summary", ""))
+        elif key == "severity_ratings":
+            # same render condition as _render_severity_ratings (empty when there are no findings), so the
+            # TOC entry appears iff the section does — pinned by test_report_cover_and_toc completeness.
+            if ctx.rollup and ctx.rollup.total > 0:
+                entries.append((1, "sec-severity_ratings", "Severity Ratings", ""))
         elif key == "rollups":
             # Same condition as _render_rollups's render/short-circuit, so the TOC entry appears iff the
             # section does (test_report_cover_and_toc pins this completeness against the rendered doc).
@@ -1963,6 +1983,8 @@ def _render_block_by_key(
         return _render_toc(ctx, blocks)
     if key == "summary":
         return _render_summary(ctx)
+    if key == "severity_ratings":
+        return _render_severity_ratings(ctx)
     if key == "rollups":
         return _render_rollups(ctx)
     if key == "findings":

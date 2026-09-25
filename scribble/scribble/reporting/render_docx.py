@@ -1005,20 +1005,122 @@ def _append_strategic_recommendations(doc, ctx: ReportContext) -> None:
         doc.add_paragraph(f"{r.number}. {_xml_safe(r.text)}")
 
 
-def _append_methodology(doc, ctx: ReportContext) -> None:
-    """Append the standing Methodology section (phases + per-section-type framing) and the severity rating
-    definitions — the docx half of ``render_html``'s Methodology section, which the .docx was missing.
-    Reuses render_html's shared standing constants so the two deliverables can't drift. Placed after the
-    strategic recommendations and before the coverage checklists, matching the HTML section order."""
+def _append_severity_ratings(doc, ctx: ReportContext) -> None:
+    """The Severity Ratings section (what Critical/High/… MEAN) as its OWN movable block (#Q1) — the docx
+    mirror of render_html._render_severity_ratings, split out of _append_methodology so it can sit anywhere
+    in the order. Empty when there are no findings (matching the HTML rule). Reuses render_html's shared
+    standing constants so the two deliverables can't drift."""
+    if not (ctx.rollup and ctx.rollup.total > 0):
+        return
     from docx.shared import Pt, RGBColor
 
     from scribble.report_templates.build_default_docx import SEVERITY_COLORS
-    from scribble.reporting.render_html import (
-        _METHODOLOGY_FRAMING,
-        _METHODOLOGY_PHASES,
-        _SEV_LABELS,
-        _SEVERITY_DEFINITIONS,
+    from scribble.reporting.render_html import _SEV_LABELS, _SEVERITY_DEFINITIONS
+
+    doc.add_heading("Severity Ratings", level=1)
+    for sev in SEVERITY_ORDER:
+        if sev not in _SEVERITY_DEFINITIONS:
+            continue
+        p = doc.add_paragraph()
+        tag = p.add_run(f"{_SEV_LABELS.get(sev, sev.title())}   ")
+        tag.bold = True
+        tag.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[sev])
+        tag.font.size = Pt(10)
+        p.add_run(_xml_safe(_SEVERITY_DEFINITIONS[sev]))
+
+
+def _append_rollups(doc, ctx: ReportContext) -> None:
+    """Findings Rollups — by-vulnerability and by-host, the docx mirror of render_html._render_rollups (the
+    same grouped views the board shows over the report-visible findings, so a fleet-wide issue reads as one
+    row spanning every affected host). Empty (no-op) when the grouping seam returned nothing (off-mount),
+    matching the HTML omit-when-empty rule, so a report with no grouping data is unchanged."""
+    if not ctx.findings_by_kind and not ctx.findings_by_host:
+        return
+    from scribble.reporting.render_html import _SEV_LABELS
+
+    def _sev(b) -> str:
+        return _SEV_LABELS.get(b.severity, b.severity)
+
+    def _table(headers: list[str], rows: list[list[str]]) -> None:
+        t = doc.add_table(rows=1, cols=len(headers))
+        try:
+            t.style = "Table Grid"
+        except Exception:
+            pass
+        for i, h in enumerate(headers):
+            t.rows[0].cells[i].paragraphs[0].add_run(h).bold = True
+        for row in rows:
+            cells = t.add_row().cells
+            for i, val in enumerate(row):
+                cells[i].text = _xml_safe(val)
+
+    doc.add_heading("Findings Rollups", level=1)
+    doc.add_paragraph(
+        "The same findings grouped by vulnerability and by host — a fleet-wide issue collapses to one row "
+        "spanning every affected host. Full details are in the findings themselves."
     )
+    if ctx.findings_by_kind:
+        doc.add_heading("By vulnerability", level=2)
+        _table(
+            ["Vulnerability", "Severity", "Hosts", "Affected hosts", "CVEs"],
+            [[b.label, _sev(b), str(len(b.hosts)), ", ".join(b.hosts) or "—", ", ".join(b.cves) or "—"]
+             for b in ctx.findings_by_kind],
+        )
+    if ctx.findings_by_host:
+        doc.add_heading("By host", level=2)
+        _table(
+            ["Host", "Severity", "Vulns", "Vulnerabilities", "CVEs"],
+            [[b.key, _sev(b), str(b.count),
+              ", ".join(sorted({it.label for it in b.items})) or "—", ", ".join(b.cves) or "—"]
+             for b in ctx.findings_by_host],
+        )
+
+
+def _append_activity_appendix(doc, ctx: ReportContext) -> None:
+    """Optional engagement activity trail (lotek#442) — the docx mirror of render_html._render_activity_
+    appendix. OFF by default (the ``activity_log`` block is opt-in); empty (no-op) when there is no
+    activity. Bounded by _MAX_APPENDIX_ITEMS with a visible note; the heading reports the TRUE total."""
+    if not ctx.activity_log:
+        return
+    from scribble.reporting.render_html import _MAX_APPENDIX_ITEMS
+
+    total = len(ctx.activity_log)
+    shown = ctx.activity_log[:_MAX_APPENDIX_ITEMS]
+    doc.add_heading("Activity Log", level=1)
+    doc.add_paragraph(
+        "Timestamped record of engagement activity — findings added, evidence uploaded, and attack-path "
+        "diagrams created — for the engagement audit trail."
+    )
+    t = doc.add_table(rows=1, cols=3)
+    try:
+        t.style = "Table Grid"
+    except Exception:
+        pass
+    for i, h in enumerate(("Time", "Type", "Activity")):
+        t.rows[0].cells[i].paragraphs[0].add_run(h).bold = True
+    for e in shown:
+        cells = t.add_row().cells
+        cells[0].text = _xml_safe(e.timestamp)
+        cells[1].text = _xml_safe(e.kind)
+        cells[2].text = _xml_safe(e.summary)
+    withheld = total - len(shown)
+    if withheld > 0:
+        note = doc.add_paragraph()
+        _r = note.add_run(
+            f"{withheld} earlier entr{'ies are' if withheld != 1 else 'y is'} not listed here "
+            f"(this appendix lists at most {_MAX_APPENDIX_ITEMS})."
+        )
+        _r.italic = True
+
+
+def _append_methodology(doc, ctx: ReportContext) -> None:
+    """Append the standing Methodology section (phases + per-section-type framing) — the docx half of
+    ``render_html``'s Methodology section, which the .docx was missing. Reuses render_html's shared standing
+    constants so the two deliverables can't drift. The severity RATINGS are a separate movable block now
+    (:func:`_append_severity_ratings`, #Q1)."""
+    from docx.shared import RGBColor
+
+    from scribble.reporting.render_html import _METHODOLOGY_FRAMING, _METHODOLOGY_PHASES
 
     doc.add_heading("Methodology", level=1)
     doc.add_paragraph(
@@ -1046,18 +1148,6 @@ def _append_methodology(doc, ctx: ReportContext) -> None:
             p = doc.add_paragraph()
             p.add_run(f"{_xml_safe(label)} — ").bold = True
             p.add_run(_xml_safe(text))
-
-    if ctx.rollup and ctx.rollup.total > 0:
-        doc.add_heading("Severity ratings", level=2)
-        for sev in SEVERITY_ORDER:
-            if sev not in _SEVERITY_DEFINITIONS:
-                continue
-            p = doc.add_paragraph()
-            tag = p.add_run(f"{_SEV_LABELS.get(sev, sev.title())}   ")
-            tag.bold = True
-            tag.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[sev])
-            tag.font.size = Pt(10)
-            p.add_run(_xml_safe(_SEVERITY_DEFINITIONS[sev]))
 
 
 def _append_checklists(doc, ctx: ReportContext) -> None:
@@ -1272,6 +1362,8 @@ def render_report_docx(
         add_section_marker(doc, key)
         render()
 
+    _section("severity_ratings", lambda: _append_severity_ratings(doc, ctx))  # #Q1, own movable block
+    _section("rollups", lambda: _append_rollups(doc, ctx))  # by-vuln/by-host (was HTML-only)
     _section("diagrams", lambda: _append_attack_paths(doc, ctx))  # ext#115
     _section("chains", lambda: _append_attack_chains(doc, ctx))  # #628
     _section("retest", lambda: _append_retest_closeout(doc, ctx))  # #622
@@ -1280,6 +1372,7 @@ def render_report_docx(
     # the DOCX splits authoring across two appenders, unlike the HTML which folds checklists in).
     _section("methodology", lambda: (_append_methodology(doc, ctx), _append_checklists(doc, ctx)))
     _section("evidence", lambda: _append_evidence_appendix(doc, ctx, artifact_bytes=artifact_bytes))
+    _section("activity_log", lambda: _append_activity_appendix(doc, ctx))  # opt-in audit trail
 
     _reorder_sections(doc, ctx.section_order)
 

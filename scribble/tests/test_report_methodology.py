@@ -29,5 +29,7 @@ def test_docx_appends_methodology_and_severity_ratings(app, session_factory):
 
     assert "Methodology" in text
     assert "Scoping and rules of engagement" in text     # a standing phase
-    assert "Severity ratings" in text
+    # Severity ratings are their OWN movable block now (#Q1), not a sub-heading of Methodology — the
+    # heading is title-case "Severity Ratings". It still renders in the default order, so it's in the doc.
+    assert "Severity Ratings" in text
     assert "Remediate immediately" in text               # the critical rating definition
