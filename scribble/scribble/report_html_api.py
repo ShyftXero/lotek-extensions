@@ -26,16 +26,21 @@ from scribble.authz import authorize_engagement_view
 from scribble.deps import host_user_setting, open_session
 from scribble.models import ReportBoard, ScribbleSettings, ScribbleThemeOverride
 from scribble.reporting.context import build_report_context
-from scribble.reporting.render_html import export_zip, make_inline_artifact_url, render_report_html
+from scribble.reporting.exporters import EXPORTERS, ExportOptions, PdfExportError, get_exporter
+from scribble.reporting.render_html import make_inline_artifact_url, render_report_html
 
 # CRIT-4's tenancy predicate now lives in ``scribble/authz.py`` (it's also the primitive the
 # blueprint-wide ``before_request`` gate uses — see that module's docstring for the full history).
 # ``report_docx_api.py`` imports it from there directly, not from this module.
 
 
-def _artifact_url_factory(engagement: ReportBoard) -> Callable[[int], str]:
-    """``artifact_url`` for ``build_report_context``: resolves inline-image nodes to a placeholder
-    that bakes in the artifact's storage_path (see ``render_html.make_inline_artifact_url``)."""
+def _artifact_url_factory(
+    engagement: ReportBoard, make_fn: Callable[[str | None], str] = make_inline_artifact_url
+) -> Callable[[int], str]:
+    """``artifact_url`` for ``build_report_context``: resolves inline-image nodes to the exporter's
+    placeholder that bakes in the artifact's storage_path. ``make_fn`` is the exporter-specific
+    placeholder builder (html vs docx bake different prefixes); defaults to the HTML one for the live
+    report view."""
     # Key by str(id): content_json's inlineImage ``artifactId`` is authored in the browser and arrives
     # as a JSON string (a UUID string since lotek#335; historically a JSON int), while ``a.id`` is a
     # ``uuid.UUID``. A plain dict keyed by the UUID would miss the string every time, silently dropping
@@ -43,7 +48,7 @@ def _artifact_url_factory(engagement: ReportBoard) -> Callable[[int], str]:
     by_id = {str(a.id): a.storage_path for a in engagement.artifacts}
 
     def _url(artifact_id: int) -> str:
-        return make_inline_artifact_url(by_id.get(str(artifact_id)) if artifact_id is not None else None)
+        return make_fn(by_id.get(str(artifact_id)) if artifact_id is not None else None)
 
     return _url
 
@@ -158,64 +163,43 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/engagements/<uuid:engagement_id>/report/export")
     def engagement_report_export(engagement_id: int):
+        # One registry lookup replaces the per-format ladder: html · docx · pdf · json · csv · zip all
+        # dispatch the same way, and a new format is a registration, not another branch here. Unknown
+        # ``?format=`` degrades to html (the historic fallthrough).
         fmt = (request.args.get("format") or "html").strip().lower()
+        exporter = get_exporter(fmt) or EXPORTERS["html"]
         with open_session() as db:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
             authorize_engagement_view(engagement)
-            _override_lookup, _override_names, _install_default = _override_theme_sources(db)
-            ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
+            override_lookup, override_names, install_default = _override_theme_sources(db)
+            # The inline-image placeholder is renderer-specific, so build the ctx with THIS exporter's
+            # factory; structured-data exporters (csv/json) embed no bytes and need none.
+            ctx = build_report_context(
+                engagement,
+                artifact_url=(
+                    _artifact_url_factory(engagement, exporter.inline_url) if exporter.inline_url else None
+                ),
+            )
             slug = _slugify(engagement.name)
-
-            # #627: structured-data exports of the SAME ctx — a download, not a rendered page.
-            if fmt == "json":
-                from scribble.reporting.render_json import render_report_json
-
-                return Response(
-                    render_report_json(ctx),
-                    mimetype="application/json",
-                    headers={"Content-Disposition": f'attachment; filename="{slug}-report.json"'},
-                )
-            if fmt == "csv":
-                from scribble.reporting.render_csv import render_report_csv
-
-                return Response(
-                    render_report_csv(ctx),
-                    mimetype="text/csv",
-                    headers={"Content-Disposition": f'attachment; filename="{slug}-report.csv"'},
-                )
-
-            if fmt == "zip":
-                payload = export_zip(
-                    ctx,
-                    artifact_bytes,
-                    layout=request.args.get("layout"),
-                    theme=_selected_theme(_install_default),
-                    template=request.args.get("template"),
-                    override_lookup=_override_lookup,
-                )
-                return Response(
-                    payload,
-                    mimetype="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="{slug}-report.zip"'},
-                )
-
-            html_doc = render_report_html(
-                ctx,
-                inline_assets=True,
+            opts = ExportOptions(
                 artifact_bytes=artifact_bytes,
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
                 layout=request.args.get("layout"),
-                theme=_selected_theme(_install_default),
+                theme=_selected_theme(install_default),
                 template=request.args.get("template"),
-                override_lookup=_override_lookup,
-                override_theme_names=_override_names,
+                override_lookup=override_lookup,
+                override_theme_names=override_names,
             )
+            try:
+                payload = exporter.render(ctx, opts)
+            except PdfExportError as exc:
+                abort(503, description=str(exc))
 
         return Response(
-            html_doc,
-            mimetype="text/html",
-            headers={"Content-Disposition": f'attachment; filename="{slug}-report.html"'},
+            payload,
+            mimetype=exporter.media_type,
+            headers={"Content-Disposition": f'attachment; filename="{slug}-report.{exporter.extension}"'},
         )

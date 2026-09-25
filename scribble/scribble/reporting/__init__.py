@@ -23,3 +23,15 @@ from scribble.reporting.context import (  # noqa: F401
     figure_label,
     number_figures,
 )
+from scribble.reporting.exporters import (  # noqa: F401
+    DOCX_MIME,
+    EXPORTERS,
+    Exporter,
+    ExportOptions,
+    PdfExportError,
+    convert_docx_to_pdf,
+    get_exporter,
+    register_exporter,
+    register_pdf_backend,
+    set_pdf_backend,
+)
