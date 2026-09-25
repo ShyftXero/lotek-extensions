@@ -2591,7 +2591,10 @@ table.index td.ix-cwe, table.index td.ix-cve {
 .finding-body .block-body img { max-width: 100%; border-radius: 6px; }
 .finding-body .block-body pre {
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
-  padding: 10px 12px; font-size: 12.5px; overflow: auto; max-height: 24em;
+  padding: 10px 12px; font-size: 12.5px; max-height: 24em; overflow-y: auto;
+  /* WRAP long lines (a request URL / curl PoC is one very long token) instead of scrolling
+     horizontally -- horizontal overflow is invisibly truncated when the report prints to PDF. */
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
 }
 .finding-body .block-body code {
   font-family: var(--font-mono); font-size: 13px;
