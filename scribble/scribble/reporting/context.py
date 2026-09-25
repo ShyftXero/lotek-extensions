@@ -639,6 +639,46 @@ def _nest_findings(ordered_findings, *, artifact_url) -> list[FindingCtx]:
     return result
 
 
+def _kind_key(fc: FindingCtx) -> str:
+    """Host-independent identity of a vulnerability KIND — the SAME rule the board and the by-vuln
+    rollup use (core ``app.finding_grouping.kind_group_key``): the CVE set if present, else the
+    normalized title. Deliberately NOT ``target_host`` / the finding's dedup signature, which are
+    per-instance — keying on those is what rendered one card per host."""
+    cves = tuple(sorted({c.upper() for c in (fc.cve_ids or []) if c}))
+    if cves:
+        return "cve:" + "+".join(cves)
+    return "title:" + " ".join((fc.title or "").split()).lower()
+
+
+def _collapse_by_kind(top_level: list[FindingCtx]) -> list[FindingCtx]:
+    """Collapse the detailed findings section to ONE card per vulnerability KIND.
+
+    Same-kind per-host findings fold into the FIRST occurrence (which is the worst-severity instance,
+    because ``_order_findings`` already severity-ordered the list) as extra ``children`` — so the card
+    renders the write-up once and lists every affected host inside it (``render_html._affected_assets``
+    already aggregates hosts from ``children``, and ``_render_children`` prints the "Affected hosts (N)"
+    table). A report whose findings are all distinct vulns is unchanged: every kind has one finding, so
+    nothing folds. This is what stops a 134-instance / 17-vuln engagement rendering 134 repeated cards
+    and a 134-row table of contents — the 73-page deliverable Eli hit.
+
+    One level only, matching ``_render_children``: a folded finding that was itself a promoted parent
+    contributes its own children as siblings under the representative, never a second nesting level."""
+    reps: dict[str, FindingCtx] = {}
+    order: list[str] = []
+    for fc in top_level:
+        key = _kind_key(fc)
+        rep = reps.get(key)
+        if rep is None:
+            reps[key] = fc
+            order.append(key)
+            continue
+        folded_kids = fc.children
+        fc.children = []
+        rep.children.append(fc)          # the folded finding becomes a host instance …
+        rep.children.extend(folded_kids)  # … and any children it already had stay one level deep
+    return [reps[key] for key in order]
+
+
 def _build_narrative(company_name: str, rollup: SeverityRollup, groups: list[GroupCtx]) -> str:
     """A short, factual executive-summary paragraph synthesized from ``rollup`` (severity counts) and
     the titles of the worst top-level findings -- ADDS to (never replaces) the risk banner / KPI tiles
@@ -811,7 +851,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
                 name=group.name,
                 type_slug=at.slug if at else None,
                 color=at.color if at else None,
-                findings=_nest_findings(ordered, artifact_url=artifact_url),
+                findings=_collapse_by_kind(_nest_findings(ordered, artifact_url=artifact_url)),
             )
         )
 
@@ -834,7 +874,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
                     name="Ungrouped",
                     type_slug=None,
                     color=None,
-                    findings=_nest_findings(ordered, artifact_url=artifact_url),
+                    findings=_collapse_by_kind(_nest_findings(ordered, artifact_url=artifact_url)),
                 )
             )
 

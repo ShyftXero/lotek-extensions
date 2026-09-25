@@ -1068,17 +1068,20 @@ def _findings_index(ctx: ReportContext) -> str:
             g = grouped[f.title] = _Kind(f.severity, f.id)
         if _rank(f.severity) < _rank(g.sev):
             g.sev = f.severity  # keep the worst severity seen for this vulnerability
-        host = f.target_host or ""
-        if host and f.target_port:
-            host = f"{host}:{f.target_port}"
-        if not host and f.target_url:
-            host = f.target_url
-        if host:
-            g.hosts.add(host)
-        for c in (f.cve_ids or []):
-            g.cves.add(c)
-        if f.threat_intel and f.threat_intel.get("kev"):
-            g.kev = True
+        # Count the card AND its folded per-host instances (context._collapse_by_kind moved same-vuln
+        # hosts into `.children`), so the host count is the true fleet size, not just the representative.
+        for inst in (f, *f.children):
+            host = inst.target_host or ""
+            if host and inst.target_port:
+                host = f"{host}:{inst.target_port}"
+            if not host and inst.target_url:
+                host = inst.target_url
+            if host:
+                g.hosts.add(host)
+            for cve in (inst.cve_ids or []):
+                g.cves.add(cve)
+            if inst.threat_intel and inst.threat_intel.get("kev"):
+                g.kev = True
 
     ordered = sorted(grouped.items(), key=lambda kv: (_rank(kv[1].sev), kv[0].lower()))
     show_cve = any(g.cves or g.kev for _, g in ordered)
@@ -2769,9 +2772,19 @@ table.index td.ix-cwe, table.index td.ix-cve {
   .toc-list li { break-inside: avoid; }
   body.has-cover .masthead { display: none !important; }
   .sec.collapsed .sec-body { display: block !important; }
-  .finding, .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
+  .metric, .risk, .evidence-item, .ck-item, .ck-table tr, .index-wrap { break-inside: avoid; }
   .mth-phase, .mth-frame { break-inside: avoid; }
-  .children-table { break-inside: avoid; }
+  /* A finding card collapsed by vulnerability can list dozens of affected hosts — taller than a page —
+     so the card and its host table MUST break across pages; keep only small units atomic. */
+  .finding { break-inside: auto; }
+  .finding-head { break-inside: avoid; break-after: avoid; }
+  .children-table { break-inside: auto; }
+  .children-table tr, .children-table thead { break-inside: avoid; }
+  .children-table thead { display: table-header-group; }
+  /* Reveal the collapsed "Affected hosts" disclosure in print — those hosts ARE the deliverable's
+     content now, so a client PDF must show them whether or not the on-screen <details> was open. */
+  details.children > .children-table { display: table !important; }
+  details.children > summary { list-style: none; color: var(--ink-2); font-weight: 600; }
   .sec-h { break-after: avoid; }
   .finding-body .block-body pre { max-height: none; overflow: visible; }
   a { color: #10202e; text-decoration: underline; }
