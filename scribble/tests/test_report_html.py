@@ -268,11 +268,12 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
     assert "Should not render as its own card." not in html_doc
     assert "Nor should this one." not in html_doc
 
-    # The unified, deduplicated Affected Assets section is present, naming both children's hosts.
+    # The unified, deduplicated Affected Assets section is present (standard block-label/block-body
+    # shape, like every other card section), naming both children's hosts.
     assert "Affected Assets (2)" in html_doc
     assert "dc01.acme.test" in html_doc
     assert "dc02.acme.test" in html_doc
-    assert '<details class="children"' in html_doc
+    assert '<div class="block affected-assets">' in html_doc
 
 
 def test_render_report_html_childless_finding_unaffected(session_factory):

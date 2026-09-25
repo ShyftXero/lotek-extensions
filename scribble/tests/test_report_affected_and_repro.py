@@ -34,7 +34,7 @@ def _render(session_factory, **finding_kwargs) -> str:
 
 
 def _affected_block(html: str) -> str:
-    return html.split('class="block affected-assets"', 1)[1].split("</details></div>", 1)[0]
+    return html.split('class="block affected-assets"', 1)[1].split("</div></div>", 1)[0]
 
 
 def test_exploit_url_goes_to_reproduction_not_the_asset_list(session_factory):

@@ -526,12 +526,11 @@ def _render_affected(f: FindingCtx, resolver: _AssetResolver) -> str:
                  f'<tbody>{"".join(rows)}</tbody></table>')
     else:
         inner = f'<ul class="asset-list">{"".join(f"<li>{_esc(label)}</li>" for label in order)}</ul>'
-    # Collapsible (open by default): the assets ARE the content, and the print sheet reveals
-    # ``details.children`` regardless of state so a client PDF always shows them.
+    # Same block-label / block-body shape as every other card section (Description, Remediation,
+    # Reproduction, Recommendations) — one consistent pattern for all renderable items.
     return (
-        '<div class="block affected-assets">'
-        f'<details class="children" open><summary class="block-label">Affected Assets ({n})</summary>'
-        f'{inner}</details></div>'
+        f'<div class="block affected-assets"><div class="block-label">Affected Assets ({n})</div>'
+        f'<div class="block-body">{inner}</div></div>'
     )
 
 
