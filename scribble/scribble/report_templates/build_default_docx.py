@@ -231,6 +231,45 @@ def _pill(paragraph, text_markup, *, fill, color, width_in, caps=False, size=15)
     paragraph._p.append(parse_xml(xml))
 
 
+def _code_box(paragraph, loop_expr, item_var, *, width_in=6.85, fill=SURFACE2, color=INK2):
+    """A ROUNDED, padded code box: a roundRect shape (gentle 8% radius) whose txbxContent runs a Jinja
+    ``{%p for %}`` loop over ``loop_expr``, one monospace line per item ({{ item_var }}). Auto-grows to
+    the line count (spAutoFit). Verified end-to-end through docxtpl + LibreOffice — real internal padding
+    and rounded corners, unlike a shaded paragraph."""
+    _PILL_ID[0] += 1
+    did = _PILL_ID[0]
+    cx, cy = int(width_in * 914400), int(0.3 * 914400)
+    inner = (
+        '<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">{%p for ' + item_var + ' in ' + loop_expr + ' %}</w:t></w:r></w:p>'
+        '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+        '<w:r><w:rPr><w:rFonts w:ascii="' + MONO_FONT + '" w:hAnsi="' + MONO_FONT + '"/>'
+        '<w:color w:val="' + color + '"/><w:sz w:val="17"/></w:rPr>'
+        '<w:t xml:space="preserve">{{ ' + item_var + ' }}</w:t></w:r></w:p>'
+        '<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
+        '<w:r><w:t xml:space="preserve">{%p endfor %}</w:t></w:r></w:p>'
+    )
+    xml = (
+        f'<w:r xmlns:w="{_W_NS}"><w:drawing>'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        ' distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{did}" name="codebox{did}"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:cNvSpPr txBox="1"/>'
+        f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 8000"/></a:avLst></a:prstGeom>'
+        f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr>'
+        f'<wps:txbx><w:txbxContent>{inner}</w:txbxContent></wps:txbx>'
+        '<wps:bodyPr rot="0" anchor="t" lIns="91440" tIns="54864" rIns="91440" bIns="54864">'
+        '<a:spAutoFit/></wps:bodyPr>'
+        '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+    )
+    paragraph._p.append(parse_xml(xml))
+
+
 # ----------------------------------------------------------------------------- doc chrome
 
 def _set_styles(doc: Document) -> None:
@@ -506,15 +545,11 @@ def _finding_card(doc: Document) -> None:
     body_p = content.add_paragraph()
     body_p.add_run("{{r f.body }}")
 
-    # Reproduction — the scanner's request(s), in a shaded monospace code box (one per distinct pattern).
+    # Reproduction — the scanner's request(s), in a ROUNDED, padded monospace code box (one line per
+    # distinct pattern; the box auto-grows to the line count).
     content.add_paragraph("{%p if f.repro %}")
     _section_label(content.add_paragraph(), "Reproduction")
-    content.add_paragraph("{%p for r in f.repro %}")
-    rp = content.add_paragraph()
-    _shade(rp._p, SURFACE2)
-    _spacing(rp, before=1, after=1)
-    _run(rp, "{{ r }}", size=8.5, color=INK2, mono=True)
-    content.add_paragraph("{%p endfor %}")
+    _code_box(content.add_paragraph(), "f.repro", "r")
     content.add_paragraph("{%p endif %}")
 
     # Affected Assets — deduped services (host:port/proto) as a 3-column monospace GRID (f.asset_rows,
@@ -533,8 +568,13 @@ def _finding_card(doc: Document) -> None:
     _section_label(content.add_paragraph(), "Evidence")
     content.add_paragraph("{%p for a in f.artifacts %}")
     content.add_paragraph("{%p if a.embedded %}")
-    content.add_paragraph().add_run("{{ a.image }}")
-    _run(content.add_paragraph(), "{{ a.caption }}", size=8, color=MUTED, italic=True)
+    img_p = content.add_paragraph()
+    img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER   # screenshots centered in the card
+    _spacing(img_p, before=4, after=1)
+    img_p.add_run("{{ a.image }}")
+    cap_p = content.add_paragraph()
+    cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _run(cap_p, "{{ a.caption }}", size=8, color=MUTED, italic=True)
     content.add_paragraph("{%p else %}")
     _run(content.add_paragraph(), "\U0001f4c4 {{ a.filename }} — {{ a.caption }} (not embedded)",
          size=8, color=MUTED, italic=True)
