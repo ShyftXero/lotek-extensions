@@ -534,15 +534,13 @@ def _render_affected(f: FindingCtx, resolver: _AssetResolver) -> str:
     )
 
 
-def _render_derived_repro(f: FindingCtx) -> str:
-    """Reproduction, when the finding has NO authored reproduction block: surface the scanner's request
-    URL(s) — the implicit PoC (path + payload) — as a copy-pasteable Reproduction section. Where the PoC
-    lives varies by finding (an authored ``reproduction`` codeBlock for some, only ``target_url`` for
-    others), so this fills the gap without duplicating an authored block. Distinct request PATTERNS across
-    the finding + folded instances: one example per (path, query) with a count, so a fleet vuln shows the
-    request once, not per host."""
+def repro_request_urls(f: FindingCtx) -> list[str]:
+    """The scanner's request URL(s) — the implicit PoC (path + payload) — for a finding with NO authored
+    reproduction block, one example per distinct (path, query) across the finding + folded instances (so a
+    fleet vuln shows the request once, not per host). Empty when a reproduction block is authored (that
+    renders instead) or no instance has a request path. Shared by the HTML and docx renderers."""
     if (f.blocks_html or {}).get("reproduction"):
-        return ""  # an authored reproduction block already renders via _render_blocks
+        return []
     examples: dict[tuple[str, str], str] = {}
     for inst in (f, *f.children):
         url = (inst.target_url or "").strip()
@@ -551,12 +549,17 @@ def _render_derived_repro(f: FindingCtx) -> str:
         p = urlparse(url)
         if not (p.path not in ("", "/") or p.query):
             continue  # a bare host/root URL is not a PoC — it is already in Affected Assets
-        examples.setdefault((p.path, p.query), url)  # one example request per distinct pattern
-    if not examples:
+        examples.setdefault((p.path, p.query), url)
+    return list(examples.values())
+
+
+def _render_derived_repro(f: FindingCtx) -> str:
+    """HTML Reproduction section from ``repro_request_urls`` — the copy-pasteable request(s), NOT annotated
+    with host counts (that is Affected Assets' job)."""
+    urls = repro_request_urls(f)
+    if not urls:
         return ""
-    # Just the request(s), copy-pasteable — NOT annotated with host counts (that is Affected Assets'
-    # job, and a "# on N assets" comment would ride along on a copy-paste).
-    code = "\n".join(_esc(url) for url in examples.values())
+    code = "\n".join(_esc(url) for url in urls)
     return (
         '<div class="block reproduction"><div class="block-label">Reproduction</div>'
         '<div class="block-body"><p class="muted repro-note">Request(s) observed by the scanner:</p>'

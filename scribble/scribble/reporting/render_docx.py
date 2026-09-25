@@ -324,6 +324,14 @@ def _artifact_ctx(
 def _finding_ctx(
     f: FindingCtx, *, tpl: DocxTemplate, artifact_bytes: ArtifactBytes | None
 ) -> dict[str, object]:
+    # Affected services + reproduction request(s) come from the SAME host-independent logic the HTML
+    # renderer uses, so the two deliverables agree: services as host:port/proto (dedup, no exploit path),
+    # and the PoC request(s) surfaced when there is no authored reproduction block. They render as
+    # STRUCTURED template content (a mono list + a shaded code box) rather than a flattened rich-text blob,
+    # which is what jammed the old "Affected Hosts (N)10.20.0.3…" body — so ``children`` is no longer fed
+    # to the body.
+    from scribble.reporting.render_html import _affected_labels, repro_request_urls
+
     image_resolver = _make_image_resolver(artifact_bytes)
     sev = f.severity if f.severity in SEVERITY_ORDER else "info"
     return {
@@ -338,8 +346,10 @@ def _finding_ctx(
         "cvss_score": f"{f.cvss_score:.1f}" if f.cvss_score is not None else "",
         "cvss_vector": f.cvss_vector or "",
         "target": _target_text(f),
+        "assets": _affected_labels(f)[0],
+        "repro": repro_request_urls(f),
         "body": _finding_body_richtext(
-            tpl, f.blocks_html, image_resolver, children=f.children,
+            tpl, f.blocks_html, image_resolver, children=None,
             metadata_html=_metadata_line_html(f), references_html=_references_html(f),
         ),
         "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in f.artifacts],

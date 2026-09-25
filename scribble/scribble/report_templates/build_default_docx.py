@@ -368,6 +368,29 @@ def _finding_card(doc: Document) -> None:
     body_p = content.add_paragraph()
     body_p.add_run("{{r f.body }}")
 
+    # Reproduction — the scanner's request(s), in a shaded monospace code box (one per distinct pattern).
+    content.add_paragraph("{% if f.repro %}")
+    _run(content.add_paragraph(), "Reproduction", size=9, color=ACCENT_INK, bold=True, caps=True)
+    content.add_paragraph("{% for r in f.repro %}")
+    rp = content.add_paragraph()
+    _shade(rp._p, SURFACE2)
+    _spacing(rp, before=1, after=1)
+    _run(rp, "{{ r }}", size=8.5, color=INK2, mono=True)
+    content.add_paragraph("{% endfor %}")
+    content.add_paragraph("{% endif %}")
+
+    # Affected Assets — deduped services (host:port/proto), one per line, monospace.
+    content.add_paragraph("{% if f.assets %}")
+    _run(content.add_paragraph(), "Affected Assets ({{ f.assets|length }})",
+         size=9, color=ACCENT_INK, bold=True, caps=True)
+    content.add_paragraph("{% for a in f.assets %}")
+    ap = content.add_paragraph()
+    _spacing(ap, before=0, after=0)
+    _run(ap, "•  ", size=9, color=MUTED)
+    _run(ap, "{{ a }}", size=9, color=INK, mono=True)
+    content.add_paragraph("{% endfor %}")
+    content.add_paragraph("{% endif %}")
+
     # evidence
     content.add_paragraph("{% if f.artifacts %}")
     _run(content.add_paragraph(), "Evidence", size=9, color=ACCENT_INK, bold=True, caps=True)
