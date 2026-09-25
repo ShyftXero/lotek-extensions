@@ -88,7 +88,23 @@ class PdfExportError(RuntimeError):
 
 PdfConvert = Callable[[bytes], bytes]
 _PDF_BACKENDS: dict[str, PdfConvert] = {}
-_pdf_backend = "libreoffice"   # default; config/GUI flips this to "gotenberg" once that client lands
+_pdf_backend = "gotenberg"   # docx->PDF engine; scribble configures the Gotenberg URL on enable
+
+# The Gotenberg service the backend targets. scribble sets this on enable — from `pdf_service_url` if an
+# operator configured an external Gotenberg, else the 127.0.0.1 URL that `ensure_service_container`
+# returns for the auto-provisioned container — and again whenever the setting changes (config<->GUI).
+_gotenberg_url: str | None = None
+_gotenberg_token: str | None = None
+
+
+def configure_gotenberg(url: str | None, token: str | None = None) -> None:
+    global _gotenberg_url, _gotenberg_token
+    _gotenberg_url = url or None
+    _gotenberg_token = token or None
+
+
+def gotenberg_url() -> str | None:
+    return _gotenberg_url
 
 
 def register_pdf_backend(name: str, fn: PdfConvert) -> None:
@@ -118,13 +134,16 @@ def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
         raise PdfExportError(f"PDF backend {_pdf_backend!r} failed: {exc}") from exc
 
 
-def _libreoffice_backend(docx_bytes: bytes) -> bytes:
-    from scribble.reporting.pdf import docx_to_pdf
+def _gotenberg_backend(docx_bytes: bytes) -> bytes:
+    from scribble.reporting.pdf import gotenberg_convert
 
-    return docx_to_pdf(docx_bytes)
+    if not _gotenberg_url:
+        raise PdfExportError("no Gotenberg service configured (set pdf_service_url or enable the "
+                             "managed container)")
+    return gotenberg_convert(docx_bytes, service_url=_gotenberg_url, token=_gotenberg_token)
 
 
-register_pdf_backend("libreoffice", _libreoffice_backend)
+register_pdf_backend("gotenberg", _gotenberg_backend)
 
 
 # --------------------------------------------------------------------------- renderer adapters
