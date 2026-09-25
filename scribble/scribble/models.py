@@ -130,6 +130,15 @@ class ReportBoard(Base, TimestampMixin):
     # the alembic migration backfills existing rows ``false`` via server_default; the create_all path
     # adds a plain column (existing rows NULL, read as OFF).
     threat_intel_egress_consent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Per-report SECTION ORDER + on/off: an ordered JSON list ``[{"key": <block>, "enabled": bool}, ...]``
+    # whose keys are ``reporting.layouts.BLOCK_KEYS``. NULL => the default composition (every section,
+    # standard order, all enabled except the opt-in ``activity_log``) — byte-identical to before this field
+    # existed. This is the ONE persisted home for report section composition; the ephemeral ``?layout=``
+    # preset only seeds/previews it. Resolved for BOTH renderers via ``layouts.resolve_section_order``
+    # (unknown keys dropped, any missing block appended disabled, dups collapsed), so the HTML preview and
+    # the DOCX/PDF deliverable render the SAME order. Additive + nullable: the migration adds a plain
+    # column, create_all adds it too, and every read coerces None to the default.
+    section_order: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"

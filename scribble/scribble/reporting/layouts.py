@@ -63,6 +63,24 @@ BLOCK_KEYS: tuple[str, ...] = (
     "activity_log",
 )
 
+# Human-readable labels for each block — the names a section-order editor shows and the TOC/handles use.
+# Keyed by BLOCK_KEYS; kept beside the keys so adding a block forces adding its label (asserted below).
+BLOCK_LABELS: dict[str, str] = {
+    "cover": "Cover",
+    "toc": "Table of Contents",
+    "summary": "Executive Summary",
+    "rollups": "Findings Rollups",
+    "findings": "Findings",
+    "diagrams": "Attack-Path Diagrams",
+    "chains": "Attack Chains",
+    "retest": "Remediation Retest",
+    "strategic": "Strategic Recommendations",
+    "methodology": "Methodology",
+    "evidence": "Evidence Appendix",
+    "activity_log": "Activity Log",
+}
+assert set(BLOCK_LABELS) == set(BLOCK_KEYS), "BLOCK_LABELS must label exactly BLOCK_KEYS"
+
 
 @dataclass(frozen=True)
 class ReportLayout:
@@ -116,3 +134,73 @@ def get_layout(name: str | None) -> ReportLayout:
 def list_layouts() -> list[ReportLayout]:
     """All Layouts in switcher order (default first)."""
     return list(_LAYOUTS)
+
+
+# --------------------------------------------------------------------------- per-report section order
+#
+# A named Layout (above) is a shipped PRESET. A per-report section order is the operator's own arrangement,
+# persisted on ``ReportBoard.section_order`` and resolved here for BOTH renderers so HTML and the DOCX/PDF
+# deliverable agree. The preset only seeds/previews; this is the persisted truth.
+
+# The default composition when a report has no saved order: every block, standard order, all enabled EXCEPT
+# the opt-in ``activity_log`` appendix (off by default keeps today's output — no shipped layout referenced
+# it). Ordered = _STANDARD_BLOCKS then activity_log last; asserted to cover the whole vocabulary so adding a
+# BLOCK_KEY forces placing it here.
+DEFAULT_SECTION_ORDER: tuple[str, ...] = (*_STANDARD_BLOCKS, "activity_log")
+_DEFAULT_DISABLED: frozenset[str] = frozenset({"activity_log"})
+assert set(DEFAULT_SECTION_ORDER) == set(BLOCK_KEYS), "DEFAULT_SECTION_ORDER must cover BLOCK_KEYS"
+
+
+@dataclass(frozen=True)
+class SectionSpec:
+    """One report section in the resolved order: its block key + whether it renders. ``label`` is the
+    human name (BLOCK_LABELS) for the editor UI."""
+
+    key: str
+    enabled: bool
+
+    @property
+    def label(self) -> str:
+        return BLOCK_LABELS[self.key]
+
+
+def default_section_specs() -> list[SectionSpec]:
+    """The full section list in default order — every block, all enabled but the opt-in activity_log."""
+    return [SectionSpec(k, k not in _DEFAULT_DISABLED) for k in DEFAULT_SECTION_ORDER]
+
+
+def resolve_section_order(raw: object) -> list[SectionSpec]:
+    """Resolve ``ReportBoard.section_order`` (a JSON list, or None) into the ordered, validated section
+    specs BOTH renderers loop.
+
+    ``raw`` items may be ``{"key": ..., "enabled": bool}`` or a bare key string (enabled). Robust to
+    anything persisted or POSTed: an unknown key is dropped, a duplicate collapses to its first
+    appearance, and any BLOCK_KEY absent from ``raw`` is appended at the end **disabled** — so a report
+    saved before a new block existed never silently gains it, yet the editor still lists it to turn on.
+    ``None``/empty → :func:`default_section_specs`.
+    """
+    if not raw or not isinstance(raw, list):
+        return default_section_specs()
+    seen: set[str] = set()
+    specs: list[SectionSpec] = []
+    for item in raw:
+        if isinstance(item, str):
+            key, enabled = item, True
+        elif isinstance(item, dict):
+            key = item.get("key")
+            enabled = bool(item.get("enabled", True))
+        else:
+            continue
+        if key in BLOCK_KEYS and key not in seen:
+            seen.add(key)
+            specs.append(SectionSpec(key, enabled))
+    for key in DEFAULT_SECTION_ORDER:  # append any block the saved order never mentioned, OFF
+        if key not in seen:
+            specs.append(SectionSpec(key, False))
+    return specs
+
+
+def enabled_section_keys(raw: object) -> tuple[str, ...]:
+    """The block keys that actually render, in order — the resolved order with disabled sections removed.
+    This is what a renderer loops."""
+    return tuple(s.key for s in resolve_section_order(raw) if s.enabled)
