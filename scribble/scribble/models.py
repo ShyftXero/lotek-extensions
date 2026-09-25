@@ -901,6 +901,13 @@ class ScribbleSettings(Base, TimestampMixin):
     # `reporting.themes.DEFAULT_THEME`" — not merely "not configured yet".
     default_report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Per-install report FONTS (reporting.fonts). The operator's chosen body + code faces, applied at
+    # render (remap_fonts) so the docx/PDF bakes them in. NULL = the template's baked default (Inter /
+    # JetBrains Mono). A value must name a face the lotek-gotenberg image has (validated by
+    # reporting.fonts.valid_*). Additive + nullable (alembic revision c3f8b1a4d206 / create_all retrofit).
+    report_body_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    report_code_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
 
 # --------------------------------------------------------------------------- collaboration (Phase B)
 

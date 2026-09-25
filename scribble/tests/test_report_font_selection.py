@@ -81,6 +81,20 @@ def test_validators_gate_the_menu():
     assert valid_body_font(None) is None
 
 
+def test_fonts_from_settings_reads_and_validates():
+    from types import SimpleNamespace
+
+    from scribble.reporting.fonts import fonts_from_settings
+
+    # A row with valid faces passes them through.
+    ok = SimpleNamespace(report_body_font="Inter", report_code_font="JetBrains Mono")
+    assert fonts_from_settings(ok) == ("Inter", "JetBrains Mono")
+    # Unknown / None / a missing row all degrade to the baked default (None, None).
+    bad = SimpleNamespace(report_body_font="Comic Sans MS", report_code_font=None)
+    assert fonts_from_settings(bad) == (None, None)
+    assert fonts_from_settings(None) == (None, None)
+
+
 def test_remap_is_a_noop_without_changes():
     # A doc with no matching families is untouched; guards the "nothing maps -> return" path.
     import docx

@@ -47,6 +47,16 @@ def valid_code_font(name: str | None) -> str | None:
     return name if name in _CODE_NAMES else None
 
 
+def fonts_from_settings(settings) -> tuple[str | None, str | None]:
+    """The validated (body, code) faces from a ScribbleSettings row (duck-typed, so this stays free of a
+    models import). Unknown/absent → None, i.e. the template's baked default. Every render entry point
+    resolves the install's fonts through here, so one place decides."""
+    if settings is None:
+        return None, None
+    return (valid_body_font(getattr(settings, "report_body_font", None)),
+            valid_code_font(getattr(settings, "report_code_font", None)))
+
+
 def remap_fonts(doc, body_font: str | None = None, code_font: str | None = None) -> None:
     """Swap the template's baked default faces for the operator's chosen ones, in every ``w:rFonts`` across
     the document body AND the styles part (so styles, docDefaults, and explicit run fonts all move). A None,
