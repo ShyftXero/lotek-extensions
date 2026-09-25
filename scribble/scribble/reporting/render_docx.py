@@ -98,19 +98,14 @@ def _make_image_resolver(artifact_bytes: ArtifactBytes | None) -> Callable[[str]
     return _resolve
 
 
-# Green section label as a bolder "block": caps, ACCENT_INK, on a light-green wash (ACCENT_WASH), 10pt,
-# in the body font — matches the template's REPRODUCTION/AFFECTED ASSETS/EVIDENCE labels
-# (build_default_docx._section_label) so body-owned labels (Description/Remediation/Details) read the same.
-# Font is "Inter" (the body default) so the render-time font remap swaps it with the chosen body face; a
-# stale "Liberation Sans" here previously left the labels in a different font from the body.
+# Body-owned block labels (Description / Remediation / Details) render as the SAME rounded, padded green
+# chip as the card's REPRODUCTION/AFFECTED ASSETS/EVIDENCE labels — one helper (build_default_docx's
+# ``label_chip_xml``) so the two can't drift. Rounded because a flat green wash read as unstyled next to
+# the rounded code box; the chip is a short fixed shape (page-break-safe, unlike wrapping the prose).
 def _label_run_xml(text: str) -> str:
-    return (
-        '<w:r><w:rPr>'
-        '<w:rFonts w:ascii="Inter" w:hAnsi="Inter"/>'
-        '<w:b/><w:caps/><w:spacing w:val="6"/><w:color w:val="0A5B3D"/><w:sz w:val="20"/>'
-        '<w:shd w:val="clear" w:color="auto" w:fill="E7F3ED"/>'
-        f'</w:rPr><w:t xml:space="preserve"> {_html_escape(text)} </w:t></w:r>'
-    )
+    from scribble.report_templates.build_default_docx import label_chip_xml
+
+    return label_chip_xml(_html_escape(text))
 
 
 def _child_host_label(c: FindingCtx) -> str:

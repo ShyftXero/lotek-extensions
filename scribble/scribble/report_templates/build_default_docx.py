@@ -17,6 +17,7 @@ of M" throughout. ``w:updateFields`` is set so the TOC/page numbers recompute at
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from docx import Document
@@ -180,21 +181,61 @@ def _chip(paragraph, text, *, fill, color, size=8, caps=False):
     return r
 
 
-def _section_label(paragraph, text):
-    """A bolder green 'block' section label: caps, ACCENT_INK, on a light-green wash, 10pt — matches the
-    body block labels (render_docx._label_run_xml). Padded so the wash reads as a block, not a highlight."""
-    r = _run(paragraph, f" {text} ", size=10, color=ACCENT_INK, bold=True, caps=True)
-    rpr = r._r.get_or_add_rPr()
-    shd = OxmlElement("w:shd")
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), ACCENT_WASH)
-    rpr.append(shd)
-    return r
-
-
 _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _PILL_ID = [1000]
+
+
+def _visible_len(text: str) -> int:
+    """Rendered length of a label that may carry a Jinja expression: a ``{{ … }}`` fills to a short value
+    at render, so estimate it at 2 chars (a count like ``{{ f.assets|length }}``) rather than measuring the
+    long template source — otherwise a fixed-width chip is sized for the markup, not the text."""
+    return len(re.sub(r"\{\{.*?\}\}", "00", text))
+
+
+def label_chip_xml(text: str, *, width_in: float | None = None) -> str:
+    """A ROUNDED, padded section-label chip: an inline DrawingML ``roundRect`` (fully rounded) holding
+    left-aligned bold green small-caps text on a soft green wash — the rounded, padded form of the old flat
+    green label, so the labels match the header pills and the rounded code box.
+
+    Labels get this treatment and the PROSE blocks under them do NOT, on purpose: a DrawingML shape can't
+    break across pages, so a long Description/Remediation would clip — a label is short and fixed, so it is
+    shape-safe. ``text`` may contain Jinja ({{ }}), filled by docxtpl at render; width is fixed (a shape
+    can't autosize to a variable), estimated from the visible length when not given. Namespaces are declared
+    inline so it renders whether appended to a paragraph or embedded in a RichText body."""
+    _PILL_ID[0] += 1
+    did = _PILL_ID[0]
+    if width_in is None:
+        width_in = min(2.7, max(0.95, 0.085 * _visible_len(text) + 0.24))
+    cx, cy = int(width_in * 914400), int(0.24 * 914400)
+    return (
+        f'<w:r xmlns:w="{_W_NS}"><w:drawing>'
+        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        ' distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{did}" name="label{did}"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        '<wps:cNvSpPr txBox="0"/>'
+        f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>'
+        f'<a:solidFill><a:srgbClr val="{ACCENT_WASH}"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr>'
+        '<wps:txbx><w:txbxContent><w:p><w:pPr><w:jc w:val="left"/>'
+        '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+        '<w:r><w:rPr><w:b/><w:caps w:val="true"/><w:spacing w:val="8"/>'
+        f'<w:color w:val="{ACCENT_INK}"/><w:sz w:val="15"/>'
+        f'<w:rFonts w:ascii="{BODY_FONT}" w:hAnsi="{BODY_FONT}"/></w:rPr>'
+        f'<w:t xml:space="preserve">{text}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+        '<wps:bodyPr rot="0" anchor="ctr" anchorCtr="0" lIns="64008" tIns="0" rIns="45720" bIns="0"/>'
+        '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+    )
+
+
+def _section_label(paragraph, text):
+    """The card's rounded section label (Reproduction / Affected Assets / Evidence) — a rounded, padded
+    green chip (:func:`label_chip_xml`). Sibling to render_docx's body labels, which share the same chip."""
+    _spacing(paragraph, before=6, after=3)
+    paragraph._p.append(parse_xml(label_chip_xml(text)))
 
 
 def _pill(paragraph, text_markup, *, fill, color, width_in, caps=False, size=15):
