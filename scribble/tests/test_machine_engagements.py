@@ -363,3 +363,35 @@ def test_core_uuid_not_visible_is_404(client, stub_host):
     stub_host.viewable_client_ids = {999}
     assert client.get(f"{M}/engagements/{eid}").status_code == 404
     assert client.get(f"{M}/engagements/{core_id}").status_code == 404
+
+
+def test_create_engagement_is_idempotent_on_core_engagement_id(client, stub_host, session_factory):
+    """A second machine-create for the SAME core engagement returns the existing board (200), never a
+    second row. The duplicate this prevents is what tripped the 1:1 partial-unique index
+    `uq_scribble_report_board_core_engagement` in prod (lotek#914 neighbourhood): the machine route used
+    to insert unconditionally, so two boards could link one core engagement and the index build aborted
+    the scribble mount. Guarded now — resolve-or-create, oldest-wins, matching the UI's `_board_for_core`.
+    """
+    stub_host.viewable_client_ids = {ACME}
+    core = uuid.uuid7()
+
+    r1 = client.post(
+        f"{M}/engagements",
+        json={"name": "First", "client_id": ACME, "core_engagement_id": str(core)},
+    )
+    assert r1.status_code == 201, r1.get_json()
+    id1 = r1.get_json()["id"]
+
+    r2 = client.post(
+        f"{M}/engagements",
+        json={"name": "Second (same core)", "client_id": ACME, "core_engagement_id": str(core)},
+    )
+    assert r2.status_code == 200, r2.get_json()  # resolved to the existing board, not created
+    assert r2.get_json()["id"] == id1
+
+    from sqlalchemy import select as _select
+    with session_factory() as db:
+        boards = db.execute(
+            _select(fm.ReportBoard).where(fm.ReportBoard.core_engagement_id == core)
+        ).scalars().all()
+    assert len(boards) == 1, f"expected exactly one board for the core engagement, got {len(boards)}"

@@ -38,6 +38,27 @@ def upgrade() -> None:
         op.rename_table(_OLD, _NEW)
     tables = set(sa.inspect(bind).get_table_names())
     if _NEW in tables:
+        # Self-heal duplicate links BEFORE the unique index. The docstring said "resolve the duplicates
+        # first"; making it automatic means an existing DB that already holds two boards for one
+        # core_engagement_id (created before this constraint, via the machine create path that did not
+        # resolve-or-create) migrates cleanly instead of aborting the mount. Keep the OLDEST board per
+        # core id (smallest id — UUIDv7 ids sort in creation order, matching the by-core resolver's
+        # order_by(id).first()) and null the link on the rest, so they survive as orphan boards with
+        # their findings intact. Done in Python: dialect-agnostic, and Postgres has no min(uuid).
+        rows = bind.execute(sa.text(
+            f"SELECT id, core_engagement_id FROM {_NEW} WHERE core_engagement_id IS NOT NULL"  # noqa: S608
+        )).fetchall()
+        by_core: dict[str, list] = {}
+        for rid, core in rows:
+            by_core.setdefault(str(core), []).append(rid)
+        for rids in by_core.values():
+            if len(rids) < 2:
+                continue
+            for rid in sorted(rids, key=str)[1:]:  # keep the oldest; null the rest
+                bind.execute(
+                    sa.text(f"UPDATE {_NEW} SET core_engagement_id = NULL WHERE id = :id"),  # noqa: S608
+                    {"id": rid},
+                )
         idx = {i["name"] for i in sa.inspect(bind).get_indexes(_NEW)}
         if _UQ not in idx:
             op.create_index(
