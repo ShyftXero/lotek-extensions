@@ -713,13 +713,16 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     # A card collapsed by vulnerability spans many services — show the fleet size up front (same
     # ``_affected_hosts`` source as the at-a-glance count and the Affected Assets section, so all three
     # agree). Only when it is more than its own asset.
-    asset_count = len(_affected_hosts(f))
+    # Report composition: a suppressed derived section is skipped entirely (and the at-a-glance host chip
+    # goes with the affected-assets section). Content blocks / references are already absent from the ctx.
+    affected_suppressed = "affected_assets" in f.suppressed
+    asset_count = 0 if affected_suppressed else len(_affected_hosts(f))
     if asset_count > 1:
         badges += f'<span class="chip hosts">{asset_count} affected assets</span>'
     body = (
         _render_blocks(f, resolver)
-        + _render_derived_repro(f)
-        + _render_affected(f, resolver)
+        + ("" if "reproduction" in f.suppressed else _render_derived_repro(f))
+        + ("" if affected_suppressed else _render_affected(f, resolver))
         + _render_recommendations(f, resolver)
         + _render_references(f)
     )

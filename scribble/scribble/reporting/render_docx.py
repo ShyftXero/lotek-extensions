@@ -353,8 +353,11 @@ def _finding_ctx(
         "cvss_score": f"{f.cvss_score:.1f}" if f.cvss_score is not None else "",
         "cvss_vector": f.cvss_vector or "",
         "target": _target_text(f),
-        "assets": _affected_labels(f)[0],
-        "repro": repro_request_urls(f),
+        # Report composition: a suppressed derived section renders as empty data, and the template's
+        # `{% if f.assets %}` / `{% if f.repro %}` then drop it — same skip path as a finding that never
+        # had them.
+        "assets": [] if "affected_assets" in f.suppressed else _affected_labels(f)[0],
+        "repro": [] if "reproduction" in f.suppressed else repro_request_urls(f),
         "body": _finding_body_richtext(
             tpl, f.blocks_html, image_resolver, children=None,
             metadata_html=_metadata_line_html(f), references_html=_references_html(f),

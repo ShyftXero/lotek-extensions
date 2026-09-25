@@ -109,6 +109,12 @@ class FindingCtx:
     # snapshot (KEV if ANY CVE is listed; EPSS = the max across the finding's CVEs), or ``None`` when there
     # is nothing to show — the KEV/EPSS chips carry ``as_of`` so they never assert a stale fact as current.
     threat_intel: dict | None = None
+    # Report composition (per-section suppression): the SECTION KEYS the operator omitted for this
+    # finding (``BoardFinding.suppressed_sections``). ``build_report_context`` already makes a suppressed
+    # section's DATA absent — dropped content blocks, empty ``artifacts``/``references`` — so most sections
+    # need nothing here; this set is what the two renderers consult for the DERIVED sections they compute
+    # themselves (``affected_assets`` from children, the ``reproduction`` request list), so those skip too.
+    suppressed: frozenset = frozenset()
 
 
 @dataclass
@@ -555,6 +561,11 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     # verbatim. ``_KeepUndefined`` still applies to any token this overlay doesn't cover — a genuinely
     # unknown ``{{TOKEN}}`` is left untouched, not blanked.
     variables = dict(finding.variables or {})
+    # Report composition: sections the operator chose to omit for this finding. A suppressed CONTENT block
+    # is dropped from ``blocks_html`` below; suppressed ``evidence``/``references`` are made empty here;
+    # the DERIVED sections (affected_assets, reproduction) carry ``suppressed`` to the renderer. Every
+    # path lands on "the data isn't there", which every renderer already skips.
+    suppressed = frozenset(finding.suppressed_sections or ())
     session = object_session(finding)
     ctx = (
         build_full_context(session, engagement, finding, extra=variables)
@@ -566,6 +577,8 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     from scribble.templating import resolve_doc  # local import avoids cycle at module import
 
     for block, doc in (finding.content_json or {}).items():
+        if block in suppressed:
+            continue  # operator omitted this content section from the report
         if block == "reproduction":
             # The reproduction block is a VERBATIM code block — auto-filled from a scanner's curl PoC,
             # which routinely carries `{{...}}` template-injection payloads (nuclei/dalfox SSTI checks).
@@ -578,7 +591,9 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         blocks_html[block] = render_html.render_block(
             resolved, resolve_var=resolve_var, artifact_url=artifact_url
         )
-    artifacts = _artifact_ctxs(finding.artifacts, engagement_id=engagement.id)
+    artifacts = [] if "evidence" in suppressed else _artifact_ctxs(
+        finding.artifacts, engagement_id=engagement.id
+    )
     return FindingCtx(
         id=finding.id,
         title=finding.title,
@@ -598,7 +613,8 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         # #624/#625: structured references (non-suppressed only) + metadata for the renderers. All read
         # through ``scribble.metadata`` so "which refs are visible" / "what the threat-intel chips show"
         # is computed in ONE place both renderers consume (one-predicate-one-home).
-        references=metadata.visible_references(finding.references),
+        references=[] if "references" in suppressed else metadata.visible_references(finding.references),
+        suppressed=suppressed,
         cve_ids=list(finding.cve_ids or []),
         cwe_ids=list(finding.cwe_ids or []),
         owasp_categories=list(finding.owasp_categories or []),

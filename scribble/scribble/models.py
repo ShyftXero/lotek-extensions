@@ -370,6 +370,18 @@ class BoardFinding(Base, TimestampMixin):
     # read uses ``finding.references or []``. Fill-NULL-only re-promote (#617 Q5) never clobbers an edit.
     references: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
 
+    # Per-section report suppression (report composition control): a JSON list of SECTION KEYS the
+    # operator chose to OMIT from the rendered deliverable for THIS finding, even though the content
+    # exists. Vocabulary: content blocks (``description``/``remediation``/``details``/``reproduction``)
+    # + the derived/structural sections (``affected_assets``/``evidence``/``references``). Honored in ONE
+    # place — ``build_report_context`` makes a suppressed section's data ABSENT — so every renderer
+    # (html/docx/csv/json) skips it by the same "best-effort fill, skip what isn't there" path it already
+    # uses for an empty field; no renderer branches on this column. Distinct from ``include_in_report``
+    # (the whole-finding veto) and per-host suppression (a CHILD row's own ``include_in_report``).
+    # Additive + nullable (alembic revision b2e4f6a8c1d3 / create_all retrofit): a row created before this
+    # column reads NULL, and every read uses ``finding.suppressed_sections or []``.
+    suppressed_sections: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+
     # Structured finding metadata (#625). All additive + defaulted so an UNENRICHED render is
     # byte-identical to today (omit-when-empty everywhere). ``category`` above is a free-text human label
     # and is untouched -- these are the STRUCTURED classification, added ALONGSIDE it, never repurposing it.
