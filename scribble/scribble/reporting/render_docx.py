@@ -355,6 +355,14 @@ def _finding_ctx(
     else:
         evidence = [(a, _child_host_label(c)) for c in f.children for a in c.artifacts]
         evidence += [(a, None) for a in f.artifacts]
+    # Affected assets as a 3-column mono GRID rather than one bullet per line — a 50-host fleet vuln was a
+    # full page of IPs. The font is fixed-width, so ljust-padding aligns the columns exactly; the labels
+    # are already natural-sorted by _affected_labels.
+    assets = [] if "affected_assets" in f.suppressed else _affected_labels(f)[0]
+    _cols = 3
+    _w = max((len(a) for a in assets), default=0) + 3
+    asset_rows = ["".join(a.ljust(_w) for a in assets[i:i + _cols]).rstrip()
+                  for i in range(0, len(assets), _cols)]
     return {
         "title": f.title,
         "severity": sev,
@@ -370,7 +378,8 @@ def _finding_ctx(
         # Report composition: a suppressed derived section renders as empty data, and the template's
         # `{% if f.assets %}` / `{% if f.repro %}` then drop it — same skip path as a finding that never
         # had them.
-        "assets": [] if "affected_assets" in f.suppressed else _affected_labels(f)[0],
+        "assets": assets,
+        "asset_rows": asset_rows,
         "repro": [] if "reproduction" in f.suppressed else repro_request_urls(f),
         "body": _finding_body_richtext(
             tpl, f.blocks_html, image_resolver, children=None,

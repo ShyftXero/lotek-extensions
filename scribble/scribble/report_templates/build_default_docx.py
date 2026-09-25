@@ -166,15 +166,23 @@ def _run(paragraph, text, *, size=10.5, color=INK, bold=False, italic=False, mon
 def _set_styles(doc: Document) -> None:
     def style(name, *, fname=BODY_FONT, size, color, bold=False):
         st = doc.styles[name]
-        st.font.name = fname
         st.font.size = Pt(size)
         st.font.color.rgb = RGBColor.from_string(color)
         st.font.bold = bold
+        # Set the font on the style's EXISTING rFonts in place, stripping the theme attrs — Word/LibreOffice
+        # honor a ``*Theme`` reference over a plain ``ascii``, and an appended second rFonts is ignored, so
+        # appending mono to "No Spacing" left its theme font (a serif under Gotenberg) winning.
         rpr = st.element.get_or_add_rPr()
-        rf = OxmlElement("w:rFonts")
+        rf = rpr.find(qn("w:rFonts"))
+        if rf is None:
+            rf = OxmlElement("w:rFonts")
+            rpr.insert(0, rf)
+        for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+            if rf.get(qn(attr)) is not None:
+                del rf.attrib[qn(attr)]
         rf.set(qn("w:ascii"), fname)
         rf.set(qn("w:hAnsi"), fname)
-        rpr.append(rf)
+        rf.set(qn("w:cs"), fname)
 
     # Document-wide default font: RichText body runs (the finding write-ups) carry no explicit font, so
     # without this LibreOffice falls back to a serif and the body clashes with the sans chrome.
@@ -208,6 +216,20 @@ def _set_styles(doc: Document) -> None:
     style("Heading 2", size=12.5, color=INK, bold=True)
     style("Heading 3", size=11, color=INK, bold=True)
     style("Heading 4", size=9, color=ACCENT_INK, bold=True)
+
+    # A content code block (a ``<pre>`` in a Description/Details block) renders under the "No Spacing"
+    # paragraph style (content/render_docx._CODE_BLOCK_STYLE). Style it as a MONO, shaded code box so it
+    # matches the Reproduction box instead of rendering as serif prose — a `curl` PoC or an HTTP request
+    # in Details reads as code, not paragraph text.
+    style("No Spacing", fname=MONO_FONT, size=8.5, color=INK2)
+    _code = doc.styles["No Spacing"]
+    _code.paragraph_format.space_before = Pt(2)
+    _code.paragraph_format.space_after = Pt(6)
+    _code_shd = OxmlElement("w:shd")
+    _code_shd.set(qn("w:val"), "clear")
+    _code_shd.set(qn("w:color"), "auto")
+    _code_shd.set(qn("w:fill"), SURFACE2)
+    _code.element.get_or_add_pPr().append(_code_shd)
 
 
 def _set_margins(doc: Document) -> None:
@@ -403,15 +425,15 @@ def _finding_card(doc: Document) -> None:
     content.add_paragraph("{%p endfor %}")
     content.add_paragraph("{%p endif %}")
 
-    # Affected Assets — deduped services (host:port/proto), one per line, monospace.
+    # Affected Assets — deduped services (host:port/proto) as a 3-column monospace GRID (f.asset_rows,
+    # each a space-padded fixed-width row), so a 50-host fleet vuln is a compact block, not a full page.
     content.add_paragraph("{%p if f.assets %}")
     _run(content.add_paragraph(), "Affected Assets ({{ f.assets|length }})",
          size=9, color=ACCENT_INK, bold=True, caps=True)
-    content.add_paragraph("{%p for a in f.assets %}")
+    content.add_paragraph("{%p for row in f.asset_rows %}")
     ap = content.add_paragraph()
     _spacing(ap, before=0, after=0)
-    _run(ap, "•  ", size=9, color=MUTED)
-    _run(ap, "{{ a }}", size=9, color=INK, mono=True)
+    _run(ap, "{{ row }}", size=9, color=INK, mono=True)
     content.add_paragraph("{%p endfor %}")
     content.add_paragraph("{%p endif %}")
 

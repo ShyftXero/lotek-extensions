@@ -460,6 +460,12 @@ def _label_from_text(text: str) -> str | None:
     return text
 
 
+def _natural_key(label: str) -> list:
+    """Sort key that orders ``192.0.2.2`` before ``192.0.2.10`` — split into text/number chunks so the
+    numeric runs compare as ints, not lexically. A plain ``sort()`` put ``.10`` before ``.2``."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", label)]
+
+
 def _affected_labels(
     f: FindingCtx,
 ) -> tuple[list[str], dict[str, list], dict[str, list[str]]]:
@@ -495,7 +501,7 @@ def _affected_labels(
             lbl = _label_from_text(piece)
             if lbl:
                 _slot(lbl)
-    order.sort()
+    order.sort(key=_natural_key)
     return order, arts, facts
 
 
@@ -2608,11 +2614,18 @@ table.index td.ix-cwe, table.index td.ix-cve {
   font-family: var(--font-mono); font-size: 13px;
 }
 .empty { color: var(--muted); font-style: italic; }
-.finding-body .asset-list { margin: 4px 0 0; padding-left: 18px; }
+.finding-body .asset-list {
+  margin: 4px 0 0; padding-left: 18px;
+  /* A fleet vuln can affect dozens of hosts — flow them into balanced ~14em columns instead of one tall
+     stack, so 50 assets are a compact grid, not a full page (the original over-tall complaint). */
+  columns: 14em; column-gap: 24px;
+}
 .finding-body .asset-list li {
   margin: 3px 0; font-family: var(--font-mono);
   font-size: 13px; font-variant-numeric: tabular-nums;
+  break-inside: avoid;
 }
+@media print { .finding-body .asset-list { columns: 3; } }
 .finding-body .block.recommendations .block-label { color: var(--accent-ink); }
 
 /* children (affected hosts) */
