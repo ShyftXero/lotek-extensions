@@ -70,10 +70,11 @@ from datetime import date
 
 from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from scribble import finding_grouping_adapter, findings_service, host
 from scribble.artifacts_storage import delete_file, guess_content_type
-from scribble.authz import can_view_client_id, host_is_mounted
+from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
 from scribble.content import schema
 from scribble.deps import (
     client_model,
@@ -1172,9 +1173,15 @@ def register(api_bp, bp) -> None:
         """Save the current section arrangement as an ORG-WIDE named preset (#Q10). Body:
         ``{"name": str, "order": [{"key","enabled"}, ...]}``. The arrangement is normalized + fingerprinted;
         a duplicate (identical order AND visibility) is refused 409 and names the existing preset, so two
-        operators can't save the same sequence twice."""
+        operators can't save the same sequence twice.
+
+        SELF-GATED: this route has no engagement in its URL, so ``authz._gate`` skips its write-capability
+        check — the preset library is org-wide, so writing it requires write capability (not ownership;
+        any operator manages the shared library, per #Q10), re-checked here."""
         from scribble.reporting.layouts import resolve_section_order, section_fingerprint
 
+        if not host_can_write():
+            abort(403)
         payload = request.get_json(silent=True) or {}
         name = (payload.get("name") or "").strip()[:120]
         order = payload.get("order")
@@ -1197,13 +1204,34 @@ def register(api_bp, bp) -> None:
             preset = ScribbleSectionPreset(name=name, specs=specs, fingerprint=fingerprint,
                                            created_by=current_actor_username())
             db.add(preset)
-            db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                # Two operators saved the identical arrangement concurrently: the check above passed for
+                # both, the unique `fingerprint` index rejects the loser. Same 409 the check-path returns.
+                db.rollback()
+                existing = db.scalar(
+                    select(ScribbleSectionPreset).where(ScribbleSectionPreset.fingerprint == fingerprint)
+                )
+                return jsonify(
+                    error="duplicate",
+                    detail=(f"This exact arrangement is already saved as “{existing.name}”."
+                            if existing is not None else "This exact arrangement is already saved."),
+                    preset=({"id": str(existing.id), "name": existing.name}
+                            if existing is not None else None),
+                ), 409
             result = {"id": str(preset.id), "name": preset.name, "specs": specs}
         return jsonify(ok=True, preset=result)
 
     @bp.post("/report/section-presets/<uuid:preset_id>/delete", endpoint="delete_section_preset")
     def delete_section_preset(preset_id: int):
-        """Delete an org-wide saved section preset. Plain form POST; redirects back."""
+        """Delete an org-wide saved section preset. Plain form POST; redirects back.
+
+        SELF-GATED for the same reason as ``save_section_preset``: no engagement in the URL, so the
+        blueprint gate's write-capability check doesn't apply — re-checked here so a viewer can't delete
+        the shared preset library."""
+        if not host_can_write():
+            abort(403)
         with open_session() as db:
             preset = db.get(ScribbleSectionPreset, preset_id)
             if preset is not None:
@@ -1236,7 +1264,17 @@ def register(api_bp, bp) -> None:
     def upload_report_logo():
         """Add an image to the ORG-WIDE cover-logo library (every operator can then pick it) and, when the
         form names an engagement, set it as that report's cover in the same step (upload-and-use). Raster
-        images only, bounded by ``_MAX_LOGO_BYTES``."""
+        images only, bounded by ``_MAX_LOGO_BYTES``.
+
+        SELF-GATED (INV-TENANCY-05/06). This route carries no engagement id in its URL, so the
+        blueprint-wide tenancy gate (``authz._gate``) skips it entirely — both the write-capability check
+        AND, when the body names an engagement, the view check its ``set_report_logo`` sibling gets for
+        free from the URL. Both are re-applied here by hand: (1) writing the shared library requires write
+        capability; (2) the ``engagement_id`` arrives in the FORM BODY, so it is authorized directly via
+        ``can_view_engagement`` — matching the body-scoped ``create_artifact``/``templating_preview``
+        pattern — before its ``cover_logo_id`` is touched, or a viewer could set any tenant's cover."""
+        if not host_can_write():
+            abort(403)
         upload = request.files.get("file")
         filename = (upload.filename or "").strip() if upload is not None else ""
         if upload is None or not filename:
@@ -1259,8 +1297,12 @@ def register(api_bp, bp) -> None:
             db.flush()
             if eng_id is not None:
                 eng = db.get(ReportBoard, eng_id)
-                if eng is not None:
-                    eng.cover_logo_id = logo.id  # upload-and-use on this report
+                # Fail closed like the gate: a foreign-but-real engagement gets the same 404 as a
+                # nonexistent one (no cross-tenant existence oracle), and the cover is only set once the
+                # caller is proven able to view it.
+                if eng is None or not can_view_engagement(eng, current_actor()):
+                    abort(404)
+                eng.cover_logo_id = logo.id  # upload-and-use on this report
             db.commit()
         if eng_id is not None:
             return redirect(url_for("scribble.engagement_board", engagement_id=eng_id))
@@ -1310,7 +1352,15 @@ def register(api_bp, bp) -> None:
     def rephrase_report_prose():
         """Rephrase operator prose through the host AI hook and return ``{text: rewrite}`` for the operator to
         review and save (never a silent in-place overwrite). 503 when the host provides no AI hook (it is
-        settings-gated + default OFF), so the button simply isn't offered then."""
+        settings-gated + default OFF), so the button simply isn't offered then.
+
+        SELF-GATED: no engagement in the URL, so ``authz._gate`` skips its write-capability check. This
+        route proxies an operator's text to the host LLM, so it requires write capability — that keeps a
+        read-only viewer from driving the (metered) AI hook.
+        ponytail: write-cap bounds abuse to trusted operators; a per-actor rate limit would need shared
+        state this extension doesn't own — add one if operator-side abuse ever shows up."""
+        if not host_can_write():
+            abort(403)
         ai = host.host_hook("ai_complete")
         if ai is None:
             return jsonify(error="ai_unavailable", detail="AI is not enabled on this install"), 503
@@ -1329,8 +1379,12 @@ def register(api_bp, bp) -> None:
         ]
         try:
             rewritten = ai(messages)
-        except Exception as exc:  # host AI failed/disabled at call time — surface, don't 500
-            return jsonify(error="ai_failed", detail=str(exc)[:200]), 502
+        except Exception:  # host AI failed/disabled at call time — 502, don't 500
+            # Do NOT echo str(exc): the host AI client's exception text can carry provider URLs, model
+            # names or key fragments. A fixed message is all the operator needs; details go to the log.
+            import logging
+            logging.getLogger(__name__).exception("scribble: ai_complete rephrase failed")
+            return jsonify(error="ai_failed", detail="The AI service could not be reached."), 502
         return jsonify(ok=True, text=(rewritten or "").strip())
 
     # =============================================================================== API: move finding
