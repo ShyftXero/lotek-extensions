@@ -284,7 +284,9 @@ def test_a_non_image_artifact_is_NAMED_but_its_bytes_stay_out_of_the_document(se
     assert "raw capture" in html, "the caption is the only thing that says what the file IS"
     assert "not embedded" in html
     assert "data:application" not in html, "the pcap's bytes are inside the deliverable"
-    assert "base64" not in html
+    # The ONLY embedded image is the always-present cover mark (one data: URI, on the cover). The pcap —
+    # a non-image — must add none; if it did, the count would exceed 1.
+    assert html.count("data:image/png;base64,") == 1, "a non-image artifact was embedded"
 
 
 def test_the_bytes_of_a_non_image_are_never_even_READ(session_factory):
@@ -324,7 +326,9 @@ def test_an_image_over_the_PER_ASSET_budget_is_not_embedded(session_factory, mon
         artifact_bytes=lambda p: PNG if p.startswith("small") else b"\x89PNG" + b"\x00" * 4096,
     )
     assert "huge.png" in html and "not embedded" in html
-    assert html.count("data:image/png;base64,") == 2, "the small one still embeds (thumb + lightbox)"
+    # 3 data: URIs: the small image embeds as thumb + lightbox (2), plus the always-present cover mark (1).
+    # The huge one must NOT embed — if it did, the count would be 5.
+    assert html.count("data:image/png;base64,") == 3, "the small one still embeds (thumb + lightbox)"
 
 
 def test_a_LYING_byte_size_does_not_get_an_artifact_past_the_budget(session_factory, monkeypatch):
@@ -341,7 +345,9 @@ def test_a_LYING_byte_size_does_not_get_an_artifact_past_the_budget(session_fact
         ctx, inline_assets=True, artifact_bytes=lambda _p: b"\x89PNG" + b"\x00" * 4096
     )
     assert "not embedded" in html
-    assert "data:image/png;base64," not in html
+    # Only the always-present cover mark embeds (1). The lying-size artifact must NOT — if it slipped past
+    # the budget on its false size it would embed as thumb + lightbox, pushing the count to 3.
+    assert html.count("data:image/png;base64,") == 1, "the lying-size artifact was embedded"
 
 
 def test_the_PER_RENDER_budget_bounds_a_document_full_of_legal_images(session_factory, monkeypatch):

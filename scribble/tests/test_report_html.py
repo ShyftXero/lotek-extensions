@@ -449,7 +449,9 @@ def test_child_finding_evidence_renders_without_leaking_child_content(session_fa
     assert "Child evidence" in html_doc
     assert "Should not render as its own card." not in html_doc
     idx_children_table = html_doc.index('<table class="children-table">')
-    idx_image = html_doc.index("data:image/png;base64,")
+    # Search for the CHILD's embedded image AFTER the children table: the first data: URI in the doc is now
+    # the cover mark (on the cover page, top of the document), so a bare `.index` would find that instead.
+    idx_image = html_doc.index("data:image/png;base64,", idx_children_table)
     assert idx_children_table < idx_image
 
 

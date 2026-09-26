@@ -402,7 +402,12 @@ def test_docx_report_matches_context_order_and_resolves_variables(session_factor
     assert "{%" not in text and "%}" not in text
 
     assert "Kept screenshot" in text
-    assert len(doc.inline_shapes) == 1  # only the kept artifact embeds; the excluded one never reaches ctx
+    # Count embedded PICTURES (<pic:pic>), not inline_shapes: the card design fills the doc with inline
+    # DrawingML pills (severity/CVSS/chips), which inflate inline_shapes but are not pictures. Every report
+    # also carries a cover mark (1 pic), so net it out — only the kept artifact embeds; the excluded one
+    # never reaches ctx.
+    evidence_pics = len(doc.element.body.findall(".//" + qn("pic:pic"))) - 1  # minus the cover mark
+    assert evidence_pics == 1
     assert "Excluded screenshot" not in text
 
 

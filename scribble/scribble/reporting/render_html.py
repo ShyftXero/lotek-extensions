@@ -505,33 +505,19 @@ def _affected_labels(
     return order, arts, facts
 
 
-def _render_affected(f: FindingCtx, resolver: _AssetResolver) -> str:
-    """The ONE "Affected Assets" section per card: a deduplicated ``host:port/proto`` list across the
-    card's own instance and every folded per-host instance. Replaces the old duplicate pair (an
-    "Affected Assets" list AND a separate "Affected hosts (N)" children table — same data twice). A
-    Details column (per-host facts + evidence) appears only when some instance actually carries it, so the
-    bare case is a clean list, not a table of empty cells."""
-    order, arts, facts = _affected_labels(f)
+def _render_affected(f: FindingCtx) -> str:
+    """The "Affected Assets" section per card: a deduplicated ``host:port/proto`` LIST across the card's
+    own instance and every folded per-host instance (``_affected_labels`` also folds in the ``AFFECTED``
+    overlay and natural-sorts). Per-host EVIDENCE (facts + screenshots) is NOT here — it renders once, in
+    the compact ``<details class="children">`` table (:func:`_render_children`), the HTML mirror of the
+    DOCX "Affected Hosts" body list. Keeping the two apart is what stopped child evidence rendering twice
+    (once here, once in the children table) and dropping evidence for a host-less child entirely."""
+    order, _arts, _facts = _affected_labels(f)
     n = len(order)
     if not order:
         return ('<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
                 '<div class="block-body"><span class="muted">Not specified.</span></div></div>')
-    if any(arts[label] or facts[label] for label in order):
-        rows = []
-        for label in order:
-            parts = []
-            if facts[label]:
-                parts.append(f'<span class="asset-facts">{_esc(", ".join(facts[label]))}</span>')
-            gallery = _render_artifact_gallery(arts[label], resolver, label=None)
-            if gallery:
-                parts.append(gallery)
-            detail = "".join(parts) or '<span class="muted">—</span>'
-            rows.append(f'<tr><td class="asset-host">{_esc(label)}</td>'
-                        f'<td class="asset-detail">{detail}</td></tr>')
-        inner = ('<table class="children-table"><thead><tr><th>Asset</th><th>Details</th></tr></thead>'
-                 f'<tbody>{"".join(rows)}</tbody></table>')
-    else:
-        inner = f'<ul class="asset-list">{"".join(f"<li>{_esc(label)}</li>" for label in order)}</ul>'
+    inner = f'<ul class="asset-list">{"".join(f"<li>{_esc(label)}</li>" for label in order)}</ul>'
     # Same block-label / block-body shape as every other card section (Description, Remediation,
     # Reproduction, Recommendations) — one consistent pattern for all renderable items.
     return (
@@ -640,6 +626,45 @@ def _child_summary_text(c: FindingCtx) -> str:
     return c.facts_line
 
 
+def _render_child_evidence_cell(c: FindingCtx, resolver: _AssetResolver) -> str:
+    """The Evidence cell for one child instance: its per-host facts line AND its own attached artifacts.
+
+    The gallery half is ext#40: ``_render_finding`` gives a top-level finding's artifacts a gallery, but a
+    CHILD is only ever rendered through this table, whose Evidence column would otherwise be the facts line
+    alone. A screenshot attached to a promoted per-host instance therefore produced an empty cell — and
+    promoted scan findings are exactly where nesting comes from (``scribble.promote.promote_job``), so
+    per-host evidence was the case most likely to be lost. An em-dash keeps a genuinely empty cell
+    scannable instead of blank. The gallery numbers each child figure via ``context.number_figures`` (bare
+    caption, no host prefix — the host is the row header), so the DOCX prints the SAME "Figure N"."""
+    facts = _child_summary_text(c)
+    gallery = _render_artifact_gallery(c.artifacts, resolver, label=None)
+    if not facts and not gallery:
+        return '<span class="muted">—</span>'
+    facts_html = f'<div class="child-facts">{_esc(facts)}</div>' if facts else ""
+    return facts_html + gallery
+
+
+def _render_children(f: FindingCtx, resolver: _AssetResolver) -> str:
+    """A COMPACT per-host list for a parent finding's children — rendered once, collapsed by default,
+    instead of one full finding card per instance. Each child's OWN evidence renders here (ext#40); a
+    ``beforeprint`` handler opens the ``<details>`` so the printed PDF's figure sequence starts at 1 like
+    the ``.docx`` (ext#117). This is the HTML mirror of ``render_docx._children_html``; the deduplicated
+    host:port LIST lives separately in the Affected Assets block."""
+    if not f.children or "evidence" in f.suppressed:
+        return ""
+    rows = "".join(
+        f'<tr><td class="child-host">{_esc(_child_host_label(c))}</td>'
+        f'<td class="child-evidence">{_render_child_evidence_cell(c, resolver)}</td></tr>'
+        for c in f.children
+    )
+    n = len(f.children)
+    return (
+        f'<details class="children"><summary>Affected hosts ({n})</summary>'
+        '<table class="children-table"><thead><tr><th>Host</th><th>Evidence</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table></details>"
+    )
+
+
 def _render_metadata_chips(f: FindingCtx) -> str:
     """The structured-metadata chips (#625) that sit beside the CVSS chip in ``finding-badges``:
     CWE / CVE / OWASP classification + a KEV flag and an EPSS score. Every chip is OMIT-WHEN-EMPTY, so an
@@ -728,7 +753,11 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
     body = (
         _render_blocks(f, resolver)
         + ("" if "reproduction" in f.suppressed else _render_derived_repro(f))
-        + ("" if affected_suppressed else _render_affected(f, resolver))
+        + ("" if affected_suppressed else _render_affected(f))
+        # Per-host child EVIDENCE (facts + screenshots) in a collapsed <details>, rendered BEFORE the
+        # parent's own gallery so context.number_figures counts child figures first — the same order the
+        # DOCX emits, which is what keeps the two deliverables' "Figure N" sequences identical.
+        + _render_children(f, resolver)
         + _render_recommendations(f, resolver)
         + _render_references(f)
     )
@@ -994,7 +1023,7 @@ def _cover_facts(ctx: ReportContext) -> list[tuple[str, str]]:
     return facts
 
 
-def _render_cover(ctx: ReportContext) -> str:
+def _render_cover(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """The PRINT-ONLY cover page (ext#43): the PDF used to open straight into the masthead and then the
     executive summary, with no title page at all.
 
@@ -1014,7 +1043,11 @@ def _render_cover(ctx: ReportContext) -> str:
     )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
     logo = ""
-    if ctx.cover_logo:
+    # The cover mark is an IMAGE, so it obeys the same inlining contract as evidence: base64 only when
+    # assets are being inlined (single-file HTML / PDF / zip). In "none" mode the report references images
+    # rather than carrying them, and a ~58 KiB data: URI on every page would defeat that — so the cover
+    # simply omits the mark there, exactly as a gallery image degrades to a placeholder.
+    if ctx.cover_logo and resolver.mode != "none":
         import base64
         b64 = base64.b64encode(ctx.cover_logo).decode("ascii")
         logo = (
@@ -2002,7 +2035,7 @@ def _render_block_by_key(
     order the template puts them in. ``blocks`` is the template's full block list — only the ``toc`` needs
     it, because a table of contents is a statement about the whole document."""
     if key == "cover":
-        return _render_cover(ctx)
+        return _render_cover(ctx, resolver)
     if key == "toc":
         return _render_toc(ctx, blocks)
     if key == "summary":

@@ -216,6 +216,17 @@ def _picture_count(doc: docx.Document) -> int:
     return len(doc.element.body.findall(".//" + qn("pic:pic")))
 
 
+#: Every report's cover page now carries the branding mark (default lotek mark or a picked library logo),
+#: which is a real ``<pic:pic>`` — so it is a fixed +1 baseline in ``_picture_count`` unrelated to whether
+#: any EVIDENCE image embedded. ``_evidence_pictures`` nets it out so the count reads as "evidence images".
+_COVER_MARK_PICS = 1
+
+
+def _evidence_pictures(doc: docx.Document) -> int:
+    """Embedded EVIDENCE pictures — ``_picture_count`` minus the always-present cover mark."""
+    return _picture_count(doc) - _COVER_MARK_PICS
+
+
 def test_render_report_docx_contract(session_factory):
     eng_id = _build_engagement(session_factory)
     with session_factory() as db:
@@ -482,11 +493,11 @@ def test_evidence_image_embeds_as_inline_shape(session_factory):
         not_embedded_payload = render_report_docx(ctx)  # artifact_bytes=None -> graceful skip
 
     embedded_doc = docx.Document(io.BytesIO(embedded_payload))
-    assert _picture_count(embedded_doc) == 1
+    assert _evidence_pictures(embedded_doc) == 1
     assert "Proof of concept" in _all_text(embedded_doc)
 
     not_embedded_doc = docx.Document(io.BytesIO(not_embedded_payload))
-    assert _picture_count(not_embedded_doc) == 0
+    assert _evidence_pictures(not_embedded_doc) == 0
     not_embedded_text = _all_text(not_embedded_doc)
     assert "not embedded" in not_embedded_text
     assert "poc.png" in not_embedded_text
@@ -536,7 +547,7 @@ def test_oversized_evidence_image_degrades_to_caption(session_factory, monkeypat
         payload = render_report_docx(ctx, artifact_bytes=oversized.get)
 
     doc = docx.Document(io.BytesIO(payload))
-    assert _picture_count(doc) == 0  # oversized image was NOT embedded
+    assert _evidence_pictures(doc) == 0  # oversized image was NOT embedded
     text = _all_text(doc)
     assert "not embedded" in text
     assert "huge.png" in text
@@ -641,7 +652,7 @@ def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_facto
         payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
 
     doc = docx.Document(io.BytesIO(payload))
-    assert _picture_count(doc) == 1
+    assert _evidence_pictures(doc) == 1
     assert "Child evidence" in _all_text(doc)
     assert "Should not get its own table." not in _all_text(doc)
 
@@ -690,4 +701,4 @@ def test_engagement_level_evidence_appendix_in_docx(session_factory):
     text = _all_text(doc)
     assert "Evidence Appendix" in text
     assert "Network overview" in text
-    assert _picture_count(doc) == 1
+    assert _evidence_pictures(doc) == 1

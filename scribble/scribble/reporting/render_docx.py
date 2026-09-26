@@ -343,16 +343,16 @@ def _finding_ctx(
 
     image_resolver = _make_image_resolver(artifact_bytes)
     sev = f.severity if f.severity in SEVERITY_ORDER else "info"
-    # Evidence gallery = every child's screenshots (host-captioned) THEN the finding's own — the exact
-    # order context.number_figures stamps, so the DOCX prints "Figure 2 … Figure 3 …" upward like the HTML
-    # does. Without the child pass a promoted (per-host) finding's evidence rendered NOWHERE in the DOCX —
-    # it was numbered but dropped, leaving a hole in the figure sequence. `evidence` suppression drops the
-    # whole section (children included).
-    if "evidence" in f.suppressed:
-        evidence: list[tuple[ArtifactCtx, str | None]] = []
-    else:
-        evidence = [(a, _child_host_label(c)) for c in f.children for a in c.artifacts]
-        evidence += [(a, None) for a in f.artifacts]
+    # Child EVIDENCE renders in the BODY's "Affected Hosts" list (via `_children_html`, fed to
+    # `_finding_body_richtext`) — host as context, BARE "Figure N" caption — NOT in the flat gallery,
+    # which holds the finding's OWN artifacts only. This is the DOCX mirror of render_html's
+    # `<details class="children">`. The binary template emits `{{r f.body }}` (children) BEFORE the
+    # artifacts loop (own), so `context.number_figures` numbers child figures first then the parent's —
+    # and both deliverables print the SAME bare captions, keeping the two "Figure N" sequences identical
+    # (ext#117). `evidence` suppression drops the whole section (children included).
+    suppress_evidence = "evidence" in f.suppressed
+    children_for_body = None if suppress_evidence else (f.children or None)
+    own_artifacts = [] if suppress_evidence else list(f.artifacts)
     # Affected assets as a 3-column mono GRID rather than one bullet per line — a 50-host fleet vuln was a
     # full page of IPs. The font is fixed-width, so ljust-padding aligns the columns exactly; the labels
     # are already natural-sorted by _affected_labels.
@@ -385,10 +385,10 @@ def _finding_ctx(
         "asset_rows": asset_rows,
         "repro": [] if "reproduction" in f.suppressed else repro_request_urls(f),
         "body": _finding_body_richtext(
-            tpl, f.blocks_html, image_resolver, children=None,
+            tpl, f.blocks_html, image_resolver, children=children_for_body,
             metadata_html=_metadata_line_html(f), references_html=_references_html(f),
         ),
-        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl, host=host) for a, host in evidence],
+        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in own_artifacts],
     }
 
 
