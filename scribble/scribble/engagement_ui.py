@@ -63,15 +63,18 @@ finding doesn't exist or belongs to a different engagement, mirroring ``delete_g
 
 from __future__ import annotations
 
+import io
+import json
 import uuid
 from datetime import date
 
-from flask import abort, jsonify, redirect, render_template, request, url_for
+from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from scribble import finding_grouping_adapter, findings_service, host
-from scribble.artifacts_storage import delete_file
-from scribble.authz import can_view_client_id, host_is_mounted
+from scribble.artifacts_storage import delete_file, guess_content_type
+from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
 from scribble.content import schema
 from scribble.deps import (
     client_model,
@@ -89,12 +92,22 @@ from scribble.models import (
     EngagementDiagram,
     FindingGroup,
     ReportBoard,
+    ScribbleReportLogo,
+    ScribbleSectionPreset,
     VulnerabilityTemplate,
     normalize_strategic_recommendations,
 )
 from scribble.templating import known_variable_keys
 
 _REGISTERED = False
+
+# Cover-logo library upload limits. Raster images only — an SVG can carry script and the cover serves the
+# image inline, so restricting to raster types avoids a stored-XSS surface AND keeps the logo embeddable in
+# the .docx (InlineImage needs a raster). Small brand images, so a tight ceiling.
+_MAX_LOGO_BYTES = 5 * 1024 * 1024
+_LOGO_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+# Cap the text sent to the host AI hook for a rephrase — a standing-prose section, not a whole report.
+_MAX_REPHRASE_CHARS = 20_000
 
 
 # --------------------------------------------------------------------------------- small helpers
@@ -594,6 +607,32 @@ def register(api_bp, bp) -> None:
             findings_by_kind = host.group_findings(group_rows, by="kind")
             findings_by_host = host.group_findings(group_rows, by="host")
 
+            # Report Layout composer (kit section-composer): the resolved per-report section order + on/off
+            # for the drag-to-reorder widget, and the shipped presets as one-click "apply this order" seeds.
+            from scribble.reporting.layouts import list_layouts, resolve_section_order
+            section_specs = resolve_section_order(engagement.section_order)
+            # Preset combobox options: built-in layouts + org-wide saved presets (#Q10). Each carries its
+            # full [{key,enabled}] specs as JSON so selecting one applies both order AND visibility. A
+            # built-in lists its blocks enabled; the widget disables everything else.
+            saved_presets = db.scalars(
+                select(ScribbleSectionPreset).order_by(ScribbleSectionPreset.name)
+            ).all()
+            composer_presets = [
+                {"label": lay.label, "builtin": True, "id": "",
+                 "specs_json": json.dumps([{"key": k, "enabled": True} for k in lay.blocks])}
+                for lay in list_layouts()
+            ] + [
+                {"label": p.name, "builtin": False, "id": str(p.id), "specs_json": json.dumps(p.specs)}
+                for p in saved_presets
+            ]
+            # Cover-logo library (org-wide) + this report's current pick, for the cover-logo picker.
+            cover_logos = db.scalars(
+                select(ScribbleReportLogo).order_by(ScribbleReportLogo.created_at.desc())
+            ).all()
+            current_logo_id = engagement.cover_logo_id
+            # Rephrase-with-AI is offered only when the host provides an AI hook (off by default).
+            ai_available = host.host_hook("ai_complete") is not None
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
@@ -607,6 +646,11 @@ def register(api_bp, bp) -> None:
                 engagement_artifacts=engagement_artifacts,
                 diagrams=diagrams,
                 source_jobs=source_jobs,
+                section_specs=section_specs,
+                composer_presets=composer_presets,
+                cover_logos=cover_logos,
+                current_logo_id=current_logo_id,
+                ai_available=ai_available,
             )
 
     # =============================================================================== UI: groups
@@ -938,6 +982,12 @@ def register(api_bp, bp) -> None:
                 finding.target_port = (request.form.get("target_port") or "").strip() or None
                 finding.target_url = (request.form.get("target_url") or "").strip() or None
                 finding.include_in_report = "include_in_report" in request.form
+                # Report composition: the sections the operator chose to omit from the deliverable. Only
+                # known keys are stored (a stray form value can't invent a section).
+                allowed = {*schema.DEFAULT_BLOCKS, "affected_assets", "evidence", "references"}
+                finding.suppressed_sections = [
+                    s for s in request.form.getlist("suppress") if s in allowed
+                ]
                 db.commit()
                 return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
 
@@ -947,6 +997,15 @@ def register(api_bp, bp) -> None:
                     blocks.append(extra)
             gallery_artifacts = sorted(finding.artifacts, key=lambda a: a.order_index)
             variable_keys = sorted(known_variable_keys(db))
+            # Affected-hosts editor: the finding's per-host CHILD rows (parent_id == this finding). Listed
+            # WITHOUT the include_in_report filter on purpose — a SUPPRESSED host must stay visible here so
+            # the operator can re-include it (the board keeps it too; only the renderers drop it).
+            affected_children = list(db.scalars(
+                select(BoardFinding)
+                .where(BoardFinding.parent_id == finding.id)
+                .order_by(BoardFinding.order_index)
+            ))
+            suppressible_sections = [*schema.DEFAULT_BLOCKS, "affected_assets", "evidence", "references"]
 
             return render_template(
                 "scribble/finding.html",
@@ -961,7 +1020,69 @@ def register(api_bp, bp) -> None:
                 scribble_variable_keys=variable_keys,
                 retests=sorted(finding.retests, key=lambda r: r.created_at),
                 retest_outcomes=list(RetestOutcome),
+                affected_children=affected_children,
+                suppressible_sections=suppressible_sections,
+                suppressed_set=set(finding.suppressed_sections or []),
             )
+
+    # ================================================================= POST: per-host report disposition
+
+    @bp.route(
+        "/findings/<uuid:finding_id>/hosts/disposition",
+        methods=["POST"], endpoint="finding_host_disposition",
+    )
+    def finding_host_disposition(finding_id: int):
+        """Include / suppress / remove ONE affected-host child of a finding. suppress = the child's
+        ``include_in_report=False`` (dropped from the report, kept in the editor); remove = delete the
+        child row (the false-positive case); include = re-add it.
+
+        The target child is named in the FORM (``host_id``), not the URL, so the route is scoped by its
+        one ``finding_id`` path arg — the engagement gate resolves membership from that. An unresolvable
+        host id or unknown action is a graceful no-op redirect (like ``adopt_job``'s unknown-job path),
+        never the gate's 404 denial signal."""
+        action = (request.form.get("action") or "").strip()
+        host_id = _as_uuid(request.form.get("host_id"))
+        storage_paths: list[str] = []
+        with open_session() as db:
+            parent = db.get(BoardFinding, finding_id)
+            if parent is None:
+                abort(404)  # the SCOPED id — a real 404, consistent with every other finding route
+            child = db.get(BoardFinding, host_id) if host_id is not None else None
+            if child is not None and child.parent_id == parent.id:
+                if action == "include":
+                    child.include_in_report = True
+                elif action == "suppress":
+                    child.include_in_report = False
+                elif action == "remove":
+                    storage_paths = findings_service.delete_finding(db, child).storage_paths
+                db.commit()
+        for storage_path in storage_paths:
+            delete_file(storage_path)
+        return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
+
+    # =================================================================== POST: add an affected host row
+
+    @bp.route("/findings/<uuid:finding_id>/hosts", methods=["POST"], endpoint="finding_add_host")
+    def finding_add_host(finding_id: int):
+        """Add a per-host child to a finding — the operator manually recording an affected asset that the
+        scan did not associate. Inherits the parent's vuln identity (title/severity/category); carries its
+        own target."""
+        with open_session() as db:
+            parent = db.get(BoardFinding, finding_id)
+            if parent is None:
+                abort(404)
+            host_val = (request.form.get("target_host") or "").strip()
+            if host_val:
+                db.add(BoardFinding(
+                    engagement_id=parent.engagement_id, group_id=parent.group_id, parent_id=parent.id,
+                    title=parent.title, severity=parent.severity, category=parent.category,
+                    target_host=host_val,
+                    target_port=(request.form.get("target_port") or "").strip() or None,
+                    target_url=(request.form.get("target_url") or "").strip() or None,
+                    content_json={}, order_index=(parent.order_index or 0) + 1,
+                ))
+                db.commit()
+        return redirect(url_for("scribble.finding_detail", finding_id=finding_id))
 
     # ============================================================================ POST: record a retest
 
@@ -1018,6 +1139,256 @@ def register(api_bp, bp) -> None:
 
             result = [{"id": gid, "order_index": index} for index, gid in enumerate(ordered_ids)]
         return jsonify(ok=True, order=result)
+
+    # =========================================================================== API: report section order
+
+    @api_bp.post("/engagements/<uuid:engagement_id>/report/sections")
+    def reorder_report_sections(engagement_id: int):
+        """Persist the per-report SECTION ORDER + on/off (``ReportBoard.section_order``). Body:
+        ``{"order": [{"key": <block>, "enabled": bool}, ...]}``. The value is normalized through
+        ``layouts.resolve_section_order`` before storing (unknown keys dropped, dups collapsed, any missing
+        block appended disabled), so what is persisted is always a complete, valid list against BLOCK_KEYS —
+        the SAME resolver both renderers read, so the editor, the HTML preview and the DOCX deliverable can't
+        disagree. Session-authed like its sibling ``reorder_groups``; a reorder leaks nothing, it only
+        rearranges the caller's own report layout."""
+        from scribble.reporting.layouts import resolve_section_order
+
+        payload = request.get_json(silent=True) or {}
+        order = payload.get("order")
+        if not isinstance(order, list):
+            return jsonify(error="order must be a list of {key, enabled}"), 400
+        normalized = [{"key": s.key, "enabled": s.enabled} for s in resolve_section_order(order)]
+        with open_session() as db:
+            engagement = db.get(ReportBoard, engagement_id)
+            if engagement is None:
+                return jsonify(error="engagement not found"), 404
+            engagement.section_order = normalized
+            db.commit()
+        return jsonify(ok=True, order=normalized)
+
+    # ======================================================================= API/UI: saved section presets
+
+    @api_bp.post("/report/section-presets")
+    def save_section_preset():
+        """Save the current section arrangement as an ORG-WIDE named preset (#Q10). Body:
+        ``{"name": str, "order": [{"key","enabled"}, ...]}``. The arrangement is normalized + fingerprinted;
+        a duplicate (identical order AND visibility) is refused 409 and names the existing preset, so two
+        operators can't save the same sequence twice.
+
+        SELF-GATED: this route has no engagement in its URL, so ``authz._gate`` skips its write-capability
+        check — the preset library is org-wide, so writing it requires write capability (not ownership;
+        any operator manages the shared library, per #Q10), re-checked here."""
+        from scribble.reporting.layouts import resolve_section_order, section_fingerprint
+
+        if not host_can_write():
+            abort(403)
+        payload = request.get_json(silent=True) or {}
+        name = (payload.get("name") or "").strip()[:120]
+        order = payload.get("order")
+        if not name:
+            return jsonify(error="name is required"), 400
+        if not isinstance(order, list):
+            return jsonify(error="order must be a list of {key, enabled}"), 400
+        specs = [{"key": s.key, "enabled": s.enabled} for s in resolve_section_order(order)]
+        fingerprint = section_fingerprint(order)
+        with open_session() as db:
+            existing = db.scalar(
+                select(ScribbleSectionPreset).where(ScribbleSectionPreset.fingerprint == fingerprint)
+            )
+            if existing is not None:
+                return jsonify(
+                    error="duplicate",
+                    detail=f"This exact arrangement is already saved as “{existing.name}”.",
+                    preset={"id": str(existing.id), "name": existing.name},
+                ), 409
+            preset = ScribbleSectionPreset(name=name, specs=specs, fingerprint=fingerprint,
+                                           created_by=current_actor_username())
+            db.add(preset)
+            try:
+                db.commit()
+            except IntegrityError:
+                # Two operators saved the identical arrangement concurrently: the check above passed for
+                # both, the unique `fingerprint` index rejects the loser. Same 409 the check-path returns.
+                # (No unit test exercises THIS branch: a single-threaded test client always wins the
+                # check-path above, so the race can't be provoked deterministically — the check-path 409 is
+                # covered in test_report_section_presets.py; this is the belt to its braces.)
+                db.rollback()
+                existing = db.scalar(
+                    select(ScribbleSectionPreset).where(ScribbleSectionPreset.fingerprint == fingerprint)
+                )
+                return jsonify(
+                    error="duplicate",
+                    detail=(f"This exact arrangement is already saved as “{existing.name}”."
+                            if existing is not None else "This exact arrangement is already saved."),
+                    preset=({"id": str(existing.id), "name": existing.name}
+                            if existing is not None else None),
+                ), 409
+            result = {"id": str(preset.id), "name": preset.name, "specs": specs}
+        return jsonify(ok=True, preset=result)
+
+    @bp.post("/report/section-presets/<uuid:preset_id>/delete", endpoint="delete_section_preset")
+    def delete_section_preset(preset_id: int):
+        """Delete an org-wide saved section preset. Plain form POST; redirects back.
+
+        SELF-GATED for the same reason as ``save_section_preset``: no engagement in the URL, so the
+        blueprint gate's write-capability check doesn't apply — re-checked here so a viewer can't delete
+        the shared preset library."""
+        if not host_can_write():
+            abort(403)
+        with open_session() as db:
+            preset = db.get(ScribbleSectionPreset, preset_id)
+            if preset is not None:
+                db.delete(preset)
+                db.commit()
+        return redirect(request.referrer or url_for("scribble.dashboard"))
+
+    # ============================================================================ API/UI: cover logo
+
+    @bp.post("/engagements/<uuid:engagement_id>/report/logo", endpoint="set_report_logo")
+    def set_report_logo(engagement_id: int):
+        """Pick this report's cover LOGO from the org-wide library — a plain form POST (``logo_id`` field;
+        empty or ``"default"`` => the stock lotek mark). The pick only changes this report's own cover."""
+        raw = (request.form.get("logo_id") or "").strip()
+        clear = raw in ("", "default")
+        logo_id = None if clear else _as_uuid(raw)
+        if not clear and logo_id is None:
+            abort(400)
+        with open_session() as db:
+            eng = db.get(ReportBoard, engagement_id)
+            if eng is None:
+                abort(404)
+            if logo_id is not None and db.get(ScribbleReportLogo, logo_id) is None:
+                abort(404)
+            eng.cover_logo_id = logo_id
+            db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @bp.post("/report/logos", endpoint="upload_report_logo")
+    def upload_report_logo():
+        """Add an image to the ORG-WIDE cover-logo library (every operator can then pick it) and, when the
+        form names an engagement, set it as that report's cover in the same step (upload-and-use). Raster
+        images only, bounded by ``_MAX_LOGO_BYTES``.
+
+        SELF-GATED (INV-TENANCY-05/06). This route carries no engagement id in its URL, so the
+        blueprint-wide tenancy gate (``authz._gate``) skips it entirely — both the write-capability check
+        AND, when the body names an engagement, the view check its ``set_report_logo`` sibling gets for
+        free from the URL. Both are re-applied here by hand: (1) writing the shared library requires write
+        capability; (2) the ``engagement_id`` arrives in the FORM BODY, so it is authorized directly via
+        ``can_view_engagement`` — matching the body-scoped ``create_artifact``/``templating_preview``
+        pattern — before its ``cover_logo_id`` is touched, or a viewer could set any tenant's cover."""
+        if not host_can_write():
+            abort(403)
+        upload = request.files.get("file")
+        filename = (upload.filename or "").strip() if upload is not None else ""
+        if upload is None or not filename:
+            abort(400)
+        data = upload.read()
+        if not data:
+            abort(400)
+        if len(data) > _MAX_LOGO_BYTES:
+            abort(413)
+        content_type = guess_content_type(filename, data)
+        if content_type not in _LOGO_TYPES:
+            abort(400)  # raster images only (no SVG: it serves inline and can carry script)
+        label = ((request.form.get("label") or "").strip() or filename)[:120]
+        raw_eng = (request.form.get("engagement_id") or "").strip()
+        eng_id = _as_uuid(raw_eng) if raw_eng else None
+        with open_session() as db:
+            logo = ScribbleReportLogo(label=label, content_type=content_type, data=data,
+                                      created_by=current_actor_username())
+            db.add(logo)
+            db.flush()
+            if eng_id is not None:
+                eng = db.get(ReportBoard, eng_id)
+                # Fail closed like the gate: a foreign-but-real engagement gets the same 404 as a
+                # nonexistent one (no cross-tenant existence oracle), and the cover is only set once the
+                # caller is proven able to view it.
+                if eng is None or not can_view_engagement(eng, current_actor()):
+                    abort(404)
+                eng.cover_logo_id = logo.id  # upload-and-use on this report
+            db.commit()
+        if eng_id is not None:
+            return redirect(url_for("scribble.engagement_board", engagement_id=eng_id))
+        return redirect(request.referrer or url_for("scribble.dashboard"))
+
+    @bp.get("/report/logos/default/raw", endpoint="report_logo_default_raw")
+    def report_logo_default_raw():
+        """Serve the stock lotek mark — the default cover logo and the picker's 'Default' thumbnail."""
+        from scribble.reporting.logos import DEFAULT_LOGO_CONTENT_TYPE, default_logo_bytes
+
+        resp = send_file(io.BytesIO(default_logo_bytes()), mimetype=DEFAULT_LOGO_CONTENT_TYPE,
+                         max_age=3600, download_name="lotek.png")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    @bp.get("/report/logos/<uuid:logo_id>/raw", endpoint="report_logo_raw")
+    def report_logo_raw(logo_id: int):
+        """Serve a library logo's bytes — the cover image and the picker thumbnail. Inline (raster only, so
+        no inline-script surface) with nosniff."""
+        with open_session() as db:
+            logo = db.get(ScribbleReportLogo, logo_id)
+            if logo is None:
+                abort(404)
+            resp = send_file(io.BytesIO(logo.data), mimetype=logo.content_type or "image/png",
+                             max_age=3600, download_name=f"{logo.label or 'logo'}")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    # ============================================================================ API/UI: report prose
+
+    @bp.post("/engagements/<uuid:engagement_id>/report/prose", endpoint="save_report_prose")
+    def save_report_prose(engagement_id: int):
+        """Save this report's Methodology / Scope-and-limitations override text (#Q4). An empty field RESETS
+        that section to the standing text (stored NULL). Plain form POST."""
+        methodology = (request.form.get("methodology_text") or "").strip()
+        scope = (request.form.get("scope_limitations_text") or "").strip()
+        with open_session() as db:
+            eng = db.get(ReportBoard, engagement_id)
+            if eng is None:
+                abort(404)
+            eng.methodology_text = methodology or None      # "" => reset to the generated standing text
+            eng.scope_limitations_text = scope or None
+            db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @api_bp.post("/report/prose/rephrase")
+    def rephrase_report_prose():
+        """Rephrase operator prose through the host AI hook and return ``{text: rewrite}`` for the operator to
+        review and save (never a silent in-place overwrite). 503 when the host provides no AI hook (it is
+        settings-gated + default OFF), so the button simply isn't offered then.
+
+        SELF-GATED: no engagement in the URL, so ``authz._gate`` skips its write-capability check. This
+        route proxies an operator's text to the host LLM, so it requires write capability — that keeps a
+        read-only viewer from driving the (metered) AI hook.
+        ponytail: write-cap bounds abuse to trusted operators; a per-actor rate limit would need shared
+        state this extension doesn't own — add one if operator-side abuse ever shows up."""
+        if not host_can_write():
+            abort(403)
+        ai = host.host_hook("ai_complete")
+        if ai is None:
+            return jsonify(error="ai_unavailable", detail="AI is not enabled on this install"), 503
+        payload = request.get_json(silent=True) or {}
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return jsonify(error="text is required"), 400
+        if len(text) > _MAX_REPHRASE_CHARS:
+            return jsonify(error="text too long"), 413
+        section = {"methodology": "penetration-test methodology",
+                   "scope": "scope and limitations"}.get((payload.get("field") or "").strip(), "report")
+        messages = [
+            {"role": "system", "content": "You rewrite security-assessment report prose to be clear, "
+             "professional and concise. Return ONLY the rewritten text — no preamble, no markdown fences."},
+            {"role": "user", "content": f"Rephrase this {section} section:\n\n{text}"},
+        ]
+        try:
+            rewritten = ai(messages)
+        except Exception:  # host AI failed/disabled at call time — 502, don't 500
+            # Do NOT echo str(exc): the host AI client's exception text can carry provider URLs, model
+            # names or key fragments. A fixed message is all the operator needs; details go to the log.
+            import logging
+            logging.getLogger(__name__).exception("scribble: ai_complete rephrase failed")
+            return jsonify(error="ai_failed", detail="The AI service could not be reached."), 502
+        return jsonify(ok=True, text=(rewritten or "").strip())
 
     # =============================================================================== API: move finding
 

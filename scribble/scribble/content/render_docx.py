@@ -60,7 +60,11 @@ _LIST_STYLES = {"ul": "ListBullet", "ol": "ListNumber"}
 _QUOTE_STYLE = "Quote"
 _CAPTION_STYLE = "Caption"
 _CODE_BLOCK_STYLE = "NoSpacing"
-_MONOSPACE_FONT = "Consolas"
+# The code/`<pre>` run font. Must be a family the PDF-render (Gotenberg/LibreOffice) image actually has:
+# "Consolas" is Windows-only, so LibreOffice fell back to a SERIF and code blocks rendered as prose. This
+# matches the default template's MONO_FONT (report_templates/build_default_docx.py), baked into the
+# lotek-gotenberg image; Word substitutes a local mono if a reader's machine lacks it (mono→mono, fine).
+_MONOSPACE_FONT = "JetBrains Mono"
 
 
 def _list_item_style(list_stack: list[str]) -> str:

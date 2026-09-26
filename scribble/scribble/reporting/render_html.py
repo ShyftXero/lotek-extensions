@@ -35,10 +35,10 @@ import io
 import mimetypes
 import re
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from html import escape as _escape
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import nh3
 
@@ -55,7 +55,7 @@ from scribble.reporting.context import (
     figure_anchor,
     figure_caption,
 )
-from scribble.reporting.layouts import ReportLayout, list_layouts
+from scribble.reporting.layouts import DEFAULT_LAYOUT, ReportLayout, list_layouts
 from scribble.reporting.marks import ResolvedMark
 from scribble.reporting.selection import resolve_selection
 from scribble.reporting.theme_css import build_theme_assets
@@ -409,46 +409,153 @@ def _render_artifact_gallery(
     return f'<div class="evidence">{cap}<div class="evidence-grid">{items}</div></div>'
 
 
-def _affected_assets(f: FindingCtx) -> list[tuple[str, str | None]]:
-    """``(label, href)`` for every asset this finding touches: its own target host/url, any per-host
-    child instances, and an ``AFFECTED`` variable overlay. De-duplicated by label, order-preserving.
-    ``href`` is set only for a safe-scheme URL so the renderer can link it."""
-    out: list[tuple[str, str | None]] = []
-    seen: set[str] = set()
+# URL schemes that ride TCP — used only to append an honest ``/tcp`` to a service label. A scheme not
+# here (or no URL) yields ``host:port`` with no proto rather than a guess.
+_TCP_URL_SCHEMES = {"http", "https", "ftp", "ftps", "ssh", "smtp", "smtps", "imap", "imaps",
+                    "pop3", "pop3s", "ldap", "ldaps", "rdp", "telnet", "mysql", "mssql", "vnc"}
 
-    def add(label: str, href: str | None = None) -> None:
-        label = (label or "").strip()
-        if label and label not in seen:
-            seen.add(label)
-            out.append((label, href))
 
-    if f.target_host:
-        add(f.target_host + (f":{f.target_port}" if f.target_port else ""))
-    if f.target_url:
-        add(f.target_url, _safe_href(f.target_url))
-    for c in f.children:
-        add(_child_host_label(c))
+def _asset_label(inst: FindingCtx) -> str | None:
+    """A single affected SERVICE label — ``host:port/proto`` — for one finding instance, from its
+    ``target_host``/``target_port`` and the netloc/scheme of its ``target_url``. NEVER the URL path or
+    query: an exploit URL carries the PoC payload (an XSS string, an LFI path), which belongs in the
+    reproduction block, not the asset list. ``/proto`` is emitted only when the URL scheme implies TCP;
+    otherwise ``host:port`` — an honest ``:port`` beats a guessed ``/proto``. None when no host is known."""
+    host = (inst.target_host or "").strip()
+    port = str(inst.target_port).strip() if inst.target_port else ""
+    proto = ""
+    if inst.target_url:
+        u = urlparse(inst.target_url)
+        if not host:
+            host = (u.hostname or "").strip()
+        if not port and u.port:
+            port = str(u.port)
+        if u.scheme in _TCP_URL_SCHEMES:
+            proto = "tcp"
+    if not host:
+        return None
+    label = host + (f":{port}" if port else "")
+    if port and proto:
+        label += f"/{proto}"
+    return label
+
+
+def _label_from_text(text: str) -> str | None:
+    """Normalize a free-text asset reference (a URL, or a bare ``host``/``host:port``) to the same
+    ``host:port/proto`` label ``_asset_label`` produces. So an ``AFFECTED`` overlay that is really an
+    exploit URL collapses to its service and dedups against the target-derived asset, instead of leaking
+    the PoC path/payload into the asset list."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if "://" in text:
+        u = urlparse(text)
+        host = (u.hostname or "").strip()
+        if not host:
+            return None
+        label = host + (f":{u.port}" if u.port else "")
+        if u.port and u.scheme in _TCP_URL_SCHEMES:
+            label += "/tcp"
+        return label
+    return text
+
+
+def _natural_key(label: str) -> list:
+    """Sort key that orders ``192.0.2.2`` before ``192.0.2.10`` — split into text/number chunks so the
+    numeric runs compare as ints, not lexically. A plain ``sort()`` put ``.10`` before ``.2``."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", label)]
+
+
+def _affected_labels(
+    f: FindingCtx,
+) -> tuple[list[str], dict[str, list], dict[str, list[str]]]:
+    """For a finding + its folded per-host instances: the DISTINCT affected-service labels (sorted), the
+    artifacts carried at each, and the per-host facts line(s) at each. One row per distinct service — a
+    host reported by two instances of the same vuln is ONE asset (the dedup the old split "Affected
+    Assets" list + "Affected hosts (N)" table got wrong: 49 rows for 26 hosts). Facts/artifacts carry
+    the per-host detail a promoted instance adds (e.g. ``svc_sql`` on dc01) so collapsing loses nothing."""
+    arts: dict[str, list] = {}
+    facts: dict[str, list[str]] = {}
+    order: list[str] = []
+
+    def _slot(label: str) -> None:
+        if label not in arts:
+            arts[label] = []
+            facts[label] = []
+            order.append(label)
+
+    for inst in (f, *f.children):
+        label = _asset_label(inst)
+        if not label:
+            continue
+        _slot(label)
+        arts[label].extend(inst.artifacts or [])
+        fl = (getattr(inst, "facts_line", "") or "").strip()
+        # A URL-valued facts line is a PoC (AFFECTED is set to the exploit URL for scan findings) — it
+        # belongs in Reproduction, not the asset Details. Per-host facts like "svc_sql" stay.
+        if fl and "://" not in fl and fl != label and fl not in facts[label]:
+            facts[label].append(fl)
     affected = f.variables.get("AFFECTED") if isinstance(f.variables, dict) else None
     if affected:
         for piece in str(affected).replace(";", ",").split(","):
-            add(piece.strip())
-    return out
+            lbl = _label_from_text(piece)
+            if lbl:
+                _slot(lbl)
+    order.sort(key=_natural_key)
+    return order, arts, facts
 
 
-def _render_affected_assets(f: FindingCtx) -> str:
-    """Always-present per-finding "Affected Assets" section (empty-state when nothing is recorded)."""
-    assets = _affected_assets(f)
-    if not assets:
-        body = '<span class="muted">Not specified.</span>'
-    else:
-        lis = []
-        for label, href in assets:
-            inner = f'<a href="{_esc(href)}">{_esc(label)}</a>' if href else _esc(label)
-            lis.append(f"<li>{inner}</li>")
-        body = f'<ul class="asset-list">{"".join(lis)}</ul>'
+def _render_affected(f: FindingCtx) -> str:
+    """The "Affected Assets" section per card: a deduplicated ``host:port/proto`` LIST across the card's
+    own instance and every folded per-host instance (``_affected_labels`` also folds in the ``AFFECTED``
+    overlay and natural-sorts). Per-host EVIDENCE (facts + screenshots) is NOT here — it renders once, in
+    the compact ``<details class="children">`` table (:func:`_render_children`), the HTML mirror of the
+    DOCX "Affected Hosts" body list. Keeping the two apart is what stopped child evidence rendering twice
+    (once here, once in the children table) and dropping evidence for a host-less child entirely."""
+    order, _arts, _facts = _affected_labels(f)
+    n = len(order)
+    if not order:
+        return ('<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
+                '<div class="block-body"><span class="muted">Not specified.</span></div></div>')
+    inner = f'<ul class="asset-list">{"".join(f"<li>{_esc(label)}</li>" for label in order)}</ul>'
+    # Same block-label / block-body shape as every other card section (Description, Remediation,
+    # Reproduction, Recommendations) — one consistent pattern for all renderable items.
     return (
-        '<div class="block affected-assets"><div class="block-label">Affected Assets</div>'
-        f'<div class="block-body">{body}</div></div>'
+        f'<div class="block affected-assets"><div class="block-label">Affected Assets ({n})</div>'
+        f'<div class="block-body">{inner}</div></div>'
+    )
+
+
+def repro_request_urls(f: FindingCtx) -> list[str]:
+    """The scanner's request URL(s) — the implicit PoC (path + payload) — for a finding with NO authored
+    reproduction block, one example per distinct (path, query) across the finding + folded instances (so a
+    fleet vuln shows the request once, not per host). Empty when a reproduction block is authored (that
+    renders instead) or no instance has a request path. Shared by the HTML and docx renderers."""
+    if (f.blocks_html or {}).get("reproduction"):
+        return []
+    examples: dict[tuple[str, str], str] = {}
+    for inst in (f, *f.children):
+        url = (inst.target_url or "").strip()
+        if not url:
+            continue
+        p = urlparse(url)
+        if not (p.path not in ("", "/") or p.query):
+            continue  # a bare host/root URL is not a PoC — it is already in Affected Assets
+        examples.setdefault((p.path, p.query), url)
+    return list(examples.values())
+
+
+def _render_derived_repro(f: FindingCtx) -> str:
+    """HTML Reproduction section from ``repro_request_urls`` — the copy-pasteable request(s), NOT annotated
+    with host counts (that is Affected Assets' job)."""
+    urls = repro_request_urls(f)
+    if not urls:
+        return ""
+    code = "\n".join(_esc(url) for url in urls)
+    return (
+        '<div class="block reproduction"><div class="block-label">Reproduction</div>'
+        '<div class="block-body"><p class="muted repro-note">Request(s) observed by the scanner:</p>'
+        f'<pre class="repro-req"><code>{code}</code></pre></div></div>'
     )
 
 
@@ -523,11 +630,12 @@ def _render_child_evidence_cell(c: FindingCtx, resolver: _AssetResolver) -> str:
     """The Evidence cell for one child instance: its per-host facts line AND its own attached artifacts.
 
     The gallery half is ext#40: ``_render_finding`` gives a top-level finding's artifacts a gallery, but a
-    CHILD was only ever rendered through this table, whose Evidence column was the facts line alone. A
-    screenshot attached to a promoted per-host instance therefore produced an empty cell — and promoted
-    scan findings are exactly where nesting comes from (``scribble.promote.promote_job``), so per-host
-    evidence was the case most likely to be lost. An em-dash keeps a genuinely empty cell scannable
-    instead of blank."""
+    CHILD is only ever rendered through this table, whose Evidence column would otherwise be the facts line
+    alone. A screenshot attached to a promoted per-host instance therefore produced an empty cell — and
+    promoted scan findings are exactly where nesting comes from (``scribble.promote.promote_job``), so
+    per-host evidence was the case most likely to be lost. An em-dash keeps a genuinely empty cell
+    scannable instead of blank. The gallery numbers each child figure via ``context.number_figures`` (bare
+    caption, no host prefix — the host is the row header), so the DOCX prints the SAME "Figure N"."""
     facts = _child_summary_text(c)
     gallery = _render_artifact_gallery(c.artifacts, resolver, label=None)
     if not facts and not gallery:
@@ -537,9 +645,12 @@ def _render_child_evidence_cell(c: FindingCtx, resolver: _AssetResolver) -> str:
 
 
 def _render_children(f: FindingCtx, resolver: _AssetResolver) -> str:
-    """A COMPACT per-host list for a parent finding's children -- rendered once, collapsed by default,
-    instead of one full finding card per instance (see module docstring header)."""
-    if not f.children:
+    """A COMPACT per-host list for a parent finding's children — rendered once, collapsed by default,
+    instead of one full finding card per instance. Each child's OWN evidence renders here (ext#40); a
+    ``beforeprint`` handler opens the ``<details>`` so the printed PDF's figure sequence starts at 1 like
+    the ``.docx`` (ext#117). This is the HTML mirror of ``render_docx._children_html``; the deduplicated
+    host:port LIST lives separately in the Affected Assets block."""
+    if not f.children or "evidence" in f.suppressed:
         return ""
     rows = "".join(
         f'<tr><td class="child-host">{_esc(_child_host_label(c))}</td>'
@@ -630,14 +741,23 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         title_attr = f' title="{_esc(f.cvss_vector)}"' if f.cvss_vector else ""
         badges += f'<span class="chip cvss"{title_attr}>CVSS {f.cvss_score:.1f}</span>'
     badges += _render_metadata_chips(f)
-    # A card collapsed by vulnerability spans many hosts — show the fleet size up front (matches the
-    # at-a-glance count; same ``_affected_hosts`` source). Only when it is more than its own host.
-    host_count = len(_affected_hosts(f))
-    if host_count > 1:
-        badges += f'<span class="chip hosts">{host_count} affected hosts</span>'
+    # A card collapsed by vulnerability spans many services — show the fleet size up front (same
+    # ``_affected_hosts`` source as the at-a-glance count and the Affected Assets section, so all three
+    # agree). Only when it is more than its own asset.
+    # Report composition: a suppressed derived section is skipped entirely (and the at-a-glance host chip
+    # goes with the affected-assets section). Content blocks / references are already absent from the ctx.
+    affected_suppressed = "affected_assets" in f.suppressed
+    asset_count = 0 if affected_suppressed else len(_affected_hosts(f))
+    if asset_count > 1:
+        badges += f'<span class="chip hosts">{asset_count} affected assets</span>'
     body = (
         _render_blocks(f, resolver)
-        + _render_affected_assets(f)
+        + ("" if "reproduction" in f.suppressed else _render_derived_repro(f))
+        + ("" if affected_suppressed else _render_affected(f))
+        # Per-host child EVIDENCE (facts + screenshots) in a collapsed <details>, rendered BEFORE the
+        # parent's own gallery so context.number_figures counts child figures first — the same order the
+        # DOCX emits, which is what keeps the two deliverables' "Figure N" sequences identical.
+        + _render_children(f, resolver)
         + _render_recommendations(f, resolver)
         + _render_references(f)
     )
@@ -646,11 +766,9 @@ def _render_finding(f: FindingCtx, resolver: _AssetResolver) -> str:
         f'id="finding-{f.id}">'
         f'<div class="finding-head"><h3>{_esc(f.title)}</h3>'
         f'<div class="finding-badges">{badges}</div></div>'
+        # The Affected Assets table (with per-service evidence) lives INSIDE the body, before the parent's
+        # own gallery, so ``context.number_figures`` counts figures upward as the reader scrolls.
         f'<div class="finding-body">{body}</div>'
-        # Children BEFORE the parent's own gallery, so the figure numbers ``context.number_figures``
-        # assigns count upward as the reader scrolls -- the .docx emits the children's evidence first
-        # (it lives inside ``{{r f.body }}`` in a binary template) and cannot be reordered as cheaply.
-        f"{_render_children(f, resolver)}"
         f"{_render_gallery(f, resolver)}"
         "</article>"
     )
@@ -905,7 +1023,7 @@ def _cover_facts(ctx: ReportContext) -> list[tuple[str, str]]:
     return facts
 
 
-def _render_cover(ctx: ReportContext) -> str:
+def _render_cover(ctx: ReportContext, resolver: _AssetResolver) -> str:
     """The PRINT-ONLY cover page (ext#43): the PDF used to open straight into the masthead and then the
     executive summary, with no title page at all.
 
@@ -924,8 +1042,21 @@ def _render_cover(ctx: ReportContext) -> str:
         for label, value in _cover_facts(ctx)
     )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
+    logo = ""
+    # The cover mark is an IMAGE, so it obeys the same inlining contract as evidence: base64 only when
+    # assets are being inlined (single-file HTML / PDF / zip). In "none" mode the report references images
+    # rather than carrying them, and a ~58 KiB data: URI on every page would defeat that — so the cover
+    # simply omits the mark there, exactly as a gallery image degrades to a placeholder.
+    if ctx.cover_logo and resolver.mode != "none":
+        import base64
+        b64 = base64.b64encode(ctx.cover_logo).decode("ascii")
+        logo = (
+            f'<img class="cover-logo" alt="" src="data:{_esc(ctx.cover_logo_content_type)};base64,{b64}" '
+            'style="max-height:96px;max-width:240px;display:block;margin:0 auto 20px;object-fit:contain;"/>'
+        )
     return (
         '<section class="cover" id="sec-cover">'
+        f"{logo}"
         '<div class="cover-top">'
         f'<div class="cover-eyebrow">{eyebrow}</div>'
         f'<div class="cover-title">{_esc(ctx.engagement_name)}</div>'
@@ -959,6 +1090,13 @@ def _overview_paragraph(ctx: ReportContext) -> str:
     return " ".join(bits)
 
 
+def _prose_to_html(text: str) -> str:
+    """Operator free-text -> safe HTML paragraphs: escape, split on blank lines into ``<p>``, single
+    newlines become ``<br/>``. The one place a standing-prose override (#Q4) becomes markup."""
+    paras = [p for p in text.split("\n\n") if p.strip()]
+    return "".join(f"<p>{_esc(p.strip()).replace(chr(10), '<br/>')}</p>" for p in paras)
+
+
 def _render_front_matter(ctx: ReportContext) -> str:
     """Front matter at the head of the Executive Summary: the engagement overview and the standing scope /
     limitations statement.
@@ -970,14 +1108,19 @@ def _render_front_matter(ctx: ReportContext) -> str:
     """
     # ``_esc`` even though these are module constants, matching ``_methodology_prose``: the escaping is
     # what makes editing the prose safe for someone who reaches for an "&" or an angle bracket.
-    limits = "".join(f"<li>{_esc(text)}</li>" for text in _LIMITATIONS)
     narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
+    # Scope/limitations: the operator's per-report override (#Q4) as prose, else the standing bullet list.
+    if ctx.scope_limitations_text:
+        limits_html = f'<div class="fm-limits">{_prose_to_html(ctx.scope_limitations_text)}</div>'
+    else:
+        bullets = "".join(f"<li>{_esc(text)}</li>" for text in _LIMITATIONS)
+        limits_html = f'<ul class="fm-limits">{bullets}</ul>'
     return (
         '<div class="frontmatter">'
-        '<div class="fm-block"><h3>ReportBoard overview</h3>'
+        '<div class="fm-block"><h3>Overview</h3>'
         f'<p class="fm-lead">{_overview_paragraph(ctx)}</p>{narrative}</div>'
         '<div class="fm-block"><h3>Scope and limitations</h3>'
-        f'<ul class="fm-limits">{limits}</ul></div>'
+        f'{limits_html}</div>'
         "</div>"
     )
 
@@ -996,6 +1139,20 @@ def _render_severity_definitions(rollup) -> str:
     return (
         '<div class="sev-defs"><div class="cap">How these ratings are used</div>'
         f"{rows}</div>"
+    )
+
+
+def _render_severity_ratings(ctx: ReportContext) -> str:
+    """The Severity Ratings block — what Critical/High/… MEAN. Split out of the Executive Summary (#Q1) so
+    it is an independently movable section. Empty when there are no findings (nothing to rate), so a clean
+    report omits it and leaves no dangling anchor/nav link — the same rule it followed inside the summary."""
+    defs = _render_severity_definitions(ctx.rollup)
+    if not defs:
+        return ""
+    return (
+        '<section class="sec" id="sec-severity_ratings">'
+        '<h2 class="sec-h">Severity Ratings <span class="chev">▾</span></h2>'
+        f'<div class="sec-body">{defs}</div></section>'
     )
 
 
@@ -1039,20 +1196,10 @@ def _index_ids_cell(ids: list) -> str:
 
 
 def _affected_hosts(f: FindingCtx) -> set[str]:
-    """Distinct affected-host labels for a finding INCLUDING its folded per-host instances
-    (``children``). One label per instance: ``host:port``, else the ``url``. The SINGLE source the
-    at-a-glance host count AND the card's host-count badge read, so the two can never disagree
-    (one-predicate-one-home)."""
-    hosts: set[str] = set()
-    for inst in (f, *f.children):
-        host = inst.target_host or ""
-        if host and inst.target_port:
-            host = f"{host}:{inst.target_port}"
-        if not host and inst.target_url:
-            host = inst.target_url
-        if host:
-            hosts.add(host)
-    return hosts
+    """Distinct affected-service labels (``host:port/proto``) for a finding INCLUDING its folded per-host
+    instances — the SINGLE source the at-a-glance count, the card badge, AND the Affected Assets section
+    all read (via ``_affected_labels``), so the three can never disagree (one-predicate-one-home)."""
+    return set(_affected_labels(f)[0])
 
 
 def _findings_index(ctx: ReportContext) -> str:
@@ -1186,7 +1333,8 @@ def _render_summary(ctx: ReportContext) -> str:
         f'<div class="level">{_esc(banner_label)}{adjusted_flag}</div>{computed_note}</div>'
         f'<div class="narr">{_esc(banner_sub)}</div>{override_note}</div>'
         f"{_sev_bar(rollup)}"
-        f"{_render_severity_definitions(rollup)}"
+        # Severity RATINGS (what Critical/High mean) moved to their own movable `severity_ratings` block
+        # (#Q1); the summary keeps the severity BAR chart. See _render_severity_ratings.
         '<div class="metrics">'
         f'<div class="metric"><div class="k">Total Findings</div><div class="v">{total}</div></div>'
         f'<div class="metric"><div class="k">Sections</div><div class="v">{n_groups}</div></div>'
@@ -1427,7 +1575,10 @@ def _render_methodology(ctx: ReportContext) -> str:
     coverage = [c for c in ctx.checklists if c.kind != "compliance"]
     compliance = [c for c in ctx.checklists if c.kind == "compliance"]
     heading = _methodology_heading(ctx)
-    body = _methodology_prose(ctx)
+    # The operator's per-report Methodology override (#Q4) replaces the generated standing prose; the
+    # coverage record (checklists) is engagement DATA, not standing prose, so it still renders below.
+    body = f'<article class="mth">{_prose_to_html(ctx.methodology_text)}</article>' \
+        if ctx.methodology_text else _methodology_prose(ctx)
     if coverage:
         body += "".join(_render_checklist_coverage(c) for c in coverage)
     else:
@@ -1808,6 +1959,11 @@ def _toc_entries(ctx: ReportContext, blocks: tuple[str, ...]) -> list[tuple[int,
     for key in blocks:
         if key == "summary":
             entries.append((1, "sec-summary", "Executive Summary", ""))
+        elif key == "severity_ratings":
+            # same render condition as _render_severity_ratings (empty when there are no findings), so the
+            # TOC entry appears iff the section does — pinned by test_report_cover_and_toc completeness.
+            if ctx.rollup and ctx.rollup.total > 0:
+                entries.append((1, "sec-severity_ratings", "Severity Ratings", ""))
         elif key == "rollups":
             # Same condition as _render_rollups's render/short-circuit, so the TOC entry appears iff the
             # section does (test_report_cover_and_toc pins this completeness against the rendered doc).
@@ -1879,11 +2035,13 @@ def _render_block_by_key(
     order the template puts them in. ``blocks`` is the template's full block list — only the ``toc`` needs
     it, because a table of contents is a statement about the whole document."""
     if key == "cover":
-        return _render_cover(ctx)
+        return _render_cover(ctx, resolver)
     if key == "toc":
         return _render_toc(ctx, blocks)
     if key == "summary":
         return _render_summary(ctx)
+    if key == "severity_ratings":
+        return _render_severity_ratings(ctx)
     if key == "rollups":
         return _render_rollups(ctx)
     if key == "findings":
@@ -1970,6 +2128,26 @@ def _render_document(
     )
 
 
+def _effective_layout(
+    ctx: ReportContext, sel_layout: ReportLayout, *, layout: str | None, template: str | None
+) -> ReportLayout:
+    """Which blocks render, in what order. An explicitly-chosen preset PREVIEWS it; with none, the report's
+    OWN persisted section order (``ctx.section_order``, resolved from ``ReportBoard.section_order``) is the
+    truth — the same order the DOCX/PDF deliverable loops, so the HTML preview and the deliverable agree.
+
+    A preset counts as explicitly chosen when ``?layout=`` is given (any value, incl. ``default`` — the
+    switcher's "revert to Standard" preview), OR the legacy single-axis ``?template=`` resolved to a
+    NON-default layout (``template=compliance``). ``template=dark`` selects only a theme, leaves the layout
+    default, and so is NOT a layout choice — the report's own order stands. A report with no saved order has
+    ``ctx.section_order`` defaulted to the standard order, so no selection is byte-identical to the old
+    default-preset behaviour.
+    """
+    explicit = bool(layout) or (bool(template) and sel_layout.name != DEFAULT_LAYOUT)
+    if explicit:
+        return sel_layout
+    return ReportLayout("custom", "This report", tuple(ctx.section_order))
+
+
 def render_report_html(
     ctx: ReportContext,
     *,
@@ -2010,7 +2188,8 @@ def render_report_html(
         layout=layout, theme=theme, template=template, override_lookup=override_lookup
     )
     return _render_document(
-        ctx, resolver, layout=sel_layout, theme=sel_theme,
+        ctx, resolver, theme=sel_theme,
+        layout=_effective_layout(ctx, sel_layout, layout=layout, template=template),
         engagement_url=engagement_url, dashboard_url=dashboard_url,
         override_theme_names=override_theme_names,
     )
@@ -2024,14 +2203,24 @@ def export_zip(
     theme: str | None = None,
     template: str | None = None,
     override_lookup: OverrideLookup | None = None,
+    loot: Iterable[tuple[str, bytes]] | None = None,
 ) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
-    ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7)."""
+    ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7).
+
+    ``loot`` is an optional lazy iterable of ``(arcname, bytes)`` — the engagement's RAW scan-tool output
+    (nmap/winpeas/sslyze/…) streamed straight from the object store, written under ``loot/``. The report's
+    own attached evidence is ``artifacts/``; this is everything the tools produced, so the bundle is the
+    whole engagement, not just what a finding cited. The route supplies it (it holds the host objects seam
+    + the actor); ``None`` omits it (e.g. the exporter used with no host)."""
     resolver = _AssetResolver("zip", artifact_bytes)
     sel_layout, sel_theme = resolve_selection(
         layout=layout, theme=theme, template=template, override_lookup=override_lookup
     )
-    html_doc = _render_document(ctx, resolver, layout=sel_layout, theme=sel_theme)
+    html_doc = _render_document(
+        ctx, resolver, theme=sel_theme,
+        layout=_effective_layout(ctx, sel_layout, layout=layout, template=template),
+    )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("report.html", html_doc)
@@ -2044,6 +2233,9 @@ def export_zip(
                 data = None
             if data:
                 zf.writestr(f"artifacts/{name}", data)
+        for arcname, data in (loot or ()):
+            if data is not None:
+                zf.writestr(f"loot/{arcname}", data)
     return buf.getvalue()
 
 
@@ -2516,17 +2708,27 @@ table.index td.ix-cwe, table.index td.ix-cve {
 .finding-body .block-body img { max-width: 100%; border-radius: 6px; }
 .finding-body .block-body pre {
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px;
-  padding: 10px 12px; font-size: 12.5px; overflow: auto; max-height: 24em;
+  padding: 10px 12px; font-size: 12.5px; max-height: 24em; overflow-y: auto;
+  /* WRAP long lines (a request URL / curl PoC is one very long token) instead of scrolling
+     horizontally -- horizontal overflow is invisibly truncated when the report prints to PDF. */
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
 }
 .finding-body .block-body code {
   font-family: var(--font-mono); font-size: 13px;
 }
 .empty { color: var(--muted); font-style: italic; }
-.finding-body .asset-list { margin: 4px 0 0; padding-left: 18px; }
+.finding-body .asset-list {
+  margin: 4px 0 0; padding-left: 18px;
+  /* A fleet vuln can affect dozens of hosts — flow them into balanced ~14em columns instead of one tall
+     stack, so 50 assets are a compact grid, not a full page (the original over-tall complaint). */
+  columns: 14em; column-gap: 24px;
+}
 .finding-body .asset-list li {
   margin: 3px 0; font-family: var(--font-mono);
   font-size: 13px; font-variant-numeric: tabular-nums;
+  break-inside: avoid;
 }
+@media print { .finding-body .asset-list { columns: 3; } }
 .finding-body .block.recommendations .block-label { color: var(--accent-ink); }
 
 /* children (affected hosts) */

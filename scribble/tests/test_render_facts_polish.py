@@ -56,7 +56,10 @@ def test_docx_hides_empty_cvss_and_target_labels(session_factory):
 
 
 def test_docx_shows_cvss_and_target_labels_when_present(session_factory):
-    """The converse: when a finding DOES carry a score/target, the (non-empty) label renders."""
+    """The converse: when a finding DOES carry a score/target, both are shown. The CVSS renders as a
+    rounded PILL — "CVSS 7.5", no colon — mirroring the HTML card's badge row (build_default_docx `_pill`),
+    and the target renders as an entry in the Affected Assets grid rather than a "Target:" label (which
+    crammed the card). Both remain extractable text, so the report stays searchable/accessible."""
     with session_factory() as db:
         eng = ReportBoard(name="Scored Co", company_name="Acme")
         group = FindingGroup(engagement=eng, name="External", order_index=0)
@@ -81,5 +84,5 @@ def test_docx_shows_cvss_and_target_labels_when_present(session_factory):
 
     doc = docx.Document(io.BytesIO(payload))
     text = _all_text(doc)
-    assert "CVSS: 7.5" in text
-    assert "Target: app.acme.test" in text
+    assert "CVSS 7.5" in text            # the CVSS pill (no colon)
+    assert "app.acme.test" in text       # the target, as an Affected Asset

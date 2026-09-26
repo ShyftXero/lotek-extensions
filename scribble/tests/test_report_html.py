@@ -268,11 +268,12 @@ def test_render_report_html_renders_nested_children_compactly(session_factory):
     assert "Should not render as its own card." not in html_doc
     assert "Nor should this one." not in html_doc
 
-    # The compact per-host list is present, naming both children's hosts.
-    assert "Affected hosts (2)" in html_doc
+    # The unified, deduplicated Affected Assets section is present (standard block-label/block-body
+    # shape, like every other card section), naming both children's hosts.
+    assert "Affected Assets (2)" in html_doc
     assert "dc01.acme.test" in html_doc
     assert "dc02.acme.test" in html_doc
-    assert '<details class="children">' in html_doc
+    assert '<div class="block affected-assets">' in html_doc
 
 
 def test_render_report_html_childless_finding_unaffected(session_factory):
@@ -448,7 +449,9 @@ def test_child_finding_evidence_renders_without_leaking_child_content(session_fa
     assert "Child evidence" in html_doc
     assert "Should not render as its own card." not in html_doc
     idx_children_table = html_doc.index('<table class="children-table">')
-    idx_image = html_doc.index("data:image/png;base64,")
+    # Search for the CHILD's embedded image AFTER the children table: the first data: URI in the doc is now
+    # the cover mark (on the cover page, top of the document), so a bare `.index` would find that instead.
+    idx_image = html_doc.index("data:image/png;base64,", idx_children_table)
     assert idx_children_table < idx_image
 
 

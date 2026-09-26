@@ -31,6 +31,7 @@ from scribble.enums import (
     severity_rank,
 )
 from scribble.models import normalize_strategic_recommendations
+from scribble.reporting.layouts import enabled_section_keys
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
 
@@ -109,6 +110,12 @@ class FindingCtx:
     # snapshot (KEV if ANY CVE is listed; EPSS = the max across the finding's CVEs), or ``None`` when there
     # is nothing to show — the KEV/EPSS chips carry ``as_of`` so they never assert a stale fact as current.
     threat_intel: dict | None = None
+    # Report composition (per-section suppression): the SECTION KEYS the operator omitted for this
+    # finding (``BoardFinding.suppressed_sections``). ``build_report_context`` already makes a suppressed
+    # section's DATA absent — dropped content blocks, empty ``artifacts``/``references`` — so most sections
+    # need nothing here; this set is what the two renderers consult for the DERIVED sections they compute
+    # themselves (``affected_assets`` from children, the ``reproduction`` request list), so those skip too.
+    suppressed: frozenset = frozenset()
 
 
 @dataclass
@@ -302,6 +309,22 @@ class ReportContext:
     # the client rollup, then `flatten_for_grouping` drops promotion shell-parents.
     findings_by_kind: list = field(default_factory=list)
     findings_by_host: list = field(default_factory=list)
+    # ADDITIVE: the resolved report SECTION ORDER — enabled block keys in the operator's per-report order
+    # (``ReportBoard.section_order`` via ``layouts.resolve_section_order``; NULL => the default composition).
+    # BOTH renderers loop this so the HTML preview and the DOCX/PDF deliverable render the SAME sections in
+    # the SAME order. Defaults to the standard enabled order, so an off-mount/legacy build (or a renderer
+    # that never sets it) is byte-identical to before this field existed.
+    section_order: tuple[str, ...] = field(default_factory=lambda: enabled_section_keys(None))
+    # Cover LOGO bytes + content type — the operator's picked library logo (ReportBoard.cover_logo_id) or the
+    # stock lotek mark (reporting.logos.resolve_cover_logo), resolved in build_report_context so BOTH
+    # renderers embed the SAME image. Empty default: a manually-built ctx (unit tests) simply renders no
+    # cover logo; the real report path always sets it (to at least the stock mark).
+    cover_logo: bytes = b""
+    cover_logo_content_type: str = "image/png"
+    # Editable standing-prose overrides (#Q4): the operator's per-report Methodology and Scope/limitations
+    # text. "" => use the generated standing text; a value REPLACES it. Both renderers branch on these.
+    methodology_text: str = ""
+    scope_limitations_text: str = ""
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -539,8 +562,16 @@ def number_figures(
             # template. Numbering the parent first made Word print "Figure 3" above "Figure 1".
             # ``render_html._render_finding`` renders children before the gallery to match, so both
             # documents count upward as the reader scrolls.
-            for child in finding.children:
-                _stamp(child.artifacts)
+            #
+            # Skip a finding whose ``evidence`` section is suppressed: BOTH renderers then drop its
+            # children block AND its own gallery (context empties ``finding.artifacts`` for it, and each
+            # renderer omits ``_render_children``/the body children list), so numbering them would burn
+            # figure numbers nothing renders — a visible gap in the sequence. The parent's OWN artifacts
+            # are already empty here in that case; the children's are not, so they must be skipped
+            # explicitly. Parity is unaffected either way (both deliverables skip the same numbers).
+            if "evidence" not in finding.suppressed:
+                for child in finding.children:
+                    _stamp(child.artifacts)
             _stamp(finding.artifacts)
     _stamp(diagrams)
     _stamp(artifacts)
@@ -555,6 +586,11 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     # verbatim. ``_KeepUndefined`` still applies to any token this overlay doesn't cover — a genuinely
     # unknown ``{{TOKEN}}`` is left untouched, not blanked.
     variables = dict(finding.variables or {})
+    # Report composition: sections the operator chose to omit for this finding. A suppressed CONTENT block
+    # is dropped from ``blocks_html`` below; suppressed ``evidence``/``references`` are made empty here;
+    # the DERIVED sections (affected_assets, reproduction) carry ``suppressed`` to the renderer. Every
+    # path lands on "the data isn't there", which every renderer already skips.
+    suppressed = frozenset(finding.suppressed_sections or ())
     session = object_session(finding)
     ctx = (
         build_full_context(session, engagement, finding, extra=variables)
@@ -566,6 +602,8 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     from scribble.templating import resolve_doc  # local import avoids cycle at module import
 
     for block, doc in (finding.content_json or {}).items():
+        if block in suppressed:
+            continue  # operator omitted this content section from the report
         if block == "reproduction":
             # The reproduction block is a VERBATIM code block — auto-filled from a scanner's curl PoC,
             # which routinely carries `{{...}}` template-injection payloads (nuclei/dalfox SSTI checks).
@@ -578,7 +616,9 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         blocks_html[block] = render_html.render_block(
             resolved, resolve_var=resolve_var, artifact_url=artifact_url
         )
-    artifacts = _artifact_ctxs(finding.artifacts, engagement_id=engagement.id)
+    artifacts = [] if "evidence" in suppressed else _artifact_ctxs(
+        finding.artifacts, engagement_id=engagement.id
+    )
     return FindingCtx(
         id=finding.id,
         title=finding.title,
@@ -598,7 +638,8 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         # #624/#625: structured references (non-suppressed only) + metadata for the renderers. All read
         # through ``scribble.metadata`` so "which refs are visible" / "what the threat-intel chips show"
         # is computed in ONE place both renderers consume (one-predicate-one-home).
-        references=metadata.visible_references(finding.references),
+        references=[] if "references" in suppressed else metadata.visible_references(finding.references),
+        suppressed=suppressed,
         cve_ids=list(finding.cve_ids or []),
         cwe_ids=list(finding.cwe_ids or []),
         owasp_categories=list(finding.owasp_categories or []),
@@ -892,6 +933,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or (client.name if client else "")
+    # Cover logo: the report's picked library logo, or the stock lotek mark — one resolver for both renderers.
+    from scribble.reporting.logos import resolve_cover_logo
+    _cover_logo = resolve_cover_logo(engagement, session)
     # ReportBoard-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
     # These have no finding gallery to appear in, so without this list they reached no deliverable at
     # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
@@ -940,4 +984,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         risk_override_rationale=engagement.risk_override_rationale,
         findings_by_kind=findings_by_kind,
         findings_by_host=findings_by_host,
+        section_order=enabled_section_keys(getattr(engagement, "section_order", None)),
+        cover_logo=_cover_logo[0],
+        cover_logo_content_type=_cover_logo[1],
+        methodology_text=(engagement.methodology_text or ""),
+        scope_limitations_text=(engagement.scope_limitations_text or ""),
     )

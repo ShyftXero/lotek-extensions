@@ -132,6 +132,12 @@ def _jsonable(value):
         return {k: _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        # A set (e.g. a finding's suppressed-section set) has no JSON form; emit a deterministic list.
+        return sorted((_jsonable(v) for v in value), key=str)
+    if isinstance(value, (bytes, bytearray)):
+        # Opaque binary (e.g. ReportContext.cover_logo) is not skill input — summarize, never dump raw bytes.
+        return f"<{len(value)} bytes>"
     return value
 
 

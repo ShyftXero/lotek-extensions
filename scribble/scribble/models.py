@@ -21,6 +21,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -130,6 +131,28 @@ class ReportBoard(Base, TimestampMixin):
     # the alembic migration backfills existing rows ``false`` via server_default; the create_all path
     # adds a plain column (existing rows NULL, read as OFF).
     threat_intel_egress_consent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Per-report SECTION ORDER + on/off: an ordered JSON list ``[{"key": <block>, "enabled": bool}, ...]``
+    # whose keys are ``reporting.layouts.BLOCK_KEYS``. NULL => the default composition (every section,
+    # standard order, all enabled except the opt-in ``activity_log``) — byte-identical to before this field
+    # existed. This is the ONE persisted home for report section composition; the ephemeral ``?layout=``
+    # preset only seeds/previews it. Resolved for BOTH renderers via ``layouts.resolve_section_order``
+    # (unknown keys dropped, any missing block appended disabled, dups collapsed), so the HTML preview and
+    # the DOCX/PDF deliverable render the SAME order. Additive + nullable: the migration adds a plain
+    # column, create_all adds it too, and every read coerces None to the default.
+    section_order: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Cover LOGO: which library logo (ScribbleReportLogo) this report's cover shows. NULL = the stock lotek
+    # mark (report_templates/lotek_mark.png). Org-wide library + per-report pick (#Q3): the same operator can
+    # brand clientA's report one week and clientB's the next by switching this. ON DELETE SET NULL so
+    # removing a library logo falls reports back to the default rather than dangling.
+    cover_logo_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("scribble_report_logos.id", ondelete="SET NULL"), nullable=True
+    )
+    # Editable STANDING PROSE overrides (#Q4). NULL = the generated standing text — the methodology phases,
+    # and the standing scope-and-limitations statement; a value REPLACES it for THIS report only. Operators
+    # edit these from the engagement page (Reset-to-standard clears the column; Rephrase-with-AI is offered
+    # only when the host provides an AI hook). Free operator text, escaped at render.
+    methodology_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scope_limitations_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
@@ -369,6 +392,18 @@ class BoardFinding(Base, TimestampMixin):
     # a7d2c4e6f810 / create_all retrofit): a row promoted before this column existed reads NULL, and every
     # read uses ``finding.references or []``. Fill-NULL-only re-promote (#617 Q5) never clobbers an edit.
     references: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
+
+    # Per-section report suppression (report composition control): a JSON list of SECTION KEYS the
+    # operator chose to OMIT from the rendered deliverable for THIS finding, even though the content
+    # exists. Vocabulary: content blocks (``description``/``remediation``/``details``/``reproduction``)
+    # + the derived/structural sections (``affected_assets``/``evidence``/``references``). Honored in ONE
+    # place — ``build_report_context`` makes a suppressed section's data ABSENT — so every renderer
+    # (html/docx/csv/json) skips it by the same "best-effort fill, skip what isn't there" path it already
+    # uses for an empty field; no renderer branches on this column. Distinct from ``include_in_report``
+    # (the whole-finding veto) and per-host suppression (a CHILD row's own ``include_in_report``).
+    # Additive + nullable (alembic revision b2e4f6a8c1d3 / create_all retrofit): a row created before this
+    # column reads NULL, and every read uses ``finding.suppressed_sections or []``.
+    suppressed_sections: Mapped[list] = mapped_column(JSON, default=list, nullable=True)
 
     # Structured finding metadata (#625). All additive + defaulted so an UNENRICHED render is
     # byte-identical to today (omit-when-empty everywhere). ``category`` above is a free-text human label
@@ -888,6 +923,47 @@ class ScribbleSettings(Base, TimestampMixin):
     # NULL is a legal, meaningful value: "no install override; fall back to
     # `reporting.themes.DEFAULT_THEME`" — not merely "not configured yet".
     default_report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Per-install report FONTS (reporting.fonts). The operator's chosen body + code faces, applied at
+    # render (remap_fonts) so the docx/PDF bakes them in. NULL = the template's baked default (Inter /
+    # JetBrains Mono). A value must name a face the lotek-gotenberg image has (validated by
+    # reporting.fonts.valid_*). Additive + nullable (alembic revision c3f8b1a4d206 / create_all retrofit).
+    report_body_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    report_code_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ScribbleReportLogo(Base, TimestampMixin):
+    """A cover logo in the ORG-WIDE library — upload once, pick per report (ReportBoard.cover_logo_id).
+    Available to every operator ("clientA this week, clientB the next", #Q3). Small brand images only;
+    the bytes live INLINE here rather than in the object store, because a logo is not engagement-scoped and
+    so has no tenancy anchor (INV-OBJSTORE-01 requires a core_engagement_id for object-store blobs) — unlike
+    finding evidence. NULL ``ReportBoard.cover_logo_id`` => the stock lotek mark, not a row here."""
+
+    __tablename__ = "scribble_report_logos"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    label: Mapped[str] = mapped_column(String(120))
+    content_type: Mapped[str] = mapped_column(String(80), default="image/png")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class ScribbleSectionPreset(Base, TimestampMixin):
+    """An operator-saved report SECTION arrangement (order + on/off) in the ORG-WIDE library — offered in the
+    composer's preset combobox alongside the built-in Standard / Compliance-first layouts (#Q10).
+
+    ``fingerprint`` is a canonical hash of the ordered (key, enabled) sequence (reporting.layouts.
+    section_fingerprint) and is UNIQUE: two operators cannot save the identical order AND visibility twice —
+    a duplicate save is refused and points at the existing preset. ``specs`` is the stored arrangement,
+    ``[{"key","enabled"}, ...]``."""
+
+    __tablename__ = "scribble_section_presets"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    name: Mapped[str] = mapped_column(String(120))
+    specs: Mapped[list] = mapped_column(JSON)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
 # --------------------------------------------------------------------------- collaboration (Phase B)

@@ -278,6 +278,26 @@ def test_number_figures_walks_findings_then_diagrams_then_the_appendix():
     assert appendix[0].figure_number == 6
 
 
+def test_number_figures_skips_a_finding_whose_evidence_is_suppressed():
+    """A finding with its ``evidence`` section suppressed renders NO evidence in EITHER deliverable — the
+    context empties its own artifacts and both renderers drop its children block — so numbering them would
+    burn figure numbers nothing renders (a visible gap in the sequence). The child's artifacts (which the
+    context does NOT empty, being separate findings) must be skipped explicitly here."""
+    child = _finding("child", [_artifact("c1")])
+    suppressed_parent = FindingCtx(
+        id="p", title="p", severity="high", cvss_score=None, cvss_vector=None, target_host=None,
+        target_port=None, target_url=None, blocks_html={}, artifacts=[], children=[child],
+        suppressed=frozenset({"evidence"}),
+    )
+    normal = _finding("normal", [_artifact("n1")])
+    groups = [GroupCtx(id=None, name="g", type_slug=None, color=None,
+                       findings=[suppressed_parent, normal])]
+
+    assert number_figures(groups, [], []) == 1        # only `normal`'s single artifact is numbered
+    assert child.artifacts[0].figure_number is None    # the suppressed parent's child evidence: NOT numbered
+    assert normal.artifacts[0].figure_number == 1      # continuous — no gap
+
+
 def test_figure_caption_degrades_rather_than_printing_a_dangling_dash():
     assert figure_caption(3, "A capture") == "Figure 3 — A capture"
     assert figure_caption(3, "") == "Figure 3"

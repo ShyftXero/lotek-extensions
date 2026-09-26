@@ -35,6 +35,7 @@ from html import escape as _html_escape
 from pathlib import Path
 from urllib.parse import quote, unquote
 
+from docx.oxml.ns import qn
 from docx.shared import Mm
 from docxtpl import DocxTemplate, InlineImage, RichText
 
@@ -98,10 +99,14 @@ def _make_image_resolver(artifact_bytes: ArtifactBytes | None) -> Callable[[str]
     return _resolve
 
 
+# Body-owned block labels (Description / Remediation / Details) render as the SAME rounded, padded green
+# chip as the card's REPRODUCTION/AFFECTED ASSETS/EVIDENCE labels — one helper (build_default_docx's
+# ``label_chip_xml``) so the two can't drift. Rounded because a flat green wash read as unstyled next to
+# the rounded code box; the chip is a short fixed shape (page-break-safe, unlike wrapping the prose).
 def _label_run_xml(text: str) -> str:
-    rt = RichText()
-    rt.add(text)
-    return rt.xml
+    from scribble.report_templates.build_default_docx import label_chip_xml
+
+    return label_chip_xml(_html_escape(text))
 
 
 def _child_host_label(c: FindingCtx) -> str:
@@ -245,7 +250,7 @@ def _finding_body_richtext(
             continue
         rendered_any = True
         label = _BLOCK_LABELS.get(key, key.replace("_", " ").title())
-        _open(style="Heading3")  # styleId (spaceless) — <w:pStyle> resolves by id, not display name
+        _open()  # green small-caps label on a Normal paragraph — matches the card's REPRODUCTION labels
         parts.append(_label_run_xml(label))
         block_rt = html_to_richtext(fragment, tpl=tpl, image_resolver=image_resolver)
         if block_rt.xml:
@@ -292,7 +297,9 @@ def _target_text(f: FindingCtx) -> str:
 def _numbered_caption(a: ArtifactCtx) -> str:
     """``"Figure 3 — Payload firing in the browser"`` (ext#117). The number comes off the CONTEXT
     (``context.number_figures``), never from a counter this renderer keeps, so it is the same number
-    the HTML deliverable prints for the same artifact."""
+    the HTML deliverable prints for the same artifact. BARE caption (no host prefix): a child
+    screenshot's host is the ``_children_html`` row header, and the HTML side prints the same bare
+    caption — a host prefix here alone would break HTML↔DOCX caption parity."""
     return _xml_safe(figure_caption(a.figure_number, a.caption or a.filename))
 
 
@@ -324,8 +331,39 @@ def _artifact_ctx(
 def _finding_ctx(
     f: FindingCtx, *, tpl: DocxTemplate, artifact_bytes: ArtifactBytes | None
 ) -> dict[str, object]:
+    # Affected services + reproduction request(s) come from the SAME host-independent logic the HTML
+    # renderer uses, so the two deliverables agree: services as host:port/proto (dedup, no exploit path),
+    # and the PoC request(s) surfaced when there is no authored reproduction block. They render as
+    # STRUCTURED template content (a mono list + a shaded code box) rather than a flattened rich-text blob,
+    # which is what jammed the old "Affected Hosts (N)10.20.0.3…" body — so ``children`` is no longer fed
+    # to the body.
+    from scribble.reporting.render_html import _affected_labels, repro_request_urls
+
     image_resolver = _make_image_resolver(artifact_bytes)
     sev = f.severity if f.severity in SEVERITY_ORDER else "info"
+    # Child EVIDENCE renders in the BODY's "Affected Hosts" list (via `_children_html`, fed to
+    # `_finding_body_richtext`) — host as context, BARE "Figure N" caption — NOT in the flat gallery,
+    # which holds the finding's OWN artifacts only. This is the DOCX mirror of render_html's
+    # `<details class="children">`. The binary template emits `{{r f.body }}` (children) BEFORE the
+    # artifacts loop (own), so `context.number_figures` numbers child figures first then the parent's —
+    # and both deliverables print the SAME bare captions, keeping the two "Figure N" sequences identical
+    # (ext#117). `evidence` suppression drops the whole section (children included).
+    suppress_evidence = "evidence" in f.suppressed
+    children_for_body = None if suppress_evidence else (f.children or None)
+    own_artifacts = [] if suppress_evidence else list(f.artifacts)
+    # Affected assets as a 3-column mono GRID rather than one bullet per line — a 50-host fleet vuln was a
+    # full page of IPs. The font is fixed-width, so ljust-padding aligns the columns exactly; the labels
+    # are already natural-sorted by _affected_labels.
+    assets = [] if "affected_assets" in f.suppressed else _affected_labels(f)[0]
+    # Grid columns ADAPT to the widest label: short IPs pack 4 across, long hostnames drop to fewer so a
+    # row never overflows the card. ~76 mono chars fit the content cell at 9pt; +2 for the inter-column gap.
+    if assets:
+        width = max(len(a) for a in assets) + 2
+        cols = max(1, min(4, 76 // width))
+        asset_rows = ["".join(a.ljust(width) for a in assets[i:i + cols]).rstrip()
+                      for i in range(0, len(assets), cols)]
+    else:
+        asset_rows = []
     return {
         "title": f.title,
         "severity": sev,
@@ -338,11 +376,17 @@ def _finding_ctx(
         "cvss_score": f"{f.cvss_score:.1f}" if f.cvss_score is not None else "",
         "cvss_vector": f.cvss_vector or "",
         "target": _target_text(f),
+        # Report composition: a suppressed derived section renders as empty data, and the template's
+        # `{% if f.assets %}` / `{% if f.repro %}` then drop it — same skip path as a finding that never
+        # had them.
+        "assets": assets,
+        "asset_rows": asset_rows,
+        "repro": [] if "reproduction" in f.suppressed else repro_request_urls(f),
         "body": _finding_body_richtext(
-            tpl, f.blocks_html, image_resolver, children=f.children,
+            tpl, f.blocks_html, image_resolver, children=children_for_body,
             metadata_html=_metadata_line_html(f), references_html=_references_html(f),
         ),
-        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in f.artifacts],
+        "artifacts": [_artifact_ctx(a, artifact_bytes, tpl) for a in own_artifacts],
     }
 
 
@@ -385,9 +429,21 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         if rationale:
             note += f" Rationale: {rationale}"
         narrative = f"{narrative} {note}".strip() if narrative else note
+    # Cover logo (picked library logo or the stock lotek mark) as a docxtpl InlineImage; "" renders nothing.
+    cover_logo = InlineImage(tpl, io.BytesIO(ctx.cover_logo), width=Mm(40)) if ctx.cover_logo else ""
+    # Scope/limitations lines: the operator's per-report override (split on blank lines) or the standing
+    # statement — one shared constant with the HTML so the two deliverables can't drift (#Q4).
+    from scribble.reporting.render_html import _LIMITATIONS
+    if ctx.scope_limitations_text:
+        scope_limitations = [_xml_safe(p.strip()) for p in ctx.scope_limitations_text.split("\n\n")
+                             if p.strip()]
+    else:
+        scope_limitations = list(_LIMITATIONS)
     return {
         "company_name": ctx.company_name or "",
         "engagement_name": ctx.engagement_name,
+        "cover_logo": cover_logo,
+        "scope_limitations": scope_limitations,
         "client_name": ctx.client_name or "",
         "scope_type": ctx.scope_type or "",
         "start_date": ctx.start_date or "",
@@ -959,6 +1015,157 @@ def _append_strategic_recommendations(doc, ctx: ReportContext) -> None:
         doc.add_paragraph(f"{r.number}. {_xml_safe(r.text)}")
 
 
+def _append_severity_ratings(doc, ctx: ReportContext) -> None:
+    """The Severity Ratings section (what Critical/High/… MEAN) as its OWN movable block (#Q1) — the docx
+    mirror of render_html._render_severity_ratings, split out of _append_methodology so it can sit anywhere
+    in the order. Empty when there are no findings (matching the HTML rule). Reuses render_html's shared
+    standing constants so the two deliverables can't drift."""
+    if not (ctx.rollup and ctx.rollup.total > 0):
+        return
+    from docx.shared import Pt, RGBColor
+
+    from scribble.report_templates.build_default_docx import SEVERITY_COLORS
+    from scribble.reporting.render_html import _SEV_LABELS, _SEVERITY_DEFINITIONS
+
+    doc.add_heading("Severity Ratings", level=1)
+    for sev in SEVERITY_ORDER:
+        if sev not in _SEVERITY_DEFINITIONS:
+            continue
+        p = doc.add_paragraph()
+        tag = p.add_run(f"{_SEV_LABELS.get(sev, sev.title())}   ")
+        tag.bold = True
+        tag.font.color.rgb = RGBColor.from_string(SEVERITY_COLORS[sev])
+        tag.font.size = Pt(10)
+        p.add_run(_xml_safe(_SEVERITY_DEFINITIONS[sev]))
+
+
+def _append_rollups(doc, ctx: ReportContext) -> None:
+    """Findings Rollups — by-vulnerability and by-host, the docx mirror of render_html._render_rollups (the
+    same grouped views the board shows over the report-visible findings, so a fleet-wide issue reads as one
+    row spanning every affected host). Empty (no-op) when the grouping seam returned nothing (off-mount),
+    matching the HTML omit-when-empty rule, so a report with no grouping data is unchanged."""
+    if not ctx.findings_by_kind and not ctx.findings_by_host:
+        return
+    from scribble.reporting.render_html import _SEV_LABELS
+
+    def _sev(b) -> str:
+        return _SEV_LABELS.get(b.severity, b.severity)
+
+    def _table(headers: list[str], rows: list[list[str]]) -> None:
+        t = doc.add_table(rows=1, cols=len(headers))
+        try:
+            t.style = "Table Grid"
+        except Exception:
+            pass
+        for i, h in enumerate(headers):
+            t.rows[0].cells[i].paragraphs[0].add_run(h).bold = True
+        for row in rows:
+            cells = t.add_row().cells
+            for i, val in enumerate(row):
+                cells[i].text = _xml_safe(val)
+
+    doc.add_heading("Findings Rollups", level=1)
+    doc.add_paragraph(
+        "The same findings grouped by vulnerability and by host — a fleet-wide issue collapses to one row "
+        "spanning every affected host. Full details are in the findings themselves."
+    )
+    if ctx.findings_by_kind:
+        doc.add_heading("By vulnerability", level=2)
+        _table(
+            ["Vulnerability", "Severity", "Hosts", "Affected hosts", "CVEs"],
+            [[b.label, _sev(b), str(len(b.hosts)), ", ".join(b.hosts) or "—", ", ".join(b.cves) or "—"]
+             for b in ctx.findings_by_kind],
+        )
+    if ctx.findings_by_host:
+        doc.add_heading("By host", level=2)
+        _table(
+            ["Host", "Severity", "Vulns", "Vulnerabilities", "CVEs"],
+            [[b.key, _sev(b), str(b.count),
+              ", ".join(sorted({it.label for it in b.items})) or "—", ", ".join(b.cves) or "—"]
+             for b in ctx.findings_by_host],
+        )
+
+
+def _append_activity_appendix(doc, ctx: ReportContext) -> None:
+    """Optional engagement activity trail (lotek#442) — the docx mirror of render_html._render_activity_
+    appendix. OFF by default (the ``activity_log`` block is opt-in); empty (no-op) when there is no
+    activity. Bounded by _MAX_APPENDIX_ITEMS with a visible note; the heading reports the TRUE total."""
+    if not ctx.activity_log:
+        return
+    from scribble.reporting.render_html import _MAX_APPENDIX_ITEMS
+
+    total = len(ctx.activity_log)
+    shown = ctx.activity_log[:_MAX_APPENDIX_ITEMS]
+    doc.add_heading("Activity Log", level=1)
+    doc.add_paragraph(
+        "Timestamped record of engagement activity — findings added, evidence uploaded, and attack-path "
+        "diagrams created — for the engagement audit trail."
+    )
+    t = doc.add_table(rows=1, cols=3)
+    try:
+        t.style = "Table Grid"
+    except Exception:
+        pass
+    for i, h in enumerate(("Time", "Type", "Activity")):
+        t.rows[0].cells[i].paragraphs[0].add_run(h).bold = True
+    for e in shown:
+        cells = t.add_row().cells
+        cells[0].text = _xml_safe(e.timestamp)
+        cells[1].text = _xml_safe(e.kind)
+        cells[2].text = _xml_safe(e.summary)
+    withheld = total - len(shown)
+    if withheld > 0:
+        note = doc.add_paragraph()
+        _r = note.add_run(
+            f"{withheld} earlier entr{'ies are' if withheld != 1 else 'y is'} not listed here "
+            f"(this appendix lists at most {_MAX_APPENDIX_ITEMS})."
+        )
+        _r.italic = True
+
+
+def _append_methodology(doc, ctx: ReportContext) -> None:
+    """Append the standing Methodology section (phases + per-section-type framing) — the docx half of
+    ``render_html``'s Methodology section, which the .docx was missing. Reuses render_html's shared standing
+    constants so the two deliverables can't drift. The severity RATINGS are a separate movable block now
+    (:func:`_append_severity_ratings`, #Q1)."""
+    from docx.shared import RGBColor
+
+    from scribble.reporting.render_html import _METHODOLOGY_FRAMING, _METHODOLOGY_PHASES
+
+    doc.add_heading("Methodology", level=1)
+    # The operator's per-report Methodology override (#Q4) replaces the generated standing prose.
+    if ctx.methodology_text:
+        for para in ctx.methodology_text.split("\n\n"):
+            if para.strip():
+                doc.add_paragraph(_xml_safe(para.strip()))
+        return
+    doc.add_paragraph(
+        "An assessment of this kind is conducted in the phases below, each feeding the next. This is a "
+        "standing description of method, not a log of what was done on this engagement — what a given "
+        "engagement covered is recorded on its coverage record and on the findings themselves."
+    )
+    for name, text in _METHODOLOGY_PHASES:
+        p = doc.add_paragraph()
+        head = p.add_run(f"{_xml_safe(name)} — ")
+        head.bold = True
+        head.font.color.rgb = RGBColor.from_string("0A5B3D")
+        p.add_run(_xml_safe(text))
+
+    seen: set[str] = set()
+    frames: list[tuple[str, str]] = []
+    for group in ctx.groups:
+        slug = getattr(group, "type_slug", "") or ""
+        if slug and slug not in seen and slug in _METHODOLOGY_FRAMING:
+            seen.add(slug)
+            frames.append(_METHODOLOGY_FRAMING[slug])
+    if frames:
+        doc.add_heading("Framing by section type", level=2)
+        for label, text in frames:
+            p = doc.add_paragraph()
+            p.add_run(f"{_xml_safe(label)} — ").bold = True
+            p.add_run(_xml_safe(text))
+
+
 def _append_checklists(doc, ctx: ReportContext) -> None:
     """Append the checklist sections to the RENDERED document with python-docx, rather than authoring a
     Jinja loop into the binary ``.docx`` template. Coverage/reminder -> a "Methodology and Coverage"
@@ -1080,12 +1287,74 @@ def _append_sha256_line(doc, a: ArtifactCtx) -> None:
     p.add_run(f"SHA-256: {a.sha256}").italic = True
 
 
-def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | None = None) -> bytes:
+def _section_marker_key(el) -> str | None:
+    """The section key of an invisible section-marker paragraph (build_default_docx.add_section_marker), or
+    None if ``el`` is not a marker."""
+    from scribble.report_templates.build_default_docx import SECTION_MARKER_PREFIX
+
+    if el.tag != qn("w:p"):
+        return None
+    for bm in el.iter(qn("w:bookmarkStart")):
+        name = bm.get(qn("w:name")) or ""
+        if name.startswith(SECTION_MARKER_PREFIX):
+            return name[len(SECTION_MARKER_PREFIX):]
+    return None
+
+
+def _reorder_sections(doc, order) -> None:
+    """Re-emit the document body's marked sections in ``order`` (BLOCK_KEYS, the resolved
+    ``ctx.section_order``), DROPPING any section not listed (disabled, or absent from the order). Each
+    section spans from its invisible marker paragraph up to the next marker; the marker paragraphs
+    themselves are removed. The trailing ``<w:sectPr>`` (page geometry / header-footer link) always stays
+    last. A key with no marked content contributes nothing, so an unimplemented or empty section is a no-op.
+
+    This is what makes the DOCX/PDF deliverable honor the operator's per-report section order — the same
+    order the HTML preview loops (render_html._effective_layout), from the one resolver
+    (layouts.resolve_section_order)."""
+    body = doc.element.body
+    children = list(body)
+    sect_pr = children[-1] if children and children[-1].tag == qn("w:sectPr") else None
+
+    groups: dict[str, list] = {}
+    pre: list = []  # anything before the first marker (defensive; normally nothing)
+    current: str | None = None
+    for el in children:
+        if el is sect_pr:
+            continue
+        key = _section_marker_key(el)
+        if key is not None:
+            current = key
+            groups.setdefault(key, [])
+            continue  # the marker paragraph itself is dropped
+        (groups[current] if current is not None else pre).append(el)
+
+    for el in children:  # detach everything, including sect_pr, then rebuild in order
+        body.remove(el)
+    for el in pre:
+        body.append(el)
+    for key in order:
+        for el in groups.get(key, []):
+            body.append(el)
+    if sect_pr is not None:
+        body.append(sect_pr)  # page geometry must remain the final body child
+
+
+def render_report_docx(
+    ctx: ReportContext,
+    *,
+    artifact_bytes: ArtifactBytes | None = None,
+    body_font: str | None = None,
+    code_font: str | None = None,
+) -> bytes:
     """Render ``ctx`` to a ``.docx`` document (bytes) using ``report_templates/default.docx``.
 
     ``artifact_bytes(storage_path) -> bytes | None`` supplies evidence-gallery + inline-content image
     bytes; when ``None`` (or a lookup fails), images degrade to caption-only / bracketed-placeholder
     text rather than the render failing.
+
+    ``body_font`` / ``code_font`` (operator report-font selection) swap the template's baked default
+    faces for the chosen ones after render (``reporting.fonts.remap_fonts``); ``None``/unknown keeps the
+    default. The chosen face must be one the lotek-gotenberg image has, or the PDF substitutes it.
     """
     tpl = DocxTemplate(str(_TEMPLATE_PATH))
     tpl.init_docx()
@@ -1097,15 +1366,36 @@ def render_report_docx(ctx: ReportContext, *, artifact_bytes: ArtifactBytes | No
 
     context = _build_context(ctx, tpl=tpl, artifact_bytes=artifact_bytes)
     tpl.render(context)
-    # Section order mirrors the HTML templates' block order (findings -> diagrams -> methodology ->
-    # evidence, reporting/layouts.py), which is what makes context.number_figures' single figure
-    # sequence come out the same in both deliverables.
-    _append_attack_paths(tpl.docx, ctx)  # ext#115
-    _append_attack_chains(tpl.docx, ctx)  # #628, right after diagrams to match the HTML layouts
-    _append_retest_closeout(tpl.docx, ctx)  # #622, right after chains to match the HTML layouts
-    _append_strategic_recommendations(tpl.docx, ctx)  # #623, right after the retest closeout
-    _append_checklists(tpl.docx, ctx)  # programmatic, post-render (no Jinja in the binary template)
-    _append_evidence_appendix(tpl.docx, ctx, artifact_bytes=artifact_bytes)
+    doc = tpl.docx
+    # The template rendered the marked cover/toc/summary/findings sections; now append the rest, each
+    # preceded by its own section marker, so EVERY section is a movable unit. Order and drops are applied
+    # afterwards by _reorder_sections(ctx.section_order) — the DOCX honors the operator's per-report order
+    # exactly as the HTML preview does (one resolver, layouts.resolve_section_order). A section that renders
+    # nothing (its appender short-circuits) leaves an empty marked group and is a harmless no-op.
+    from scribble.report_templates.build_default_docx import add_section_marker
+
+    def _section(key: str, render) -> None:
+        add_section_marker(doc, key)
+        render()
+
+    _section("severity_ratings", lambda: _append_severity_ratings(doc, ctx))  # #Q1, own movable block
+    _section("rollups", lambda: _append_rollups(doc, ctx))  # by-vuln/by-host (was HTML-only)
+    _section("diagrams", lambda: _append_attack_paths(doc, ctx))  # ext#115
+    _section("chains", lambda: _append_attack_chains(doc, ctx))  # #628
+    _section("retest", lambda: _append_retest_closeout(doc, ctx))  # #622
+    _section("strategic", lambda: _append_strategic_recommendations(doc, ctx))  # #623
+    # methodology = the standing method text + the coverage/compliance checklists (one movable section;
+    # the DOCX splits authoring across two appenders, unlike the HTML which folds checklists in).
+    _section("methodology", lambda: (_append_methodology(doc, ctx), _append_checklists(doc, ctx)))
+    _section("evidence", lambda: _append_evidence_appendix(doc, ctx, artifact_bytes=artifact_bytes))
+    _section("activity_log", lambda: _append_activity_appendix(doc, ctx))  # opt-in audit trail
+
+    _reorder_sections(doc, ctx.section_order)
+
+    # Operator report-font selection: swap the template's baked default faces for the chosen ones across
+    # the whole document (styles + runs), so the PDF bakes them in with no raw-docx editing.
+    from scribble.reporting.fonts import remap_fonts
+    remap_fonts(doc, body_font, code_font)
 
     buf = io.BytesIO()
     tpl.save(buf)

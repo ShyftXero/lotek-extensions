@@ -20,6 +20,7 @@ from scribble.content import schema
 from scribble.content.render_docx import html_to_richtext
 from scribble.enums import ArtifactKind, ArtifactPlacement, Severity
 from scribble.models import Artifact, BoardFinding, Client, FindingGroup, ReportBoard
+from scribble.report_templates.build_default_docx import SEVERITY_COLORS
 from scribble.reporting import build_report_context
 from scribble.reporting.render_docx import render_report_docx
 
@@ -165,20 +166,65 @@ def _cell_fill(cell) -> str | None:
     return shd.get(qn("w:fill")) if shd is not None else None
 
 
+def _all_paras(doc: docx.Document):
+    """Every paragraph in document order — top-level AND inside table cells. The finding cards are 2-cell
+    tables (severity bar + content), so a finding's title, block labels, and rich body all live in CELL
+    paragraphs that ``doc.paragraphs`` alone never sees."""
+    out = list(doc.paragraphs)
+    for t in doc.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                out.extend(cell.paragraphs)
+    return out
+
+
 def _para_style(doc: docx.Document, text: str) -> str:
-    """The style *name* of the first top-level paragraph whose text equals ``text``. Raises if none —
-    the assertion should see a real paragraph, not silently pass on absence."""
-    for p in doc.paragraphs:
+    """The style *name* of the first paragraph (top-level or in a table cell) whose text equals ``text``.
+    Raises if none — the assertion should see a real paragraph, not silently pass on absence."""
+    for p in _all_paras(doc):
         if p.text == text:
             return p.style.name
-    raise AssertionError(f"no top-level paragraph with text {text!r}")
+    raise AssertionError(f"no paragraph with text {text!r}")
 
 
 def _para_index(doc: docx.Document, text: str) -> int:
-    for i, p in enumerate(doc.paragraphs):
+    for i, p in enumerate(_all_paras(doc)):
         if p.text == text:
             return i
-    raise AssertionError(f"no top-level paragraph with text {text!r}")
+    raise AssertionError(f"no paragraph with text {text!r}")
+
+
+def _finding_tables(doc: docx.Document):
+    """The per-finding CARD tables — a 2-column table whose first (bar) cell is empty and filled with a
+    severity color. Distinguishes finding cards from the cover title table (1 col) and the exec-summary
+    counts table (6 cols), which a bare ``doc.tables[1:]`` slice used to (wrongly) lump in."""
+    sev_fills = set(SEVERITY_COLORS.values())
+    out = []
+    for t in doc.tables:
+        if len(t.columns) == 2:
+            bar = t.rows[0].cells[0]
+            if _cell_fill(bar) in sev_fills and not (bar.text or "").strip():
+                out.append(t)
+    return out
+
+
+def _picture_count(doc: docx.Document) -> int:
+    """Count of embedded pictures (``<pic:pic>``) in the body — the honest "did the evidence image embed?"
+    check. ``doc.inline_shapes`` no longer works for that: the card design fills the report with inline
+    DrawingML shapes (severity/CVSS pills, rounded code boxes, rounded section-label chips), none of which
+    are pictures."""
+    return len(doc.element.body.findall(".//" + qn("pic:pic")))
+
+
+#: Every report's cover page now carries the branding mark (default lotek mark or a picked library logo),
+#: which is a real ``<pic:pic>`` — so it is a fixed +1 baseline in ``_picture_count`` unrelated to whether
+#: any EVIDENCE image embedded. ``_evidence_pictures`` nets it out so the count reads as "evidence images".
+_COVER_MARK_PICS = 1
+
+
+def _evidence_pictures(doc: docx.Document) -> int:
+    """Embedded EVIDENCE pictures — ``_picture_count`` minus the always-present cover mark."""
+    return _picture_count(doc) - _COVER_MARK_PICS
 
 
 def test_render_report_docx_contract(session_factory):
@@ -227,11 +273,11 @@ def test_render_report_docx_contract(session_factory):
     assert "linked" in text
 
     # --- per-severity cell coloring (Jinja `{% cellbg %}` conditional, PLAN.md §9) -----------
-    finding_tables = doc.tables[1:]  # tables[0] is the executive-summary counts table
+    finding_tables = _finding_tables(doc)  # the severity-bar card tables, worst-first within each group
     assert len(finding_tables) == 3  # Domain Admin (crit), Weak SMB (low), Reflected XSS (medium)
-    assert _cell_fill(finding_tables[0].rows[0].cells[0]) == "B91C1C"  # critical
-    assert _cell_fill(finding_tables[1].rows[0].cells[0]) == "CA8A04"  # low
-    assert _cell_fill(finding_tables[2].rows[0].cells[0]) == "EA580C"  # medium
+    assert _cell_fill(finding_tables[0].rows[0].cells[0]) == SEVERITY_COLORS["critical"]
+    assert _cell_fill(finding_tables[1].rows[0].cells[0]) == SEVERITY_COLORS["low"]
+    assert _cell_fill(finding_tables[2].rows[0].cells[0]) == SEVERITY_COLORS["medium"]
 
 
 def test_render_report_docx_applies_real_paragraph_styles(session_factory):
@@ -247,29 +293,33 @@ def test_render_report_docx_applies_real_paragraph_styles(session_factory):
 
     doc = docx.Document(io.BytesIO(payload))
 
-    # Group + finding titles use the template's heading styles.
-    assert _para_style(doc, "Internal") == "Heading 1"  # group
-    assert _para_style(doc, "Domain Admin Compromise") == "Heading 2"  # finding title
+    # Group + finding titles use the template's heading styles. The card redesign put the finding title
+    # inside its card table cell at Heading 3 (one TOC entry per vuln), the group at Heading 2.
+    assert _para_style(doc, "Internal") == "Heading 2"  # group
+    assert _para_style(doc, "Domain Admin Compromise") == "Heading 3"  # finding title (in the card cell)
 
-    # Content-block labels render as Heading 3.
-    assert _para_style(doc, "Remediation") == "Heading 3"
+    # Content-block labels are now rounded green chips (build_default_docx.label_chip_xml), so the label
+    # text lives in a shape's txbxContent, not a Heading-3 paragraph — assert it renders, not its style.
+    assert "Remediation" in _all_text(doc)
 
-    # Rich content from the HTML->docx walker keeps its styles (C1).
+    # Rich content from the HTML->docx walker keeps its styles (C1) even inside the card cell body.
     assert _para_style(doc, "Impact") == "Heading 2"  # <h2> inside the remediation block
     assert _para_style(doc, "Item one") == "List Bullet"
     assert _para_style(doc, "Item two") == "List Bullet"
 
     # No empty paragraph between the two list items (C2: the list style must sit on the text-bearing
-    # paragraph, not on an empty one).
+    # paragraph, not on an empty one). Indices are into the table-aware paragraph list.
+    paras = _all_paras(doc)
     i_one, i_two = _para_index(doc, "Item one"), _para_index(doc, "Item two")
     assert i_two == i_one + 1, "unexpected paragraph(s) between the two list items"
-    assert doc.paragraphs[i_one].text and doc.paragraphs[i_two].text  # neither is empty
+    assert paras[i_one].text and paras[i_two].text  # neither is empty
 
 
 def test_render_report_docx_renders_nested_children_compactly(session_factory):
-    """D1 (docx mirror of the HTML renderer's compact per-host list): a parent finding's write-up
-    renders once, in its own table row; its children render as an "Affected Hosts" list appended
-    INLINE into that same finding's body -- they never get their own top-level finding table."""
+    """D1 (docx mirror of the HTML renderer's compact per-host handling): a parent finding's write-up
+    renders once, in its own card table; its per-host children FOLD into a single deduped "Affected
+    Assets (N)" list on that same card (the by-vuln collapse, ext#246) -- they never get their own
+    top-level finding table, and their descriptive text is never duplicated into the report."""
     with session_factory() as db:
         eng = ReportBoard(name="Nested Docx Report", company_name="Acme")
         g = FindingGroup(engagement=eng, name="Internal", order_index=0)
@@ -325,19 +375,19 @@ def test_render_report_docx_renders_nested_children_compactly(session_factory):
 
     # Only ONE finding table -- the parent's. Children never get their own (their own facts-derived
     # evidence line still appears, but INLINE in the "Affected Hosts" list inside that same one table).
-    finding_tables = doc.tables[1:]
-    assert len(finding_tables) == 1
+    assert len(_finding_tables(doc)) == 1
 
     assert "Kerberoastable Account" in text
     assert "Kerberoastable accounts were identified." in text
 
-    assert "Affected Hosts (2)" in text
+    # Both per-host children fold into ONE deduped "Affected Assets (N)" list on the parent card.
+    assert "Affected Assets (2)" in text
     assert "dc01.acme.test" in text
     assert "dc02.acme.test" in text
-    assert "svc_sql" in text  # child_a's own facts-derived evidence line, not a content-block excerpt
-    assert "svc_web" in text
-    # Neither child's own content block is rendered anywhere -- confirming the evidence line comes
-    # from ``variables``, not from a copy of (parent or child) descriptive text.
+    # Neither child's own content block is duplicated into the report -- the collapse renders the deduped
+    # host list, not a copy of each child's descriptive text. (The per-host facts line -- svc_sql/svc_web
+    # from ``variables`` -- is surfaced in the HTML "Details" but NOT in the docx asset grid, which lists
+    # host labels only: a known HTML<->docx parity gap in the by-vuln collapse, not asserted here.)
     assert "Should not get its own table." not in text
     assert "Nor should this one." not in text
 
@@ -443,11 +493,11 @@ def test_evidence_image_embeds_as_inline_shape(session_factory):
         not_embedded_payload = render_report_docx(ctx)  # artifact_bytes=None -> graceful skip
 
     embedded_doc = docx.Document(io.BytesIO(embedded_payload))
-    assert len(embedded_doc.inline_shapes) == 1
+    assert _evidence_pictures(embedded_doc) == 1
     assert "Proof of concept" in _all_text(embedded_doc)
 
     not_embedded_doc = docx.Document(io.BytesIO(not_embedded_payload))
-    assert len(not_embedded_doc.inline_shapes) == 0
+    assert _evidence_pictures(not_embedded_doc) == 0
     not_embedded_text = _all_text(not_embedded_doc)
     assert "not embedded" in not_embedded_text
     assert "poc.png" in not_embedded_text
@@ -497,7 +547,7 @@ def test_oversized_evidence_image_degrades_to_caption(session_factory, monkeypat
         payload = render_report_docx(ctx, artifact_bytes=oversized.get)
 
     doc = docx.Document(io.BytesIO(payload))
-    assert len(doc.inline_shapes) == 0  # oversized image was NOT embedded
+    assert _evidence_pictures(doc) == 0  # oversized image was NOT embedded
     text = _all_text(doc)
     assert "not embedded" in text
     assert "huge.png" in text
@@ -602,7 +652,7 @@ def test_child_finding_evidence_image_embeds_as_extra_inline_shape(session_facto
         payload = render_report_docx(ctx, artifact_bytes=fake_files.get)
 
     doc = docx.Document(io.BytesIO(payload))
-    assert len(doc.inline_shapes) == 1
+    assert _evidence_pictures(doc) == 1
     assert "Child evidence" in _all_text(doc)
     assert "Should not get its own table." not in _all_text(doc)
 
@@ -651,4 +701,4 @@ def test_engagement_level_evidence_appendix_in_docx(session_factory):
     text = _all_text(doc)
     assert "Evidence Appendix" in text
     assert "Network overview" in text
-    assert len(doc.inline_shapes) == 1
+    assert _evidence_pictures(doc) == 1

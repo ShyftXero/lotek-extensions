@@ -49,6 +49,7 @@ import scribble
 from scribble.checklists import assign_template
 from scribble.models import ChecklistTemplate, Client, ReportBoard
 from scribble.seed import seed_defaults
+from scribble.testing import register_kit_assets_shim
 
 try:
     from playwright.sync_api import sync_playwright
@@ -135,6 +136,10 @@ def mounted_client(tmp_path):
     app.config["SECRET_KEY"] = "mounted-test"
     engine = create_engine(f"sqlite:///{tmp_path / 'mounted.db'}", future=True)
     cfg = scribble.register(app, engine, instance_path=str(tmp_path), base_template="base.html")
+    # The engagement page includes the Report Layout composer partial, which loads kit assets via
+    # url_for('lotek_kit.static', ...); core registers that blueprint at boot, so a self-built mounted app
+    # must add the shim or the page 500s with a BuildError (conftest does this for the shared `app` fixture).
+    register_kit_assets_shim(app)
     with cfg.session_factory() as db:
         seed_defaults(db)
         db.commit()
@@ -307,6 +312,10 @@ def _boot(tmp, name: str, *, mounted: bool = False):
     flask_app.config["SECRET_KEY"] = "ckp-theming-test"
     engine = create_engine(f"sqlite:///{tmp / name}", future=True)
     cfg = scribble.register(flask_app, engine, instance_path=str(tmp), base_template=base_template)
+    # The engagement page includes the Report Layout composer partial (kit assets via
+    # url_for('lotek_kit.static', ...)); core registers that blueprint at boot, so a self-built app needs
+    # the shim or the page 500s with a BuildError (conftest wires it for the shared `app` fixture).
+    register_kit_assets_shim(flask_app)
     with cfg.session_factory() as db:
         seed_defaults(db)
         db.commit()

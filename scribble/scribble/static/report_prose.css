@@ -1,0 +1,25 @@
+/* Report-prose editor (scribble/templates/scribble/_report_prose.html). External, CSP-friendly. */
+.scribble-report-prose .rp-field {
+  margin: 0.5rem 0 0.8rem;
+}
+.scribble-report-prose textarea {
+  display: block;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0.2rem 0;
+  font: inherit;
+  padding: 0.5rem;
+  border: 1px solid var(--line, #2a2a2a);
+  border-radius: 6px;
+  background: var(--bg2, #111);
+  color: inherit;
+  resize: vertical;
+}
+.scribble-report-prose .rp-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+.scribble-report-prose .rp-status {
+  margin-left: 0.6rem;
+  font-size: 0.85rem;
+}

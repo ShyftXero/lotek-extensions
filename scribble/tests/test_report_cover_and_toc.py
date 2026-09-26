@@ -372,7 +372,8 @@ def test_the_summary_leads_with_prose_and_not_the_dashboard(session_factory):
     html = _render(session_factory, _full_engagement(session_factory))
     assert 'class="frontmatter"' in html
     assert html.index('class="frontmatter"') < html.index('<div class="risk ')
-    assert "ReportBoard overview" in html
+    # "Overview" — the heading no longer leaks the internal model name ("ReportBoard") into a client doc.
+    assert "<h3>Overview</h3>" in html
     assert "Scope and limitations" in html
     # the overview's factual clauses come from real fields
     assert "This report covers a web-app assessment of TeamsPlus Inc." in html

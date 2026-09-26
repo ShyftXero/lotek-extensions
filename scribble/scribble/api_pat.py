@@ -101,6 +101,7 @@ from scribble.models import (
 )
 from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.reporting.context import build_report_context
+from scribble.reporting.exporters import ExportOptions, get_exporter
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -1619,7 +1620,11 @@ def scribble_engagement_report(engagement_id: str):
     missing and not-visible are the same 404."""
     actor = host.actor()
     fmt = (request.args.get("format") or "html").strip().lower()
-    if fmt not in ("html", "docx", "json", "csv"):
+    # The PAT stream deliberately offers the lightweight set only (no pdf/zip — a machine caller should
+    # not trigger a heavy soffice/Gotenberg conversion or a bundle over this route); dispatch is the same
+    # shared exporter registry the cookie routes use, so an export can never disagree with the deliverable.
+    exporter = get_exporter(fmt)
+    if exporter is None or fmt not in ("html", "docx", "json", "csv"):
         return jsonify({"error": "bad_request", "detail": "format must be html, docx, json, or csv"}), 400
 
     reader = artifact_bytes
@@ -1629,34 +1634,15 @@ def scribble_engagement_report(engagement_id: str):
             return _engagement_not_found()
         engagement_id = engagement.id  # normalize to the integer PK for the audit row below
 
-        # #627: json/csv are STRUCTURED-DATA exports of the same ReportContext — no artifact bytes to
-        # embed (the #626 sha256 already lives on the context), so they skip the inline-url factory.
-        if fmt == "json":
-            from scribble.reporting.render_json import render_report_json
-
-            payload: bytes | str = render_report_json(build_report_context(engagement))
-            mimetype = "application/json"
-        elif fmt == "csv":
-            from scribble.reporting.render_csv import render_report_csv
-
-            payload = render_report_csv(build_report_context(engagement))
-            mimetype = "text/csv"
-        elif fmt == "docx":
-            from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
-
-            ctx = build_report_context(
-                engagement, artifact_url=_inline_url_factory(engagement, make_inline_artifact_url)
-            )
-            payload = render_report_docx(ctx, artifact_bytes=reader)
-            mimetype = _DOCX_MIME
-        else:
-            from scribble.reporting.render_html import make_inline_artifact_url, render_report_html
-
-            ctx = build_report_context(
-                engagement, artifact_url=_inline_url_factory(engagement, make_inline_artifact_url)
-            )
-            payload = render_report_html(ctx, inline_assets=True, artifact_bytes=reader)
-            mimetype = "text/html"
+        # json/csv are STRUCTURED-DATA exports of the same ReportContext — no artifact bytes to embed
+        # (the #626 sha256 already lives on the context), so they carry no inline-url factory.
+        ctx = build_report_context(
+            engagement,
+            artifact_url=(
+                _inline_url_factory(engagement, exporter.inline_url) if exporter.inline_url else None
+            ),
+        )
+        payload = exporter.render(ctx, ExportOptions(artifact_bytes=reader))
 
         _audit(
             db, "report_read", subject_type="engagement", subject_id=engagement_id,
@@ -1664,7 +1650,7 @@ def scribble_engagement_report(engagement_id: str):
         )
         db.commit()  # persist the disclosure audit row
 
-    return Response(payload, mimetype=mimetype)
+    return Response(payload, mimetype=exporter.media_type)
 
 
 # ── 9. POST /engagements/<id>/artifacts — evidence/screenshot upload ─────────────────────────────────

@@ -144,6 +144,21 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         "scribble_api.update_theme_override",
         "scribble_api.delete_theme_override",
         "scribble_api.set_default_theme",
+        # Report-library routes (feat/scribble-report-asset-polish): none carries an engagement id in its
+        # URL, so the view-arg gate has nothing to resolve — each is self-gated in engagement_ui.py /
+        # themes_api.py. `upload_report_logo` additionally authorizes a BODY-supplied engagement via a
+        # direct `can_view_engagement` call (the same body-scoped pattern as create_artifact /
+        # templating_preview above) before touching its cover; the rest mutate an ORG-WIDE library
+        # (cover-logo library, section presets) or install-wide settings and gate on `host_can_write()`.
+        # A non-admin/viewer refusal on each mutating one is proven in `tests/test_report_authz_selfgate.py`.
+        # The GET logo routes serve org-wide branding images (no client/engagement data), session-gated.
+        "scribble.upload_report_logo",         # body-scoped: host_can_write + can_view_engagement(body eng)
+        "scribble.report_logo_raw",            # GET: serve an org-wide library logo (raster-only, nosniff)
+        "scribble.report_logo_default_raw",    # GET: serve the stock default mark
+        "scribble.delete_section_preset",      # org-wide section-preset library delete (host_can_write)
+        "scribble.save_report_fonts",          # install-wide report fonts (themes_api, admin-gated)
+        "scribble_api.save_section_preset",    # org-wide section-preset library save (host_can_write)
+        "scribble_api.rephrase_report_prose",  # AI-rephrase proxy: body prose, no eng axis (host_can_write)
     }
 )
 

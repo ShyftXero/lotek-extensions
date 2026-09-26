@@ -37,6 +37,11 @@ EXPECTED_CONSUMERS = {
     # image paste -- so it deliberately carries no outbox: an unused one would open an IndexedDB
     # connection on a page that never uploads. If that page grows paste-upload, add it here.
     "library_detail.html": {"reporting-editor.js"},
+    # The Report Layout composer (feat/scribble-report-asset-polish): a REUSABLE kit drag-reorder widget
+    # (section-composer, built on the kit's reorder.js), NOT the CodeMirror editor — so it carries no
+    # editor/outbox, and `test_the_outbox_loads_before_the_editor` skips it. Pinned here so the composer's
+    # kit-asset load site is reviewed like any other (and a silent removal is caught).
+    "_report_layout.html": {"reorder.css", "reorder.js", "section-composer.css", "section-composer.js"},
 }
 
 
