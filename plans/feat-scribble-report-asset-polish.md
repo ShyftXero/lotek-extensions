@@ -1,6 +1,6 @@
 # feat/scribble-report-asset-polish
 
-- **Status:** in progress — report customization suite; section-reorder + cover-logo + prose + presets shipped; font-GUI + pre-PR test cleanup remain.
+- **Status:** in review — customization suite + font GUI + cross-tenant security self-gates + report-render repair all complete and green; running the extensions PR gate, then opening the PR.
 
 ## Purpose
 
@@ -41,19 +41,44 @@ This session's arc — the **customization suite**:
 
 Alembic head chain (single head): c3f8b1a4d206 → f4a7c2e91b60 → d5b8e3a1c62f → e6c9f4a2b83d → f7a1d4c8e520.
 
+This session (landing):
+- `331077c` **Task #9 — font-selection GUI**: wired fonts_from_settings into report_docx_api + a body/code
+  picker on the themes page (themes_api.save_report_fonts, admin-gated).
+- `a480b17` skill sidecar `_jsonable` handles set/frozenset + bytes (cover_logo) — test_skill green.
+- `0ea20c1` **SECURITY — self-gate the report-library routes** (adversarial review, "Razor", returned BLOCK
+  on a cross-tenant cover-logo IDOR). `authz._gate` resolves the engagement from URL view-args only, so the
+  URL-less report-library routes skipped BOTH its view check and its write-cap check. Fixed:
+  `upload_report_logo` now requires write capability AND authorizes the FORM-BODY engagement via
+  `can_view_engagement` (fail-closed 404) before touching `cover_logo_id`; `save_section_preset` /
+  `delete_section_preset` / `rephrase_report_prose` self-gate on `host_can_write()`; preset save races to a
+  409 (IntegrityError) not a 500; rephrase no longer echoes `str(exc)`. Tests: test_report_authz_selfgate.py.
+- `a3e2192` **report-render repair** (the reds below). Restored HTML `_render_children`
+  (`<details class="children">`, accidentally dropped by the Affected-Assets grid merge) so child evidence
+  renders again; `_render_affected` is now a host-LIST only; DOCX renders child evidence in the body (bare
+  captions) — HTML↔DOCX figure parity restored; cover mark obeys `inline_assets`. Report tests updated for
+  the intended new design (Overview heading, CVSS pill + target-as-asset, cover-mark picture baseline).
+- `5ac3b92` review NOTES: number_figures skips a finding whose `evidence` is suppressed (no figure gap);
+  regression test for the rephrase info-leak fix; dropped the dead `host=` docx caption param.
+
 ## Remaining
 
-1. **Task #9 — font-selection GUI** (Q5 order #4, quick): the engine + schema already shipped (6fdf415);
-   wire ExportOptions.body_font/code_font pass-through + render entry points reading fonts_from_settings +
-   a body/code font picker on the settings/themes page.
-2. **Task #6 — pre-PR cleanup (BLOCKING the PR):**
-   - 11 PRE-EXISTING report-suite reds (NOT caused by this branch): render_html figure-numbering ×3/×4
-     (HTML drops the child's Figure 1 that the DOCX numbers correctly — a by-vuln-collapse HTML regression),
-     test_report_print_media ×1, test_report_cover_and_toc::test_the_summary_leads (a "ReportBoard overview"
-     Engagement→ReportBoard rename artifact), test_e2e_flow::test_docx_report_matches_context_order,
-     test_render_facts_polish::test_docx_shows_cvss, test_report_evidence_targets ×2, test_skill frozenset.
-   - Then the extensions PR gate: /security-review + --ack-review, /adversarial-reviewer + --ack-adversarial,
-     the scribble suite + --ack-tests, --ack-transcripts (tests/ touched).
+Nothing functional — the PR gate + opening the PR.
+
+**Correction to an earlier version of this plan:** the report-suite reds were NOT pre-existing. A baseline
+run against the extensions `origin/main` (agent "Ghost_Baseline") proved all 6 affected files were 100%
+GREEN on main — the reds were regressions THIS branch introduced with its Affected-Assets grid redesign
+(commits b5b023d / a79254a / 8a440b8), which merged `_render_affected_assets` + `_render_children` and, in
+doing so, dropped child evidence from the HTML and broke HTML↔DOCX figure parity. `a3e2192` repairs that.
+
+**Deferred, documented follow-ups (non-blocking; surfaced by the security + adversarial review):**
+- The cookie WRITE surface gates on `host_can_write()` + `can_view_engagement` (client-coarse), not the
+  per-engagement `can_operate_on` — a KNOWN, cookie-WIDE limitation `authz.py` already documents (switching
+  needs a mounted lotek-core test a stub host can't stand in for). The self-gates match the sibling
+  `set_report_logo`; do not special-case one route — upgrade the whole cookie gate together.
+- The org-wide logo library serves any logo by id to any operator and has no per-mutation audit (both by
+  #Q10 design). Consider an audit-log entry on shared-library mutation; note org-wide visibility in operator docs.
+- `guess_content_type` falls back to the filename extension for WebP (no magic-byte signature); mitigated by
+  raster-only + `nosniff` + the session gate. Hardening: require positive magic-byte identification for logos.
 
 ## Notes / gotchas (READ before resuming)
 
@@ -67,8 +92,11 @@ Alembic head chain (single head): c3f8b1a4d206 → f4a7c2e91b60 → d5b8e3a1c62f
   pyrefly against the pinned scribble dep and can't resolve new symbols; also python-docx stubs type
   `Document`/`.part`/`int()` loosely. Every commit here verified clean under scribble's OWN pyrefly + ruff,
   then RAILS_OVERRIDE=1 with a documented reason. Not a real type error in any case.
-- **HTML↔DOCX parity watch:** per-host facts (svc_sql) show in HTML Details, not the docx asset grid (a
-  by-vuln-collapse gap, noted not fixed). The figure-numbering divergence above is the more important one.
+- **HTML↔DOCX parity: REPAIRED (a3e2192).** Child evidence renders in both deliverables (HTML
+  `<details class="children">`, DOCX body "Affected Hosts" list), numbered children-first with identical
+  bare captions, so the figure sequences match — proven by the ungameable
+  `test_html_and_docx_number_the_same_figures_the_same_way`. The Affected Assets block is now a host LIST
+  in both; per-host facts (svc_sql) live in the children table / body list, not the asset grid.
 - The scribble standalone test suite runs on **sqlite** (mounted Postgres contract tests live in lotek/tests).
 - Design decisions (from a grilling round this session): Q1 matrix = severity-ratings-as-its-own-block;
   Q2 composer on the engagement page; Q3 cover-logo library + per-report pick; Q4 methodology+scope editable;
