@@ -77,4 +77,6 @@ def test_evidence_suppression_drops_the_whole_gallery(app, session_factory):
     eng_id, shots = _tree(session_factory, suppressed=["evidence"])
     zf = zipfile.ZipFile(io.BytesIO(_render(app, session_factory, eng_id, shots)))
     media = [n for n in zf.namelist() if n.startswith("word/media/")]
-    assert media == [], f"evidence suppressed -> no images (children included), got {media}"
+    # Every report embeds the cover MARK (one image), which is not evidence — so the floor is 1, not 0.
+    # Evidence suppression must drop every EVIDENCE screenshot (children included): only the cover remains.
+    assert len(media) == 1, f"evidence suppressed -> only the cover mark, no evidence images, got {media}"
