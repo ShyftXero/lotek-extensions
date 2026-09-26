@@ -457,6 +457,14 @@ def _heading1(doc: Document, text: str):
 # ----------------------------------------------------------------------------- sections
 
 def _add_cover(doc: Document) -> None:
+    # Cover logo (the picked library logo or the stock lotek mark) — a docxtpl InlineImage filled by
+    # render_docx; an empty context value renders nothing (a report that somehow has no logo just opens on
+    # the title band).
+    logo_p = doc.add_paragraph()
+    logo_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _spacing(logo_p, before=0, after=8)
+    logo_p.add_run("{{ cover_logo }}")
+
     band = doc.add_table(rows=1, cols=1)
     band.alignment = WD_TABLE_ALIGNMENT.CENTER
     cell = band.rows[0].cells[0]

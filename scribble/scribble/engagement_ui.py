@@ -63,14 +63,15 @@ finding doesn't exist or belongs to a different engagement, mirroring ``delete_g
 
 from __future__ import annotations
 
+import io
 import uuid
 from datetime import date
 
-from flask import abort, jsonify, redirect, render_template, request, url_for
+from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
 from sqlalchemy import select
 
 from scribble import finding_grouping_adapter, findings_service, host
-from scribble.artifacts_storage import delete_file
+from scribble.artifacts_storage import delete_file, guess_content_type
 from scribble.authz import can_view_client_id, host_is_mounted
 from scribble.content import schema
 from scribble.deps import (
@@ -89,12 +90,19 @@ from scribble.models import (
     EngagementDiagram,
     FindingGroup,
     ReportBoard,
+    ScribbleReportLogo,
     VulnerabilityTemplate,
     normalize_strategic_recommendations,
 )
 from scribble.templating import known_variable_keys
 
 _REGISTERED = False
+
+# Cover-logo library upload limits. Raster images only — an SVG can carry script and the cover serves the
+# image inline, so restricting to raster types avoids a stored-XSS surface AND keeps the logo embeddable in
+# the .docx (InlineImage needs a raster). Small brand images, so a tight ceiling.
+_MAX_LOGO_BYTES = 5 * 1024 * 1024
+_LOGO_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 
 # --------------------------------------------------------------------------------- small helpers
@@ -601,6 +609,11 @@ def register(api_bp, bp) -> None:
             section_presets = [
                 {"name": lay.name, "label": lay.label, "keys": list(lay.blocks)} for lay in list_layouts()
             ]
+            # Cover-logo library (org-wide) + this report's current pick, for the cover-logo picker.
+            cover_logos = db.scalars(
+                select(ScribbleReportLogo).order_by(ScribbleReportLogo.created_at.desc())
+            ).all()
+            current_logo_id = engagement.cover_logo_id
 
             return render_template(
                 "scribble/engagement.html",
@@ -617,6 +630,8 @@ def register(api_bp, bp) -> None:
                 source_jobs=source_jobs,
                 section_specs=section_specs,
                 section_presets=section_presets,
+                cover_logos=cover_logos,
+                current_logo_id=current_logo_id,
             )
 
     # =============================================================================== UI: groups
@@ -1131,6 +1146,84 @@ def register(api_bp, bp) -> None:
             engagement.section_order = normalized
             db.commit()
         return jsonify(ok=True, order=normalized)
+
+    # ============================================================================ API/UI: cover logo
+
+    @bp.post("/engagements/<uuid:engagement_id>/report/logo", endpoint="set_report_logo")
+    def set_report_logo(engagement_id: int):
+        """Pick this report's cover LOGO from the org-wide library — a plain form POST (``logo_id`` field;
+        empty or ``"default"`` => the stock lotek mark). The pick only changes this report's own cover."""
+        raw = (request.form.get("logo_id") or "").strip()
+        clear = raw in ("", "default")
+        logo_id = None if clear else _as_uuid(raw)
+        if not clear and logo_id is None:
+            abort(400)
+        with open_session() as db:
+            eng = db.get(ReportBoard, engagement_id)
+            if eng is None:
+                abort(404)
+            if logo_id is not None and db.get(ScribbleReportLogo, logo_id) is None:
+                abort(404)
+            eng.cover_logo_id = logo_id
+            db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @bp.post("/report/logos", endpoint="upload_report_logo")
+    def upload_report_logo():
+        """Add an image to the ORG-WIDE cover-logo library (every operator can then pick it) and, when the
+        form names an engagement, set it as that report's cover in the same step (upload-and-use). Raster
+        images only, bounded by ``_MAX_LOGO_BYTES``."""
+        upload = request.files.get("file")
+        filename = (upload.filename or "").strip() if upload is not None else ""
+        if upload is None or not filename:
+            abort(400)
+        data = upload.read()
+        if not data:
+            abort(400)
+        if len(data) > _MAX_LOGO_BYTES:
+            abort(413)
+        content_type = guess_content_type(filename, data)
+        if content_type not in _LOGO_TYPES:
+            abort(400)  # raster images only (no SVG: it serves inline and can carry script)
+        label = ((request.form.get("label") or "").strip() or filename)[:120]
+        raw_eng = (request.form.get("engagement_id") or "").strip()
+        eng_id = _as_uuid(raw_eng) if raw_eng else None
+        with open_session() as db:
+            logo = ScribbleReportLogo(label=label, content_type=content_type, data=data,
+                                      created_by=current_actor_username())
+            db.add(logo)
+            db.flush()
+            if eng_id is not None:
+                eng = db.get(ReportBoard, eng_id)
+                if eng is not None:
+                    eng.cover_logo_id = logo.id  # upload-and-use on this report
+            db.commit()
+        if eng_id is not None:
+            return redirect(url_for("scribble.engagement_board", engagement_id=eng_id))
+        return redirect(request.referrer or url_for("scribble.dashboard"))
+
+    @bp.get("/report/logos/default/raw", endpoint="report_logo_default_raw")
+    def report_logo_default_raw():
+        """Serve the stock lotek mark — the default cover logo and the picker's 'Default' thumbnail."""
+        from scribble.reporting.logos import DEFAULT_LOGO_CONTENT_TYPE, default_logo_bytes
+
+        resp = send_file(io.BytesIO(default_logo_bytes()), mimetype=DEFAULT_LOGO_CONTENT_TYPE,
+                         max_age=3600, download_name="lotek.png")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    @bp.get("/report/logos/<uuid:logo_id>/raw", endpoint="report_logo_raw")
+    def report_logo_raw(logo_id: int):
+        """Serve a library logo's bytes — the cover image and the picker thumbnail. Inline (raster only, so
+        no inline-script surface) with nosniff."""
+        with open_session() as db:
+            logo = db.get(ScribbleReportLogo, logo_id)
+            if logo is None:
+                abort(404)
+            resp = send_file(io.BytesIO(logo.data), mimetype=logo.content_type or "image/png",
+                             max_age=3600, download_name=f"{logo.label or 'logo'}")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
 
     # =============================================================================== API: move finding
 

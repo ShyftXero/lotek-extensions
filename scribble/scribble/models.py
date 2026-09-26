@@ -21,6 +21,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -139,6 +140,13 @@ class ReportBoard(Base, TimestampMixin):
     # the DOCX/PDF deliverable render the SAME order. Additive + nullable: the migration adds a plain
     # column, create_all adds it too, and every read coerces None to the default.
     section_order: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Cover LOGO: which library logo (ScribbleReportLogo) this report's cover shows. NULL = the stock lotek
+    # mark (report_templates/lotek_mark.png). Org-wide library + per-report pick (#Q3): the same operator can
+    # brand clientA's report one week and clientB's the next by switching this. ON DELETE SET NULL so
+    # removing a library logo falls reports back to the default rather than dangling.
+    cover_logo_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("scribble_report_logos.id", ondelete="SET NULL"), nullable=True
+    )
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
@@ -916,6 +924,22 @@ class ScribbleSettings(Base, TimestampMixin):
     # reporting.fonts.valid_*). Additive + nullable (alembic revision c3f8b1a4d206 / create_all retrofit).
     report_body_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
     report_code_font: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ScribbleReportLogo(Base, TimestampMixin):
+    """A cover logo in the ORG-WIDE library — upload once, pick per report (ReportBoard.cover_logo_id).
+    Available to every operator ("clientA this week, clientB the next", #Q3). Small brand images only;
+    the bytes live INLINE here rather than in the object store, because a logo is not engagement-scoped and
+    so has no tenancy anchor (INV-OBJSTORE-01 requires a core_engagement_id for object-store blobs) — unlike
+    finding evidence. NULL ``ReportBoard.cover_logo_id`` => the stock lotek mark, not a row here."""
+
+    __tablename__ = "scribble_report_logos"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    label: Mapped[str] = mapped_column(String(120))
+    content_type: Mapped[str] = mapped_column(String(80), default="image/png")
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
 # --------------------------------------------------------------------------- collaboration (Phase B)

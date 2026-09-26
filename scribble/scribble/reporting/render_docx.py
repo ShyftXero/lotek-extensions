@@ -431,9 +431,12 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         if rationale:
             note += f" Rationale: {rationale}"
         narrative = f"{narrative} {note}".strip() if narrative else note
+    # Cover logo (picked library logo or the stock lotek mark) as a docxtpl InlineImage; "" renders nothing.
+    cover_logo = InlineImage(tpl, io.BytesIO(ctx.cover_logo), width=Mm(40)) if ctx.cover_logo else ""
     return {
         "company_name": ctx.company_name or "",
         "engagement_name": ctx.engagement_name,
+        "cover_logo": cover_logo,
         "client_name": ctx.client_name or "",
         "scope_type": ctx.scope_type or "",
         "start_date": ctx.start_date or "",

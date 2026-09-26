@@ -1013,8 +1013,17 @@ def _render_cover(ctx: ReportContext) -> str:
         for label, value in _cover_facts(ctx)
     )
     eyebrow = _esc(ctx.client_name or ctx.company_name or "Security Assessment")
+    logo = ""
+    if ctx.cover_logo:
+        import base64
+        b64 = base64.b64encode(ctx.cover_logo).decode("ascii")
+        logo = (
+            f'<img class="cover-logo" alt="" src="data:{_esc(ctx.cover_logo_content_type)};base64,{b64}" '
+            'style="max-height:96px;max-width:240px;display:block;margin:0 auto 20px;object-fit:contain;"/>'
+        )
     return (
         '<section class="cover" id="sec-cover">'
+        f"{logo}"
         '<div class="cover-top">'
         f'<div class="cover-eyebrow">{eyebrow}</div>'
         f'<div class="cover-title">{_esc(ctx.engagement_name)}</div>'

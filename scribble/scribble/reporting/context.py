@@ -315,6 +315,12 @@ class ReportContext:
     # the SAME order. Defaults to the standard enabled order, so an off-mount/legacy build (or a renderer
     # that never sets it) is byte-identical to before this field existed.
     section_order: tuple[str, ...] = field(default_factory=lambda: enabled_section_keys(None))
+    # Cover LOGO bytes + content type — the operator's picked library logo (ReportBoard.cover_logo_id) or the
+    # stock lotek mark (reporting.logos.resolve_cover_logo), resolved in build_report_context so BOTH
+    # renderers embed the SAME image. Empty default: a manually-built ctx (unit tests) simply renders no
+    # cover logo; the real report path always sets it (to at least the stock mark).
+    cover_logo: bytes = b""
+    cover_logo_content_type: str = "image/png"
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -915,6 +921,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or (client.name if client else "")
+    # Cover logo: the report's picked library logo, or the stock lotek mark — one resolver for both renderers.
+    from scribble.reporting.logos import resolve_cover_logo
+    _cover_logo = resolve_cover_logo(engagement, session)
     # ReportBoard-level evidence: attached to the engagement, NOT to any finding (``finding_id`` null).
     # These have no finding gallery to appear in, so without this list they reached no deliverable at
     # all (ext#40). A finding's own artifacts stay where they were — in that finding's gallery.
@@ -964,4 +973,6 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         findings_by_kind=findings_by_kind,
         findings_by_host=findings_by_host,
         section_order=enabled_section_keys(getattr(engagement, "section_order", None)),
+        cover_logo=_cover_logo[0],
+        cover_logo_content_type=_cover_logo[1],
     )

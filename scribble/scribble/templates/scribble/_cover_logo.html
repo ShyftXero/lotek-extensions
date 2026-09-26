@@ -1,0 +1,35 @@
+{# Cover logo picker: choose this report's cover logo from the ORG-WIDE library (or the stock lotek mark),
+   or upload a new one (upload-and-use). Persists to ReportBoard.cover_logo_id; NULL = the lotek mark.
+   Expects: engagement, cover_logos (ScribbleReportLogo list), current_logo_id. #}
+<details class="card scribble-cover-logo">
+  <summary><strong>Cover Logo</strong> <span class="muted">— the mark on the report's title page</span></summary>
+  <p class="muted">Pick the logo for this report's cover — the stock lotek mark, or a client logo from the
+    shared library. Uploads go into the library, so you can reuse them next time.</p>
+  <form method="post" action="{{ url_for('scribble.set_report_logo', engagement_id=engagement.id) }}">
+    <div class="cl-grid">
+      <label class="cl-option{% if not current_logo_id %} cl-current{% endif %}">
+        <input type="radio" name="logo_id" value="default"{% if not current_logo_id %} checked{% endif %} />
+        <img class="cl-thumb" src="{{ url_for('scribble.report_logo_default_raw') }}" alt="Default lotek mark" />
+        <span class="cl-name">Default (lotek)</span>
+      </label>
+      {% for logo in cover_logos %}
+      <label class="cl-option{% if logo.id == current_logo_id %} cl-current{% endif %}">
+        <input type="radio" name="logo_id" value="{{ logo.id }}"{% if logo.id == current_logo_id %} checked{% endif %} />
+        <img class="cl-thumb" src="{{ url_for('scribble.report_logo_raw', logo_id=logo.id) }}" alt="{{ logo.label }}" />
+        <span class="cl-name">{{ logo.label }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn btn-sm">Use selected logo</button>
+  </form>
+  <form method="post" action="{{ url_for('scribble.upload_report_logo') }}"
+        enctype="multipart/form-data" class="cl-upload">
+    <input type="hidden" name="engagement_id" value="{{ engagement.id }}" />
+    <label class="muted">Upload a client logo
+      <input type="file" name="file" accept="image/png,image/jpeg,image/gif,image/webp" required />
+    </label>
+    <input type="text" name="label" placeholder="Label (optional)" maxlength="120" />
+    <button type="submit" class="btn btn-sm">Upload &amp; use</button>
+  </form>
+</details>
+<link rel="stylesheet" href="{{ url_for('scribble.static', filename='cover_logo.css') }}" />
