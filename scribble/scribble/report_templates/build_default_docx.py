@@ -538,6 +538,14 @@ def _add_executive_summary(doc: Document) -> None:
          "{{ groups|length }} section(s), {{ rollup.total }} finding(s) in this report.",
          size=9, color=MUTED)
 
+    # Scope and limitations — the operator's per-report override or the standing statement (resolved to a
+    # line list in render_docx._build_context, #Q4). Parity with the HTML front matter, which the .docx was
+    # missing. Rendered as paragraphs so both a bullet-style standing list and free prose read cleanly.
+    _section_label(doc.add_paragraph(), "Scope and Limitations")
+    doc.add_paragraph("{%p for line in scope_limitations %}")
+    _run(doc.add_paragraph(), "{{ line }}", size=10, color=INK2)
+    doc.add_paragraph("{%p endfor %}")
+
     table = doc.add_table(rows=2, cols=len(SEVERITY_ORDER) + 1)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
 

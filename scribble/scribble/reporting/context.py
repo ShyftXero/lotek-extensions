@@ -321,6 +321,10 @@ class ReportContext:
     # cover logo; the real report path always sets it (to at least the stock mark).
     cover_logo: bytes = b""
     cover_logo_content_type: str = "image/png"
+    # Editable standing-prose overrides (#Q4): the operator's per-report Methodology and Scope/limitations
+    # text. "" => use the generated standing text; a value REPLACES it. Both renderers branch on these.
+    methodology_text: str = ""
+    scope_limitations_text: str = ""
 
 
 def _order_findings(group_findings, order_mode: OrderMode):
@@ -975,4 +979,6 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         section_order=enabled_section_keys(getattr(engagement, "section_order", None)),
         cover_logo=_cover_logo[0],
         cover_logo_content_type=_cover_logo[1],
+        methodology_text=(engagement.methodology_text or ""),
+        scope_limitations_text=(engagement.scope_limitations_text or ""),
     )

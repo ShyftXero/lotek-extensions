@@ -1057,6 +1057,13 @@ def _overview_paragraph(ctx: ReportContext) -> str:
     return " ".join(bits)
 
 
+def _prose_to_html(text: str) -> str:
+    """Operator free-text -> safe HTML paragraphs: escape, split on blank lines into ``<p>``, single
+    newlines become ``<br/>``. The one place a standing-prose override (#Q4) becomes markup."""
+    paras = [p for p in text.split("\n\n") if p.strip()]
+    return "".join(f"<p>{_esc(p.strip()).replace(chr(10), '<br/>')}</p>" for p in paras)
+
+
 def _render_front_matter(ctx: ReportContext) -> str:
     """Front matter at the head of the Executive Summary: the engagement overview and the standing scope /
     limitations statement.
@@ -1068,14 +1075,19 @@ def _render_front_matter(ctx: ReportContext) -> str:
     """
     # ``_esc`` even though these are module constants, matching ``_methodology_prose``: the escaping is
     # what makes editing the prose safe for someone who reaches for an "&" or an angle bracket.
-    limits = "".join(f"<li>{_esc(text)}</li>" for text in _LIMITATIONS)
     narrative = f'<p class="summary-narrative">{_esc(ctx.narrative)}</p>' if ctx.narrative else ""
+    # Scope/limitations: the operator's per-report override (#Q4) as prose, else the standing bullet list.
+    if ctx.scope_limitations_text:
+        limits_html = f'<div class="fm-limits">{_prose_to_html(ctx.scope_limitations_text)}</div>'
+    else:
+        bullets = "".join(f"<li>{_esc(text)}</li>" for text in _LIMITATIONS)
+        limits_html = f'<ul class="fm-limits">{bullets}</ul>'
     return (
         '<div class="frontmatter">'
         '<div class="fm-block"><h3>Overview</h3>'
         f'<p class="fm-lead">{_overview_paragraph(ctx)}</p>{narrative}</div>'
         '<div class="fm-block"><h3>Scope and limitations</h3>'
-        f'<ul class="fm-limits">{limits}</ul></div>'
+        f'{limits_html}</div>'
         "</div>"
     )
 
@@ -1530,7 +1542,10 @@ def _render_methodology(ctx: ReportContext) -> str:
     coverage = [c for c in ctx.checklists if c.kind != "compliance"]
     compliance = [c for c in ctx.checklists if c.kind == "compliance"]
     heading = _methodology_heading(ctx)
-    body = _methodology_prose(ctx)
+    # The operator's per-report Methodology override (#Q4) replaces the generated standing prose; the
+    # coverage record (checklists) is engagement DATA, not standing prose, so it still renders below.
+    body = f'<article class="mth">{_prose_to_html(ctx.methodology_text)}</article>' \
+        if ctx.methodology_text else _methodology_prose(ctx)
     if coverage:
         body += "".join(_render_checklist_coverage(c) for c in coverage)
     else:

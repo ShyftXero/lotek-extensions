@@ -433,10 +433,19 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         narrative = f"{narrative} {note}".strip() if narrative else note
     # Cover logo (picked library logo or the stock lotek mark) as a docxtpl InlineImage; "" renders nothing.
     cover_logo = InlineImage(tpl, io.BytesIO(ctx.cover_logo), width=Mm(40)) if ctx.cover_logo else ""
+    # Scope/limitations lines: the operator's per-report override (split on blank lines) or the standing
+    # statement — one shared constant with the HTML so the two deliverables can't drift (#Q4).
+    from scribble.reporting.render_html import _LIMITATIONS
+    if ctx.scope_limitations_text:
+        scope_limitations = [_xml_safe(p.strip()) for p in ctx.scope_limitations_text.split("\n\n")
+                             if p.strip()]
+    else:
+        scope_limitations = list(_LIMITATIONS)
     return {
         "company_name": ctx.company_name or "",
         "engagement_name": ctx.engagement_name,
         "cover_logo": cover_logo,
+        "scope_limitations": scope_limitations,
         "client_name": ctx.client_name or "",
         "scope_type": ctx.scope_type or "",
         "start_date": ctx.start_date or "",
@@ -1126,6 +1135,12 @@ def _append_methodology(doc, ctx: ReportContext) -> None:
     from scribble.reporting.render_html import _METHODOLOGY_FRAMING, _METHODOLOGY_PHASES
 
     doc.add_heading("Methodology", level=1)
+    # The operator's per-report Methodology override (#Q4) replaces the generated standing prose.
+    if ctx.methodology_text:
+        for para in ctx.methodology_text.split("\n\n"):
+            if para.strip():
+                doc.add_paragraph(_xml_safe(para.strip()))
+        return
     doc.add_paragraph(
         "An assessment of this kind is conducted in the phases below, each feeding the next. This is a "
         "standing description of method, not a log of what was done on this engagement — what a given "

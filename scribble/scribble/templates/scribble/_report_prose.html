@@ -1,0 +1,38 @@
+{# Editable standing prose (#Q4): per-report Methodology + Scope/limitations overrides. Empty box => the
+   generated standing text (Reset clears it). "Rephrase with AI" (only when the host provides an AI hook)
+   rewrites the draft for review before Save. Expects: engagement, ai_available. #}
+<details class="card scribble-report-prose">
+  <summary><strong>Report Prose</strong> <span class="muted">— methodology &amp; scope, editable per report</span></summary>
+  <p class="muted">Edit the standing Methodology and Scope/limitations for <em>this</em> report; leave a box
+    empty to use the standard text.{% if ai_available %} “Rephrase with AI” rewrites your draft — you review
+    it before saving.{% endif %}</p>
+  <form method="post" action="{{ url_for('scribble.save_report_prose', engagement_id=engagement.id) }}"
+        data-prose-form data-rephrase-url="{{ url_for('scribble_api.rephrase_report_prose') }}">
+    <div class="rp-field">
+      <label for="rp-methodology"><strong>Methodology</strong></label>
+      <textarea id="rp-methodology" name="methodology_text" rows="6" data-field="methodology"
+                placeholder="Leave empty to use the standard methodology text.">{{ engagement.methodology_text or '' }}</textarea>
+      <div class="rp-actions">
+        <button type="button" class="btn btn-sm" data-reset="rp-methodology">Reset to standard</button>
+        {% if ai_available %}
+        <button type="button" class="btn btn-sm" data-rephrase="rp-methodology">Rephrase with AI</button>
+        {% endif %}
+      </div>
+    </div>
+    <div class="rp-field">
+      <label for="rp-scope"><strong>Scope &amp; limitations</strong></label>
+      <textarea id="rp-scope" name="scope_limitations_text" rows="5" data-field="scope"
+                placeholder="Leave empty to use the standard scope/limitations statement.">{{ engagement.scope_limitations_text or '' }}</textarea>
+      <div class="rp-actions">
+        <button type="button" class="btn btn-sm" data-reset="rp-scope">Reset to standard</button>
+        {% if ai_available %}
+        <button type="button" class="btn btn-sm" data-rephrase="rp-scope">Rephrase with AI</button>
+        {% endif %}
+      </div>
+    </div>
+    <button type="submit" class="btn">Save prose</button>
+    <span class="rp-status muted" data-prose-status></span>
+  </form>
+</details>
+<link rel="stylesheet" href="{{ url_for('scribble.static', filename='report_prose.css') }}" />
+<script src="{{ url_for('scribble.static', filename='report_prose.js') }}"></script>

@@ -103,6 +103,8 @@ _REGISTERED = False
 # the .docx (InlineImage needs a raster). Small brand images, so a tight ceiling.
 _MAX_LOGO_BYTES = 5 * 1024 * 1024
 _LOGO_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+# Cap the text sent to the host AI hook for a rephrase — a standing-prose section, not a whole report.
+_MAX_REPHRASE_CHARS = 20_000
 
 
 # --------------------------------------------------------------------------------- small helpers
@@ -614,6 +616,8 @@ def register(api_bp, bp) -> None:
                 select(ScribbleReportLogo).order_by(ScribbleReportLogo.created_at.desc())
             ).all()
             current_logo_id = engagement.cover_logo_id
+            # Rephrase-with-AI is offered only when the host provides an AI hook (off by default).
+            ai_available = host.host_hook("ai_complete") is not None
 
             return render_template(
                 "scribble/engagement.html",
@@ -632,6 +636,7 @@ def register(api_bp, bp) -> None:
                 section_presets=section_presets,
                 cover_logos=cover_logos,
                 current_logo_id=current_logo_id,
+                ai_available=ai_available,
             )
 
     # =============================================================================== UI: groups
@@ -1224,6 +1229,50 @@ def register(api_bp, bp) -> None:
                              max_age=3600, download_name=f"{logo.label or 'logo'}")
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
+
+    # ============================================================================ API/UI: report prose
+
+    @bp.post("/engagements/<uuid:engagement_id>/report/prose", endpoint="save_report_prose")
+    def save_report_prose(engagement_id: int):
+        """Save this report's Methodology / Scope-and-limitations override text (#Q4). An empty field RESETS
+        that section to the standing text (stored NULL). Plain form POST."""
+        methodology = (request.form.get("methodology_text") or "").strip()
+        scope = (request.form.get("scope_limitations_text") or "").strip()
+        with open_session() as db:
+            eng = db.get(ReportBoard, engagement_id)
+            if eng is None:
+                abort(404)
+            eng.methodology_text = methodology or None      # "" => reset to the generated standing text
+            eng.scope_limitations_text = scope or None
+            db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @api_bp.post("/report/prose/rephrase")
+    def rephrase_report_prose():
+        """Rephrase operator prose through the host AI hook and return ``{text: rewrite}`` for the operator to
+        review and save (never a silent in-place overwrite). 503 when the host provides no AI hook (it is
+        settings-gated + default OFF), so the button simply isn't offered then."""
+        ai = host.host_hook("ai_complete")
+        if ai is None:
+            return jsonify(error="ai_unavailable", detail="AI is not enabled on this install"), 503
+        payload = request.get_json(silent=True) or {}
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return jsonify(error="text is required"), 400
+        if len(text) > _MAX_REPHRASE_CHARS:
+            return jsonify(error="text too long"), 413
+        section = {"methodology": "penetration-test methodology",
+                   "scope": "scope and limitations"}.get((payload.get("field") or "").strip(), "report")
+        messages = [
+            {"role": "system", "content": "You rewrite security-assessment report prose to be clear, "
+             "professional and concise. Return ONLY the rewritten text — no preamble, no markdown fences."},
+            {"role": "user", "content": f"Rephrase this {section} section:\n\n{text}"},
+        ]
+        try:
+            rewritten = ai(messages)
+        except Exception as exc:  # host AI failed/disabled at call time — surface, don't 500
+            return jsonify(error="ai_failed", detail=str(exc)[:200]), 502
+        return jsonify(ok=True, text=(rewritten or "").strip())
 
     # =============================================================================== API: move finding
 

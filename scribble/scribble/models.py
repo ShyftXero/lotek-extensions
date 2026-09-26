@@ -147,6 +147,12 @@ class ReportBoard(Base, TimestampMixin):
     cover_logo_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("scribble_report_logos.id", ondelete="SET NULL"), nullable=True
     )
+    # Editable STANDING PROSE overrides (#Q4). NULL = the generated standing text — the methodology phases,
+    # and the standing scope-and-limitations statement; a value REPLACES it for THIS report only. Operators
+    # edit these from the engagement page (Reset-to-standard clears the column; Rephrase-with-AI is offered
+    # only when the host provides an AI hook). Free operator text, escaped at render.
+    methodology_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scope_limitations_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"
