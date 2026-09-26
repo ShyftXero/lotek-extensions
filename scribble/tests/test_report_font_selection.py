@@ -101,3 +101,42 @@ def test_remap_is_a_noop_without_changes():
     d = docx.Document()
     d.add_paragraph("x")
     remap_fonts(d, body_font=None, code_font=None)  # no error, no-op
+
+
+# --- the font-selection GUI: settings route + picker + the docx route bakes the saved fonts (Task #9) ----
+
+UI = "/scribble"
+
+
+def _set_default_settings_fonts(session_factory, *, body=None, code=None) -> None:
+    with session_factory() as db:
+        s = fm.ScribbleSettings(slot="default", report_body_font=body, report_code_font=code)
+        db.add(s)
+        db.commit()
+
+
+def test_save_report_fonts_route_persists_and_validates(client, session_factory):
+    resp = client.post(f"{UI}/settings/report-fonts",
+                       data={"body_font": "Liberation Sans", "code_font": "Comic Sans MS"})
+    assert resp.status_code == 302
+    with session_factory() as db:
+        s = db.query(fm.ScribbleSettings).filter_by(slot="default").one()
+        assert s.report_body_font == "Liberation Sans"   # valid -> stored
+        assert s.report_code_font is None                # unknown code face -> NULL (baked default)
+
+
+def test_themes_page_renders_the_font_picker(client):
+    html = client.get(f"{UI}/themes").get_data(as_text=True)
+    assert "Report fonts" in html
+    assert 'name="body_font"' in html and 'name="code_font"' in html
+    assert "Liberation Sans" in html  # a body choice is offered
+
+
+def test_docx_route_bakes_the_saved_fonts(client, session_factory):
+    eng_id = _engagement(session_factory)
+    _set_default_settings_fonts(session_factory, body="Liberation Sans", code="DejaVu Sans Mono")
+    resp = client.get(f"{UI}/engagements/{eng_id}/report.docx")
+    assert resp.status_code == 200
+    fonts = _fonts_in(resp.data)
+    assert "Liberation Sans" in fonts and "DejaVu Sans Mono" in fonts
+    assert DEFAULT_BODY_FONT not in fonts  # the install setting swapped the baked default out

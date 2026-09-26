@@ -86,7 +86,7 @@ from __future__ import annotations
 import tomllib
 from typing import Any
 
-from flask import jsonify, render_template, request
+from flask import abort, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -342,9 +342,12 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/themes", endpoint="themes_library")
     def themes_library():
+        from scribble.reporting.fonts import BODY_FONT_CHOICES, CODE_FONT_CHOICES
         with open_session() as db:
             settings = db.scalar(select(ScribbleSettings).where(ScribbleSettings.slot == "default"))
             default_name = settings.default_report_theme if settings else None
+            current_body_font = settings.report_body_font if settings else None
+            current_code_font = settings.report_code_font if settings else None
             discovery = _installed_descriptors()
             rows = _list_all_themes(db, discovery, default_name=default_name)
             known_names = sorted(_known_theme_names(db, discovery))
@@ -356,7 +359,26 @@ def register(api_bp, bp) -> None:
             is_admin=_actor_is_admin(),
             discovery_errors=discovery.errors,
             discovery_collisions=discovery.collisions,
+            body_font_choices=BODY_FONT_CHOICES,
+            code_font_choices=CODE_FONT_CHOICES,
+            current_body_font=current_body_font or "",
+            current_code_font=current_code_font or "",
         )
+
+    @bp.post("/settings/report-fonts", endpoint="save_report_fonts")
+    def save_report_fonts():
+        """Set the install-wide report FONTS (ScribbleSettings) — the body + code faces the docx/PDF bakes
+        in. Admin-gated like the default-theme, and a plain form POST. Blank/unknown => NULL (the template's
+        default face), validated against the choosable set the lotek-gotenberg image actually has."""
+        if not _actor_is_admin():
+            abort(403)
+        from scribble.reporting.fonts import valid_body_font, valid_code_font
+        with open_session() as db:
+            settings = _get_or_create_settings(db)
+            settings.report_body_font = valid_body_font((request.form.get("body_font") or "").strip() or None)
+            settings.report_code_font = valid_code_font((request.form.get("code_font") or "").strip() or None)
+            db.commit()
+        return redirect(url_for("scribble.themes_library"))
 
     # ------------------------------------------------------------------------------- JSON (api_bp)
 

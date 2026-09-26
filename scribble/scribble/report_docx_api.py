@@ -23,6 +23,7 @@ import re
 from collections.abc import Callable
 
 from flask import Response, abort
+from sqlalchemy import select
 
 from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
@@ -79,7 +80,14 @@ def register(api_bp, bp) -> None:
                 abort(404)
             authorize_engagement_view(engagement)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
-            payload = render_report_docx(ctx, artifact_bytes=artifact_bytes)
+            # Bake the operator-chosen report fonts (install-wide ScribbleSettings; NULL = the template's
+            # default Inter / JetBrains Mono). One resolver, reporting.fonts.fonts_from_settings.
+            from scribble.models import ScribbleSettings
+            from scribble.reporting.fonts import fonts_from_settings
+            settings = db.scalar(select(ScribbleSettings).where(ScribbleSettings.slot == "default"))
+            body_font, code_font = fonts_from_settings(settings)
+            payload = render_report_docx(ctx, artifact_bytes=artifact_bytes,
+                                         body_font=body_font, code_font=code_font)
             slug = _slugify(engagement.name)
 
         return Response(

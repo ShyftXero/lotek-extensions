@@ -60,6 +60,37 @@
   </form>
 </div>
 
+<div class="card">
+  <h2>Report fonts</h2>
+  <p class="muted">The body and code faces the report bakes into the generated <code>.docx</code> / PDF.
+     Leave a box blank to use the template's default (Inter / JetBrains Mono). Only faces the report-render
+     image ships are offered, so the PDF never falls back to a substitute.</p>
+  {% if is_admin %}
+  <form method="post" action="{{ url_for('scribble.save_report_fonts') }}" class="thm-default-form">
+    <label>Body
+      <select name="body_font">
+        <option value="">— default (Inter) —</option>
+        {% for value, label in body_font_choices %}
+        <option value="{{ value }}"{% if value == current_body_font %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Code
+      <select name="code_font">
+        <option value="">— default (JetBrains Mono) —</option>
+        {% for value, label in code_font_choices %}
+        <option value="{{ value }}"{% if value == current_code_font %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-primary">Save fonts</button>
+  </form>
+  {% else %}
+  <p class="muted">Body: {{ current_body_font or 'Inter (default)' }} · Code:
+     {{ current_code_font or 'JetBrains Mono (default)' }}</p>
+  {% endif %}
+</div>
+
 {% if is_admin %}
 <div class="card">
   <h2>Add an override Theme</h2>
