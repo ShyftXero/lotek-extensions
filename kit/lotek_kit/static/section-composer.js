@@ -107,13 +107,25 @@
     });
   }
 
-  function applyPreset(container, keys) {
-    var wanted = keys.filter(Boolean);
+  /** Apply a preset's full arrangement: ``specs`` is ``[{key, enabled}, …]``. Its keys are ordered first
+   * (with the stored enabled state), everything else follows DISABLED — so a preset carries both order AND
+   * visibility. A built-in layout is just its blocks all-enabled; a saved preset is the operator's exact
+   * arrangement. */
+  function applySpecs(container, specs) {
+    var enabledByKey = {};
+    var wanted = [];
+    (specs || []).forEach(function (s) {
+      if (s && s.key && wanted.indexOf(s.key) === -1) {
+        enabledByKey[s.key] = !!s.enabled;
+        wanted.push(s.key);
+      }
+    });
     var present = itemsIn(container).map(function (el) { return el.getAttribute("data-key"); });
     var rest = present.filter(function (k) { return wanted.indexOf(k) === -1; });
-    applyOrder(container, wanted.concat(rest)); // preset keys first, everything else after
+    applyOrder(container, wanted.concat(rest));
     itemsIn(container).forEach(function (li) {
-      var on = wanted.indexOf(li.getAttribute("data-key")) !== -1;
+      var key = li.getAttribute("data-key");
+      var on = Object.prototype.hasOwnProperty.call(enabledByKey, key) ? enabledByKey[key] : false;
       var box = li.querySelector(".sc-item-toggle");
       if (box) box.checked = on;
       reflectEnabled(li);
@@ -122,18 +134,53 @@
     persist(container);
   }
 
-  function wirePresets(container) {
-    // Preset buttons may sit outside the <ul> (a toolbar above it), so search the enclosing section too.
-    var scope = container.closest("section, form, div") || doc;
-    Array.prototype.forEach.call(scope.querySelectorAll("[data-preset][data-keys]"), function (btn) {
-      if (btn.__scWired) return;
-      btn.__scWired = true;
-      btn.addEventListener("click", function () {
-        applyPreset(container, (btn.getAttribute("data-keys") || "").split(",").map(function (s) {
-          return s.trim();
-        }));
+  function wireControls(container) {
+    // The combobox + save button sit outside the <ul>, in the enclosing section/details.
+    var scope = container.closest("section, form, details, div") || doc;
+    var status = scope.querySelector("[data-preset-status]");
+    function setStatus(msg) { if (status) status.textContent = msg || ""; }
+
+    var select = scope.querySelector("[data-preset-select]");
+    if (select && !select.__scWired) {
+      select.__scWired = true;
+      select.addEventListener("change", function () {
+        var opt = select.options[select.selectedIndex];
+        var raw = opt && opt.getAttribute("data-specs");
+        if (raw) {
+          try { applySpecs(container, JSON.parse(raw)); } catch (ignored) {}
+        }
+        select.selectedIndex = 0; // the preset was applied; return the combobox to its placeholder
       });
-    });
+    }
+
+    var saveBtn = scope.querySelector("[data-save-preset]");
+    var saveUrl = container.getAttribute("data-save-preset-url");
+    if (saveBtn && saveUrl && !saveBtn.__scWired) {
+      saveBtn.__scWired = true;
+      saveBtn.addEventListener("click", function () {
+        var name = (global.prompt("Name this section sequence:") || "").trim();
+        if (!name) return;
+        saveBtn.disabled = true;
+        setStatus("Saving…");
+        global.fetch(saveUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ name: name, order: readOrder(container) }),
+        })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, j: j }; }); })
+          .then(function (res) {
+            if (res.status === 200) {
+              setStatus("Saved.");
+              global.location.reload(); // the new preset joins the combobox on reload
+            } else {
+              setStatus((res.j && (res.j.detail || res.j.error)) || "Save failed.");
+            }
+          })
+          .catch(function () { setStatus("Save failed."); })
+          .then(function () { saveBtn.disabled = false; });
+      });
+    }
   }
 
   /** Wire one composer container. Idempotent. */
@@ -163,7 +210,7 @@
 
     itemsIn(container).forEach(reflectEnabled);
     renderArrows(container);
-    wirePresets(container);
+    wireControls(container);
   }
 
   function mountAll(root) {
@@ -180,7 +227,7 @@
     }
   }
 
-  var api = { mount: mount, mountAll: mountAll, readOrder: readOrder, applyPreset: applyPreset };
+  var api = { mount: mount, mountAll: mountAll, readOrder: readOrder, applySpecs: applySpecs };
   if (Object.freeze) Object.freeze(api);
   global.lotekSectionComposer = api;
 })(this);

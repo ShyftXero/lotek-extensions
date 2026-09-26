@@ -48,6 +48,8 @@ See ``scribble/CONTEXT.md``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 
 # Every block key a Layout may reference. Kept here so an unknown key in a Layout is a caught
@@ -210,3 +212,11 @@ def enabled_section_keys(raw: object) -> tuple[str, ...]:
     """The block keys that actually render, in order — the resolved order with disabled sections removed.
     This is what a renderer loops."""
     return tuple(s.key for s in resolve_section_order(raw) if s.enabled)
+
+
+def section_fingerprint(raw: object) -> str:
+    """A stable fingerprint of a section ARRANGEMENT — its ordered (key, enabled) sequence, normalized first
+    so equivalent inputs collide. This is the uniqueness key for a saved preset (#Q10): two operators cannot
+    save the identical order AND visibility twice, because both normalize to the same fingerprint."""
+    canonical = [[s.key, s.enabled] for s in resolve_section_order(raw)]
+    return hashlib.sha256(json.dumps(canonical, separators=(",", ":")).encode()).hexdigest()

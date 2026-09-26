@@ -948,6 +948,24 @@ class ScribbleReportLogo(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
+class ScribbleSectionPreset(Base, TimestampMixin):
+    """An operator-saved report SECTION arrangement (order + on/off) in the ORG-WIDE library — offered in the
+    composer's preset combobox alongside the built-in Standard / Compliance-first layouts (#Q10).
+
+    ``fingerprint`` is a canonical hash of the ordered (key, enabled) sequence (reporting.layouts.
+    section_fingerprint) and is UNIQUE: two operators cannot save the identical order AND visibility twice —
+    a duplicate save is refused and points at the existing preset. ``specs`` is the stored arrangement,
+    ``[{"key","enabled"}, ...]``."""
+
+    __tablename__ = "scribble_section_presets"
+
+    id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
+    name: Mapped[str] = mapped_column(String(120))
+    specs: Mapped[list] = mapped_column(JSON)
+    fingerprint: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
 # --------------------------------------------------------------------------- collaboration (Phase B)
 
 

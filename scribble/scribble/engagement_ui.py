@@ -64,6 +64,7 @@ finding doesn't exist or belongs to a different engagement, mirroring ``delete_g
 from __future__ import annotations
 
 import io
+import json
 import uuid
 from datetime import date
 
@@ -91,6 +92,7 @@ from scribble.models import (
     FindingGroup,
     ReportBoard,
     ScribbleReportLogo,
+    ScribbleSectionPreset,
     VulnerabilityTemplate,
     normalize_strategic_recommendations,
 )
@@ -608,8 +610,19 @@ def register(api_bp, bp) -> None:
             # for the drag-to-reorder widget, and the shipped presets as one-click "apply this order" seeds.
             from scribble.reporting.layouts import list_layouts, resolve_section_order
             section_specs = resolve_section_order(engagement.section_order)
-            section_presets = [
-                {"name": lay.name, "label": lay.label, "keys": list(lay.blocks)} for lay in list_layouts()
+            # Preset combobox options: built-in layouts + org-wide saved presets (#Q10). Each carries its
+            # full [{key,enabled}] specs as JSON so selecting one applies both order AND visibility. A
+            # built-in lists its blocks enabled; the widget disables everything else.
+            saved_presets = db.scalars(
+                select(ScribbleSectionPreset).order_by(ScribbleSectionPreset.name)
+            ).all()
+            composer_presets = [
+                {"label": lay.label, "builtin": True, "id": "",
+                 "specs_json": json.dumps([{"key": k, "enabled": True} for k in lay.blocks])}
+                for lay in list_layouts()
+            ] + [
+                {"label": p.name, "builtin": False, "id": str(p.id), "specs_json": json.dumps(p.specs)}
+                for p in saved_presets
             ]
             # Cover-logo library (org-wide) + this report's current pick, for the cover-logo picker.
             cover_logos = db.scalars(
@@ -633,7 +646,7 @@ def register(api_bp, bp) -> None:
                 diagrams=diagrams,
                 source_jobs=source_jobs,
                 section_specs=section_specs,
-                section_presets=section_presets,
+                composer_presets=composer_presets,
                 cover_logos=cover_logos,
                 current_logo_id=current_logo_id,
                 ai_available=ai_available,
@@ -1151,6 +1164,52 @@ def register(api_bp, bp) -> None:
             engagement.section_order = normalized
             db.commit()
         return jsonify(ok=True, order=normalized)
+
+    # ======================================================================= API/UI: saved section presets
+
+    @api_bp.post("/report/section-presets")
+    def save_section_preset():
+        """Save the current section arrangement as an ORG-WIDE named preset (#Q10). Body:
+        ``{"name": str, "order": [{"key","enabled"}, ...]}``. The arrangement is normalized + fingerprinted;
+        a duplicate (identical order AND visibility) is refused 409 and names the existing preset, so two
+        operators can't save the same sequence twice."""
+        from scribble.reporting.layouts import resolve_section_order, section_fingerprint
+
+        payload = request.get_json(silent=True) or {}
+        name = (payload.get("name") or "").strip()[:120]
+        order = payload.get("order")
+        if not name:
+            return jsonify(error="name is required"), 400
+        if not isinstance(order, list):
+            return jsonify(error="order must be a list of {key, enabled}"), 400
+        specs = [{"key": s.key, "enabled": s.enabled} for s in resolve_section_order(order)]
+        fingerprint = section_fingerprint(order)
+        with open_session() as db:
+            existing = db.scalar(
+                select(ScribbleSectionPreset).where(ScribbleSectionPreset.fingerprint == fingerprint)
+            )
+            if existing is not None:
+                return jsonify(
+                    error="duplicate",
+                    detail=f"This exact arrangement is already saved as “{existing.name}”.",
+                    preset={"id": str(existing.id), "name": existing.name},
+                ), 409
+            preset = ScribbleSectionPreset(name=name, specs=specs, fingerprint=fingerprint,
+                                           created_by=current_actor_username())
+            db.add(preset)
+            db.commit()
+            result = {"id": str(preset.id), "name": preset.name, "specs": specs}
+        return jsonify(ok=True, preset=result)
+
+    @bp.post("/report/section-presets/<uuid:preset_id>/delete", endpoint="delete_section_preset")
+    def delete_section_preset(preset_id: int):
+        """Delete an org-wide saved section preset. Plain form POST; redirects back."""
+        with open_session() as db:
+            preset = db.get(ScribbleSectionPreset, preset_id)
+            if preset is not None:
+                db.delete(preset)
+                db.commit()
+        return redirect(request.referrer or url_for("scribble.dashboard"))
 
     # ============================================================================ API/UI: cover logo
 

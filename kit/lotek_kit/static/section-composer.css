@@ -84,3 +84,27 @@
   gap: 0.4rem;
   margin: 0.3rem 0 0.5rem;
 }
+.sc-preset-status {
+  font-size: 0.8rem;
+}
+.sc-saved-presets {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.sc-saved-list {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.sc-saved-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.sc-saved-list form {
+  margin: 0;
+}
