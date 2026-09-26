@@ -102,3 +102,24 @@ def test_rephrase_uses_the_host_ai_hook(client, app):
     assert resp.get_json()["text"] == "A crisper rewrite."  # trimmed
     # the draft was actually sent to the hook
     assert any("the original blurb" in m.get("content", "") for m in captured["messages"])
+
+
+def test_rephrase_failure_does_not_leak_the_host_ai_exception(client, app):
+    """A raising AI hook must NOT surface its exception text to the client — the host AI client's error can
+    carry provider URLs, model names or API-key fragments. The route returns a FIXED 502 message; the
+    detail (which used to be ``str(exc)``) must not echo the exception."""
+    secret = "https://api.provider.example/v1 key=sk-SECRET-DEADBEEF"
+
+    def raising_ai(_messages, **_kw):
+        raise RuntimeError(secret)
+
+    app.extensions["scribble"].extras["ai_complete"] = raising_ai
+    try:
+        resp = client.post(f"{API}/report/prose/rephrase",
+                           json={"field": "methodology", "text": "draft"})
+    finally:
+        app.extensions["scribble"].extras.pop("ai_complete", None)
+    assert resp.status_code == 502
+    body = resp.get_data(as_text=True)
+    assert "SECRET" not in body and "sk-" not in body and secret not in body
+    assert resp.get_json()["error"] == "ai_failed"

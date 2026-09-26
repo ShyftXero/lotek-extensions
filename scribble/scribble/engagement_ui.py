@@ -1209,6 +1209,9 @@ def register(api_bp, bp) -> None:
             except IntegrityError:
                 # Two operators saved the identical arrangement concurrently: the check above passed for
                 # both, the unique `fingerprint` index rejects the loser. Same 409 the check-path returns.
+                # (No unit test exercises THIS branch: a single-threaded test client always wins the
+                # check-path above, so the race can't be provoked deterministically — the check-path 409 is
+                # covered in test_report_section_presets.py; this is the belt to its braces.)
                 db.rollback()
                 existing = db.scalar(
                     select(ScribbleSectionPreset).where(ScribbleSectionPreset.fingerprint == fingerprint)

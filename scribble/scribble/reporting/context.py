@@ -562,8 +562,16 @@ def number_figures(
             # template. Numbering the parent first made Word print "Figure 3" above "Figure 1".
             # ``render_html._render_finding`` renders children before the gallery to match, so both
             # documents count upward as the reader scrolls.
-            for child in finding.children:
-                _stamp(child.artifacts)
+            #
+            # Skip a finding whose ``evidence`` section is suppressed: BOTH renderers then drop its
+            # children block AND its own gallery (context empties ``finding.artifacts`` for it, and each
+            # renderer omits ``_render_children``/the body children list), so numbering them would burn
+            # figure numbers nothing renders — a visible gap in the sequence. The parent's OWN artifacts
+            # are already empty here in that case; the children's are not, so they must be skipped
+            # explicitly. Parity is unaffected either way (both deliverables skip the same numbers).
+            if "evidence" not in finding.suppressed:
+                for child in finding.children:
+                    _stamp(child.artifacts)
             _stamp(finding.artifacts)
     _stamp(diagrams)
     _stamp(artifacts)

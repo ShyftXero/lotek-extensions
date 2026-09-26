@@ -294,19 +294,17 @@ def _target_text(f: FindingCtx) -> str:
     return " · ".join(bits)
 
 
-def _numbered_caption(a: ArtifactCtx, host: str | None = None) -> str:
+def _numbered_caption(a: ArtifactCtx) -> str:
     """``"Figure 3 — Payload firing in the browser"`` (ext#117). The number comes off the CONTEXT
     (``context.number_figures``), never from a counter this renderer keeps, so it is the same number
-    the HTML deliverable prints for the same artifact. ``host`` prefixes the caption for a per-host
-    (child) screenshot so it's clear which affected asset it documents."""
-    text = a.caption or a.filename
-    if host:
-        text = f"{host} — {text}"
-    return _xml_safe(figure_caption(a.figure_number, text))
+    the HTML deliverable prints for the same artifact. BARE caption (no host prefix): a child
+    screenshot's host is the ``_children_html`` row header, and the HTML side prints the same bare
+    caption — a host prefix here alone would break HTML↔DOCX caption parity."""
+    return _xml_safe(figure_caption(a.figure_number, a.caption or a.filename))
 
 
 def _artifact_ctx(
-    a: ArtifactCtx, artifact_bytes: ArtifactBytes | None, tpl: DocxTemplate, *, host: str | None = None
+    a: ArtifactCtx, artifact_bytes: ArtifactBytes | None, tpl: DocxTemplate
 ) -> dict[str, object]:
     is_image = (a.content_type or "").startswith("image/")
     image = None
@@ -323,7 +321,7 @@ def _artifact_ctx(
             except Exception:
                 image = None
     return {
-        "caption": _numbered_caption(a, host),
+        "caption": _numbered_caption(a),
         "filename": a.filename,
         "image": image,
         "embedded": image is not None,
