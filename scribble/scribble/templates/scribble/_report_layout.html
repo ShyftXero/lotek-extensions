@@ -1,0 +1,33 @@
+{# Report Layout composer — the kit section-composer widget (lotek_kit/static/section-composer.js), the
+   same draggable-module UX as core's scan composer. Drag to reorder the report's sections, or switch one
+   off to leave it out. Persists to ReportBoard.section_order via scribble_api.reorder_report_sections, and
+   the SAME resolved order drives the HTML preview AND the DOCX/PDF deliverable (reporting.layouts).
+   Expects: engagement, section_specs (layouts.SectionSpec list), section_presets [{name,label,keys}]. #}
+<details class="card scribble-report-layout">
+  <summary><strong>Report Layout</strong> <span class="muted">— which sections, in what order</span></summary>
+  <p class="muted">Drag a section to reorder it, or switch it off to leave it out. Applies to the on-screen
+    report <em>and</em> the DOCX / PDF you deliver — no need to hand-edit a template.</p>
+  <div class="sc-composer-presets">
+    <span class="muted">Start from:</span>
+    {% for p in section_presets %}
+    <button type="button" class="btn btn-sm" data-preset data-keys="{{ p['keys']|join(',') }}">{{ p.label }}</button>
+    {% endfor %}
+  </div>
+  <ul class="sc-composer" data-section-composer
+      data-save-url="{{ url_for('scribble_api.reorder_report_sections', engagement_id=engagement.id) }}">
+    {% for s in section_specs %}
+    <li class="sc-item{% if not s.enabled %} sc-item-off{% endif %}" draggable="true" data-key="{{ s.key }}">
+      <span class="sc-grip lk-handle" aria-hidden="true">&#x283F;</span>
+      <label class="sc-item-enable" title="Include this section in the report">
+        <input type="checkbox" class="sc-item-toggle"{% if s.enabled %} checked{% endif %} />
+      </label>
+      <span class="sc-item-name">{{ s.label }}</span>
+      <span class="sc-item-arrows"></span>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+<link rel="stylesheet" href="{{ url_for('lotek_kit.static', filename='reorder.css') }}" />
+<link rel="stylesheet" href="{{ url_for('lotek_kit.static', filename='section-composer.css') }}" />
+<script src="{{ url_for('lotek_kit.static', filename='reorder.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='section-composer.js') }}"></script>

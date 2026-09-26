@@ -594,6 +594,14 @@ def register(api_bp, bp) -> None:
             findings_by_kind = host.group_findings(group_rows, by="kind")
             findings_by_host = host.group_findings(group_rows, by="host")
 
+            # Report Layout composer (kit section-composer): the resolved per-report section order + on/off
+            # for the drag-to-reorder widget, and the shipped presets as one-click "apply this order" seeds.
+            from scribble.reporting.layouts import list_layouts, resolve_section_order
+            section_specs = resolve_section_order(engagement.section_order)
+            section_presets = [
+                {"name": lay.name, "label": lay.label, "keys": list(lay.blocks)} for lay in list_layouts()
+            ]
+
             return render_template(
                 "scribble/engagement.html",
                 engagement=engagement,
@@ -607,6 +615,8 @@ def register(api_bp, bp) -> None:
                 engagement_artifacts=engagement_artifacts,
                 diagrams=diagrams,
                 source_jobs=source_jobs,
+                section_specs=section_specs,
+                section_presets=section_presets,
             )
 
     # =============================================================================== UI: groups
@@ -1095,6 +1105,32 @@ def register(api_bp, bp) -> None:
 
             result = [{"id": gid, "order_index": index} for index, gid in enumerate(ordered_ids)]
         return jsonify(ok=True, order=result)
+
+    # =========================================================================== API: report section order
+
+    @api_bp.post("/engagements/<uuid:engagement_id>/report/sections")
+    def reorder_report_sections(engagement_id: int):
+        """Persist the per-report SECTION ORDER + on/off (``ReportBoard.section_order``). Body:
+        ``{"order": [{"key": <block>, "enabled": bool}, ...]}``. The value is normalized through
+        ``layouts.resolve_section_order`` before storing (unknown keys dropped, dups collapsed, any missing
+        block appended disabled), so what is persisted is always a complete, valid list against BLOCK_KEYS —
+        the SAME resolver both renderers read, so the editor, the HTML preview and the DOCX deliverable can't
+        disagree. Session-authed like its sibling ``reorder_groups``; a reorder leaks nothing, it only
+        rearranges the caller's own report layout."""
+        from scribble.reporting.layouts import resolve_section_order
+
+        payload = request.get_json(silent=True) or {}
+        order = payload.get("order")
+        if not isinstance(order, list):
+            return jsonify(error="order must be a list of {key, enabled}"), 400
+        normalized = [{"key": s.key, "enabled": s.enabled} for s in resolve_section_order(order)]
+        with open_session() as db:
+            engagement = db.get(ReportBoard, engagement_id)
+            if engagement is None:
+                return jsonify(error="engagement not found"), 404
+            engagement.section_order = normalized
+            db.commit()
+        return jsonify(ok=True, order=normalized)
 
     # =============================================================================== API: move finding
 

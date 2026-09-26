@@ -29,6 +29,10 @@
 <p class="muted scribble-readonly-note">You have read-only access — editing controls are hidden.</p>
 {% endif %}
 
+{% if scribble_can_write and section_specs %}
+{% include "scribble/_report_layout.html" %}
+{% endif %}
+
 {% if scribble_can_write %}
 <div class="card scribble-board-toolbar">
   <div class="scribble-board-toolbar-section">
