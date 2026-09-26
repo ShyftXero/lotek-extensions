@@ -80,6 +80,12 @@ def test_promote_is_deduped_on_rerun(client, stub_host):
         "promoted": 0,
         "skipped": 2,
         "parents": 0,
+        # Scan-coverage verdict, reported on EVERY success since lotek#656 -- not only the acknowledged
+        # ones, so a caller that never sends the flag still learns what its findings were promoted
+        # under. True here because the job has findings (see `StubFindings.add_job`'s derived default).
+        "coverage_acknowledged": False,
+        "assessed": True,
+        "unassessed_modules": [],
     }
 
 

@@ -72,7 +72,7 @@ from flask import abort, jsonify, redirect, render_template, request, send_file,
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from scribble import finding_grouping_adapter, findings_service, host
+from scribble import coverage, finding_grouping_adapter, findings_service, host
 from scribble.artifacts_storage import delete_file, guess_content_type
 from scribble.authz import can_view_client_id, can_view_engagement, host_is_mounted
 from scribble.content import schema
@@ -114,6 +114,20 @@ _MAX_REPHRASE_CHARS = 20_000
 
 
 from scribble.artifacts_api import _as_uuid  # noqa: E402  -- one shared body-id parser (lotek#335)
+
+
+def _acknowledged_or_400(raw) -> bool:
+    """The #656 coverage override, as a form field. Unparseable is a 400, never a guess.
+
+    Shares `scribble.coverage.parse_acknowledgement` with the machine route so the browser and the PAT
+    surface accept exactly the same words -- a checkbox posts `"on"`, a scripted form post may send
+    `"true"`, and both must mean the same thing on both surfaces. An unchecked checkbox sends nothing
+    at all, which parses as a well-formed NO: the override is opt-in by construction.
+    """
+    acknowledged, well_formed = coverage.parse_acknowledgement(raw)
+    if not well_formed:
+        abort(400, "invalid acknowledge_inconclusive")
+    return acknowledged
 
 
 def _as_int(value) -> int | None:
@@ -279,23 +293,40 @@ def _apply_engagement_form(engagement: ReportBoard, form, db) -> str | None:
     return None
 
 
-def _adopt_job_onto_board(db, engagement: ReportBoard, job_id: str, actor) -> None:
+def _adopt_job_onto_board(
+    db, engagement: ReportBoard, job_id: str, actor, *, acknowledged: bool = False
+) -> None:
     """Link + pour ONE scan job onto ``engagement`` — the SINGLE shared body of ``adopt_job`` and the
     by-core one-click ``adopt_job_by_core``, so every promote routes through ONE place and never forks
     the #845 predicate.
 
-    Order is load-bearing (mirrors the machine route): the anchor check (#845) runs FIRST, then the
-    refuse-on-conflict mark (#632) GATES the pour — a cross-engagement job 409s and a job already
-    adopted elsewhere 409s, and NOTHING is poured or linked in either case. An unknown/not-viewable job
-    (host ``get_job`` -> ``None``) is a silent no-op — the same one-answer-no-leak posture the routes give.
+    Order is load-bearing (mirrors the machine route): the scan-coverage gate (#656) runs FIRST, then
+    the anchor check (#845), then the refuse-on-conflict mark (#632) GATES the pour — an unassessed job
+    409s, a cross-engagement job 409s and a job already adopted elsewhere 409s, and NOTHING is poured or
+    linked in any case. An unknown/not-viewable job (host ``get_job`` -> ``None``) is a silent no-op —
+    the same one-answer-no-leak posture the routes give.
+
+    COVERAGE GOES FIRST, and before ``mark_job_promoted`` specifically: that call is this path's gate
+    AND its side effect, so checking coverage after it would leave an unassessed job adopted-but-
+    unpoured — a link the un-adopt flow would then have to clean up. Refusing first leaves nothing.
+    ``acknowledged`` is the operator's deliberate override and defaults to False, so a caller that
+    forgets to thread it refuses rather than promotes.
+
+    The refusal is raised as ``coverage.CoverageRefused`` rather than ``abort``-ed here because the two
+    callers must render it differently — ``adopt_job`` answers `board.js` with a JSON `error` code it
+    can branch on, while ``adopt_job_by_core`` is a plain form POST that shows the sentence. The rule
+    stays in one place; only the wording of the answer is the caller's.
 
     The CALLER owns write-gating (``host_can_write``) and resolving/committing ``engagement``; this body
-    is only get_job -> anchor -> mark -> promote. ``abort(409)`` raises through the view.
+    is only get_job -> coverage -> anchor -> mark -> promote. ``abort(409)`` raises through the view.
     """
     findings_ns = host.findings()
     job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
     if job is None:  # unknown/not-viewable/no id -> silent no-op, exactly like the routes
         return
+    inconclusive = not coverage.may_promote(job)
+    if inconclusive and not acknowledged:
+        raise coverage.CoverageRefused(job, job_id)
     from scribble.promote import (  # lazy: promote.py is Track D's file
         CrossEngagementPromote,
         assert_promote_anchor,
@@ -316,6 +347,12 @@ def _adopt_job_onto_board(db, engagement: ReportBoard, job_id: str, actor) -> No
     promote_job(db, engagement=engagement, findings=dtos,
                 actor_username=current_actor_username(),
                 job_engagement_id=getattr(job, "engagement_id", None))
+    # An ACKNOWLEDGED adopt says so IN the engagement, in the same transaction as the findings it
+    # qualifies: a deliverable that kept the findings but lost the caveat would be worse than one that
+    # carried neither.
+    if inconclusive:
+        coverage.write_coverage_note(db, engagement=engagement, job=job, job_id=job_id,
+                                     actor_username=current_actor_username())
 
 
 def _board_for_core(db, core_id: uuid.UUID) -> ReportBoard:
@@ -472,7 +509,16 @@ def register(api_bp, bp) -> None:
             # still created (exactly as a bare import would) and we still redirect to it, so a real-vs-bogus
             # job is indistinguishable in the response. A 409 (cross-engagement/already-adopted) instead
             # rolls the fresh board back — commit is last.
-            _adopt_job_onto_board(db, board, job_id, current_actor())
+            # A coverage refusal (#656) rolls the fresh board back with it, exactly like the 409s above —
+            # commit is last. This is a plain form POST from a core job page, not a fetch(), so the
+            # operator reads the sentence; there is no client here to branch on an `error` code.
+            try:
+                _adopt_job_onto_board(
+                    db, board, job_id, current_actor(),
+                    acknowledged=_acknowledged_or_400(request.form.get("acknowledge_inconclusive")),
+                )
+            except coverage.CoverageRefused as exc:
+                abort(409, str(exc))
             db.commit()
             return redirect(url_for("scribble.engagement_board", engagement_id=board.id))
 
@@ -745,6 +791,7 @@ def register(api_bp, bp) -> None:
         if not host_can_write():
             abort(403)
         job_id = (request.form.get("job_id") or "").strip()
+        acknowledged = _acknowledged_or_400(request.form.get("acknowledge_inconclusive"))
         actor = current_actor()
         promoted_ref = None
         with open_session() as db:
@@ -754,6 +801,15 @@ def register(api_bp, bp) -> None:
             findings_ns = host.findings()
             job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
             if job is not None:
+                # Scan-coverage gate (#656) — identical rule to the machine twin, because this route is
+                # equally a boundary into a client deliverable. Checked BEFORE anything is poured and
+                # before `mark_job_promoted`, so a refusal leaves the board untouched and the job
+                # unlinked. 409-with-a-sentence is this file's existing refusal idiom (see the anchor
+                # refusal below). This route is a form POST, not a fetch(), so the operator reads the
+                # sentence directly — no `error` code to branch on is needed here.
+                inconclusive = not coverage.may_promote(job)
+                if inconclusive and not acknowledged:
+                    abort(409, coverage.refusal_message(job, job_id))
                 from scribble.promote import CrossEngagementPromote, promote_job  # lazy: promote.py
                 dtos = findings_ns.list_findings(job_id, actor)
                 try:
@@ -766,6 +822,9 @@ def register(api_bp, bp) -> None:
                     abort(409, f"This report board is anchored to engagement {exc.anchor}; the scan job "
                                f"belongs to engagement {exc.job_engagement_id}. Reassign the job, or "
                                f"promote it into that engagement's board.")
+                if inconclusive:
+                    coverage.write_coverage_note(db, engagement=engagement, job=job, job_id=job_id,
+                                                 actor_username=current_actor_username())
                 db.commit()
                 promoted_ref = engagement.id  # capture inside the session for the host-side write below
         if promoted_ref is not None:
@@ -790,12 +849,22 @@ def register(api_bp, bp) -> None:
         """
         if not host_can_write():
             abort(403)
+        acknowledged = _acknowledged_or_400(request.form.get("acknowledge_inconclusive"))
         actor = current_actor()
         with open_session() as db:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
-            _adopt_job_onto_board(db, engagement, job_id, actor)
+            # JSON, not the `abort(409, ...)` the shared body uses for the conflict/anchor refusals:
+            # this route is driven by `board.js` over fetch(), which before #656 could read 409 as ONE
+            # thing ("already adopted elsewhere"). Two different 409s that look identical to the client
+            # would mean a coverage refusal is reported to the operator as an adoption conflict — a
+            # wrong sentence that sends them to fix the wrong problem. The `error` code is what makes
+            # them tellable apart; the conflict path keeps its existing shape.
+            try:
+                _adopt_job_onto_board(db, engagement, job_id, actor, acknowledged=acknowledged)
+            except coverage.CoverageRefused as exc:
+                return jsonify(coverage.refusal_body(exc.job, exc.job_id)), coverage.REFUSAL_STATUS
             db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 

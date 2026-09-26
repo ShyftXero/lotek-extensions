@@ -29,7 +29,12 @@ def _engagement(session_factory, name: str = "E"):
 
 def test_adopt_links_an_unadopted_job(client, stub_host, session_factory):
     eid, anchor = _engagement(session_factory)
-    stub_host.findings.add_job("job-x", owner_id=1, dtos=[], engagement_id=anchor)  # admin may view it
+    # `assessed=True` stated outright: this test is about the LINK, and since lotek#656 a job whose
+    # coverage is unknown is refused before it can be adopted (see test_promote_coverage_guard.py).
+    # Leaving it unstated would make this assert the coverage guard by accident instead.
+    stub_host.findings.add_job(
+        "job-x", owner_id=1, dtos=[], engagement_id=anchor, assessed=True
+    )  # admin stub may view it
 
     resp = client.post(f"/scribble/engagements/{eid}/adopt-job/job-x")
     assert resp.status_code in (302, 303), resp.data  # redirects back to the board

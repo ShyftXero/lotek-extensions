@@ -53,7 +53,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, jsonify, request
 from sqlalchemy import select
 
-from scribble import findings_service, host, metadata
+from scribble import coverage, findings_service, host, metadata
 from scribble.api_schemas import (
     AddFindingRequest,
     BulkMoveFindingsRequest,
@@ -1360,6 +1360,22 @@ def scribble_resolve_template():
 # ── 8. POST /engagements/<id>/promote-job/<job_id> ──────────────────────────────────────────────────
 
 
+def _acknowledge_inconclusive_or_400(raw) -> tuple[bool, tuple[Response, int] | None]:
+    """``(acknowledged, refusal)`` for the #656 coverage override. Absent/empty means NOT acknowledged.
+
+    The parse itself is ``scribble.coverage.parse_acknowledgement`` -- shared with the browser surface,
+    so the two promote paths cannot drift into accepting different words. This wrapper only turns "not
+    well-formed" into this blueprint's 400 shape. Ambiguous input is refused, never guessed at.
+    """
+    acknowledged, well_formed = coverage.parse_acknowledgement(raw)
+    if not well_formed:
+        return False, (
+            jsonify({"error": "bad_request", "detail": "invalid acknowledge_inconclusive"}),
+            400,
+        )
+    return acknowledged, None
+
+
 @machine_bp.post("/engagements/<uuid:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
 def scribble_promote_job(engagement_id: str, job_id: str):
@@ -1376,7 +1392,20 @@ def scribble_promote_job(engagement_id: str, job_id: str):
 
     Aggregation (resolving each finding to a library template, nesting matches under one shared parent,
     everything else bridged verbatim) is ``scribble.promote.promote_job``'s concern, not this module's.
+
+    SCAN COVERAGE (lotek#656): a job that produced no tool evidence -- or whose coverage was never
+    measured at all -- is refused here, because this route is the boundary where scan output becomes a
+    CLIENT deliverable. The verdict comes from the host (``JobDTO.assessed``, lotek PR #927); reading
+    it is deliberately not core's job, so the decision is ``scribble.coverage``'s. The check sits
+    BEFORE ``promote_job`` and before the commit, so a refusal leaves the engagement exactly as it
+    found it and records no promotion on the host.
     """
+    acknowledged, refusal = _acknowledge_inconclusive_or_400(
+        (request.get_json(silent=True) or {}).get("acknowledge_inconclusive")
+    )
+    if refusal is not None:
+        return refusal
+
     actor = host.actor()
     actor_username = actor.username if actor else None
     with open_session() as db:
@@ -1391,6 +1420,11 @@ def scribble_promote_job(engagement_id: str, job_id: str):
         job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
         if job is None:
             return jsonify({"error": "not_found", "detail": "job not found"}), 404
+
+        inconclusive = not coverage.may_promote(job)
+        if inconclusive and not acknowledged:
+            return jsonify(coverage.refusal_body(job, job_id)), coverage.REFUSAL_STATUS
+
         dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
 
         from scribble.promote import CrossEngagementPromote, promote_job  # lazy: scribble/promote.py
@@ -1414,6 +1448,16 @@ def scribble_promote_job(engagement_id: str, job_id: str):
                     f"that engagement's report board."
                 ),
             }), 409
+
+        # An ACKNOWLEDGED promotion says so IN the engagement, in the same transaction as the findings
+        # it qualifies: a deliverable that kept the findings but lost the caveat would be worse than one
+        # that carried neither. Note that `acknowledge_inconclusive` on a job that IS assessed is a
+        # no-op, not a way to staple a coverage caveat onto a clean scan. Placed after the
+        # CrossEngagementPromote handler above, which returns, so a refused pairing writes no note.
+        if inconclusive:
+            coverage.write_coverage_note(
+                db, engagement=engagement, job=job, job_id=job_id, actor_username=actor_username
+            )
         db.commit()
 
     # Record the assignment on the host's own generic Job.promoted_* columns (separate session/engine —
@@ -1428,6 +1472,12 @@ def scribble_promote_job(engagement_id: str, job_id: str):
             "promoted": result.get("promoted", 0),
             "skipped": result.get("skipped", 0),
             "parents": result.get("parents", 0),
+            # Reported on EVERY success, not only the acknowledged ones, so a caller that never sends
+            # the flag still learns the coverage verdict its findings were promoted under -- and a
+            # `true` here is the receipt that a coverage note was written into the engagement.
+            "coverage_acknowledged": inconclusive,
+            "assessed": coverage.job_assessed(job),
+            "unassessed_modules": list(coverage.unassessed_modules(job)),
         }
     )
 
