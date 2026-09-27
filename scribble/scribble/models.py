@@ -20,11 +20,13 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +44,15 @@ from scribble.enums import (
     VariableScope,
     VariableType,
 )
+
+# The partial-unique index that makes "one scan finding pours into a report board at most once" a
+# DATABASE rule instead of a Python one (ext#257). Named once, here, because two other places must spell
+# it identically: ``BoardFinding.__table_args__`` below (which is what a fresh database actually gets --
+# see the comment there) and ``promote.is_promote_dedup_conflict``, which recognises the violation by
+# name to decide whether a lost race is retryable. The alembic revision that retrofits it onto an
+# existing database (``a1b7c3e05d94``) deliberately repeats the literal rather than importing this: a
+# migration is pinned to the schema as it was, and must not shift when a model constant is renamed.
+PROMOTE_DEDUP_INDEX = "uq_scribble_findings_engagement_source"
 
 # --------------------------------------------------------------------------- clients & engagements
 
@@ -313,6 +324,34 @@ class BoardFinding(Base, TimestampMixin):
     keeps a nullable link back to the template it came from. Field names mirror Lotek's ``Finding``."""
 
     __tablename__ = "scribble_findings"
+    # ONE scan finding pours into a report board AT MOST ONCE (ext#257). ``promote.promote_job`` dedups
+    # by reading ``engagement.findings`` into a Python set and then inserting, which two CONCURRENT
+    # promotions of the same job -- a double-clicked "Add to report", a client retry, the browser and the
+    # machine API at once -- both pass before either commits, doubling every finding in the deliverable.
+    # A Python check cannot close that window; only the database can, so the rule lives here.
+    #
+    # PARTIAL, on non-null ``source_finding_id`` only. Author-written findings, synthesized parent
+    # write-ups and the #656 coverage note all legitimately carry NULL there and many share an
+    # engagement, so a total unique index would refuse them. (Both backends already treat NULL keys as
+    # distinct in a UNIQUE index, so the WHERE clause is about index SIZE and stating the rule out loud,
+    # not about correctness -- but say it anyway: a reader should not have to know that NULL rule to see
+    # that authored findings are exempt.)
+    #
+    # Declared on the MODEL, not only in the alembic revision that builds it on existing databases
+    # (a1b7c3e05d94): ``db.run_migrations`` builds a FRESH database with ``Base.metadata.create_all`` and
+    # stamps head WITHOUT replaying the chain, so a migration-only index would be missing from every new
+    # deployment and every unit test. Its sibling ``uq_scribble_report_board_core_engagement`` is
+    # migration-only for exactly that reason and is absent on fresh databases -- do not copy that.
+    __table_args__ = (
+        Index(
+            PROMOTE_DEDUP_INDEX,
+            "engagement_id",
+            "source_finding_id",
+            unique=True,
+            postgresql_where=text("source_finding_id IS NOT NULL"),
+            sqlite_where=text("source_finding_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     engagement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_report_boards.id"))

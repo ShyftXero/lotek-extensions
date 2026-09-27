@@ -238,18 +238,23 @@ def write_coverage_note(
     ``promote_job`` itself is idempotent and a note that stacked would make one retried call look like
     a worsening coverage picture.
 
-    🔴 That idempotence is SEQUENTIAL-retry idempotence, and deliberately no stronger. The lookup below
-    reads ``engagement.findings`` and then inserts, so two CONCURRENT acknowledged promotions can both
-    see no matching row and write two notes -- ``scribble_findings`` carries no uniqueness that would
-    stop them (``source_finding_id`` is indexed ``unique=False``; the model has no ``__table_args__``).
+    🔴 That idempotence is SEQUENTIAL-retry idempotence, and still deliberately no stronger. The lookup
+    below reads ``engagement.findings`` and then inserts, so two CONCURRENT acknowledged promotions can
+    both see no matching row and write two notes.
 
-    Not fixed here, because fixing it HERE would be the wrong shape: ``promote.promote_job`` dedups by
-    the same read-then-write (it reads ``promoted_source_ids``/``legacy_titles`` into Python sets, then
-    inserts), so the same race duplicates every promoted FINDING, not just this note. Giving the note a
-    database-enforced key while the findings it annotates keep none would buy a tidy caveat attached to a
-    doubled report -- and would publish a one-note-per-(engagement, job) guarantee this module cannot
-    honour alone. The race is real and is filed as its own defect (ext#257); it predates #656 and wants
-    one constraint covering the promotion as a whole.
+    ext#257 closed the FINDINGS half of that race: ``uq_scribble_findings_engagement_source``, a
+    partial-unique index on ``(engagement_id, source_finding_id)``, now has the database refuse a
+    duplicate promotion, and ``promote.promote_job`` re-reads and reports the loser's rows as skipped.
+    This note is NOT covered by it -- the note descends from no scan finding, so its ``source_finding_id``
+    is NULL, and the index is partial precisely so that authored rows like this one stay legal.
+
+    Narrowed, then, but not gone: the note can still double when two acknowledged promotions collide. In
+    practice the retry usually swallows it, because the losing promotion re-reads ``engagement.findings``
+    before this function runs and then finds the winner's note -- but a job with ZERO promotable findings
+    has nothing to collide ON, so no retry fires and two notes can land. Closing that honestly needs a
+    durable per-(engagement, job) marker to key on: the title is a rendered string, not an identity, and
+    no column here holds the job id. Filed as its own defect (ext#258) rather than papered over with a
+    second title-shaped guess.
     """
     title = COVERAGE_NOTE_TITLE.format(job_id=job_id)
     from scribble.content.schema import doc_from_text  # local: avoids a content <-> models import cycle
