@@ -12,11 +12,14 @@ text) -- not just "some text is present somewhere".
 
 from __future__ import annotations
 
+import json
 import re
 
 from scribble.content import render_html, schema
+from scribble.enums import Severity
 from scribble.models import VulnerabilityTemplate
 from scribble.seed import faction_parse
+from scribble.seed.loader import _LOTEK_JSON
 
 _KERBEROAST = "At Least One Member of an Admin Group Is Vulnerable to the Kerberoast Attack"
 _NO_EDR_RECOMMENDATION = "Using EDR - Microsoft Defender for Endpoint"  # empty Recommendation in source
@@ -127,6 +130,79 @@ def test_seeded_template_count(session_factory):
     # 44 FACTION default library + 19 lotek AD/network entries (lotek_vulnerabilities.json).
     with session_factory() as db:
         assert db.query(VulnerabilityTemplate).count() == 63
+
+
+# ---------------------------------------------------------------------------
+# Seed severity regression pins (LOT-68)
+#
+# The other seed guards pin record count, token vocabulary, and rendering, but nothing asserted a
+# template imports at a specific severity. That gap was not theoretical: LOT-49 (PR #262) silently moved
+# SMBv1 Enabled and Outdated or Vulnerable Software Component from high to medium, the suite stayed
+# green, and only human review caught it (both reverted to high). These pins make a name->severity edit
+# to a default template trip a test instead of shipping. SeverityId per FACTION's scale (loader.py
+# _SEV_BY_ID): Critical=5 High=4 Medium=3 Low=2/1 Informational=0.
+# ---------------------------------------------------------------------------
+
+# Hardcoded on purpose: the pin is only a regression guard if it is INDEPENDENT of the seed source. Do
+# not derive this from lotek_vulnerabilities.json -- deriving from the file under guard would let a
+# severity edit slip through. Keys must stay in lockstep with that file's Name set
+# (test_default_template_name_set_is_pinned enforces it), so adding/removing a default forces a pin here.
+_EXPECTED_LOTEK_SEVERITY: dict[str, Severity] = {
+    "AS-REP Roasting": Severity.high,                                  # SeverityId 4
+    "Kerberoasting": Severity.high,                                    # SeverityId 4
+    "AD CS - Vulnerable Certificate Template or CA (ESC)": Severity.high,  # SeverityId 4
+    "DCSync - Domain Credential Database Extraction": Severity.critical,   # SeverityId 5
+    "SMB Signing Not Required": Severity.medium,                       # SeverityId 3
+    "SMB Null Session Allowed": Severity.medium,                       # SeverityId 3
+    "SMBv1 Enabled": Severity.high,                                    # SeverityId 4 (LOT-49 regression)
+    "LLMNR / NBT-NS / mDNS Poisoning": Severity.high,                 # SeverityId 4
+    "Weak or Guessable Credentials": Severity.high,                    # SeverityId 4
+    "Cross-Site Scripting (XSS)": Severity.high,                       # SeverityId 4
+    "SQL Injection": Severity.critical,                               # SeverityId 5
+    "Exposed Version Control Directory (.git)": Severity.high,        # SeverityId 4
+    "Sensitive Information Disclosure": Severity.medium,              # SeverityId 3
+    "Missing or Weak HTTP Security Headers": Severity.low,            # SeverityId 2
+    "Outdated or Vulnerable Software Component": Severity.high,       # SeverityId 4 (LOT-49 regression)
+    "Exposed Administrative or Debug Endpoint": Severity.high,        # SeverityId 4
+    "Weak TLS/SSL Configuration": Severity.medium,                    # SeverityId 3
+    "Kubernetes Security Misconfiguration": Severity.medium,          # SeverityId 3
+    "Exposed Network Service": Severity.low,                          # SeverityId 2
+}
+
+
+def test_default_template_name_set_is_pinned():
+    """The pinned severity map must cover exactly the names shipped in lotek_vulnerabilities.json. If a
+    default is added, removed, or renamed, this trips first -- forcing a matching (de)escalation-proof
+    severity pin below rather than letting a new default ship with no severity guard at all."""
+    shipped = {rec["Name"] for rec in json.loads(_LOTEK_JSON.read_text())}
+    assert shipped == set(_EXPECTED_LOTEK_SEVERITY), (
+        "lotek_vulnerabilities.json default names drifted from the pinned severity map; add/remove the "
+        "corresponding entry in _EXPECTED_LOTEK_SEVERITY (with its SeverityId comment)"
+    )
+
+
+def test_default_templates_import_at_pinned_severity(session_factory):
+    """Every default template resolves to its pinned severity. A seed edit that re-escalates or
+    de-escalates a default (the LOT-49 SMBv1 / Outdated-component high->medium slip) trips here."""
+    with session_factory() as db:
+        for name, expected in _EXPECTED_LOTEK_SEVERITY.items():
+            tmpl = db.query(VulnerabilityTemplate).filter_by(name=name).one()
+            assert tmpl.default_severity == expected, (
+                f"{name!r} seeded at {tmpl.default_severity} but is pinned to {expected}; a default "
+                "template severity changed -- confirm the edit is intended before updating the pin"
+            )
+
+
+def test_smbv1_and_outdated_component_stay_high(session_factory):
+    """Explicit named pin for the two templates LOT-49 silently moved high->medium (reverted on review).
+    Redundant with the map above by design: a targeted guard survives a careless map edit."""
+    with session_factory() as db:
+        smbv1 = db.query(VulnerabilityTemplate).filter_by(name="SMBv1 Enabled").one()
+        outdated = db.query(VulnerabilityTemplate).filter_by(
+            name="Outdated or Vulnerable Software Component"
+        ).one()
+    assert smbv1.default_severity == Severity.high  # SeverityId 4
+    assert outdated.default_severity == Severity.high  # SeverityId 4
 
 
 def test_company_name_present_no_raw_client_or_foreign_tokens_remain(session_factory):
