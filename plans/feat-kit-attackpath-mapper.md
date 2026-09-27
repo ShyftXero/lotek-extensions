@@ -1,8 +1,8 @@
 # Plan: feat/kit-attackpath-mapper
 
 - **Branch:** `feat/kit-attackpath-mapper`  (worktree: `.claude/worktrees/vector-mapper`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/268 (draft)
+- **Status:** 🟢 ready to merge (pending `/adversarial-reviewer`)
 
 ## Purpose
 LOT-70 (LOT-48/2). The Vector layout mapper: a pure, deterministic transform from an exploiteer
@@ -38,13 +38,20 @@ the render step and its coupling (open item O1).
   floor, in ranked order; a node's row is taken from the first path that contains it (stable).
 
 ## Done
-- [ ] `kit/lotek_kit/attackpath_map.py` — `map_ranked_path`, `map_engagement`, `node_id`, zone helpers.
-- [ ] `kit/tests/test_attackpath_map.py` — byte-identical determinism, node ids/zones/rows, malformed
-      edge dropped by normalize, no external URLs introduced by the mapper.
+- [x] `kit/lotek_kit/attackpath_map.py` — `map_ranked_path`, `map_engagement`, `node_id`, zone helpers.
+- [x] `kit/tests/test_attackpath_map.py` — byte-identical determinism, node ids/zones/rows, malformed
+      edge dropped by normalize, no external URLs introduced by the mapper (15 tests).
+- [x] `uvx ruff check kit` + `cd kit && uv run --extra dev pyrefly check` + `pytest -q` green
+      (full kit suite 114 passed).
+- [x] AC#3 proven end-to-end: mapped model rendered through vector's real `render_deliverable` is
+      self-contained (0 external src/href; only the SVG XML namespace URI appears, never fetched).
+- [x] `/security-review` over `git diff main...HEAD` — no findings (full data-flow trace).
+- [x] Draft PR #268 opened into `main`.
 
 ## Remaining
-- [ ] `uvx ruff check kit` + `cd kit && uv run --extra dev pyrefly check` + `pytest -q` green.
-- [ ] Reviews + `--ack-*` markers; PR into `main`.
+- [ ] `/adversarial-reviewer` pass (not runnable in the authoring session) + mark PR ready; merge
+      (`--merge`/`--rebase`; squash disabled on this repo).
+- [ ] Re-pin `lotek-kit` into lotek core after merge.
 - [ ] LOT-71 wires the mapper into the G2 bridge and resolves O1 (render coupling).
 
 ## Notes / gotchas
