@@ -31,6 +31,7 @@ from scribble.enums import (
     severity_rank,
 )
 from scribble.models import normalize_strategic_recommendations
+from scribble.reporting import narrative as _narrative
 from scribble.reporting.layouts import enabled_section_keys
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
@@ -116,6 +117,12 @@ class FindingCtx:
     # need nothing here; this set is what the two renderers consult for the DERIVED sections they compute
     # themselves (``affected_assets`` from children, the ``reproduction`` request list), so those skip too.
     suppressed: frozenset = frozenset()
+    # ADDITIVE (LOT-48/4): the deterministic, templated one-sentence summary of this finding
+    # (``narrative.render_finding_one_liner``) -- severity, exploitability tier, host, CVE, title, in one
+    # voice, no model. Defaults "" so a ``FindingCtx`` built by an older caller (or a test constructing one
+    # directly) is byte-identical to before; ``build_report_context`` fills it. Advisory prose only: it
+    # summarizes fields already present, it never adds or reclassifies a fact.
+    one_liner: str = ""
 
 
 @dataclass
@@ -619,7 +626,7 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     artifacts = [] if "evidence" in suppressed else _artifact_ctxs(
         finding.artifacts, engagement_id=engagement.id
     )
-    return FindingCtx(
+    fctx = FindingCtx(
         id=finding.id,
         title=finding.title,
         severity=finding.severity.value,
@@ -645,6 +652,9 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
         owasp_categories=list(finding.owasp_categories or []),
         threat_intel=metadata.threat_intel_display(finding.threat_intel),
     )
+    # LOT-48/4: the deterministic one-liner, built from the fields just assembled above (no model).
+    fctx.one_liner = _narrative.render_finding_one_liner(fctx)
+    return fctx
 
 
 def _nest_findings(ordered_findings, *, artifact_url) -> list[FindingCtx]:
@@ -720,52 +730,45 @@ def _collapse_by_kind(top_level: list[FindingCtx]) -> list[FindingCtx]:
     return [reps[key] for key in order]
 
 
-def _build_narrative(company_name: str, rollup: SeverityRollup, groups: list[GroupCtx]) -> str:
-    """A short, factual executive-summary paragraph synthesized from ``rollup`` (severity counts) and
-    the titles of the worst top-level findings -- ADDS to (never replaces) the risk banner / KPI tiles
-    ``_render_summary``/``_build_context`` already render."""
-    company = company_name or "the target environment"
-    if rollup.total == 0:
-        return f"This assessment of {company} did not identify any findings within the tested scope."
+def _top_finding_titles(groups: list[GroupCtx]) -> list[str]:
+    """The worst LIVE finding titles (critical/high), in group/finding order, deduped, capped at 3.
 
-    crit = rollup.counts.get("critical", 0)
-    high = rollup.counts.get("high", 0)
-    plural = "finding" if rollup.total == 1 else "findings"
-    lead = f"This assessment of {company} identified {rollup.total} {plural} across the environment"
-
-    severity_bits = []
-    if crit:
-        severity_bits.append(f"{crit} critical")
-    if high:
-        severity_bits.append(f"{high} high-risk")
-    if severity_bits:
-        issue_word = "issue" if (crit + high) == 1 else "issues"
-        lead += f", including {' and '.join(severity_bits)} {issue_word}."
-    else:
-        lead += "."
-
+    LIVE only (lotek#618): a remediated or risk-accepted finding still renders its card, but naming it
+    as a "most significant exposure" would present a closed-out issue -- or a false positive, before it
+    was excluded outright -- as present risk."""
     top_titles: list[str] = []
     seen: set[str] = set()
     for group in groups:
         for finding in group.findings:
-            # LIVE only (lotek#618). A remediated or risk-accepted finding still renders its card,
-            # but naming it here would have the executive summary present a closed-out issue -- or a
-            # false positive, before they were excluded outright -- as a "most significant exposure".
             if finding.disposition != DISPOSITION_LIVE:
                 continue
             if finding.severity in ("critical", "high") and finding.title not in seen:
                 seen.add(finding.title)
                 top_titles.append(finding.title)
-    top_titles = top_titles[:3]
+    return top_titles[:3]
 
-    if top_titles:
-        lead += " The most significant exposures were " + "; ".join(top_titles) + "."
-    else:
-        lead += (
-            " No critical or high-risk issues were identified; findings were limited to "
-            "lower-severity observations."
-        )
-    return lead
+
+def _build_narrative(
+    company_name: str,
+    rollup: SeverityRollup,
+    groups: list[GroupCtx],
+    *,
+    path_count: int = 0,
+    coverage_limited_jobs: int = 0,
+) -> str:
+    """The executive-summary paragraph -- a deterministic, templated (Jinja, no model) synthesis of
+    ``rollup`` (severity counts), the worst finding titles, the discovered cradle-to-DA attack-path
+    count, and the could-not-run coverage posture. ADDS to (never replaces) the risk banner / KPI tiles
+    ``_render_summary``/``_build_context`` already render. See ``scribble.reporting.narrative`` (LOT-48/4):
+    it states tested / found / could-not-run in that order and never reads "no issues" for a job that
+    did not run (plan §5, INV-DATA-08)."""
+    return _narrative.render_executive_summary(
+        company_name=company_name,
+        rollup=rollup,
+        top_titles=_top_finding_titles(groups),
+        path_count=path_count,
+        coverage_limited_jobs=coverage_limited_jobs,
+    )
 
 
 def _build_checklists(engagement) -> list[ChecklistCtx]:
@@ -959,6 +962,29 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     ]
     findings_by_kind = host.group_findings(group_rows, by="kind")
     findings_by_host = host.group_findings(group_rows, by="host")
+    # LOT-48/4 executive-summary facts. Built once, off structured data, no model:
+    #  - discovered cradle-to-DA attack paths = the count of report-included attack chains (#628).
+    #  - could-not-run posture = the scan-coverage limitation notes ``coverage.write_coverage_note``
+    #    writes when an operator promotes an UNASSESSED job on an acknowledged gap (category "Scan
+    #    coverage", #656). Their presence is the honest signal that a job did not run, so the summary
+    #    must never read "no issues" (plan §5 / INV-DATA-08). Counted only over notes that actually
+    #    render (``report_visible``), since the summary points the reader to the limitations "below".
+    chain_ctxs = _chain_ctxs(engagement.chains)
+    coverage_limited_jobs = sum(
+        1 for f in engagement.findings
+        if getattr(f, "category", None) == "Scan coverage" and report_visible(f)
+    )
+    narrative = _build_narrative(
+        company_name,
+        rollup,
+        groups_out,
+        path_count=len(chain_ctxs),
+        coverage_limited_jobs=coverage_limited_jobs,
+    )
+    # Optional AI prose-polish seam (LOT-48 vision §2): OFF by default -> identity, so the report is
+    # byte-for-byte deterministic. Never in the decision path; the deterministic ``narrative`` above is
+    # the source of truth and is what ships unless an operator explicitly opts in AND a provider answers.
+    narrative = _narrative.polish(narrative, kind="exec_summary")
     return ReportContext(
         engagement_id=engagement.id,
         engagement_name=engagement.name,
@@ -971,12 +997,12 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         rollup=rollup,
         artifacts=engagement_artifacts,
         diagrams=diagrams,
-        chains=_chain_ctxs(engagement.chains),
+        chains=chain_ctxs,
         retest_closeout=_retest_closeout_rows(engagement, rendered_finding_ids),
         strategic_recommendations=_strategic_rec_ctxs(engagement),
         checklists=_build_checklists(engagement),
         variables=build_context(engagement),
-        narrative=_build_narrative(company_name, rollup, groups_out),
+        narrative=narrative,
         activity_log=_build_activity_log(engagement),
         # lotek#620: carry the operator override (Severity enum → its ``.value`` string) + rationale.
         # None when unset; the renderers keep ``rollup.overall`` as the honest computed band.
