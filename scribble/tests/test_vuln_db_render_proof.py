@@ -52,6 +52,13 @@ def _render(session_factory, eng_id):
     return ctx, html, docx_text
 
 
+def _docx_body_xml(session_factory, eng_id) -> str:
+    """The raw OOXML of the rendered report body -- used to prove run-level shading (highlight) survives."""
+    with session_factory() as db:
+        docx_bytes = render_report_docx(build_report_context(db.get(ReportBoard, eng_id)))
+    return docx.Document(io.BytesIO(docx_bytes)).element.body.xml
+
+
 def test_asrep_kerberoast_certipy_secretsdump_render_with_real_facts(session_factory):
     """The four AD-rollup-family templates, promoted with realistic proven facts (CONTRACT-FACTS.md
     §5.1): DOMAIN/AFFECTED resolve to real values, no literal token survives, no empty tag."""
@@ -135,11 +142,15 @@ def test_llmnr_poisoning_renders_captured_accounts(session_factory):
     assert not _LITERAL_TOKEN_RE.search(html)
 
 
-def test_asrep_template_degrades_cleanly_with_no_facts_at_all(session_factory):
-    """The adversarial case the task explicitly requires: promote a finding that resolves to a touched
-    template but carries NO facts and NO target_host (the worst realistic input) and confirm the
-    rendered HTML/DOCX has no literal {{TOKEN}}, and -- the concrete bug this task fixed -- no empty
-    ``<code></code>`` tag from a blanked DOMAIN/TARGET_HOST reference in narrative prose."""
+_HIGHLIGHT_SPAN_RE = re.compile(r'<span class="unresolved-var">.*?</span>', re.DOTALL)
+
+
+def test_asrep_template_highlights_unresolved_tags_with_no_facts(session_factory):
+    """The adversarial case: promote a finding that resolves to a touched template but carries NO facts
+    and NO target_host (the worst realistic input). Under LOT-63 the render must not crash and must not
+    leave an empty ``<code></code>`` tag -- but a tag that never resolved (DOMAIN/TARGET_HOST/AFFECTED)
+    is now *highlighted*, not silently blanked, so the gap can't ship unnoticed. Every literal token that
+    survives must be wrapped in an ``.unresolved-var`` highlight; none may leak bare."""
     dto = FakeFindingDTO(
         id=1, title="AS-REP roastable accounts (bare)", source="asreproast",
         dedupe_key="asreproast:bare", target_host=None, facts={},
@@ -147,9 +158,16 @@ def test_asrep_template_degrades_cleanly_with_no_facts_at_all(session_factory):
     eng_id = _promote(session_factory, [dto])
     ctx, html, docx_text = _render(session_factory, eng_id)
 
-    assert not _LITERAL_TOKEN_RE.search(html), _LITERAL_TOKEN_RE.findall(html)
-    assert not _LITERAL_TOKEN_RE.search(docx_text), _LITERAL_TOKEN_RE.findall(docx_text)
+    # LOT-63: unpopulated tags are surfaced (loud), not dropped.
+    assert _LITERAL_TOKEN_RE.search(html), "expected unresolved tokens to be surfaced, not blanked"
+    # ...but every surviving literal token is wrapped in a highlight -- none leaks bare into the prose.
+    stripped = _HIGHLIGHT_SPAN_RE.sub("", html)
+    assert not _LITERAL_TOKEN_RE.search(stripped), _LITERAL_TOKEN_RE.findall(stripped)
+    # The concrete bug this template rewrite fixed still must not regress: no empty tag from a blank fact.
     assert not _EMPTY_TAG_RE.search(html), _EMPTY_TAG_RE.findall(html)
+    # The highlight survives into the DOCX the client receives (yellow shading fill on the run).
+    assert "{{DOMAIN}}" in docx_text
+    assert 'w:fill="ffff00"' in _docx_body_xml(session_factory, eng_id)
 
     finding = ctx.groups[0].findings[0]
     assert finding.variables["DOMAIN"] == ""

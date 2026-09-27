@@ -22,6 +22,9 @@ _MARKS = {
     "code": ("<code>", "</code>"),
     "strike": ("<s>", "</s>"),
     "underline": ("<u>", "</u>"),
+    # LOT-63: an unresolved/unpopulated ``{{KEY}}`` the resolver flagged — highlighted yellow via CSS so
+    # a missing client name can't ship silently. The ``.unresolved-var`` rule lives in the report's _CSS.
+    schema.MARK_UNRESOLVED: ('<span class="unresolved-var">', "</span>"),
 }
 
 VarResolver = Callable[[str], str]
@@ -75,7 +78,12 @@ def _render_node(node: dict, *, resolve_var: VarResolver | None, artifact_url: A
         return f'<img src="{src}" alt="{alt}"/>'
     if t == schema.VARIABLE:
         key = node.get("attrs", {}).get("key", "")
-        value = resolve_var(key) if resolve_var else "{{" + key + "}}"
+        value = resolve_var(key) if resolve_var else None
+        # LOT-63: an unknown tag (no resolver) or a resolved-but-unpopulated value is highlighted rather
+        # than emitted as a literal/blank. (The report path pre-resolves via ``resolve_doc``, which marks
+        # these already; this covers callers that render ``variable`` nodes directly with a resolver.)
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            return f'<span class="unresolved-var">{escape("{{" + key + "}}")}</span>'
         return escape(value)
     if t == schema.INLINE_IMAGE:
         attrs = node.get("attrs", {})

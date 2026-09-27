@@ -38,6 +38,13 @@ FIGURE = "figure"
 
 CUSTOM_NODES = (VARIABLE, INLINE_IMAGE, FIGURE)
 
+# Inline marks. Standard StarterKit marks (bold/italic/...) are handled structurally by the renderers;
+# this is the one Scribble-specific mark:
+# - ``unresolvedVar`` — a ``{{KEY}}`` that resolution left unpopulated (unknown variable, or a known one
+#                       with no value). The resolver stamps it at render time so the HTML/DOCX renderers
+#                       can highlight the gap in yellow (LOT-63) instead of shipping it silently.
+MARK_UNRESOLVED = "unresolvedVar"
+
 # The default set of named blocks a finding/template carries. ``reproduction`` (copy-pastable repro
 # steps, auto-filled from a scan finding's curl PoC on promotion) is offered on every finding/template
 # but, like the others, is omitted from the rendered report when empty.
