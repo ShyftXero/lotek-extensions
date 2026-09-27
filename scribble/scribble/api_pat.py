@@ -64,6 +64,7 @@ from scribble.api_schemas import (
     MoveFindingRequest,
     PatchEngagementRequest,
     PatchFindingRequest,
+    PromoteJobRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
     UpdateAttackPathRequest,
@@ -1378,6 +1379,7 @@ def _acknowledge_inconclusive_or_400(raw) -> tuple[bool, tuple[Response, int] | 
 
 @machine_bp.post("/engagements/<uuid:engagement_id>/promote-job/<job_id>")
 @host.require_scope("write")
+@request_body(PromoteJobRequest, required=False)
 def scribble_promote_job(engagement_id: str, job_id: str):
     """Bulk-promote a lotek scan job's Findings into a Scribble engagement.
 
@@ -1400,9 +1402,20 @@ def scribble_promote_job(engagement_id: str, job_id: str):
     BEFORE ``promote_job`` and before the commit, so a refusal leaves the engagement exactly as it
     found it and records no promotion on the host.
     """
-    acknowledged, refusal = _acknowledge_inconclusive_or_400(
-        (request.get_json(silent=True) or {}).get("acknowledge_inconclusive")
-    )
+    # `_json_object_or_400` before `.get`, the idiom the other body-taking machine routes use. A truthy
+    # NON-object body -- `[1,2]`, `123`, `"hello"` -- has no `.get`, so reading the flag off it raised
+    # AttributeError INSIDE the view and answered 500 for a plainly malformed request. (`[]` and `null`
+    # escaped it by being falsy, which is how it stayed invisible.) A bodyless POST stays valid: that is
+    # the ordinary promotion, and `or {}` keeps it a well-formed empty object.
+    #
+    # Unknown fields are deliberately NOT refused here, unlike the PATCH routes: this route accepted any
+    # body at all before the flag existed, and the published contract says it IGNORES `idempotency_key`
+    # rather than rejecting it. Refusing extras would break callers already sending one. Nothing is lost
+    # safety-wise -- a MISSPELLED `acknowledge_inconclusive` simply is not the override, so it refuses.
+    body, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
+    acknowledged, refusal = _acknowledge_inconclusive_or_400(body.get("acknowledge_inconclusive"))
     if refusal is not None:
         return refusal
 

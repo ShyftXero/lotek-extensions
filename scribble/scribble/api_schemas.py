@@ -45,9 +45,19 @@ def idempotent_route(fn):
     return fn
 
 
-def request_body(model: type[BaseModel]):
+# Stamped alongside ``REQUEST_MODEL_ATTR`` when the route accepts a body but does not REQUIRE one, so
+# the generator can publish ``requestBody.required: false``. It published ``true`` unconditionally, which
+# is a false contract for ``promote-job``: a bodyless POST is the normal call (the body carries only the
+# coverage override), and a generated client that believes the body is mandatory sends ``{}`` at best and
+# refuses to build the call at worst.
+REQUEST_BODY_OPTIONAL_ATTR = "__scribble_request_body_optional__"
+
+
+def request_body(model: type[BaseModel], *, required: bool = True):
     def deco(fn):
         setattr(fn, REQUEST_MODEL_ATTR, model)
+        if not required:
+            setattr(fn, REQUEST_BODY_OPTIONAL_ATTR, True)
         return fn
 
     return deco
@@ -124,6 +134,28 @@ class AddFindingRequest(BaseModel):
         None,
         description="Dedup key (or Idempotency-Key header). A retry with the SAME request replays the "
         "original response; the same key with a DIFFERENT request is refused 422 (use a new key).",
+    )
+
+
+class PromoteJobRequest(BaseModel):
+    """Body of ``POST /scribble/machine/engagements/{engagement_id}/promote-job/{job_id}`` (write scope).
+
+    OPTIONAL in full — a bodyless POST is the ordinary promotion. The one field exists to answer the
+    scan-coverage refusal (lotek#656): a job whose ``assessed`` verdict is not ``True`` is refused ``409
+    job_not_assessed``, and this flag is the only way past it.
+
+    ``idempotency_key`` is deliberately NOT here. This route does not route through the idempotency seam
+    and BULK-CREATES findings; accepting the key in the published schema would advertise a retry-safety
+    it does not have (see ``IDEMPOTENT_ATTR``).
+    """
+
+    acknowledge_inconclusive: bool | None = Field(
+        None,
+        description="Promote anyway when this job's scan coverage is inconclusive (`assessed` is `false` "
+        "— every module ran and produced no tool evidence — or `null` — coverage was never measured). "
+        "Omitted, empty and `false` all REFUSE; anything that is not recognisably a yes or a no is a 400, "
+        "never a guess. Setting it is an operator act with a consequence: the promotion writes a coverage "
+        "note INTO the engagement naming `unassessed_modules`, so the deliverable states its own limits.",
     )
 
 

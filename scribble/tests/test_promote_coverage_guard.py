@@ -359,6 +359,45 @@ def test_unparseable_override_is_a_400_not_a_guess(client, stub_host, raw):
     assert r.get_json()["detail"] == "invalid acknowledge_inconclusive"
 
 
+@pytest.mark.parametrize("body", [[1, 2], "hello", 123, True], ids=str)
+def test_a_non_object_body_is_a_400_not_a_500(client, stub_host, body):
+    """The BODY's own type is checked before the flag is read off it.
+
+    `(request.get_json(silent=True) or {}).get(...)` reads the flag straight off whatever JSON arrived.
+    Handed a truthy non-object there is no `.get`, so the view raised AttributeError and the caller got a
+    500 — an unhandled server error for a plainly malformed request, on the one route that gates a client
+    deliverable. `[]` and `null` hid it by being falsy (`[] or {}` is `{}`), which is why the cases here
+    are all TRUTHY; a regression that only guarded the falsy shapes would pass a laxer version of this.
+
+    Fails CLOSED either way — no promotion happens on a 400 — so this is a diagnosability bug, not a hole
+    in the guard: 500 tells the operator "we broke", 400 tells them "fix your body", and only one of those
+    is true.
+    """
+    stub_host.findings.add_job(
+        "job-1", engagement_id=CORE, owner_id=7, dtos=[FakeFindingDTO(id=1)], assessed=True
+    )
+    _operator(stub_host)
+    eid = _engagement(client, stub_host)
+
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1", json=body)
+    assert r.status_code == 400, r.get_json()
+    assert r.get_json()["detail"] == "body must be a JSON object"
+
+
+def test_a_bodyless_promote_is_still_the_ordinary_call(client, stub_host):
+    """The body guard must not make a body MANDATORY — an assessed job promotes with no body at all."""
+    stub_host.findings.add_job(
+        "job-1",
+        engagement_id=CORE, owner_id=7, dtos=[FakeFindingDTO(id=1, title="SQLi")], assessed=True,
+    )
+    _operator(stub_host)
+    eid = _engagement(client, stub_host)
+
+    r = client.post(f"{M}/engagements/{eid}/promote-job/job-1")
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()["coverage_acknowledged"] is False
+
+
 def test_acknowledged_string_form_is_accepted(client, stub_host):
     """Word forms match `_include_in_report_or_400`'s vocabulary, for callers that can only send text."""
     stub_host.findings.add_job(
