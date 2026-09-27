@@ -132,7 +132,11 @@ def make_var_resolver(ctx: dict[str, Any]) -> Callable[[str], str]:
 
 # A rendered ``{{...}}`` that stayed unresolved: either an unknown tag left literal by ``_KeepUndefined``,
 # or a foreign token (``{{.pass_pol}}``) the resolver passed through verbatim. Both get highlighted.
-_UNRESOLVED_TOKEN_RE = re.compile(r"\{\{.*?\}\}", re.DOTALL)
+# The body is ``[^{}]*`` (not ``.*?``) on purpose: a real token never nests braces, and the negated
+# class matches newlines too, so this needs no DOTALL. It also stays linear on adversarial input like
+# ``{{{{{{...`` — ``.*?`` there is O(n^2) backtracking (a polynomial-ReDoS flag), because every ``{{``
+# start rescans to end hunting a ``}}``; ``[^{}]*`` fails at the next brace, so each start is O(1).
+_UNRESOLVED_TOKEN_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 
 def _with_unresolved_mark(marks: list[dict] | None) -> list[dict]:
