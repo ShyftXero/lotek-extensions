@@ -24,6 +24,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from scribble.dispositions import confidence_from_dto, snapshot_source_facts, status_from_dto
 from scribble.facts import resolve_variables, synthesize_parent_variables
@@ -35,7 +36,15 @@ from scribble.metadata import (
     normalize_cve_ids,
     normalize_cwe_ids,
 )
-from scribble.models import BoardFinding, ScribbleVulnMap, TemplateVariable, VulnerabilityTemplate
+from scribble.models import (
+    PROMOTE_DEDUP_INDEX as _UQ_PROMOTE_DEDUP,
+)
+from scribble.models import (
+    BoardFinding,
+    ScribbleVulnMap,
+    TemplateVariable,
+    VulnerabilityTemplate,
+)
 
 
 class CrossEngagementPromote(Exception):
@@ -327,6 +336,22 @@ def promote_one(
     return finding
 
 
+def is_promote_dedup_conflict(exc: BaseException) -> bool:
+    """Is ``exc`` the ``(engagement_id, source_finding_id)`` partial-unique index refusing a duplicate?
+
+    The two backends name it differently and neither is structured: Postgres quotes the INDEX
+    (``duplicate key value violates unique constraint "uq_scribble_findings_engagement_source"``),
+    SQLite names the COLUMNS (``UNIQUE constraint failed: scribble_findings.engagement_id,
+    scribble_findings.source_finding_id``). Match both, and match NOTHING else -- a retry is only correct
+    for the conflict we know how to resolve by re-reading, and swallowing an unrelated ``IntegrityError``
+    here would hide a real bug behind a silent second attempt.
+    """
+    text = f"{getattr(exc, 'orig', None) or exc}"
+    return _UQ_PROMOTE_DEDUP in text or (
+        "UNIQUE constraint failed" in text and "scribble_findings.source_finding_id" in text
+    )
+
+
 def promote_job(
     db: Any, *, engagement: Any, findings: list, actor_username: str | None, job_engagement_id: Any
 ) -> dict:
@@ -345,6 +370,23 @@ def promote_job(
     (``host.mark_job_promoted``, called by ``scribble/api_pat.py`` in a separate transaction after this
     one commits).
 
+    That idempotence is CONCURRENT, not merely sequential (ext#257). The dedup below reads
+    ``engagement.findings`` into Python sets and then inserts, and two simultaneous promotions of the
+    same job -- a double-clicked "Add to report", a client retry, the browser and the machine API at
+    once -- both pass that read before either commits. The database settles it:
+    ``uq_scribble_findings_engagement_source`` (a partial-unique index on non-null
+    ``source_finding_id``) refuses the loser's rows. This function then does what the loser WOULD have
+    done had it read a moment later: the whole insert batch runs inside a SAVEPOINT, a conflict rolls
+    that savepoint back (touching nothing the caller wrote before calling in), ``engagement`` is expired
+    so the collection re-reads the winner's committed rows, and the build runs once more -- where the
+    ordinary dedup now sees those rows and reports them as ``skipped``. So a lost race answers exactly
+    like a sequential re-promote, not with a 500 and not with a doubled deliverable.
+
+    ONE retry, then the ``IntegrityError`` propagates: a second conflict is no longer this race (the
+    re-read already saw the winner), and a loop here would spin against a real defect instead of
+    surfacing it. An ``IntegrityError`` from any OTHER constraint is never retried
+    (:func:`is_promote_dedup_conflict`).
+
     Returns ``{"promoted": int, "skipped": int, "parents": int}``.
 
     Refuses (``CrossEngagementPromote``) unless ``job_engagement_id`` (the SOURCE job's core engagement,
@@ -352,6 +394,35 @@ def promote_job(
     jobs from its own core engagement (lotek#845). Checked FIRST, before any row is read or written.
     """
     assert_promote_anchor(engagement, job_engagement_id)
+    for last_attempt in (False, True):
+        savepoint = db.begin_nested()
+        try:
+            result = _promote_findings(
+                db, engagement=engagement, findings=findings, actor_username=actor_username
+            )
+            db.flush()  # force the conflict HERE, inside the savepoint, not at the caller's commit
+        except IntegrityError as exc:
+            savepoint.rollback()
+            if last_attempt or not is_promote_dedup_conflict(exc):
+                raise
+            # Re-read: the collection in memory predates the winner's commit, which is precisely why
+            # the dedup missed it.
+            db.expire(engagement)
+            continue
+        savepoint.commit()
+        return result
+    raise AssertionError("unreachable: the loop returns or raises on both attempts")  # pragma: no cover
+
+
+def _promote_findings(
+    db: Any, *, engagement: Any, findings: list, actor_username: str | None
+) -> dict:
+    """The insert batch :func:`promote_job` runs (and, on a lost race, re-runs) inside a SAVEPOINT.
+
+    Split out ONLY so the retry can re-run it against a freshly-read ``engagement.findings``; the tenancy
+    guard stays in ``promote_job`` because it must answer once, before anything is read or written. Do
+    not call this directly -- it has no anchor check and no conflict handling.
+    """
     declarations = _load_declarations(db)
 
     promoted_source_ids = {
