@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from scribble.api_schemas import IDEMPOTENT_ATTR, REQUEST_MODEL_ATTR
+from scribble.api_schemas import IDEMPOTENT_ATTR, REQUEST_BODY_OPTIONAL_ATTR, REQUEST_MODEL_ATTR
 from scribble.host import SCOPE_ATTR
 
 # Flask rule placeholders: `<name>`, `<conv:name>`.
@@ -265,8 +265,33 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
         "finding_id": _UUID, "engagement_id": _UUID,
         "deduped": {"type": "boolean", "description": "200 + true when this scan finding was already "
                     "promoted into this engagement — nothing was created."}})),
-    "scribble_promote_job": (200, _obj({"engagement_id": _UUID, "promoted": {"type": "integer"},
-                                        "skipped": {"type": "integer"}, "parents": {"type": "integer"}})),
+    "scribble_promote_job": (200, _obj({
+        "engagement_id": _UUID, "promoted": {"type": "integer"},
+        "skipped": {"type": "integer"}, "parents": {"type": "integer"},
+        # lotek#656. Reported on EVERY success, not only the acknowledged ones, so a caller that never
+        # sends the flag still learns the coverage verdict its findings were promoted under.
+        "coverage_acknowledged": {
+            "type": "boolean",
+            "description": "True when this job's scan coverage was inconclusive and the promotion went "
+                           "ahead on an explicit `acknowledge_inconclusive`. It is also the RECEIPT that "
+                           "a coverage note naming `unassessed_modules` was written into the engagement.",
+        },
+        "assessed": {
+            "type": ["boolean", "null"],
+            "description": "The host's scan-coverage verdict for this job: `true` = some module produced "
+                           "tool evidence; `false` = every module was measured and produced none; `null` "
+                           "= coverage was never measured, so whether anything was tested is unknown. "
+                           "Only `true` promotes un-acknowledged — `null` refuses exactly as loudly as "
+                           "`false`, because \"we do not know\" must not reach a client deliverable.",
+        },
+        "unassessed_modules": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Modules whose own coverage verdict is not `true`, in pipeline order. EMPTY is "
+                           "a real answer with two different meanings — read it with `assessed`: empty "
+                           "under `true` means nothing was missing, empty under `null` means there are no "
+                           "per-module verdicts to report at all, NOT that every module was fine.",
+        },
+    })),
     "scribble_list_findings": (200, _obj(
         {
             "engagement_id": _UUID,
@@ -358,6 +383,85 @@ def _openapi_path(rule: str) -> tuple[str, list[dict[str, Any]]]:
     return _RULE_PARAM.sub(lambda m: "{" + m.group("name") + "}", rule), params
 
 
+# Per-route 409s that have NOTHING to do with the idempotency seam, keyed by view name:
+# ``{error code: what it means}``. The generator attached a 409 only where the seam could produce one, so
+# a route with a refusal of its OWN published no 409 at all — ``promote-job`` has answered
+# ``cross_engagement`` since lotek#845 and ``job_not_assessed`` since lotek#656, and a generated client
+# could discover neither. A client that meets an undocumented 409 reads it as unknown and retries harder,
+# which is the worst possible response to both of these: the job/board pairing will never become valid by
+# repetition, and the coverage verdict will never improve by repetition either.
+#
+# One 409 response object per operation is all OpenAPI allows, so where a route can refuse for several
+# reasons they are merged below and the `error` code in the body is what tells them apart — which is
+# exactly why the codes are listed in `x-refusal-codes`.
+_ROUTE_CONFLICTS: dict[str, dict[str, str]] = {
+    "scribble_create_engagement": {
+        "conflict": "An engagement with this name already exists for this client.",
+    },
+    "scribble_promote_job": {
+        "job_not_assessed": (
+            "This job's scan coverage will not support a client deliverable (lotek#656): `assessed` is "
+            "`false` (every module ran and produced no tool evidence) or `null` (coverage was never "
+            "measured). The body carries the verdict in `assessed` and the modules in "
+            "`unassessed_modules`. DO NOT retry the same call — it will refuse identically. Either fix "
+            "the scan, or re-send with `acknowledge_inconclusive: true`, which promotes and writes a "
+            "coverage note naming those modules into the engagement."
+        ),
+        "cross_engagement": (
+            "This report board is anchored to a different core engagement than the job belongs to "
+            "(lotek#845). Reassign the job, or promote it onto its own engagement's board."
+        ),
+    },
+}
+
+# The idempotency seam's in-flight refusal, attached only where the route REALLY routes through the seam
+# (``IDEMPOTENT_ATTR``). Keying it off the HTTP method instead advertised retry-safety on four routes that
+# have none — including ``promote-job``, which BULK-CREATES findings. A client retries on that promise, so
+# a false one is worse than silence.
+#
+# The code is ``conflict``, NOT some seam-specific string: that is what the host really puts in the body
+# (lotek ``app/idempotency.py``, ported faithfully in ``tests/conftest.py::_make_stub_idempotent``). It
+# therefore COLLIDES with ``create_engagement``'s own ``conflict`` — which is precisely why the merge
+# below groups by code instead of letting one cause overwrite the other, and why
+# ``x-idempotency-refusal`` is a separate flag rather than something a client could infer from the code.
+_SEAM_IN_FLIGHT_CODE = "conflict"
+_SEAM_IN_FLIGHT = (
+    "A request under this `Idempotency-Key` is STILL IN FLIGHT. Do not retry harder — the original is "
+    "running and its slot is never reclaimed (\"old\" cannot be told from \"slow\"). Wait, or use a new key."
+)
+
+
+def _conflict_response(view_name: str, honours_idempotency: bool) -> dict[str, Any] | None:
+    """The merged ``409`` for one operation, or ``None`` when it cannot answer 409 at all.
+
+    ``x-refusal-codes`` is the machine-readable half, and the reason this merges rather than picking one
+    cause: unrelated refusals share the status code, so a client branches on the `error` string in the
+    body — and it can only do that if the document tells it which strings to expect. Where two causes
+    share a code the descriptions are joined under it, because for those two a client genuinely CANNOT
+    tell them apart from the code alone and the document should not pretend otherwise.
+
+    ``x-idempotency-refusal`` says whether the seam's in-flight refusal is among them. It is a flag of its
+    own for the same reason — the codes collide — and it is the property ``tests/test_machine_openapi.py``
+    pins in both directions, now that "this route documents a 409" and "this route promises retry-safety"
+    are no longer the same statement.
+    """
+    causes: dict[str, list[str]] = {
+        code: [text] for code, text in _ROUTE_CONFLICTS.get(view_name, {}).items()
+    }
+    if honours_idempotency:
+        causes.setdefault(_SEAM_IN_FLIGHT_CODE, []).append(_SEAM_IN_FLIGHT)
+    if not causes:
+        return None
+    return {
+        "description": "\n\n".join(
+            f"`{code}` — {' '.join(texts)}" for code, texts in sorted(causes.items())
+        ),
+        "content": {"application/json": {"schema": _ref("Error")}},
+        "x-refusal-codes": sorted(causes),
+        "x-idempotency-refusal": honours_idempotency,
+    }
+
+
 def _summary(doc: str | None) -> tuple[str, str]:
     """``(summary, description)`` from a view docstring: first line, then the FIRST PARAGRAPH only.
 
@@ -418,8 +522,13 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
             for def_name, def_schema in (model_schema.pop("$defs", {}) or {}).items():
                 components[def_name] = def_schema
             components[model.__name__] = model_schema
-            request_body = {"required": True, "content": {
-                "application/json": {"schema": _ref(model.__name__)}}}
+            # `required` from the stamp, not a constant. `promote-job` accepts a body carrying only the
+            # coverage override, and the ordinary promotion sends none at all — publishing it as
+            # mandatory would make a generated client demand a body the route does not want.
+            request_body = {
+                "required": not getattr(view, REQUEST_BODY_OPTIONAL_ATTR, False),
+                "content": {"application/json": {"schema": _ref(model.__name__)}},
+            }
 
         path_item = paths.setdefault(oapi_path, {})
         for method in sorted((rule.methods or set()) - _IMPLICIT_METHODS):
@@ -441,18 +550,14 @@ def build_spec(app: Any, blueprint_name: str, *, version: str = "0") -> dict[str
                                        "authentication to enforce.",
                         "content": {"application/json": {"schema": _ref("Error")}}},
             }
-            # The two idempotency refusals are attached only where the route REALLY routes through the
-            # seam. Keying them off the HTTP method instead advertised retry-safety on four routes that
-            # have none — including `promote-job`, which BULK-CREATES findings. A client retries on that
-            # promise, so a false one is worse than silence.
-            if getattr(view, IDEMPOTENT_ATTR, False) and method in ("POST", "PUT", "PATCH", "DELETE"):
-                responses["409"] = {
-                    "description": "A request under this `Idempotency-Key` is STILL IN FLIGHT. Do not "
-                                   "retry harder — the original is running and its slot is never "
-                                   "reclaimed (\"old\" cannot be told from \"slow\"). Wait, or use a "
-                                   "new key.",
-                    "content": {"application/json": {"schema": _ref("Error")}},
-                }
+            mutating = method in ("POST", "PUT", "PATCH", "DELETE")
+            honours_idempotency = bool(getattr(view, IDEMPOTENT_ATTR, False)) and mutating
+            # `409` now has two independent sources — the idempotency seam, and a route's OWN refusal
+            # (`promote-job`'s `job_not_assessed`/`cross_engagement`) — so it is assembled rather than
+            # attached wholesale. `422` stays seam-only: it has no non-idempotency source.
+            if mutating and (conflict := _conflict_response(view.__name__, honours_idempotency)):
+                responses["409"] = conflict
+            if honours_idempotency:
                 responses["422"] = {
                     "description": "This `Idempotency-Key` was already used for a DIFFERENT request. "
                                    "Nothing was created and nothing was replayed; use a new key.",

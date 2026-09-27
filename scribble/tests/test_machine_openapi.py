@@ -80,7 +80,9 @@ _UNDECLARED_REQUEST_BODIES = frozenset(
     {
         "scribble_create_vuln_map",
         "scribble_resolve_template",
-        "scribble_promote_job",
+        # `scribble_promote_job` was here until lotek#656 gave it a body worth declaring
+        # (`acknowledge_inconclusive`). The positive control below is what makes removing it MANDATORY
+        # rather than optional once the model exists.
         "scribble_delete_finding",
         "scribble_delete_group",
         "scribble_delete_attack_path",
@@ -148,38 +150,90 @@ def test_refusals_a_client_must_handle_are_documented(spec):
 
 
 def test_the_retry_refusals_are_documented_where_and_only_where_they_can_happen(app, spec):
-    """`409`/`422` are the idempotency seam's refusals, so an operation must document them **iff** it
-    actually routes through the seam.
+    """An operation must advertise the idempotency seam's refusals **iff** it actually routes through it.
 
     Keying them off the HTTP method — which is what this generator did until review caught it — promised
     retry-safety on four routes that have none, `POST …/promote-job/{job_id}` among them, and that one
     BULK-CREATES findings. A client retries on the promise, so a false one is worse than silence. This
     asserts the document against the `IDEMPOTENT_ATTR` stamp in both directions.
+
+    🔴 The assertion is on `x-idempotency-refusal`, NOT on the presence of `409`. Those were the same
+    statement only while the seam was the sole thing on this blueprint that could answer 409; `promote-job`
+    now refuses `job_not_assessed` (lotek#656) and has refused `cross_engagement` since lotek#845, both
+    with a 409 of their own. Reading a bare `409` as "promises retry-safety" would force the choice
+    between publishing a false promise and hiding two real refusals from every generated client. `422`
+    still keys off the bare code, because it has no source other than the seam.
     """
     by_op = {
-        rule.endpoint: getattr(view, IDEMPOTENT_ATTR, False)
+        rule.endpoint: bool(getattr(view, IDEMPOTENT_ATTR, False))
         for rule, view in openapi.machine_views(app, "scribble_machine")
     }
-    seen_true = seen_false = False
+    seen_true = seen_false = seen_unseamed_409 = False
     for path, item in spec["paths"].items():
         for method, op in item.items():
             if method not in ("post", "put", "patch", "delete"):
                 continue
             honoured = by_op[op["operationId"]]
             codes = set(op["responses"])
+            conflict = op["responses"].get("409")
             if honoured:
                 seen_true = True
-                assert {"409", "422"} <= codes, (
+                assert conflict is not None and "422" in codes, (
                     f"{method.upper()} {path} routes through the idempotency seam but does not document "
                     f"its refusals: {sorted(codes)}"
                 )
+                assert conflict["x-idempotency-refusal"] is True, (method, path)
+                # The seam really answers `error: "conflict"` (lotek `app/idempotency.py`), so that code
+                # has to be among the ones the document tells a client to expect.
+                assert "conflict" in conflict["x-refusal-codes"], (method, path, conflict)
             else:
                 seen_false = True
-                assert not ({"409", "422"} & codes), (
+                assert "422" not in codes, (
                     f"{method.upper()} {path} advertises retry-safety it does NOT have: {sorted(codes)}"
                 )
-    # Both arms must have run, or this passes vacuously the day the stamp is applied (or dropped) wholesale.
-    assert seen_true and seen_false, (seen_true, seen_false)
+                if conflict is not None:
+                    seen_unseamed_409 = True
+                    assert conflict["x-idempotency-refusal"] is False, (
+                        f"{method.upper()} {path} does not route through the seam but its 409 claims to "
+                        "be the seam's — that is the false retry-safety promise, one level down."
+                    )
+                    assert conflict["x-refusal-codes"], (method, path)
+    # All three arms must have run, or this passes vacuously the day the stamp is applied (or dropped)
+    # wholesale — `seen_unseamed_409` specifically, or the new branch above is never exercised at all.
+    assert seen_true and seen_false and seen_unseamed_409, (seen_true, seen_false, seen_unseamed_409)
+
+
+def test_promote_job_publishes_its_own_refusals_not_the_seam_s(spec):
+    """`POST …/promote-job/{job_id}` is the route the two properties above pull in opposite directions on.
+
+    It BULK-CREATES findings and does not route through the idempotency seam, so it must not carry `422`
+    or claim the seam's 409. It also owns two real 409s a client has to be able to branch on:
+    `job_not_assessed` (lotek#656 — the scan coverage will not support a deliverable) and
+    `cross_engagement` (lotek#845). Both are terminal for the call as sent: retrying the identical request
+    refuses identically, which is exactly what an undocumented 409 provokes a client into doing.
+    """
+    op = spec["paths"]["/scribble/machine/engagements/{engagement_id}/promote-job/{job_id}"]["post"]
+    conflict = op["responses"]["409"]
+    assert conflict["x-idempotency-refusal"] is False
+    assert conflict["x-refusal-codes"] == ["cross_engagement", "job_not_assessed"]
+    assert "422" not in op["responses"]
+    assert "acknowledge_inconclusive" in conflict["description"]
+
+    # The override is a documented request field, and the body is OPTIONAL — the ordinary promotion sends
+    # none at all, so a generated client must not be built to demand one.
+    body = op["requestBody"]
+    assert body["required"] is False, "a bodyless promote is the normal call"
+    model = spec["components"]["schemas"][
+        body["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+    ]
+    assert "acknowledge_inconclusive" in model["properties"]
+    assert not model.get("required"), "nothing in this body is mandatory"
+
+    # And the success payload carries the verdict, not just the counters: a caller that never sends the
+    # flag still has to be able to learn what coverage its findings were promoted under.
+    ok = op["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+    assert {"coverage_acknowledged", "assessed", "unassessed_modules"} <= set(ok)
+    assert ok["assessed"]["type"] == ["boolean", "null"], "null is a verdict, not a missing value"
 
 
 def test_the_report_route_is_not_documented_as_json(spec):

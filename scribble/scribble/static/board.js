@@ -403,14 +403,41 @@
 
     function setMsg(t) { if (msg) msg.textContent = t || ""; }
 
+    // Two DIFFERENT things now answer 409 (lotek#656): the job is adopted elsewhere, or its scan
+    // coverage is inconclusive. Reporting the coverage refusal with the adoption-conflict sentence
+    // would send the operator to fix the wrong problem, so the refusal body's `error` code decides
+    // which sentence to show. The coverage refusal is JSON; the conflict one is not, so a failed
+    // parse falls through to the conflict wording — the shape this handler already assumed.
+    function refusalMessage(r) {
+      return r.json().then(
+        function (body) {
+          if (body && body.error === "job_not_assessed") {
+            return (body.detail || "This scan job's coverage is inconclusive.") +
+              " Tick the inconclusive-coverage box below to adopt it anyway.";
+          }
+          return "That job is already adopted by another engagement.";
+        },
+        function () { return "That job is already adopted by another engagement."; }
+      );
+    }
+
     btn.addEventListener("click", function () {
       var jobId = (input.value || "").trim();
       if (!jobId) { setMsg("Pick a scan job first."); return; }
       btn.disabled = true;
       setMsg("Adopting…");
-      fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)), { method: "POST" })
+      // The lotek#656 override travels as form data, and ONLY when the operator ticked the box — an
+      // unticked box sends the field not at all rather than sending a "false" the server has to
+      // interpret. The server defaults to refusing, so a request that omits it is a refusal.
+      var ack = document.getElementById("scribble-adopt-ack-inconclusive");
+      var payload = new FormData();
+      if (ack && ack.checked) payload.append("acknowledge_inconclusive", "true");
+      fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)),
+            { method: "POST", body: payload })
         .then(function (r) {
-          if (r.status === 409) { setMsg("That job is already adopted by another engagement."); return; }
+          if (r.status === 409) {
+            return refusalMessage(r).then(setMsg);
+          }
           if (r.status === 404) { setMsg("No such scan job, or you can't see it."); return; }
           if (!r.ok && r.status !== 302) { throw new Error("adopt failed"); }
           window.location.reload();

@@ -93,7 +93,8 @@
   </div>
   {# "Promote a scan job" (raw job_id field) was removed here — adopting a job is now a single searchable
      picker in the Source jobs panel below (#234). Both always routed through the same _adopt_job_onto_board,
-     so this was a redundant second affordance that made you paste an opaque UUID. #}
+     so this was a redundant second affordance that made you paste an opaque UUID. The lotek#656
+     inconclusive-coverage override therefore lives on that picker, not here. #}
 </div>
 {% endif %}
 
@@ -186,6 +187,17 @@
     </select>
     <button type="button" class="btn" id="scribble-adopt-job-btn">Adopt job</button>
     <span id="scribble-adopt-job-msg" class="muted"></span>
+    {# lotek#656: a job that produced no tool evidence -- or whose coverage was never measured -- is
+       refused (409) unless this is ticked. UNCHECKED BY DEFAULT and never pre-ticked: board.js only
+       sends the flag when it is checked, so the override is opt-in by construction rather than by a
+       default someone could flip. Without it the browser operator would hit the refusal with no way
+       forward but to hand-craft a POST. Ticking it does NOT hide the gap -- the engagement gets a
+       coverage note naming the modules that produced nothing, and that note renders in the report. #}
+    <label class="muted" style="display:block;margin-top:.4rem;font-size:.85em">
+      <input type="checkbox" id="scribble-adopt-ack-inconclusive" />
+      Adopt even if scan coverage is inconclusive — adds a coverage note to the report naming the
+      modules that produced no evidence
+    </label>
   </div>
   {% endif %}
 </div>
