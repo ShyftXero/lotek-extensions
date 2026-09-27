@@ -41,24 +41,33 @@ def _fc(**over) -> FindingCtx:
 
 # --------------------------------------------------------------------------- exec summary honesty
 
-def test_exec_summary_clean_scope_when_no_coverage_gap():
+def test_exec_summary_ran_clean_branch_when_no_coverage_gap():
+    """RAN-CLEAN (Ghostwriter branch B): assessed, nothing found, no gap. The "no issues" wording lives
+    only here, and it is paired with the honest hedge that it is not a clean bill for what was not tested."""
     out = N.render_executive_summary(company_name="Acme", rollup=_roll(), top_titles=[])
-    assert out == "This assessment of Acme did not identify any findings within the tested scope."
+    assert out == (
+        "We assessed Acme and found no issues in the tested scope. That is a clean result for what we "
+        "tested, not a clean bill for what we did not."
+    )
 
 
 def test_exec_summary_never_says_no_issues_for_a_job_that_did_not_run():
-    """AC2. Zero findings BUT a scan job could not be assessed: the summary must state the could-not-run
-    posture and must NOT read as an all-clear."""
+    """AC2. Zero findings BUT a scan job could not be assessed -> the COULD-NOT-RUN branch (Ghostwriter C):
+    it must state the could-not-run posture and must NOT read as an all-clear. The RAN-CLEAN "no issues"
+    wording must be unreachable here."""
     out = N.render_executive_summary(
         company_name="Acme", rollup=_roll(), top_titles=[], coverage_limited_jobs=1
     )
     lowered = out.lower()
-    assert "did not identify any findings within the tested scope" not in lowered
-    assert "could not be assessed" in lowered
-    assert "not evidence" in lowered  # the honest hedge, not an all-clear
+    assert "found no issues in the tested scope" not in lowered  # the RAN-CLEAN wording is unreachable
+    assert "we could not complete the assessment" in lowered
+    assert "1 scan job could not be assessed" in lowered
+    assert "does not mean the rest is clean. it means we did not test it" in lowered  # the honest hedge
 
 
 def test_exec_summary_states_tested_found_couldnotrun_in_order_with_paths():
+    """MIXED (Ghostwriter branch D): findings AND a coverage gap. Found (count, severity breakdown,
+    paths) is stated before the could-not-run disclaimer, in that order."""
     out = N.render_executive_summary(
         company_name="Acme Corp",
         rollup=_roll(critical=2, high=1, low=3),
@@ -66,20 +75,22 @@ def test_exec_summary_states_tested_found_couldnotrun_in_order_with_paths():
         path_count=2,
         coverage_limited_jobs=1,
     )
-    assert "identified 6 findings" in out
-    assert "2 critical and 1 high-risk issues" in out
-    # found: attack paths are named, cradle-to-DA count present
-    assert "traced 2 cradle-to-Domain-Admin attack paths" in out
-    assert "Domain Admin Compromise; SMB signing not required" in out
-    # ordering: found (paths, exposures) precedes could-not-run (coverage)
-    assert out.index("traced 2") < out.index("Coverage was incomplete")
-    assert out.index("most significant exposures") < out.index("Coverage was incomplete")
+    assert "found 6 issues" in out
+    assert "2 critical, 1 high, and 3 low" in out  # every nonzero band, most severe first
+    # found: cradle-to-DA path count, plural phrasing
+    assert "We chained 2 separate paths from a starting foothold to Domain Admin." in out
+    # ordering: found (paths) precedes could-not-run (coverage disclaimer)
+    assert "We could not assess 1 scan job. This report makes no claim about that scope." in out
+    assert out.index("We chained 2") < out.index("We could not assess")
+    assert "We could not assess 1 scan job could not be assessed" not in out  # noun phrase, not doubled
 
 
 def test_exec_summary_singular_and_no_high_crit_branch():
+    """FOUND (branch A) with only low-severity findings: the count and severity breakdown are stated, and
+    no highest-risk sentence is emitted (there is no LIVE crit/high to name)."""
     out = N.render_executive_summary(company_name="Acme", rollup=_roll(low=1), top_titles=[])
-    assert "identified 1 finding across" in out
-    assert "No critical or high-risk issues were identified" in out
+    assert out == "We assessed Acme and found 1 issue: 1 low."
+    assert "highest-risk findings" not in out
 
 
 def test_no_em_dashes_in_generated_prose():
@@ -105,19 +116,29 @@ def test_one_liner_full_shape():
         title="SMB signing not required", severity="high", target_host="10.0.0.5",
         target_port="445", cve_ids=["CVE-2020-1472"], threat_intel={"kev": True},
     ))
-    assert out == ("High-severity finding (known-exploited) on 10.0.0.5:445 "
-                   "[CVE-2020-1472]: SMB signing not required.")
+    assert out == ("High severity on 10.0.0.5:445, CVE-2020-1472. "
+                   "Listed in CISA KEV as known exploited.")
 
 
-def test_one_liner_omits_empty_clauses():
+def test_one_liner_multiple_cves():
+    out = N.render_finding_one_liner(_fc(
+        title="Chained CVEs", severity="critical", target_host="10.0.0.9",
+        cve_ids=["CVE-2021-1", "CVE-2021-2"],
+    ))
+    assert out == "Critical severity on 10.0.0.9, CVEs CVE-2021-1, CVE-2021-2."
+
+
+def test_one_liner_info_word_and_scope_floor():
+    """info -> "Informational" (Ghostwriter), and a finding with no host/url falls back to "the tested
+    scope" so the sentence never dangles. No title, no CVE clause, no KEV sentence."""
     out = N.render_finding_one_liner(_fc(title="Info leak", severity="info"))
-    assert out == "Info-severity finding: Info leak."
+    assert out == "Informational severity on the tested scope."
 
 
 def test_one_liner_prefers_url_when_no_host():
     out = N.render_finding_one_liner(_fc(title="Reflected XSS", severity="medium",
                                          target_url="https://app/x"))
-    assert out == "Medium-severity finding on https://app/x: Reflected XSS."
+    assert out == "Medium severity on https://app/x."
 
 
 def test_one_liner_is_deterministic():
@@ -228,7 +249,7 @@ def test_build_populates_finding_one_liner(session_factory):
         ctx = build_report_context(db.get(ReportBoard, eng.id))
 
     f = ctx.groups[0].findings[0]
-    assert f.one_liner == "High-severity finding on 10.0.0.5: Weak SMB Signing."
+    assert f.one_liner == "High severity on 10.0.0.5."
 
 
 def test_exec_summary_honesty_end_to_end_with_coverage_note(session_factory):
@@ -247,6 +268,10 @@ def test_exec_summary_honesty_end_to_end_with_coverage_note(session_factory):
         db.expire_all()
         ctx = build_report_context(db.get(ReportBoard, eng.id))
 
+    # The coverage note is itself a report-visible info finding, so this engagement reads as MIXED
+    # (found + a gap), never as an all-clear. AC2: the could-not-run posture is stated and "no issues" is
+    # unreachable.
     lowered = ctx.narrative.lower()
-    assert "did not identify any findings within the tested scope" not in lowered
-    assert "could not be assessed" in lowered
+    assert "found no issues in the tested scope" not in lowered
+    assert "we could not assess" in lowered
+    assert "makes no claim about that scope" in lowered

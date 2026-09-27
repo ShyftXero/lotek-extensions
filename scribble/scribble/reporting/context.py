@@ -118,8 +118,8 @@ class FindingCtx:
     # themselves (``affected_assets`` from children, the ``reproduction`` request list), so those skip too.
     suppressed: frozenset = frozenset()
     # ADDITIVE (LOT-48/4): the deterministic, templated one-sentence summary of this finding
-    # (``narrative.render_finding_one_liner``) -- severity, exploitability tier, host, CVE, title, in one
-    # voice, no model. Defaults "" so a ``FindingCtx`` built by an older caller (or a test constructing one
+    # (``narrative.render_finding_one_liner``) -- severity, location, CVE, KEV, in one voice, no model.
+    # Defaults "" so a ``FindingCtx`` built by an older caller (or a test constructing one
     # directly) is byte-identical to before; ``build_report_context`` fills it. Advisory prose only: it
     # summarizes fields already present, it never adds or reclassifies a fact.
     one_liner: str = ""

@@ -22,8 +22,14 @@ byte-for-byte, so the report is identical whether or not a model was ever config
 the ``draft_api`` seam posture: the host's ``ai_stream`` egress gate defaults OFF and is the real
 switch, and the deterministic string above is always the source of truth.
 
-The strings below are Hardcopy's placeholder voice; the final voice pass against the Lotek voice
-guide is Ghostwriter's (LOT-48/6).
+The strings below are Ghostwriter's Lotek-voice copy (delivered on LOT-72, honesty-doctrine-correct,
+run through unsloppify), wired here by Hardcopy. The final voice pass is Ghostwriter's LOT-74, which is a
+check against this copy, not a rewrite. Jinja placeholders map to the structured facts the engine already
+carries on ``ReportContext``/``FindingCtx``; where Ghostwriter's copy referenced facts the engine does
+not yet carry (named gap_reason / covered_scope / unassessed_scope), the could-not-run branches render on
+the coverage-limited-job COUNT instead of naming scope, so no scope prose is fabricated (evidence-first).
+House rules honored in every string: no em dashes, no semicolons, no UTF middle dots (all three also fail
+``test_report_standing_prose``).
 """
 
 from __future__ import annotations
@@ -49,41 +55,35 @@ _AI_HOOK = "ai_stream"
 _ENV = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
 
 
-# The executive summary. Order is fixed: tested -> found -> could-not-run (plan §5). Whitespace is
-# collapsed after rendering, so the template is laid out for reading, not for output spacing.
+# The executive summary. Ghostwriter's four coverage branches (LOT-72 comment): FOUND, RAN-CLEAN,
+# COULD-NOT-RUN, MIXED. Order within a branch is fixed: tested -> found -> could-not-run (plan §5). The
+# "no issues" (RAN-CLEAN) wording is reachable ONLY when nothing could-not-run, so it can never describe
+# an unassessed job (AC2 / INV-DATA-08). Whitespace is collapsed after rendering. ``path_sentence`` and
+# ``top_sentence`` are prebuilt fragments (empty when they do not apply) and each already carries its own
+# leading space. ``gap_clause`` names the coverage-limited-job count (the engine does not carry named
+# scope strings, so the branch renders on the count, never fabricated scope prose).
 _EXEC_SUMMARY_SRC = """
-{%- if total == 0 -%}
-  {%- if coverage_limited_jobs > 0 -%}
-    This assessment of {{ company }} recorded no findings in the portions of scope that were assessed.
-    {{ coverage_limited_jobs }} scan {{ "job" if coverage_limited_jobs == 1 else "jobs" }} could not be
-    assessed and {{ "was" if coverage_limited_jobs == 1 else "were" }} carried on an acknowledged
-    coverage gap, recorded under the scan-coverage limitations below. The absence of findings there is
-    not evidence those systems are free of the issues the unassessed modules would have detected.
-  {%- else -%}
-    This assessment of {{ company }} did not identify any findings within the tested scope.
-  {%- endif -%}
+{%- if total == 0 and coverage_limited_jobs > 0 -%}
+  We could not complete the assessment of {{ company }}. {{ gap_clause }}. This report covers only the
+  portions of scope that were assessed. No findings here does not mean the rest is clean. It means we did
+  not test it.
+{%- elif total == 0 -%}
+  We assessed {{ company }} and found no issues in the tested scope. That is a clean result for what we
+  tested, not a clean bill for what we did not.
+{%- elif coverage_limited_jobs > 0 -%}
+  We assessed {{ company }} and found {{ total }} {{ issue_word }}: {{ severity_breakdown }}.
+  {{- path_sentence }} We could not assess {{ gap_noun }}. This report makes no claim about that scope.
 {%- else -%}
-  This assessment of {{ company }} identified {{ total }} {{ finding_word }}
-  across the environment{{ severity_clause }}.
-  {%- if path_count > 0 %} The engagement traced {{ path_count }} cradle-to-Domain-Admin
-  attack {{ "path" if path_count == 1 else "paths" }} through the discovered findings.{% endif %}
-  {%- if top_titles %} The most significant exposures were {{ top_titles | join("; ") }}.
-  {%- else %} No critical or high-risk issues were identified; findings were limited to
-  lower-severity observations.{% endif %}
-  {%- if coverage_limited_jobs > 0 %} Coverage was incomplete: {{ coverage_limited_jobs }}
-  scan {{ "job" if coverage_limited_jobs == 1 else "jobs" }} could not be assessed and
-  {{ "is" if coverage_limited_jobs == 1 else "are" }} recorded under the scan-coverage
-  limitations below, so these findings are not a complete picture of those systems.{% endif %}
+  We assessed {{ company }} and found {{ total }} {{ issue_word }}: {{ severity_breakdown }}.
+  {{- path_sentence }}{{ top_sentence }}
 {%- endif -%}
 """
 
-# The per-finding one-liner. Every clause is omit-when-empty, so a finding with no host or CVE still
-# reads cleanly. ``exploit_tier`` is the exploitability qualifier derived in ``render_finding_one_liner``.
+# The per-finding one-liner (Ghostwriter's shape): severity word + location + optional CVE clause + an
+# optional KEV sentence. No title (the finding card carries its own), one voice for every finding.
+# ``location`` always resolves ("the tested scope" as the floor), so the sentence never dangles.
 _FINDING_ONE_LINER_SRC = """
-{{ severity_label }}-severity finding
-{%- if exploit_tier %} ({{ exploit_tier }}){% endif %}
-{%- if host %} on {{ host }}{% endif %}
-{%- if cve %} [{{ cve }}]{% endif %}: {{ title }}.
+{{ severity_word }} severity on {{ location }}{{ cve_clause }}.{{ kev_sentence }}
 """
 
 _EXEC_SUMMARY_TMPL = _ENV.from_string(_EXEC_SUMMARY_SRC)
@@ -96,20 +96,68 @@ def _collapse_ws(text: str) -> str:
     return " ".join(text.split())
 
 
-def _severity_clause(rollup: SeverityRollup) -> str:
-    """The ", including N critical and M high-risk issue(s)" tail, or "" when there are none. Reads the
-    LIVE-only counts already computed in ``rollup`` (lotek#618), so it never overstates present risk."""
-    crit = rollup.counts.get("critical", 0)
-    high = rollup.counts.get("high", 0)
-    bits: list[str] = []
-    if crit:
-        bits.append(f"{crit} critical")
-    if high:
-        bits.append(f"{high} high-risk")
-    if not bits:
+# Severity bands, most severe first, and the word each renders as in prose (Ghostwriter: info ->
+# "informational"). Drives the severity_breakdown and keeps the ordering in one place.
+_SEVERITY_BANDS: tuple[tuple[str, str], ...] = (
+    ("critical", "critical"),
+    ("high", "high"),
+    ("medium", "medium"),
+    ("low", "low"),
+    ("info", "informational"),
+)
+
+
+def _oxford(items: list[str]) -> str:
+    """Prose list join: "" / "A" / "A and B" / "A, B, and C". No semicolons (house rule)."""
+    items = [i for i in items if i]
+    if not items:
         return ""
-    issue_word = "issue" if (crit + high) == 1 else "issues"
-    return f", including {' and '.join(bits)} {issue_word}"
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+def _severity_breakdown(rollup: SeverityRollup) -> str:
+    """Every NONZERO severity band, most severe first, as "2 critical, 1 high, and 3 low". Reads the
+    LIVE-only counts already computed in ``rollup`` (lotek#618), so it never overstates present risk.
+    "" only when the rollup is empty (a branch that does not use this fragment)."""
+    bits = [f"{rollup.counts.get(key, 0)} {word}" for key, word in _SEVERITY_BANDS
+            if rollup.counts.get(key, 0)]
+    return _oxford(bits)
+
+
+def _path_sentence(path_count: int) -> str:
+    """The cradle-to-Domain-Admin path sentence, with a leading space, or "" when no path was chained.
+    Singular / plural per Ghostwriter's copy. ``path_count`` is ``len(ctx.chains)`` (report-included)."""
+    if path_count <= 0:
+        return ""
+    if path_count == 1:
+        return " We chained a full path from a starting foothold to Domain Admin."
+    return f" We chained {path_count} separate paths from a starting foothold to Domain Admin."
+
+
+def _top_sentence(top_titles: list[str]) -> str:
+    """The highest-risk-findings sentence, with a leading space, or "" when there is no LIVE crit/high
+    finding to name. ``top_titles`` is already LIVE-only, ordered, and capped at 3 by the caller."""
+    prose = _oxford([t for t in (top_titles or []) if t])
+    if not prose:
+        return ""
+    return f" The highest-risk findings are {prose}."
+
+
+def _gap_noun(coverage_limited_jobs: int) -> str:
+    """The coverage-limited scan-job count as a noun phrase: "1 scan job" / "N scan jobs". The engine
+    carries the COUNT, not named scope, so the could-not-run branches name the count and never fabricate a
+    scope description (evidence-first)."""
+    return f"{coverage_limited_jobs} scan {'job' if coverage_limited_jobs == 1 else 'jobs'}"
+
+
+def _gap_clause(coverage_limited_jobs: int) -> str:
+    """The standalone could-not-run sentence fragment for the COULD-NOT-RUN branch: "1 scan job could not
+    be assessed". Count-based (see ``_gap_noun``)."""
+    return f"{_gap_noun(coverage_limited_jobs)} could not be assessed"
 
 
 def render_executive_summary(
@@ -122,6 +170,11 @@ def render_executive_summary(
 ) -> str:
     """The executive-summary paragraph, rendered deterministically from structured facts (no model).
 
+    Ghostwriter's four coverage branches (LOT-72), selected on ``total`` and ``coverage_limited_jobs``:
+    FOUND (found, no gap), RAN-CLEAN (nothing found, no gap), COULD-NOT-RUN (nothing found, a gap), and
+    MIXED (found, and a gap). The RAN-CLEAN "no issues" wording is reachable only when nothing
+    could-not-run, so it can never describe an unassessed job (AC2 / INV-DATA-08).
+
     ``company_name``           the client/company name, or "" (falls back to a neutral phrase).
     ``rollup``                  the ``SeverityRollup`` (LIVE-only severity counts + total).
     ``top_titles``             worst LIVE finding titles, already ordered and capped by the caller.
@@ -131,52 +184,75 @@ def render_executive_summary(
     """
     company = company_name or "the target environment"
     total = rollup.total
+    coverage_limited_jobs = max(0, int(coverage_limited_jobs or 0))
     rendered = _EXEC_SUMMARY_TMPL.render(
         company=company,
         total=total,
-        finding_word=("finding" if total == 1 else "findings"),
-        severity_clause=_severity_clause(rollup),
-        top_titles=list(top_titles or []),
-        path_count=max(0, int(path_count or 0)),
-        coverage_limited_jobs=max(0, int(coverage_limited_jobs or 0)),
+        issue_word=("issue" if total == 1 else "issues"),
+        severity_breakdown=_severity_breakdown(rollup),
+        path_sentence=_path_sentence(max(0, int(path_count or 0))),
+        top_sentence=_top_sentence(list(top_titles or [])),
+        gap_clause=_gap_clause(coverage_limited_jobs),
+        gap_noun=_gap_noun(coverage_limited_jobs),
+        coverage_limited_jobs=coverage_limited_jobs,
     )
     return _collapse_ws(rendered)
 
 
-def _one_liner_host(finding: FindingCtx) -> str:
-    """The tightest host locator the finding carries: ``host:port`` when both are present, else the URL,
-    else the host alone, else "". Pure read of ``FindingCtx`` fields, no lookups."""
+# Severity value -> the word Ghostwriter's one-liner uses (info -> "Informational").
+_SEVERITY_WORDS: dict[str, str] = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Informational",
+}
+
+
+def _one_liner_location(finding: FindingCtx) -> str:
+    """The finding's location for the one-liner: ``host:port`` when both are present, else the host alone,
+    else the URL (web scope), else "the tested scope" as the floor so the sentence never dangles. Pure
+    read of ``FindingCtx`` fields, no lookups."""
     host_s = (getattr(finding, "target_host", None) or "").strip()
     port_s = str(getattr(finding, "target_port", None) or "").strip()
     if host_s and port_s:
         return f"{host_s}:{port_s}"
     if host_s:
         return host_s
-    return (getattr(finding, "target_url", None) or "").strip()
+    url_s = (getattr(finding, "target_url", None) or "").strip()
+    return url_s or "the tested scope"
 
 
-def _exploit_tier(finding: FindingCtx) -> str:
-    """A deterministic exploitability qualifier from the finding's own fields. Today the only tier
-    signal carried on ``FindingCtx`` is threat-intel KEV (a CVE on CISA's Known-Exploited list); the
-    exploiteer verdict tier (none/poc/weaponized/active) plugs in here verbatim once LOT-48/1 enriches
-    the finding with it. "" when there is nothing to assert -- never a guess."""
+def _cve_clause(cve_ids: list[str]) -> str:
+    """", CVE-..." (one) / ", CVEs A, B" (several) / "" (none). No CVE is silence, not a safety claim."""
+    ids = [str(c).strip() for c in (cve_ids or []) if str(c).strip()]
+    if not ids:
+        return ""
+    if len(ids) == 1:
+        return f", {ids[0]}"
+    return ", CVEs " + ", ".join(ids)
+
+
+def _kev_sentence(finding: FindingCtx) -> str:
+    """The KEV sentence (leading space), only when the finding's threat-intel marks a CISA-KEV CVE. The
+    ``as_of`` date stays in the report's threat-intel chip, not this sentence (Ghostwriter). The
+    exploiteer verdict tier (poc/weaponized/active) will add its own sentence here once LOT-48/1 enriches
+    the finding with it; today KEV is the only exploitability signal ``FindingCtx`` carries."""
     ti = getattr(finding, "threat_intel", None)
     if isinstance(ti, dict) and ti.get("kev"):
-        return "known-exploited"
+        return " Listed in CISA KEV as known exploited."
     return ""
 
 
 def render_finding_one_liner(finding: FindingCtx) -> str:
-    """One deterministic sentence summarizing a single finding, over its ``FindingCtx`` fields
-    (severity, exploitability tier, host, CVE, title). No model; same finding -> same sentence."""
-    severity = (getattr(finding, "severity", "") or "").strip()
-    cve_ids = list(getattr(finding, "cve_ids", None) or [])
+    """One deterministic sentence summarizing a single finding, over its ``FindingCtx`` fields (severity,
+    location, CVE, KEV). No model; same finding -> same sentence. Ghostwriter's shape (LOT-72)."""
+    severity = (getattr(finding, "severity", "") or "").strip().lower()
     rendered = _FINDING_ONE_LINER_TMPL.render(
-        severity_label=(severity.capitalize() if severity else "Unrated"),
-        exploit_tier=_exploit_tier(finding),
-        host=_one_liner_host(finding),
-        cve=(str(cve_ids[0]) if cve_ids else ""),
-        title=(getattr(finding, "title", "") or "").strip(),
+        severity_word=_SEVERITY_WORDS.get(severity, severity.capitalize() if severity else "Unrated"),
+        location=_one_liner_location(finding),
+        cve_clause=_cve_clause(list(getattr(finding, "cve_ids", None) or [])),
+        kev_sentence=_kev_sentence(finding),
     )
     return _collapse_ws(rendered)
 
