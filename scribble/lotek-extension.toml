@@ -123,6 +123,7 @@ verbs = [
     "link_attack_path",
     "update_attack_path",
     "delete_attack_path",
+    "link_attack_chain",
     # Report Themes (ext#113). Emitted by themes_api.py -- which is WHY the guard in
     # tests/test_machine_openapi.py now scans the whole package instead of api_pat.py alone: these four
     # were emitted and undeclared while that test stayed green, because it could not see a second file.

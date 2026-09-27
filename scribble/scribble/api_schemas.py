@@ -430,3 +430,58 @@ class LinkAttackPathRequest(BaseModel):
     idempotency_key: str | None = Field(
         None, description="Dedup key; a retry with the same key returns the original link (200)."
     )
+
+
+class LinkAttackChainRequest(BaseModel):
+    """JSON body of ``POST /scribble/machine/engagements/{engagement_id}/chains`` (write scope): mint an
+    attack-chain NARRATIVE (models.AttackChain + AttackChainStep, #628) into this engagement's report from
+    deterministic exploiteer output (LOT-69).
+
+    Sibling of ``LinkAttackPathRequest``: same tenancy-before-body rule, same ``idempotency_key`` retry
+    contract, same OPTIONAL self-contained ``embed_html``/``diagram_ref`` visual (stored verbatim, never
+    parsed). The DIFFERENCE is the payload: a chain carries its authored prose (a ``title`` + ``summary``
+    over ordered ``steps``) rather than only a picture. Every prose field is the caller's DETERMINISTIC
+    output (``summary`` <- the chain's reproduction text, each ``steps[].description`` <- the hop's
+    reproduction text) and is stored BYTE-FOR-BYTE; this endpoint synthesizes no prose.
+
+    ``source_finding_ids`` / ``rule_ids`` are evidence-first provenance: the finding ids and rule
+    identifiers (Nuclei template id, MSF module, CVE/KEV id) this chain was minted from, so the narrative
+    can cite what produced it.
+    """
+
+    title: str = Field(..., description="Chain title (required). Deterministic caller output.")
+    summary: str | None = Field(
+        None,
+        description="Chain narrative summary: the chain's reproduction text, stored verbatim (no rewrite).",
+    )
+    steps: list[Any] | None = Field(
+        None,
+        description="Ordered chain steps. Each element is an object "
+        "{title, description, order_index}: ``title`` <- the hop title, ``description`` <- the hop's "
+        "reproduction text (stored byte-for-byte), ``order_index`` <- the hop position (defaults to array "
+        "order when omitted). No prose is synthesized here.",
+    )
+    diagram_ref: str | None = Field(
+        None, description="The source vector diagram's id/UUID, kept for provenance/dedup only (optional)."
+    )
+    embed_html: str | None = Field(
+        None,
+        description="OPTIONAL self-contained HTML snapshot (vector's export.html) embedded beside the "
+        "narrative; a chain with none renders as pure prose.",
+    )
+    include_in_report: bool | None = Field(
+        None, description="Whether this chain appears in the rendered report (default true)."
+    )
+    source_finding_ids: list[Any] | None = Field(
+        None,
+        description="Provenance: finding ids this chain was minted from (evidence-first: lets the chain "
+        "cite its findings). Stored as a JSON list.",
+    )
+    rule_ids: list[Any] | None = Field(
+        None,
+        description="Provenance: rule identifiers behind the findings (Nuclei template id, MSF module, "
+        "CVE/KEV id). Stored as a JSON list.",
+    )
+    idempotency_key: str | None = Field(
+        None, description="Dedup key; a retry with the same key returns the original chain (200)."
+    )

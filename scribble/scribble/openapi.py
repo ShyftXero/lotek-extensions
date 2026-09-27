@@ -182,6 +182,45 @@ COMPONENTS["AttackPathDetail"] = {
     ],
     "description": "One attack path INCLUDING its stored self-contained HTML snapshot.",
 }
+COMPONENTS["AttackChainStep"] = _obj(
+    {
+        "id": _UUID,
+        "order_index": {"type": "integer"},
+        "title": {"type": "string"},
+        "description": _STR_N,
+        "finding_id": {**_UUID_N, "description": "Per-step provenance: the finding this hop is evidenced "
+                       "by (soft reference; null unless supplied)."},
+        "rule_id": {**_STR_N, "description": "Per-step provenance: the rule identifier behind this hop "
+                    "(Nuclei template id, MSF module, CVE/KEV id; null unless supplied)."},
+    },
+    description="One ordered stage of an attack-chain narrative (#628).",
+)
+COMPONENTS["AttackChain"] = _obj(
+    {
+        "id": _UUID,
+        "engagement_id": _UUID,
+        "title": {"type": "string"},
+        "summary": {"type": "string", "description": "Chain narrative summary, stored verbatim."},
+        "diagram_ref": {**_STR_N, "description": "The vector diagram id an optional snapshot came from - "
+                        "provenance only."},
+        "has_embed_html": {
+            "type": "boolean",
+            "description": "Whether an optional self-contained snapshot is stored (its body is omitted "
+            "from this response, like AttackPath listings).",
+        },
+        "order_index": {"type": "integer"},
+        "include_in_report": {"type": "boolean"},
+        "source_finding_ids": {"type": ["array", "null"], "items": {"type": "string"},
+                               "description": "Provenance: finding ids this chain was minted from "
+                               "(evidence-first). Null when not supplied."},
+        "rule_ids": {"type": ["array", "null"], "items": {"type": "string"},
+                     "description": "Provenance: rule identifiers behind the findings (Nuclei template id, "
+                     "MSF module, CVE/KEV id). Null when not supplied."},
+        "steps": {"type": "array", "items": {"$ref": "#/components/schemas/AttackChainStep"}},
+    },
+    description="An attack-chain NARRATIVE (#628): a title + summary over ordered steps, with optional "
+    "provenance citing the findings/rules it was minted from.",
+)
 COMPONENTS["FindingDetail"] = {
     "allOf": [
         {"$ref": "#/components/schemas/FindingSummary"},
@@ -361,6 +400,7 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
     "scribble_update_attack_path": (200, _ref("AttackPath")),
     "scribble_delete_attack_path": (200, _obj({
         "deleted": _DELETED, "attack_path_id": _UUID, "engagement_id": _UUID})),
+    "scribble_link_attack_chain": (201, _ref("AttackChain")),
     "scribble_machine_openapi": (200, _obj({}, description="This document.")),
 }
 

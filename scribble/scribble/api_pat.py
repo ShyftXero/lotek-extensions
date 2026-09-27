@@ -60,6 +60,7 @@ from scribble.api_schemas import (
     CreateEngagementRequest,
     CreateGroupRequest,
     CreateTemplateRequest,
+    LinkAttackChainRequest,
     LinkAttackPathRequest,
     MoveFindingRequest,
     PatchEngagementRequest,
@@ -92,6 +93,8 @@ from scribble.deps import open_session, severity_enum
 from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingStatus, OrderMode
 from scribble.models import (
     Artifact,
+    AttackChain,
+    AttackChainStep,
     BoardFinding,
     EngagementDiagram,
     FindingGroup,
@@ -129,6 +132,13 @@ _MAX_ARTIFACT_BYTES = 25 * 1024 * 1024
 _MAX_DIAGRAM_HTML_BYTES = 10 * 1024 * 1024
 _DIAGRAM_REF_MAX_LEN = 64      # EngagementDiagram.diagram_ref  String(64)
 _DIAGRAM_CAPTION_MAX_LEN = 255  # EngagementDiagram.caption      String(255)
+
+# Column-width caps for the attack-chain narrative route (scribble_link_attack_chain, LOT-69). A ``title``
+# overflowing its ``String(255)`` is a 400 at the boundary, not a Postgres StringDataRightTruncation 500
+# (same trap _COLUMN_MAX_LEN documents). ``summary``/``description`` are ``Text`` — no width to exceed.
+# A chain's optional ``embed_html`` is the same self-contained snapshot as a diagram's, so it shares the
+# 10 MiB bound (_MAX_DIAGRAM_HTML_BYTES) and the ``diagram_ref`` String(64) cap above.
+_CHAIN_TITLE_MAX_LEN = 255       # AttackChain.title / AttackChainStep.title  String(255)
 
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
 
@@ -3442,6 +3452,209 @@ def scribble_delete_attack_path(engagement_id, attack_path_id):
     body, status = _with_idempotency(
         _idempotency_key(request.get_json(silent=True) or {}), _produce
     )
+    return jsonify(body), status
+
+
+# ── attack-chain narratives (LOT-69 / #628) ──────────────────────────────────────────────────────────
+
+
+def _chain_dict(chain: AttackChain) -> dict:
+    """Serialize an ``AttackChain`` for a machine response: the shape the CREATE route returns and the
+    idempotency store memoizes. Steps in document order; ``embed_html`` is omitted (up to 10 MiB, like a
+    diagram listing) because its presence, not its bytes, is what a review surface needs."""
+    return {
+        "id": chain.id,
+        "engagement_id": chain.engagement_id,
+        "title": chain.title,
+        "summary": chain.summary or "",
+        "diagram_ref": chain.diagram_ref,
+        "has_embed_html": bool(chain.embed_html),
+        "order_index": chain.order_index,
+        "include_in_report": chain.include_in_report,
+        "source_finding_ids": chain.source_finding_ids,
+        "rule_ids": chain.rule_ids,
+        "steps": [
+            {
+                "id": s.id,
+                "order_index": s.order_index,
+                "title": s.title,
+                "description": s.description,
+                "finding_id": s.finding_id,
+                "rule_id": s.rule_id,
+            }
+            for s in sorted(chain.steps, key=lambda s: (s.order_index, s.id))
+        ],
+    }
+
+
+def _opt_id_list(data: dict, key: str):
+    """Validate an OPTIONAL provenance id list -> (list_or_None, error_or_None).
+
+    ``source_finding_ids`` / ``rule_ids`` are stored as a JSON list of evidence identifiers, so the type is
+    part of the contract: a non-list (a bare string, a dict) is a clean 400, not a value silently written to
+    a JSON column that a reader then cannot iterate. Elements are coerced to their string form so a mix of
+    UUIDs and rule strings (Nuclei template id, CVE/KEV id) round-trips as one homogeneous JSON list. An
+    absent field is None (provenance is opt-in), NOT ``[]`` - so a legacy row and an unsupplied field read
+    back identically."""
+    v = data.get(key)
+    if v is None:
+        return None, None
+    if not isinstance(v, list):
+        return None, _bad_request(f"{key} must be a list")
+    return [_nul_safe(str(item)) for item in v], None
+
+
+def _parse_chain_steps(raw):
+    """Parse the CREATE body's ``steps`` -> (list_of_step_dicts, error_or_None).
+
+    Each element must be an object with a non-empty ``title`` (String(255), width-capped like every other
+    title on this blueprint) and an OPTIONAL ``description``. ``order_index`` is optional and defaults to the
+    element's position, so a caller may either number the hops explicitly or rely on array order - the same
+    ``len(siblings)`` convention the attack-path link route uses for its own ordering.
+
+    ``description`` (the hop's reproduction text) is stored BYTE-FOR-BYTE: ``_nul_safe`` only (Postgres
+    refuses a raw NUL) and NO ``.strip()``, because indentation and trailing newlines in a reproduction are
+    evidence, not noise - this endpoint synthesizes no prose and must not rewrite the caller's.
+    """
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return None, _bad_request("steps must be a list")
+    steps: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            return None, _bad_request(f"steps[{i}] must be an object")
+        title = item.get("title")
+        if not isinstance(title, str) or not _nul_safe(title).strip():
+            return None, _bad_request(f"steps[{i}].title is required")
+        title = _nul_safe(title).strip()
+        if (err := _too_long(f"steps[{i}].title", title, cap=_CHAIN_TITLE_MAX_LEN)) is not None:
+            return None, err
+        description = item.get("description")
+        if description is not None and not isinstance(description, str):
+            return None, _bad_request(f"steps[{i}].description must be a string")
+        # BYTE-FOR-BYTE: _nul_safe (never a raw NUL to Postgres) but no strip - see the docstring.
+        description = _nul_safe(description) if description is not None else None
+        order_index = item.get("order_index")
+        if order_index is None:
+            order_index = i
+        elif isinstance(order_index, bool) or not isinstance(order_index, int):
+            return None, _bad_request(f"steps[{i}].order_index must be an integer")
+        steps.append({"title": title, "description": description, "order_index": order_index})
+    return steps, None
+
+
+@machine_bp.post("/engagements/<uuid:engagement_id>/chains")
+@host.require_scope("write")
+@request_body(LinkAttackChainRequest)
+@idempotent_route
+def scribble_link_attack_chain(engagement_id):
+    """Mint an attack-chain NARRATIVE (models.AttackChain + AttackChainStep, #628) into this engagement's
+    report from deterministic exploiteer output (LOT-69).
+
+    Sibling of ``scribble_link_attack_path`` and modeled on it line-for-line: tenancy is checked BEFORE the
+    body is read (INV-TENANCY-05 - same reason: a caller must not map the id space by diffing 400s against
+    404s for an engagement it cannot see), the route is ``write``-scoped, and ``idempotency_key`` (body or
+    ``Idempotency-Key`` header) makes a retry return the ORIGINAL chain (200) rather than minting a
+    duplicate. The difference is the payload: a chain carries authored PROSE (``title`` + ``summary`` over
+    ordered ``steps``) plus an OPTIONAL self-contained ``embed_html`` snapshot, where a linked path carries
+    only the picture.
+
+    NO prose is synthesized here (LOT-44 no-LLM-in-render doctrine): ``summary`` and each
+    ``steps[].description`` are the caller's deterministic reproduction text, stored byte-for-byte.
+    ``source_finding_ids`` / ``rule_ids`` are evidence-first provenance - the findings and rules the chain
+    was minted from, so the narrative can cite what produced it.
+    """
+    actor = host.actor()
+    with open_session() as db:
+        engagement = _visible_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
+
+    data = request.get_json(silent=True) or {}
+    title, err = _opt_str(data, "title")
+    if err:
+        return err
+    if not title:
+        return _bad_request("title is required")
+    if (err := _too_long("title", title, cap=_CHAIN_TITLE_MAX_LEN)) is not None:
+        return err
+
+    summary_raw = data.get("summary")
+    if summary_raw is not None and not isinstance(summary_raw, str):
+        return _bad_request("summary must be a string")
+    # BYTE-FOR-BYTE: the chain's reproduction text, _nul_safe only, no strip (see _parse_chain_steps).
+    summary = _nul_safe(summary_raw) if summary_raw is not None else None
+
+    diagram_ref, err = _opt_str(data, "diagram_ref")
+    if err:
+        return err
+    if (err := _too_long("diagram_ref", diagram_ref or "", cap=_DIAGRAM_REF_MAX_LEN)) is not None:
+        return err
+
+    embed_html, err = _opt_str(data, "embed_html")
+    if err:
+        return err
+    if embed_html and len(embed_html.encode("utf-8")) > _MAX_DIAGRAM_HTML_BYTES:
+        return jsonify({
+            "error": "payload_too_large",
+            "detail": f"embed_html exceeds the {_MAX_DIAGRAM_HTML_BYTES // (1024 * 1024)} MiB limit",
+        }), 413
+
+    publish, err = _include_in_report_or_400(data.get("include_in_report"))
+    if err:
+        return err
+
+    steps, err = _parse_chain_steps(data.get("steps"))
+    if err:
+        return err
+    source_finding_ids, err = _opt_id_list(data, "source_finding_ids")
+    if err:
+        return err
+    rule_ids, err = _opt_id_list(data, "rule_ids")
+    if err:
+        return err
+
+    idempotency_key = _idempotency_key(data)
+
+    def _produce() -> tuple[dict, int]:
+        with open_session() as wdb:
+            eng = wdb.get(ReportBoard, engagement_id)
+            if eng is None:
+                return {"error": "not_found", "detail": "engagement not found"}, 404
+            siblings = list(eng.chains)
+            chain = AttackChain(
+                engagement_id=engagement_id,
+                title=title,
+                summary=summary,
+                diagram_ref=diagram_ref,
+                embed_html=embed_html,
+                order_index=len(siblings),
+                include_in_report=publish if publish is not None else True,
+                source_finding_ids=source_finding_ids,
+                rule_ids=rule_ids,
+            )
+            wdb.add(chain)
+            wdb.flush()  # populate chain.id before steps/audit reference it
+            for step in steps:
+                wdb.add(AttackChainStep(
+                    chain_id=chain.id,
+                    order_index=step["order_index"],
+                    title=step["title"],
+                    description=step["description"],
+                ))
+            wdb.flush()
+            body = _chain_dict(chain)
+            _audit(
+                wdb, "link_attack_chain", subject_type="attack_chain", subject_id=chain.id,
+                after={**body, "engagement_id": engagement_id},
+            )
+            wdb.commit()
+            return body, 201
+
+    body, status = _with_idempotency(idempotency_key, _produce)
     return jsonify(body), status
 
 
