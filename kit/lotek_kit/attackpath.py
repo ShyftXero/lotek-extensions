@@ -32,6 +32,7 @@ passthrough: a caller that must bound what a document can carry cannot rely on t
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 SCHEMA_ID = "attackpath/v1"
@@ -57,6 +58,14 @@ _MED = 400  # labels, titles, ips, domains, mitre
 _LONG = 4000  # descriptions, queries, notes, findings
 _ACCENTS = {"red", "orange", "cyan", "amber", "green", "violet", "slate"}
 _ROUTES = {"flow", "arcTop", "arcBot", "intra"}
+# Tour steps may carry an image + links. Both end up as src/href in the viewer, so only same-origin
+# targets survive: no scheme (javascript:, http:), no protocol-relative //host, no backslash, and no
+# whitespace/control chars a browser strips before it parses the scheme ("java\tscript:").
+_TOUR_MAX_LINKS = 8
+_TOUR_MAX_IMAGE = 262144  # a data: URI screenshot is inline bytes; bound it like everything else
+_TOUR_OFFSITE = re.compile(r"^//|\\|[\s\x00-\x1f\x7f]|^[^/?#]*:")
+_TOUR_DATA_IMAGE = re.compile(r"data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]*={0,2}")  # never svg
+_TOUR_DOCS_PATH = re.compile(r"/docs(?:[/#?]|$)")
 
 
 def _s(v: Any, cap: int = _MED, default: str = "") -> str:
@@ -115,6 +124,38 @@ def _accent(v: Any) -> str:
 def _route(v: Any) -> str:
     s = _s(v, _SHORT).strip()
     return s if s in _ROUTES else "flow"
+
+
+def _tour_same_origin(tour_ref: str) -> bool:
+    """True for a relative reference that cannot leave the current origin."""
+    return bool(tour_ref) and not _TOUR_OFFSITE.search(tour_ref)
+
+
+def _tour_image(v: Any) -> str:
+    """A step image: a same-origin path or a raster ``data:image/...;base64,`` URI. Anything else -> ""."""
+    tour_image = _s(v, _TOUR_MAX_IMAGE).strip()
+    tour_ok = _TOUR_DATA_IMAGE.fullmatch(tour_image) or _tour_same_origin(tour_image)
+    return tour_image if tour_ok else ""
+
+
+def _tour_href(v: Any) -> str:
+    """A step link: a relative reference, or an absolute path under ``/docs``. Anything else -> ""."""
+    tour_href = _s(v, _MED).strip()
+    tour_abs = tour_href.startswith("/")  # an absolute path may point only into the host's docs
+    tour_ok = _tour_same_origin(tour_href) and (not tour_abs or _TOUR_DOCS_PATH.match(tour_href))
+    return tour_href if tour_ok else ""
+
+
+def _tour_links(v: Any) -> list[dict]:
+    tour_links = [(_dict(x), _tour_href(_dict(x).get("href"))) for x in _list(v)[:_TOUR_MAX_LINKS]]
+    return [{"label": _s(d.get("label"), _MED).strip() or tour_href, "href": tour_href}
+            for d, tour_href in tour_links if tour_href]
+
+
+def _tour_mode(v: Any) -> dict:
+    """``meta.mode``: only ``"tour"`` is recorded; anything else is the default attack-path mode (omitted,
+    so every pre-existing document normalizes byte-for-byte as before)."""
+    return {"mode": "tour"} if _s(v, _SHORT).strip().lower() == "tour" else {}
 
 
 def _norm_state(raw: Any) -> dict | None:
@@ -193,6 +234,8 @@ def _norm_node(raw: Any, idx: int, zone_ids: set[str]) -> dict | None:
     reip = _norm_reip(d.get("reIp"))
     if reip is not None:
         out["reIp"] = reip
+    if _i(d.get("activateAt"), default=-1) >= 0:  # the phase a role node wakes at (read by the viewer)
+        out["activateAt"] = _i(d.get("activateAt"))
     states = []
     for s_raw in _list(d.get("states"))[:MAX_STATES_PER_NODE]:
         st = _norm_state(s_raw)
@@ -276,6 +319,10 @@ def _norm_phase(raw: Any, idx: int, node_ids: set[str]) -> dict:
     blue = _norm_blue(d.get("blue"))
     if blue is not None:
         out["blue"] = blue
+    if tour_image := _tour_image(d.get("image")):
+        out["image"] = tour_image
+    if tour_links := _tour_links(d.get("links")):
+        out["links"] = tour_links
     return out
 
 
@@ -294,6 +341,7 @@ def _norm_meta(raw: Any) -> dict:
         "badge": _s(d.get("badge"), _MED),
         "railLabels": [_s(x, _MED) for x in _list(d.get("railLabels"))[:MAX_RAIL_LABELS]],
         "intro": out_intro,
+        **_tour_mode(d.get("mode")),
     }
 
 

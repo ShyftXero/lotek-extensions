@@ -1,6 +1,19 @@
-"""Idempotent first-boot seed: the Spark Range attack path as a read-only ``builtin`` example.
+"""Idempotent boot seed: the read-only ``builtin`` examples.
 
-This is a faithful port of the hand-built reference deliverable
+Two ship today:
+
+* **How lotek works** — a guided tour (``meta.mode = "tour"``) of lotek itself, bundled as package data in
+  ``examples/lotek-walkthrough.json`` and loaded through ``importlib.resources``. Its sibling
+  ``lotek-walkthrough.claims.toml`` ties each step to the lotek DATAFLOW claims it restates, so core's
+  doc-claims guard notices when the code under a step moves.
+* **Spark Range** — the red-team attack path below.
+
+``seed_defaults`` UPSERTS: a missing builtin is created, and one whose stored document differs from the
+bundled one is updated in place (same row, same id, so links to it keep working). It touches builtin rows
+only, matched by name — never a user's diagram, and never a user's "hide the examples" preference, which
+lives in a different table.
+
+The Spark Range example is a faithful port of the hand-built reference deliverable
 (``CS2026-OPFOR/DAY_4_SANDWORM/PUPPY/spark-range-attack-path_4.html``) into ``vector.attackpath/v1``.
 It doubles as proof the abstraction round-trips the real document, and as a rich fixture for tests/e2e.
 Names/IPs/domains are the fictional range scenario, unchanged from the reference.
@@ -9,11 +22,24 @@ Names/IPs/domains are the fictional range scenario, unchanged from the reference
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from importlib.resources import files
 
 from vector.models import Diagram
 from vector.schema import normalize
 
 EXAMPLE_NAME = "Spark Range — Red Team Attack Path (example)"
+TOUR_NAME = "How lotek works (guided tour)"
+TOUR_FILE = "lotek-walkthrough.json"
+
+
+def load_example(filename: str) -> dict:
+    """A bundled example document from ``vector/examples/`` (package data), parsed but not normalized."""
+    return json.loads(files("vector").joinpath("examples", filename).read_text(encoding="utf-8"))
+
+
+def _tour_model() -> dict:
+    return load_example(TOUR_FILE)
 
 
 def _model() -> dict:
@@ -279,14 +305,29 @@ def _phases() -> list[dict]:
     ]
 
 
+#: (name, loader) for every builtin example. Order is creation order on a fresh install.
+BUILTINS: tuple[tuple[str, Callable[[], dict]], ...] = (
+    (TOUR_NAME, _tour_model),
+    (EXAMPLE_NAME, _model),
+)
+
+
 def seed_defaults(session) -> None:
-    """Insert the read-only Spark Range example if it isn't already present. Idempotent."""
-    existing = session.query(Diagram).filter(Diagram.builtin.is_(True), Diagram.name == EXAMPLE_NAME).first()
-    if existing is not None:
-        return
-    doc = normalize(_model())
-    session.add(
-        Diagram(name=EXAMPLE_NAME, builtin=True, owner_id=None, created_by="seed",
-                model_json=json.dumps(doc, ensure_ascii=False))
-    )
-    session.commit()
+    """Create each builtin example if missing, and refresh its document if the bundled one changed.
+
+    "Changed" is a straight comparison of the canonical (normalized, serialized) document against the
+    stored ``model_json`` — the serialization is deterministic, so equal content means an equal string and
+    a second boot writes nothing. Idempotent.
+    """
+    changed = False
+    for name, loader in BUILTINS:
+        payload = json.dumps(normalize(loader()), ensure_ascii=False)
+        existing = session.query(Diagram).filter(Diagram.builtin.is_(True), Diagram.name == name).first()
+        if existing is None:
+            session.add(Diagram(name=name, builtin=True, owner_id=None, created_by="seed", model_json=payload))
+            changed = True
+        elif existing.model_json != payload:
+            existing.model_json = payload
+            changed = True
+    if changed:
+        session.commit()
