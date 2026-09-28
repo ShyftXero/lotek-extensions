@@ -145,7 +145,8 @@
   // ---- DOM builders -------------------------------------------------------
   // attrs: attribute name -> value (null / false = omit), plus two keys that are not attributes: `text`
   // (textContent) and `css` (prop -> value, through style.setProperty, which refuses anything that is not
-  // a valid value for that property). kids: nodes, or anything else, which becomes a text node.
+  // a valid value for that property). kids: nodes only (null / false skipped) — loose text goes in as
+  // txt(s), so a string can never reach appendChild by accident.
   function build(node, attrs, kids) {
     for (var k in attrs) {
       if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
@@ -159,8 +160,7 @@
   }
   function append(node, kids) {
     (kids || []).forEach(function (c) {
-      if (c == null || c === false) return;
-      node.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+      if (c != null && c !== false) node.appendChild(c);
     });
     return node;
   }
@@ -169,6 +169,7 @@
       if (decls[prop] != null && decls[prop] !== "") node.style.setProperty(prop, String(decls[prop]));
     });
   }
+  function txt(s) { return document.createTextNode(str(s)); }
   function h(tag, attrs, kids) { return build(document.createElement(tag), attrs, kids); }
   function svg(tag, attrs, kids) { return build(document.createElementNS(NS, tag), attrs, kids); }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -384,7 +385,7 @@
   }
 
   function legendItem(swatchClass, col, label) {
-    return h("span", { "class": "lg" }, [h("span", { "class": swatchClass, css: col ? { "border-color": col } : null }), label]);
+    return h("span", { "class": "lg" }, [h("span", { "class": swatchClass, css: col ? { "border-color": col } : null }), txt(label)]);
   }
 
   function legendSvg() {
@@ -540,7 +541,7 @@
 
     function blk(title, kids) { return h("div", { "class": "blk" }, [h("div", { "class": "blk-h", text: title })].concat(kids)); }
     function eyebrow(word, ph) {
-      return h("div", { "class": "eyebrow" }, [word + " ", h("b", { text: String(ph.n).padStart(2, "0") }), " / " + state.MAX]);
+      return h("div", { "class": "eyebrow" }, [txt(word + " "), h("b", { text: String(ph.n).padStart(2, "0") }), txt(" / " + state.MAX)]);
     }
     function media(ph) { var box = h("div", { "data-media": "" }); appendMedia(box, ph); return box; }
 
@@ -551,7 +552,7 @@
       var tour = isTourModel(model), word = tour ? "Step" : "Phase";
       var fallbackTitle = tour ? "Walkthrough" : "Attack path";
       if (tour) el.brand.textContent = meta.title || fallbackTitle;  // no ◤ brand glyph in a tour
-      else fill(el.brand, [h("b", { text: "◤" }), " " + str(meta.title || fallbackTitle)]);
+      else fill(el.brand, [h("b", { text: "◤" }), txt(" " + str(meta.title || fallbackTitle))]);
       el.sub.textContent = meta.subtitle || "";
       el.badge.textContent = meta.badge || "";
       el.badge.style.display = meta.badge ? "" : "none";
@@ -605,13 +606,13 @@
       if (b) {
         blue = [
           h("div", { "class": b.gap ? "blue-tool gap" : "blue-tool" },
-            [h("span", { text: (b.gap ? "Gap / unvalidated" : "Tool") + ":" }), " " + str(b.tool || "—")]),
+            [h("span", { text: (b.gap ? "Gap / unvalidated" : "Tool") + ":" }), txt(" " + str(b.tool || "—"))]),
           b.finding ? h("p", { "class": "desc", text: b.finding }) : null,
           b.query ? h("div", { "class": "blue-signal", text: "Example query" }) : null,
           b.query ? h("pre", { "class": "blue-query", text: b.query }) : null,
-          b.seen ? h("div", { "class": "blue-seen" }, [h("b", { text: "What is seen:" }), " " + str(b.seen)]) : null,
+          b.seen ? h("div", { "class": "blue-seen" }, [h("b", { text: "What is seen:" }), txt(" " + str(b.seen))]) : null,
           b.note ? h("div", { "class": "blue-note " + (b.gap ? "gap-note" : "") },
-            [h("b", { text: b.gap ? "Gap / caveat:" : "Notes:" }), " " + str(b.note)]) : null
+            [h("b", { text: b.gap ? "Gap / caveat:" : "Notes:" }), txt(" " + str(b.note))]) : null
         ];
       } else {
         blue = [h("div", { "class": "empty", text: "No blue-team detail for this phase." })];
