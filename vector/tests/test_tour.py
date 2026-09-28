@@ -66,7 +66,9 @@ def test_links_keep_relative_and_docs_targets(href):
 @pytest.mark.parametrize("href", ["http://evil", "https://evil.example/docs", "javascript:alert(1)",
                                   "JavaScript:alert(1)", "java\tscript:alert(1)", " javascript:alert(1)",
                                   "//evil.example/docs", "/\\evil.example", "data:text/html,x",
-                                  "vbscript:x", "/other", "/docsx", "mailto:a@b", ""])
+                                  "vbscript:x", "/other", "/docsx", "mailto:a@b", "",
+                                  "javascript\u00a0:alert(1)", "\u2028javascript:alert(1)",
+                                  "\ufeffjavascript:alert(1)", "java\u200bscript:alert(1)"])
 def test_links_drop_offsite_targets(href):
     phase = normalize(_doc(links=[{"label": "L", "href": href}]))["phases"][0]
     assert "links" not in phase
