@@ -25,7 +25,8 @@ ARTIFACTS_JS = (Path(__file__).resolve().parents[1] / "scribble" / "static" / "a
 
 X = '"\'><img src=x onerror="window.__xss=(window.__xss||0)+1"><svg onload="window.__xss=1"></svg>'
 BAD_URLS = ["javascript:window.__xss=1", " JaVaScRiPt:window.__xss=1", "java\tscript:window.__xss=1",
-            "data:text/html,<script>parent.__xss=1</script>", '"><img src=x onerror=window.__xss=1>']
+            "data:text/html,<script>parent.__xss=1</script>", "data:image/png;base64,iVBORw0KGgo=",
+            "vbscript:x", "//evil.example/x", "/\\evil.example/x", "https://example.com/a b"]
 
 _PAGE = """<!doctype html><html><body>
 <div class="scribble-gallery card" data-finding-id="f1" data-list-url="/scribble/api/findings/f1/artifacts"
@@ -134,10 +135,10 @@ def test_resolved_upload_urls_and_ids_are_not_trusted(page):
         temp = _upload(page, "shot.png")
         page.evaluate("(a) => window.__handlers.resolved(a[0], { id: a[1], url: a[2] })", [temp, X, url])
     got = _assert_inert(page)
-    # A scripted URL is dropped (href "#", src ""); the scheme-less breakout is a relative URL, so it is
-    # kept, but encoded: no quote or bracket survives into the attribute.
-    assert got["hrefs"][:4] == ["#"] * 4 and got["srcs"][:4] == [""] * 4
-    assert got["hrefs"][4] == got["srcs"][4] == "%22%3E%3Cimg%20src=x%20onerror=window.__xss=1%3E"
+    # Every one is refused: the thumbnail is left unlinked and the image without a source.
+    assert got["hrefs"] == []
+    assert got["srcs"] == [""] * len(BAD_URLS)
+    assert page.locator(".scribble-gallery-list a[target]").count() == 0
     for el in page.query_selector_all(".scribble-gallery-list a, .scribble-gallery-list img"):
         el.click(force=True, modifiers=[])
     page.wait_for_timeout(50)
@@ -146,11 +147,31 @@ def test_resolved_upload_urls_and_ids_are_not_trusted(page):
 
 def test_resolved_upload_keeps_a_real_artifact_url(page):
     temp = _upload(page, "shot.png")
-    page.evaluate("(t) => window.__handlers.resolved(t, { id: '0190-ab', url: '/scribble/api/artifacts/0190-ab/raw' })",
-                  temp)
+    page.evaluate("(t) => window.__handlers.resolved(t, { id: '0190-ab', "
+                  "url: '/scribble/api/artifacts/0190-ab/raw' })", temp)
     got = _assert_inert(page)
     assert got["hrefs"] == ["/scribble/api/artifacts/0190-ab/raw"]
     assert got["srcs"] == ["/scribble/api/artifacts/0190-ab/raw"]
+
+
+def test_a_breakout_url_is_kept_only_as_an_encoded_relative_path(page):
+    """A scheme-less string is a same-origin relative URL, so it is kept, but encoded: no quote or bracket
+    survives into the attribute."""
+    temp = _upload(page, "shot.png")
+    page.evaluate("(a) => window.__handlers.resolved(a[0], { id: 'i', url: a[1] })",
+                  [temp, '"><img/src=x/onerror=window.__xss=1>'])
+    got = _assert_inert(page)
+    assert got["hrefs"] == got["srcs"] == ["%22%3E%3Cimg/src=x/onerror=window.__xss=1%3E"]
+
+
+def test_an_https_artifact_url_is_exactly_one_new_tab_link(page):
+    temp = _upload(page, "shot.png")
+    url = "https://store.example/a/raw?sig=1"
+    page.evaluate("(a) => window.__handlers.resolved(a[0], { id: 'i', url: a[1] })", [temp, url])
+    links = page.evaluate("""() => Array.from(document.querySelectorAll('.scribble-gallery-list a')).map(
+      a => ({ href: a.getAttribute('href'), rel: a.getAttribute('rel'),
+              target: a.getAttribute('target') }))""")
+    assert links == [{"href": url, "rel": "noopener noreferrer", "target": "_blank"}]
 
 
 def test_failed_upload_shows_the_server_error_as_text(page):

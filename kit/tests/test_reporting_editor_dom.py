@@ -38,7 +38,12 @@ BAD_URLS = [
     "\x01javascript:window.__xss=1",
     "vbscript:window.__xss=1",
     "data:text/html,<script>parent.__xss=1</script>",
+    "data:image/png;base64,iVBORw0KGgo=",
     '"><img src=x onerror=window.__xss=1>',
+    "//evil.example/x",
+    "/\\evil.example/x",
+    "https://example.com/a b",
+    "ftp://example.com/x",
 ]
 
 
@@ -105,7 +110,8 @@ _INSPECT = """
 }
 """
 
-SAFE_URL = r"^(?:https?:|mailto:|blob:|data:image/(?:png|jpeg|gif|webp);base64,|[/#?.]|[A-Za-z0-9_\-%])"
+# An empty src is what a refused image keeps. Otherwise: http(s), mailto, blob or same-origin relative.
+SAFE_URL = r"^(?:$|https?:|mailto:|blob:|/(?!/)|[#?.]|[A-Za-z0-9_\-%])"
 ALLOWED_TAGS = {"blockquote", "br", "code", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
                 "img", "li", "p", "pre", "span", "strong", "ul", "a", "div", "button", "input", "select",
                 "option"}
@@ -146,7 +152,7 @@ def _assert_inert(page, selector):
     assert set(got["tags"]) <= ALLOWED_TAGS, got["tags"]
     for url in got["hrefs"] + got["srcs"]:
         assert re.match(SAFE_URL, url), f"unsafe URL reached the DOM: {url!r}"
-        assert not re.search(r"script:", url, re.I), url
+        assert not re.search(r"script:|^data:|\s|\\", url, re.I), url
     for s in MARKUP:
         assert s in got["text"], f"text not shown verbatim: {s!r}"
     return got
@@ -213,7 +219,8 @@ def test_serializer_never_saves_an_unsafe_url(page):
       return JSON.stringify(LotekReportingEditor._internal.domToDoc(root));
     }""", BAD_URLS)
     assert "script:" not in got.lower()
-    assert "data:text" not in got
+    assert "data:" not in got
+    assert "evil.example" not in got
 
 
 def test_resolved_upload_url_is_not_trusted(page):
@@ -233,14 +240,14 @@ def test_resolved_upload_url_is_not_trusted(page):
     got = page.evaluate(_INSPECT, page.query_selector("#c"))
     assert got["bad"] == [], got["bad"]
     for src in got["srcs"]:
-        assert not src.lower().lstrip().startswith(("javascript", "vbscript", "data:text")), src
+        assert src == "" or src.startswith("blob:"), src
     assert page.locator("#c .fr-editor-surface img").count() == len(BAD_URLS)
     assert _click_everything(page, "#c") is None
 
 
 def test_safe_urls_still_render(page):
-    """The allowlist keeps what reports actually use: http(s)/mailto/relative links, same-origin, blob:
-    and raster data: images."""
+    """The allowlist keeps what reports actually use: http(s), mailto and same-origin relative links, and
+    same-origin images."""
     doc = {"type": "doc", "content": [
         {"type": "paragraph", "content": [
             _text("a", [{"type": "link", "attrs": {"href": "https://example.com/a?b=1#c"}}]),
@@ -249,7 +256,6 @@ def test_safe_urls_still_render(page):
             _text("d", [{"type": "link", "attrs": {"href": "/scribble/x"}}]),
             _text("e", [{"type": "link", "attrs": {"href": "#frag"}}]),
             {"type": "image", "attrs": {"src": "/scribble/api/artifacts/1/raw", "alt": "i"}},
-            {"type": "image", "attrs": {"src": "data:image/png;base64,iVBORw0KGgo=", "alt": "d"}},
         ]},
     ]}
     got = page.evaluate("(doc) => { var f = LotekReportingEditor._internal.docToFragment(doc);"
@@ -259,5 +265,64 @@ def test_safe_urls_still_render(page):
                         " round: LotekReportingEditor._internal.domToDoc(d) }; }", doc)
     assert got["hrefs"] == ["https://example.com/a?b=1#c", "http://example.com/", "mailto:a@example.com",
                             "/scribble/x", "#frag"]
-    assert got["srcs"] == ["/scribble/api/artifacts/1/raw", "data:image/png;base64,iVBORw0KGgo="]
+    assert got["srcs"] == ["/scribble/api/artifacts/1/raw"]
     assert got["round"] == doc
+
+
+# --- links: the one enrichment the editor renders --------------------------------------------------------
+
+_LINKS = """(doc) => {
+  var d = document.createElement('div');
+  d.appendChild(LotekReportingEditor._internal.docToFragment(doc));
+  document.getElementById('ro').appendChild(d);
+  var p = d.querySelector('p');
+  return {
+    links: Array.from(d.querySelectorAll('a')).map(function (a) {
+      return { href: a.getAttribute('href'), rel: a.getAttribute('rel'), target: a.getAttribute('target'),
+               text: a.textContent, attrs: a.getAttributeNames().sort() };
+    }),
+    kids: p ? Array.from(p.childNodes).map(function (n) {
+      return [n.nodeType === 3 ? '#text' : n.tagName.toLowerCase(), n.textContent]; }) : [],
+    text: d.textContent,
+  };
+}"""
+
+
+def _link_doc(*parts):
+    return {"type": "doc", "content": [{"type": "paragraph", "content": list(parts)}]}
+
+
+@pytest.mark.parametrize("href", BAD_URLS)
+def test_a_hostile_link_stays_unlinked_text(page, href):
+    got = page.evaluate(_LINKS, _link_doc(_text("see "), _text("here", [{"type": "link", "attrs": {"href": href}}])))
+    assert got["links"] == []
+    assert got["kids"] == [["#text", "see here"]] or got["kids"] == [["#text", "see "], ["#text", "here"]]
+    assert got["text"] == "see here"
+
+
+@pytest.mark.parametrize("href", ["https://example.com/a?b=1#c", "http://example.com/"])
+def test_an_http_link_is_exactly_one_anchor_opening_a_new_tab(page, href):
+    got = page.evaluate(_LINKS, _link_doc(_text(href, [{"type": "link", "attrs": {"href": href}}])))
+    assert got["links"] == [{"href": href, "rel": "noopener noreferrer", "target": "_blank", "text": href,
+                             "attrs": ["href", "rel", "target"]}]
+
+
+def test_a_relative_link_stays_in_the_tab(page):
+    got = page.evaluate(_LINKS, _link_doc(_text("x", [{"type": "link", "attrs": {"href": "/scribble/x"}}])))
+    assert got["links"] == [{"href": "/scribble/x", "rel": None, "target": None, "text": "x", "attrs": ["href"]}]
+
+
+def test_mixed_text_and_links_keep_their_order(page):
+    got = page.evaluate(_LINKS, _link_doc(
+        _text("before "),
+        _text("https://a.example/", [{"type": "link", "attrs": {"href": "https://a.example/"}}]),
+        _text(" middle "),
+        _text("bad", [{"type": "link", "attrs": {"href": "javascript:window.__xss=1"}}]),
+        _text(" and "),
+        _text("https://b.example/", [{"type": "link", "attrs": {"href": "https://b.example/"}}]),
+        _text(" after"),
+    ))
+    assert got["kids"] == [["#text", "before "], ["a", "https://a.example/"], ["#text", " middle "],
+                           ["#text", "bad"], ["#text", " and "], ["a", "https://b.example/"], ["#text", " after"]]
+    assert [lk["href"] for lk in got["links"]] == ["https://a.example/", "https://b.example/"]
+    assert got["text"] == "before https://a.example/ middle bad and https://b.example/ after"

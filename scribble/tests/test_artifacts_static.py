@@ -4,7 +4,7 @@
 Building with ``createElement``, ``textContent`` and ``setAttribute`` leaves nothing to escape, so this
 pins it: an HTML sink anywhere in the file fails, including on a constant, so one cannot creep back in
 beside a constant and later grow a variable. URL properties fail too: a URL goes in through
-``setAttribute`` behind ``safeUrl``. The behaviour is proven in the browser by
+``setAttribute`` behind ``safeHref`` / ``safeSrc``. The behaviour is proven in the browser by
 ``test_e2e_artifacts_dom.py``.
 """
 
@@ -40,11 +40,14 @@ def test_the_gallery_uses_no_html_sink(sink):
     assert _hits(HTML_SINKS[sink]) == [], f"artifacts.js uses {sink}; build the node with createElement"
 
 
-def test_gallery_urls_go_through_safe_url():
-    assert _hits(URL_PROPERTY) == [], "set href/src with setAttribute(..., safeUrl(...))"
+def test_gallery_urls_go_through_the_allowlist():
+    assert _hits(URL_PROPERTY) == [], "set href/src with setAttribute(..., safeHref/safeSrc(...))"
     text = ARTIFACTS.read_text(encoding="utf-8")
     for m in re.finditer(r"setAttribute\(\s*\"(href|src)\"\s*,\s*([^)]*)", text):
-        assert m.group(2).startswith("safeUrl("), m.group(0)
+        # setArtifactLink's own setAttribute("href", href) sets the value safeHref just returned.
+        allowed = {"href": ("safeHref(", "href"), "src": ("safeSrc(",)}[m.group(1)]
+        assert m.group(2).startswith(allowed), m.group(0)
+    assert re.search(r"const href = safeHref\(url\);", text)
 
 
 def test_the_sink_patterns_catch_what_they_claim_to():

@@ -69,22 +69,21 @@
   // ---------------------------------------------------------------------------- URL allowlist
   // A doc's link/image URLs come from whoever wrote the doc (a collaborator's autosave, a stored report
   // body, pasted HTML), and the exported walkers may be rendered outside a contenteditable, where a link
-  // is live. So a URL reaches the DOM only if its scheme is on the list for that attribute; anything else
-  // (javascript:, vbscript:, data:text/html, a control-character evasion like "java\tscript:") is dropped.
-  // A string with no scheme is a relative URL. The scheme test matches the URL parser's own grammar, and
-  // any string with a C0 control character or DEL is refused outright, because the parser strips those
-  // before it reads the scheme.
+  // is live. So a URL reaches the DOM only if it is http(s) (mailto: too, for a link; blob: too, for an
+  // image, which is how an upload previews) or same-origin relative. Anything else is refused: a
+  // javascript:, data: or vbscript: URL, any other scheme, a protocol-relative "//host", and any string
+  // holding whitespace, a control character or a backslash (the URL parser strips or rewrites those
+  // before it reads the scheme, which is how "java\tscript:" gets past a naive check). A refused link
+  // renders as its text; a refused image keeps an empty src.
   var URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
-  var URL_CONTROL = /[\x00-\x1f\x7f]/;
-  var DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+\/]*={0,2}$/;
+  var URL_REFUSED_CHARS = /[\s\x00-\x1f\x7f\\]/;
   var LINK_SCHEMES = { http: 1, https: 1, mailto: 1 };
   var IMAGE_SCHEMES = { http: 1, https: 1, blob: 1 };
 
   function allowedUrl(s, schemes) {
-    s = typeof s === "string" ? s.trim() : "";
-    if (!s || URL_CONTROL.test(s)) return "";
+    if (typeof s !== "string" || !s || URL_REFUSED_CHARS.test(s) || s.indexOf("//") === 0) return "";
     var m = URL_SCHEME.exec(s);
-    if (m && !schemes[m[1].toLowerCase()] && !(schemes === IMAGE_SCHEMES && DATA_IMAGE.test(s))) return "";
+    if (m && !schemes[m[1].toLowerCase()]) return "";
     return inertUrl(s);
   }
 
@@ -244,6 +243,11 @@
       if (!href) return child;
       var a = document.createElement("a");
       a.setAttribute("href", href);
+      // An off-site link opens in a new tab, with no opener handle and no referrer.
+      if (/^https?:/i.test(href)) {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      }
       a.appendChild(child);
       return a;
     }

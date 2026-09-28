@@ -16,24 +16,47 @@
   }
 
   // An artifact URL comes from the server (a route URL) or is a local blob: preview, but it is still data
-  // on its way into an attribute, so only http(s), blob: and relative URLs are set; anything else
-  // (javascript:, data:, a control-character evasion like "java\tscript:") is dropped. encodeURI then
-  // leaves no quote or bracket in the value; existing %XX escapes are kept, and a lone surrogate (which
-  // makes encodeURI throw) is refused.
+  // on its way into an attribute, so only http(s) and same-origin relative URLs are set (plus blob:, for
+  // an image preview). Refused: javascript:, data:, vbscript:, any other scheme, a protocol-relative
+  // "//host", and any string holding whitespace, a control character or a backslash (the URL parser
+  // strips or rewrites those before it reads the scheme). encodeURI then leaves no quote or bracket in
+  // the value; existing %XX escapes are kept, and a lone surrogate (encodeURI throws) is refused.
   const URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
-  const URL_CONTROL = /[\x00-\x1f\x7f]/;
-  const URL_SCHEMES = { http: 1, https: 1, blob: 1 };
+  const URL_REFUSED_CHARS = /[\s\x00-\x1f\x7f\\]/;
+  const HREF_SCHEMES = { http: 1, https: 1 };
+  const SRC_SCHEMES = { http: 1, https: 1, blob: 1 };
 
-  function safeUrl(s) {
-    s = typeof s === "string" ? s.trim() : "";
-    if (!s || URL_CONTROL.test(s)) return "";
+  function allowedUrl(s, schemes) {
+    if (typeof s !== "string" || !s || URL_REFUSED_CHARS.test(s) || s.indexOf("//") === 0) return "";
     const m = URL_SCHEME.exec(s);
-    if (m && !URL_SCHEMES[m[1].toLowerCase()]) return "";
+    if (m && !schemes[m[1].toLowerCase()]) return "";
     try {
       return encodeURI(s).replace(/%25([0-9A-Fa-f]{2})/g, "%$1");
     } catch (e) {
       return "";
     }
+  }
+
+  function safeHref(s) {
+    return allowedUrl(s, HREF_SCHEMES);
+  }
+
+  function safeSrc(s) {
+    return allowedUrl(s, SRC_SCHEMES);
+  }
+
+  // Point a row's link at an artifact URL. A refused (or missing) URL leaves the thumbnail unlinked. An
+  // off-site URL also gets no referrer; every artifact link already opens in a new tab with no opener.
+  function setArtifactLink(link, url) {
+    const href = safeHref(url);
+    if (!href) {
+      link.removeAttribute("href");
+      link.removeAttribute("target");
+      return;
+    }
+    link.setAttribute("href", href);
+    link.setAttribute("target", "_blank");
+    if (/^https?:/i.test(href)) link.setAttribute("rel", "noopener noreferrer");
   }
 
   // createElement + setAttribute, in the order given; `text` sets textContent. kids are nodes only.
@@ -116,7 +139,7 @@
       link.removeAttribute("href");
       link.removeAttribute("target");
       if (img) {
-        img.setAttribute("src", safeUrl(pendingInfo.objectUrl));
+        img.setAttribute("src", safeSrc(pendingInfo.objectUrl));
         img.alt = artifact.caption || artifact.filename || "";
       }
       statusEl.textContent = pendingInfo.statusText || "Uploading…";
@@ -125,9 +148,9 @@
       return li;
     }
 
-    link.setAttribute("href", safeUrl(artifact.url));
+    setArtifactLink(link, artifact.url);
     if (img) {
-      img.setAttribute("src", safeUrl(artifact.url));
+      img.setAttribute("src", safeSrc(artifact.url));
       img.alt = artifact.caption || artifact.filename || "";
     } else {
       link.textContent = artifact.kind || "file";
@@ -180,12 +203,9 @@
     li.dataset.rawUrl = data.url || "";
 
     const link = li.querySelector("a");
-    if (link) {
-      link.setAttribute("href", safeUrl(data.url) || "#");
-      link.setAttribute("target", "_blank");
-    }
+    if (link) setArtifactLink(link, data.url);
     const img = li.querySelector("img");
-    if (img) img.setAttribute("src", safeUrl(data.url));
+    if (img) img.setAttribute("src", safeSrc(data.url));
     revokeObjectUrl(li);
 
     const statusEl = li.querySelector(".scribble-gallery-pending-status");
