@@ -1,8 +1,9 @@
 /* Vector attack-path viewer runtime — styles.
  * Everything is scoped under `.vap` so the runtime can be embedded inside a host shell (lotek's
  * base.html) or the editor's preview pane without its selectors leaking out (or theirs leaking in).
- * Colors that vary per edge-kind / node-state / role are set INLINE by vector-viewer.js from the style
- * catalogs; this sheet owns layout, typography, chrome, and animation only.
+ * Colors that vary per edge-kind / node-state / role are set on element.style by vector-viewer.js from
+ * the style catalogs (never a style="" attribute — see the CSP note there); this sheet owns layout,
+ * typography, chrome, and animation only.
  */
 .vap{
   --vap-bg:#0a0f14; --vap-bg2:#0e151c; --vap-panel:#111a22; --vap-panel2:#0c141b;
@@ -139,6 +140,34 @@
 .vap .blue-note{border-left:2px solid var(--vap-line2);padding-left:8px}
 .vap .blue-note.gap-note{border-left-color:var(--vap-amber);color:var(--vap-amber)}
 
+/* per-step image + links (both modes) */
+.vap .step-media{margin:0 0 16px}
+.vap .step-img{display:block;max-width:100%;height:auto;border:1px solid var(--vap-line2);border-radius:6px}
+.vap .step-links{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:6px}
+.vap .step-links a{font-family:var(--vap-mono);font-size:11.5px;color:var(--vap-cyan);text-decoration:none;border-bottom:1px dotted #1c5b62}
+.vap .step-links a:hover{border-bottom-style:solid}
+.vap .step-links a::before{content:"→ ";color:var(--vap-faint)}
+
+/* per-step highlight: the current step's targets (tour mode). A separate ring rather than a stroke on
+   the box, so it never fights the per-state colour set on the box itself. */
+.vap .node .focus-ring{fill:none;stroke:var(--vap-cyan);stroke-width:1.6;stroke-dasharray:4 3;
+  filter:drop-shadow(0 0 6px rgba(55,201,214,.55));animation:vap-focus 1.8s ease-in-out infinite}
+@keyframes vap-focus{0%,100%{opacity:1}50%{opacity:.45}}
+.vap .lg .bx.focus{border:1.4px dashed var(--vap-cyan)}
+
+/* tour mode: neutral chrome — the attack path's red accents become cyan */
+.vap-root.vap-tour{
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(55,201,214,.06), transparent 60%),
+    radial-gradient(1000px 700px at 100% 120%, rgba(169,139,255,.05), transparent 55%),
+    var(--vap-bg);
+}
+.vap.vap-tour .seg.done{background:#1c5b62}
+.vap.vap-tour .seg.cur{background:var(--vap-cyan);box-shadow:0 0 10px rgba(55,201,214,.6)}
+.vap.vap-tour .eyebrow b{color:var(--vap-cyan)}
+.vap.vap-tour button.vap-btn.primary{background:#16454b;border-color:var(--vap-cyan)}
+.vap.vap-tour button.vap-btn.primary:hover{background:#1c5b62}
+
 .vap .empty{padding:40px 20px;color:var(--vap-faint);font-family:var(--vap-mono);font-size:12px;text-align:center}
 
 @media (max-width:940px){
@@ -146,7 +175,7 @@
   .vap .brief{border-left:none;border-top:1px solid var(--vap-line)}
 }
 @media (prefers-reduced-motion:reduce){
-  .vap .edge.flow,.vap .edge.draw,.vap .node.is-new rect.box,.vap .pulse-ring{animation:none!important}
+  .vap .edge.flow,.vap .edge.draw,.vap .node.is-new rect.box,.vap .pulse-ring,.vap .node .focus-ring{animation:none!important}
   .vap .edge.draw{stroke-dashoffset:0}
 }
 

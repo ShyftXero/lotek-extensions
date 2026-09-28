@@ -48,6 +48,24 @@ draws itself on, and `flow`-kind edges show a marching dash. In an **exported de
 is captured: **Space** toggles play/pause, **←/→** step, **Home** resets to phase 0. `prefers-reduced-
 motion: reduce` disables the transition animations (the graph still advances).
 
+### Tour mode
+
+With `meta.mode = "tour"` the same viewer reads as a guided tour instead of an engagement artifact: the
+Red Team / Blue Team tabs are gone, headings say **Step NN** and **On the map**, the brand glyph and
+the attack-path wording are dropped, the chrome is cyan rather than red, and the legend lists only the
+edge kinds and node states the document uses (named by each style entry's `label`). The current step's
+`targets` get a highlight ring on the map for that step only; the next step releases it. Attack-path
+mode is unchanged.
+
+The exported deliverable follows **deep links**: `#step-N` opens on step N, and stepping updates the
+hash with `history.replaceState`, so a long tour does not fill the back button.
+
+The viewer is **CSP-clean**: it never writes a `style="…"` attribute (per-kind colours are set through
+`element.style`), never evals, and boots from the `<script type="application/json" id="vap-model">`
+island, so a page that serves `vector-viewer.{js,css}` as files runs under
+`script-src 'self'; style-src 'self'`. (The downloadable deliverable still inlines both, because it is
+one self-contained file.)
+
 ### Browser JSON API (`/vector/api`, cookie-authed)
 
 The editor and list drive a cookie-authenticated, CSRF-protected JSON surface: `GET /health`,
@@ -65,20 +83,27 @@ A diagram is one JSON document. `vector/schema.py::normalize` coerces, caps, and
 and **never raises** (the same document is embedded verbatim into an exported HTML file). Parts:
 
 - **meta** — `title`, `subtitle`, `badge`, `railLabels[]`, and an `intro` block (`eyebrow`, `objective`,
-  `readingNotes`, `note`).
+  `readingNotes`, `note`). Optional `mode`: `"tour"` renders the diagram as a neutral guided tour (see
+  below); anything else, or no `mode`, is the attack path.
 - **zones** — trust-zone columns laid out left→right by `order`. Each has a title/subtitle and an accent
   (`red`/`orange`/`cyan`/`amber`/`green`/`violet`/`slate`).
 - **boundaries** — optional firewall/segmentation markers drawn between zones.
 - **nodes** — hosts/assets, each in a `zone` + `row`, carrying a **state timeline** (`states[]`:
   `{at: <phase>, state, label}`). States `target` < `owned` = `beacon` < `impacted` by precedence — the
   highest-precedence reached state shows; `beacon` emits a pulsing ring. Optional `role`, `dualIp`, and a
-  `reIp` event (a phase at which the host changes IP/domain).
+  `reIp` event (a phase at which the host changes IP/domain). A node whose `role` idles by default
+  (`egress`, `backup`) wakes at the phase named by `activateAt`.
 - **edges** — attacker actions between two nodes; `kind` picks the style (`attack`, `transfer`, `c2`,
   `tunnel`, `ssh`, `disc`, `mesh`, `action`, `disrupt`), pinned to a phase via `at`. An edge whose
   endpoints aren't real nodes is dropped.
 - **phases** — the ordered walkthrough. **Phase 0 is the intro.** Each later phase carries a `title`,
   MITRE `tactics` chips, a red-team narrative (`desc`), the `targets` it lights up, and an optional
-  blue-team `blue` block (tool, finding, query, what was seen, note, and a `gap` flag).
+  blue-team `blue` block (tool, finding, query, what was seen, note, and a `gap` flag). A phase may also
+  carry an `image` and `links[]` (`{label, href}`), shown in the brief panel. Only same-origin targets
+  survive `normalize` (and the viewer re-checks): an image is a relative path or a raster
+  `data:image/{png,jpeg,gif,webp};base64,` URI; a link is a relative reference or a path under `/docs`.
+  Any scheme (`http:`, `javascript:`), protocol-relative `//host`, backslash or embedded whitespace is
+  dropped.
 - **style** — optional catalog overrides; the JS runtime owns the vocabulary and merges `style` over its
   baked-in cyber-dark defaults, so a minimal diagram renders with no style block.
 
@@ -112,10 +137,21 @@ admin-visible only. `builtin` examples are visible to everyone. Both surfaces ro
 
 ### Seed
 
-`vector.seed:seed_defaults` runs once after `register()` (idempotent). It inserts one read-only `builtin`
-example — **"Spark Range — Red Team Attack Path (example)"**, a 16-phase IT→OT red-team kill chain (plus
-phase 0 intro). It is visible to everyone and read-only: duplicate it to author your own, you cannot edit
-or delete it.
+`vector.seed:seed_defaults` runs after `register()` (idempotent). It seeds two read-only `builtin`
+examples:
+
+- **"How lotek works (guided tour)"** — a 9-step tour of lotek itself, from a new runner to a delivered
+  report, in tour mode. It ships as package data (`vector/examples/lotek-walkthrough.json`). Its sidecar
+  `lotek-walkthrough.claims.toml` holds one `[[claim]]` per step (`DOC-VECTOR-TOUR-NN`) whose anchors
+  are copied from the lotek `docs/DATAFLOW.md` claims that step restates, so lotek's doc-claims guard
+  fails when the code under a step moves.
+- **"Spark Range — Red Team Attack Path (example)"** — a 16-phase IT→OT red-team kill chain (plus phase
+  0 intro).
+
+The seed **upserts**: a missing builtin is created, and a builtin whose stored document differs from the
+bundled one is updated in place, so a new release refreshes the examples. It touches builtin rows only;
+user diagrams and the per-user "hide the examples" preference are never modified. Builtins are visible
+to everyone and read-only: duplicate one to author your own.
 
 ---
 

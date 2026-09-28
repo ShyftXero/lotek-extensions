@@ -14,7 +14,16 @@
  *   onPhaseChange(cb) subscribe to phase changes (editor scrubber sync)
  *   destroy()
  *
- * Auto-boot: if window.__VECTOR_MODEL__ is present (the deliverable), it mounts into #vap or <body>.
+ * Auto-boot: a page carrying the model as <script type="application/json" id="vap-model"> (the
+ * deliverable) mounts into #vap or <body> — no inline script needed, so it runs under
+ * `script-src 'self'`. window.__VECTOR_MODEL__, when set, still wins.
+ *
+ * Modes: `meta.mode = "tour"` is a neutral guided tour (no red/blue tabs, "Step NN" headings, the
+ * current step's targets highlighted on the map for that step only). Anything else is the attack path.
+ *
+ * CSP: nothing here writes a style="" attribute or evals. Markup built as strings carries its per-kind
+ * colors in data-vs, and applyStyles() moves them onto element.style (the CSSOM), which a strict
+ * `style-src 'self'` does not govern.
  */
 (function () {
   "use strict";
@@ -89,7 +98,7 @@
     return out;
   }
   // Style values come from the (un-normalized) model.style — treat as untrusted. These are inserted
-  // into inline style="" attributes / marker ids, so a raw string with a quote could break out and
+  // into data-vs="" attributes / marker ids, so a raw string with a quote could break out and
   // inject an attribute. Restrict colors to known accents or a strict color grammar, numbers to finite
   // floats, dash to a numeric list, and marker/id tokens to a safe charset. (Text goes through esc().)
   var _COLOR_RE = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,%\s]+\)|[a-zA-Z]{3,20})$/;
@@ -106,6 +115,40 @@
     return d.map(function (x) { return Number(x); }).filter(function (x) { return isFinite(x); }).join(" ");
   }
   function safeToken(s) { return String(s == null ? "" : s).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "x"; }
+
+  // Step image/link targets — the same rule as schema.py's _tour_* helpers, re-applied here because the
+  // editor previews an un-normalized model. Same-origin only: no scheme, no //host, no backslash, no
+  // whitespace/control chars (a browser strips those before reading the scheme: "java\tscript:").
+  var _OFFSITE = /^\/\/|\\|[\s\x00-\x1f\x7f]|^[^\/?#]*:/;
+  var _DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+\/]*={0,2}$/;
+  var _DOCS_PATH = /^\/docs(?:[\/#?]|$)/;
+  function sameOrigin(s) { return typeof s === "string" && s !== "" && !_OFFSITE.test(s); }
+  function safeImage(s) {
+    s = typeof s === "string" ? s.trim() : "";
+    return (_DATA_IMAGE.test(s) || sameOrigin(s)) ? s : "";
+  }
+  function safeHref(s) {
+    s = typeof s === "string" ? s.trim() : "";
+    if (!sameOrigin(s)) return "";
+    if (s.charAt(0) === "/" && !_DOCS_PATH.test(s)) return "";
+    return s;
+  }
+
+  // Move data-vs="prop:value;..." onto element.style. Values were already narrowed by safeColor /
+  // safeNum / safeDash when the markup was built; setProperty() refuses anything that still is not a
+  // valid value for that property.
+  function applyStyles(container) {
+    var els = container.querySelectorAll("[data-vs]");
+    for (var i = 0; i < els.length; i++) {
+      var decls = els[i].getAttribute("data-vs").split(";");
+      for (var j = 0; j < decls.length; j++) {
+        var k = decls[j].indexOf(":");
+        if (k > 0) els[i].style.setProperty(decls[j].slice(0, k).trim(), decls[j].slice(k + 1).trim());
+      }
+      els[i].removeAttribute("data-vs");
+    }
+  }
+  function isTourModel(model) { return !!(model && model.meta && model.meta.mode === "tour"); }
 
   function computeMax(model) {
     var m = 0;
@@ -246,7 +289,7 @@
     return s;
   }
 
-  function nodesSvg(model, g, p, style) {
+  function nodesSvg(model, g, p, style, focus) {
     var s = "";
     (model.nodes || []).forEach(function (n) {
       var geo = g.geo[n.id];
@@ -262,15 +305,17 @@
         boxStyle = 'stroke:' + accentLine(v.accent) + ';';
         if (v.fill) boxStyle += 'fill:' + accentFill(v.accent) + ';';
       }
+      if (focus && focus[n.id]) v.cls.push("is-focus");
       s += '<g class="' + v.cls.join(" ") + '" transform="translate(' + geo.x + "," + geo.y + ')">';
-      s += '<rect class="box" x="0" y="0" width="' + geo.w + '" height="' + geo.h + '" rx="6"' + (boxStyle ? ' style="' + boxStyle + '"' : "") + "/>";
-      s += '<text class="nm" x="10" y="' + y1 + '"' + (v.accent && v.fill ? ' style="fill:' + (ACCENTS[v.accent] ? ACCENTS[v.accent].text : "#fff") + '"' : "") + ">" + esc(n.label) + "</text>";
+      if (focus && focus[n.id]) s += '<rect class="focus-ring" x="-5" y="-5" width="' + (geo.w + 10) + '" height="' + (geo.h + 10) + '" rx="9"/>';
+      s += '<rect class="box" x="0" y="0" width="' + geo.w + '" height="' + geo.h + '" rx="6"' + (boxStyle ? ' data-vs="' + boxStyle + '"' : "") + "/>";
+      s += '<text class="nm" x="10" y="' + y1 + '"' + (v.accent && v.fill ? ' data-vs="fill:' + (ACCENTS[v.accent] ? ACCENTS[v.accent].text : "#fff") + '"' : "") + ">" + esc(n.label) + "</text>";
       s += '<text class="ip" x="10" y="' + y2 + '">' + esc(curIp) + (n.dualIp ? "  ⇄ " + esc(n.dualIp) : "") + "</text>";
       if (curDom) s += '<text class="dom" x="10" y="41">' + esc(curDom) + "</text>";
-      if (v.statusText) s += '<text class="stt" x="' + (geo.w - 10) + '" y="' + y1 + '" text-anchor="end"' + (v.accent ? ' style="fill:' + accentLine(v.accent) + '"' : "") + ">" + esc(v.statusText) + "</text>";
+      if (v.statusText) s += '<text class="stt" x="' + (geo.w - 10) + '" y="' + y1 + '" text-anchor="end"' + (v.accent ? ' data-vs="fill:' + accentLine(v.accent) + '"' : "") + ">" + esc(v.statusText) + "</text>";
       if (v.hasBeacon) {
         var rc = accentLine((style.nodeStates.beacon && style.nodeStates.beacon.ring) || "orange");
-        s += '<circle class="beacon-ring" cx="' + (geo.w - 13) + '" cy="' + y2 + '" r="4" style="stroke:' + rc + '"/>';
+        s += '<circle class="beacon-ring" cx="' + (geo.w - 13) + '" cy="' + y2 + '" r="4" data-vs="stroke:' + rc + '"/>';
         s += '<circle class="pulse-ring" cx="' + (geo.w - 13) + '" cy="' + y2 + '" r="3" fill="none" stroke="' + rc + '" stroke-width="1.2"/>';
       }
       s += "</g>";
@@ -304,7 +349,7 @@
       if (inlineDash) st += "stroke-dasharray:" + inlineDash + ";";
       var mk = "vap-ar-" + (conf.accent in ACCENTS ? conf.accent : "slate");
       var startMk = conf.both ? 'marker-start="url(#' + mk + ')" ' : "";
-      vis += '<path class="' + cls + '" d="' + pt.d + '" style="' + st + 'color:' + col + '" ' + startMk + 'marker-end="url(#' + mk + ')"/>';
+      vis += '<path class="' + cls + '" d="' + pt.d + '" data-vs="' + st + 'color:' + col + '" ' + startMk + 'marker-end="url(#' + mk + ')"/>';
       if (hot && e.label) {
         var w = e.label.length * 5.6 + 12;
         lab += '<g transform="translate(' + (pt.mx - w / 2) + "," + (pt.my - 9) + ')"><rect class="elabel-bg" x="0" y="0" width="' + w + '" height="15" rx="3"/><text class="elabel" x="' + (w / 2) + '" y="11" text-anchor="middle" fill="#dfe9f0">' + esc(e.label) + "</text></g>";
@@ -325,11 +370,31 @@
     ];
     return items.map(function (it) {
       var col = accentLine(it.accent);
-      var sw = it.t === "bx"
-        ? '<span class="bx" style="border-color:' + col + '"></span>'
-        : (it.t === "swd" ? '<span class="swd" style="border-color:' + col + '"></span>' : '<span class="sw" style="border-color:' + col + '"></span>');
+      var sw = '<span class="' + (it.t === "bx" ? "bx" : (it.t === "swd" ? "swd" : "sw")) + '" data-vs="border-color:' + col + '"></span>';
       return '<span class="lg">' + sw + esc(it.label) + "</span>";
     }).join("");
+  }
+
+  // Tour legend: only the edge kinds and node states this model actually uses, named by the style's own
+  // `label` (falling back to the key), plus the per-step highlight. No attack vocabulary.
+  function tourLegendSvg(model, style) {
+    var out = [], seen = {};
+    (model.edges || []).forEach(function (e) {
+      if (seen["e:" + e.kind]) return;
+      seen["e:" + e.kind] = 1;
+      var conf = style.edgeKinds[e.kind] || { accent: "slate" };
+      out.push('<span class="lg"><span class="' + (conf.dash ? "swd" : "sw") + '" data-vs="border-color:' + accentLine(conf.accent) + '"></span>' + esc(conf.label || e.kind) + "</span>");
+    });
+    (model.nodes || []).forEach(function (n) {
+      (n.states || []).forEach(function (st) {
+        if (!st.state || seen["s:" + st.state] || !style.nodeStates[st.state]) return;
+        seen["s:" + st.state] = 1;
+        var def = style.nodeStates[st.state];
+        out.push('<span class="lg"><span class="bx" data-vs="border-color:' + accentLine(def.accent) + '"></span>' + esc(String(def.label || st.state).toLowerCase()) + "</span>");
+      });
+    });
+    out.push('<span class="lg"><span class="bx focus"></span>this step</span>');
+    return out.join("");
   }
 
   // ---- mount --------------------------------------------------------------
@@ -349,7 +414,7 @@
         "</header>" +
         '<main class="grid">' +
           '<section class="stage">' +
-            '<svg class="map" data-map role="img" aria-label="Attack path topology"></svg>' +
+            '<svg class="map" data-map role="img" aria-label="Diagram"></svg>' +
             '<div class="legend" data-legend></div>' +
           "</section>" +
           '<aside class="brief">' +
@@ -383,13 +448,58 @@
       return m;
     }
 
+    function focusSet() {
+      // Tour mode only: the current step's targets, for this step alone (the next render recomputes it,
+      // which is what releases the previous step's highlight). Attack-path mode keeps its cumulative
+      // state rendering untouched.
+      if (!isTourModel(state.model)) return null;
+      var ph = phaseMap()[state.p], out = {};
+      ((ph && !ph.intro && ph.targets) || []).forEach(function (id) { out[id] = true; });
+      return out;
+    }
+
     function draw() {
-      var g = state.g, model = state.model, style = state.style, p = state.p;
+      var g = state.g, model = state.model, style = state.style, p = state.p, tour = isTourModel(model);
       g._model = model;
+      root.classList.toggle("vap-tour", tour);
       el.map.setAttribute("viewBox", g.viewBox);
+      el.map.setAttribute("aria-label", tour ? "Walkthrough map" : "Attack path topology");
       el.map.style.minWidth = Math.min(1288, g.width) + "px";
-      el.map.innerHTML = defsSvg() + bandsSvg(g) + edgesSvg(model, g, p, style) + nodesSvg(model, g, p, style);
-      el.legend.innerHTML = legendSvg(style);
+      el.map.innerHTML = defsSvg() + bandsSvg(g) + edgesSvg(model, g, p, style) + nodesSvg(model, g, p, style, focusSet());
+      applyStyles(el.map);
+      el.legend.innerHTML = tour ? tourLegendSvg(model, style) : legendSvg(style);
+      applyStyles(el.legend);
+    }
+
+    // Per-step image + links, built as DOM nodes (textContent / setAttribute) — never markup — and only
+    // for targets that pass safeImage / safeHref.
+    function appendMedia(container, ph) {
+      if (!container) return;
+      var src = safeImage(ph.image);
+      if (src) {
+        var fig = document.createElement("figure");
+        fig.className = "step-media";
+        var img = document.createElement("img");
+        img.className = "step-img";
+        img.alt = ph.title || "";
+        img.loading = "lazy";
+        img.setAttribute("src", src);
+        fig.appendChild(img);
+        container.appendChild(fig);
+      }
+      var links = (Array.isArray(ph.links) ? ph.links : []).filter(function (l) { return l && safeHref(l.href); });
+      if (links.length) {
+        var ul = document.createElement("ul");
+        ul.className = "step-links";
+        links.forEach(function (l) {
+          var li = document.createElement("li"), a = document.createElement("a");
+          a.setAttribute("href", safeHref(l.href));
+          a.textContent = (typeof l.label === "string" && l.label.trim()) || safeHref(l.href);
+          li.appendChild(a);
+          ul.appendChild(li);
+        });
+        container.appendChild(ul);
+      }
     }
 
     function dotColor(id) {
@@ -418,7 +528,10 @@
       var model = state.model, p = state.p, pm = phaseMap();
       var ph = pm[p];
       var meta = model.meta || {};
-      el.brand.innerHTML = "<b>◤</b> " + esc(meta.title || "Attack path");
+      var tour = isTourModel(model), word = tour ? "Step" : "Phase";
+      var fallbackTitle = tour ? "Walkthrough" : "Attack path";
+      if (tour) el.brand.textContent = meta.title || fallbackTitle;  // no ◤ brand glyph in a tour
+      else el.brand.innerHTML = "<b>◤</b> " + esc(meta.title || fallbackTitle);
       el.sub.textContent = meta.subtitle || "";
       el.badge.textContent = meta.badge || "";
       el.badge.style.display = meta.badge ? "" : "none";
@@ -426,8 +539,8 @@
       if (p === 0 || (ph && ph.intro)) {
         var intro = meta.intro || {};
         el.brief.innerHTML =
-          '<div class="eyebrow">' + esc(intro.eyebrow || "Walkthrough") + "</div>" +
-          '<div class="ph-title">' + esc(meta.title || "Attack path") + "</div>" +
+          '<div class="eyebrow">' + esc(intro.eyebrow || (tour ? "Guided tour" : "Walkthrough")) + "</div>" +
+          '<div class="ph-title">' + esc(meta.title || fallbackTitle) + "</div>" +
           (intro.objective ? '<p class="intro-obj">' + esc(intro.objective) + "</p>" : "") +
           (intro.readingNotes ? '<div class="blk"><div class="blk-h">Reading the map</div><p class="watch">' + esc(intro.readingNotes) + "</p></div>" : "") +
           (intro.note ? '<div class="note">' + esc(intro.note) + "</div>" : "") +
@@ -435,16 +548,30 @@
         return;
       }
       if (!ph) {
-        el.brief.innerHTML = '<div class="empty">Phase ' + p + " — no content yet.</div>";
+        el.brief.innerHTML = '<div class="empty">' + word + " " + p + " — no content yet.</div>";
         return;
       }
       var tacs = (ph.tactics || []).map(function (t) {
         var col = accentLine(state.style.tacticKinds[t.kind] || "slate");
-        return '<span class="tac" style="color:' + col + ';border-color:' + col + '">' + esc(t.label) + "</span>";
+        return '<span class="tac" data-vs="color:' + col + ';border-color:' + col + '">' + esc(t.label) + "</span>";
       }).join("");
       var tgts = (ph.targets || []).map(function (id) {
-        return '<div class="tgt"><span class="dot" style="background:' + dotColor(id) + '"></span><span class="thn">' + esc(nodeLabel(id)) + '</span><span class="tip">' + esc(nodeIp(id)) + '</span><span class="tz">' + esc(zoneTitle(id)) + "</span></div>";
+        return '<div class="tgt"><span class="dot" data-vs="background:' + dotColor(id) + '"></span><span class="thn">' + esc(nodeLabel(id)) + '</span><span class="tip">' + esc(nodeIp(id)) + '</span><span class="tz">' + esc(zoneTitle(id)) + "</span></div>";
       }).join("");
+      if (tour) {
+        el.brief.innerHTML =
+          '<div class="eyebrow">Step <b>' + String(ph.n).padStart(2, "0") + "</b> / " + state.MAX + "</div>" +
+          '<div class="ph-title">' + esc(ph.title) + "</div>" +
+          (tacs ? '<div class="tacs">' + tacs + "</div>" : "") +
+          (ph.desc ? '<p class="desc">' + esc(ph.desc) + "</p>" : "") +
+          '<div data-media></div>' +
+          (tgts ? '<div class="blk"><div class="blk-h">On the map</div>' + tgts + "</div>" : "") +
+          (ph.watch ? '<div class="blk"><div class="blk-h">Look for</div><p class="watch">' + esc(ph.watch) + "</p></div>" : "") +
+          (ph.note ? '<div class="note">' + esc(ph.note) + "</div>" : "");
+        applyStyles(el.brief);
+        appendMedia(el.brief.querySelector("[data-media]"), ph);
+        return;
+      }
       var b = ph.blue;
       var blueHtml = "";
       if (b) {
@@ -470,11 +597,14 @@
         "</div>" +
         '<div class="tab-pane ' + (state.tab === "red" ? "active" : "") + '" data-pane="red">' +
           (ph.desc ? '<p class="desc">' + esc(ph.desc) + "</p>" : "") +
+          '<div data-media></div>' +
           (tgts ? '<div class="blk"><div class="blk-h">Targets this phase</div>' + tgts + "</div>" : "") +
           (ph.watch ? '<div class="blk"><div class="blk-h">On the map</div><p class="watch">' + esc(ph.watch) + "</p></div>" : "") +
           (ph.note ? '<div class="note">' + esc(ph.note) + "</div>" : "") +
         "</div>" +
         '<div class="tab-pane ' + (state.tab === "blue" ? "active" : "") + '" data-pane="blue">' + blueHtml + "</div>";
+      applyStyles(el.brief);
+      appendMedia(el.brief.querySelector("[data-media]"), ph);
 
       root.querySelectorAll(".detail-tab").forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -491,7 +621,7 @@
         (function (idx) {
           var seg = document.createElement("div");
           seg.className = "seg";
-          seg.title = "Phase " + idx;
+          seg.title = (isTourModel(state.model) ? "Step " : "Phase ") + idx;
           seg.addEventListener("click", function () { stopAuto(); go(idx); });
           el.rail.appendChild(seg);
         })(i);
@@ -517,9 +647,26 @@
       el.next.textContent = state.p >= state.MAX ? "Complete" : "Next ►";
     }
 
+    // Deep links (opts.deepLink): #step-N selects a step on mount and follows the step as it changes.
+    // replaceState, not assignment, so stepping through a tour does not stack history entries. Wrapped in
+    // try: a sandboxed/srcdoc iframe (scribble embeds the deliverable) may refuse history writes.
+    function hashStep() {
+      var m = /^#step-(\d{1,4})$/.exec((window.location && window.location.hash) || "");
+      return m ? parseInt(m[1], 10) : null;
+    }
+    function writeHash() {
+      if (!opts.deepLink) return;
+      try {
+        var h = "#step-" + state.p;
+        if (window.location.hash !== h) window.history.replaceState(window.history.state, "", h);
+      } catch (e) {}
+    }
+    function onHash() { var n = hashStep(); if (n !== null && n !== state.p) { stopAuto(); go(n); } }
+
     function go(p) {
       state.p = Math.max(0, Math.min(state.MAX, p));
       render();
+      writeHash();
       phaseCbs.forEach(function (cb) { try { cb(state.p); } catch (e) {} });
     }
     function step(d) { stopAuto(); go(state.p + d); }
@@ -556,7 +703,11 @@
     }
 
     setModel(model);
-    if (opts.phase != null) go(opts.phase);
+    if (opts.deepLink) {
+      window.addEventListener("hashchange", onHash);
+      if (hashStep() !== null) go(hashStep());
+      else if (opts.phase != null) go(opts.phase);
+    } else if (opts.phase != null) go(opts.phase);
 
     return {
       setModel: setModel,
@@ -564,7 +715,12 @@
       phase: function () { return state.p; },
       max: function () { return state.MAX; },
       onPhaseChange: function (cb) { if (typeof cb === "function") phaseCbs.push(cb); },
-      destroy: function () { stopAuto(); if (opts.captureKeys) document.removeEventListener("keydown", onKey); root.innerHTML = ""; }
+      destroy: function () {
+        stopAuto();
+        if (opts.captureKeys) document.removeEventListener("keydown", onKey);
+        if (opts.deepLink) window.removeEventListener("hashchange", onHash);
+        root.innerHTML = "";
+      }
     };
   }
 
@@ -572,10 +728,19 @@
   if (typeof window !== "undefined") window.VectorViewer = VectorViewer;
 
   // Auto-boot the deliverable.
+  function bootModel() {
+    if (window.__VECTOR_MODEL__) return window.__VECTOR_MODEL__;
+    var island = document.getElementById("vap-model");
+    if (!island) return null;
+    try { return JSON.parse(island.textContent); }
+    catch (e) { return { schema: "vector.attackpath/v1", meta: { title: "Parse error" }, zones: [], nodes: [], edges: [], phases: [] }; }
+  }
   function boot() {
-    if (typeof window === "undefined" || !window.__VECTOR_MODEL__) return;
+    if (typeof window === "undefined") return;
+    var model = bootModel();
+    if (!model) return;
     var host = document.getElementById("vap") || document.body;
-    var inst = mount(host, window.__VECTOR_MODEL__, { captureKeys: true });
+    var inst = mount(host, model, { captureKeys: true, deepLink: true });
     // On paper, an animated walkthrough is whatever phase it happened to be on — usually the intro,
     // i.e. an empty diagram (ext#115). Print the FINAL keyframe instead: the whole path, every node in
     // its end state. `goto` also stops the auto-play timer, so the printed frame cannot move under the

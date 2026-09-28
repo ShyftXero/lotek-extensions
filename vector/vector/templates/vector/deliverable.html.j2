@@ -22,11 +22,8 @@ body{padding-bottom:28px;box-sizing:border-box}
 <body>
 <div id="vap"></div>
 {% if footer %}<footer class="vap-deliverable-footer">{{ footer }}</footer>{% endif %}
+{# The runtime's boot() reads this JSON island itself — no inline parse script. #}
 <script type="application/json" id="vap-model">{{ model_json }}</script>
-<script>
-  try { window.__VECTOR_MODEL__ = JSON.parse(document.getElementById('vap-model').textContent); }
-  catch (e) { window.__VECTOR_MODEL__ = { schema: "vector.attackpath/v1", meta: { title: "Parse error" }, zones: [], nodes: [], edges: [], phases: [] }; }
-</script>
 <script>{{ js }}</script>
 </body>
 </html>

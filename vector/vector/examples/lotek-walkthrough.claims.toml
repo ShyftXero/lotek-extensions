@@ -1,0 +1,135 @@
+# Claims about the bundled lotek walkthrough (lotek-walkthrough.json), one per tour step.
+#
+# Format: lotek core docs/DOC_CLAIMS.md, "Extension claims sidecars (TOML)" — only [[claim]] tables with
+# the keys id / describes / anchors. Each step restates claims from lotek's docs/DATAFLOW.md, so its
+# anchors are copied VERBATIM from those DATAFLOW claims (named in the comment above each entry). When the
+# code under a DATAFLOW claim moves, core's doc-claims guard fails on this sidecar too, and the tour step
+# that says the same thing is flagged for a rewrite.
+
+# Step 1 — restates DOC-DATAFLOW-09, DOC-DATAFLOW-10
+[[claim]]
+id = "DOC-VECTOR-TOUR-01"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "sym=app.routes.runner_api.runner_key_exchange",
+    "test=tests/test_e2e_channel_http.py::test_key_exchange_registers_key_and_returns_dashboard_key",
+    "test=tests/test_runner_cred_authz.py::test_key_exchange_rekey_requires_registration_secret",
+    "sym=app.routes.runner_api.runner_heartbeat",
+    "test=tests/test_e2e_channel_http.py::test_encrypted_heartbeat_round_trips",
+    "test=tests/test_e2e_channel_http.py::test_plaintext_heartbeat_is_refused",
+    "test=tests/test_runner_capability_gate.py::test_heartbeat_persists_reported_tools_and_image",
+]
+
+# Step 2 — restates DOC-DATAFLOW-01, DOC-DATAFLOW-19
+[[claim]]
+id = "DOC-VECTOR-TOUR-02"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "col=jobs.engagement_id",
+    "col=jobs.client_id",
+    "test=tests/test_scope_gate.py::test_job_insert_out_of_scope_is_refused_by_the_listener_alone",
+    "sym=app.access.user_can_view_job",
+    "sym=app.access.user_can_control_job",
+    "test=tests/test_access_seam_v2.py::test_effective_permission_is_the_lesser_of_role_and_capability",
+    "test=tests/test_access_seam_v2.py::test_get_job_or_404_control_flag_applies_the_control_predicate",
+]
+
+# Step 3 — restates DOC-DATAFLOW-13, DOC-DATAFLOW-14, DOC-DATAFLOW-16
+[[claim]]
+id = "DOC-VECTOR-TOUR-03"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "col=engagements.scope",
+    "sym=app.scope.explain_target",
+    "sym=app.scope.target_in_scope",
+    "sym=app.scope.assert_job_targets",
+    "inv=INV-TENANCY-09",
+    "test=tests/test_scope_single_source.py::test_explain_target_is_target_in_scope",
+    "test=tests/test_scope_single_source.py::test_widget_route_agrees_with_job_creation",
+    "test=tests/test_scope_single_source.py::test_no_second_scope_matcher",
+    "test=tests/test_scope_gate.py::test_in_scope_ip_is_accepted",
+    "test=tests/test_scope_gate.py::test_exclusion_inside_an_inclusion_is_refused",
+    "test=tests/test_scope_gate.py::test_empty_includes_refuses_everything",
+    "test=tests/test_scope_gate.py::test_persist_job_refuses_out_of_scope_target_by_name",
+    "test=tests/test_scope_gate.py::test_job_insert_out_of_scope_is_refused_by_the_listener_alone",
+]
+
+# Step 4 — restates DOC-DATAFLOW-25
+[[claim]]
+id = "DOC-VECTOR-TOUR-04"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "sym=app.routes.jobs.persist_job",
+    "sym=app.routes.jobs.start_job_record",
+    "test=tests/test_dashboard_job_create.py::test_quick_job_is_queued_not_stranded_stopped",
+    "test=tests/test_dashboard_job_create.py::test_future_assessment_is_scheduled",
+    "test=tests/test_start_job_record_atomic.py::test_start_job_record_wont_double_start_a_claimed_job",
+]
+
+# Step 5 — restates DOC-DATAFLOW-12, DOC-DATAFLOW-41
+[[claim]]
+id = "DOC-VECTOR-TOUR-05"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "sym=app.routes.runner_api.runner_claim_job",
+    "test=tests/test_chaos_claim_concurrency.py::test_concurrent_claimers_exactly_one_wins",
+    "test=tests/test_chaos_db_faults.py::test_claim_commit_failure_leaves_job_queued_not_half_claimed",
+    "sym=app.object_store.ingest_job_artifacts",
+    "sym=app.object_store.ObjectStore",
+    "test=tests/test_object_store.py::test_ingest_job_artifacts_sweeps_output_dir",
+    "test=tests/test_object_store.py::test_download_serves_from_store_through_the_seam",
+]
+
+# Step 6 — restates DOC-DATAFLOW-29, DOC-DATAFLOW-30
+[[claim]]
+id = "DOC-VECTOR-TOUR-06"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "sym=app.manager.JobManager._normalize_and_emit",
+    "sym=app.normalizer.apply_parsed",
+    "test=tests/test_manager_summary.py::test_job_due_once_after_completion",
+    "test=tests/test_manager_summary.py::test_historical_terminal_job_is_never_due",
+    "test=tests/test_apply_parsed_batch.py::test_reapply_is_idempotent_and_still_one_select",
+    "test=tests/test_apply_parsed_batch.py::test_all_sources_dedup_by_their_key",
+]
+
+# Step 7 — restates DOC-DATAFLOW-31, DOC-DATAFLOW-32, DOC-DATAFLOW-33
+[[claim]]
+id = "DOC-VECTOR-TOUR-07"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "enum=FindingStatus",
+    "col=findings.status",
+    "sym=app.routes.jobs.update_finding_status",
+    "test=tests/test_ui_wiring.py::test_finding_status_post_refused_without_control",
+    "sym=app.finding_grouping.group_by_kind",
+    "sym=app.finding_grouping.group_by_host",
+    "test=tests/test_finding_grouping_single_source.py::test_no_second_bucketer_outside_the_home",
+]
+
+# Step 8 — restates DOC-DATAFLOW-36, DOC-DATAFLOW-37, DOC-DATAFLOW-39
+[[claim]]
+id = "DOC-VECTOR-TOUR-08"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "col=jobs.promoted_extension",
+    "col=jobs.promoted_ref_id",
+    "col=jobs.promoted_at",
+    "sym=app.host_contract.make_mark_job_promoted",
+    "test=tests/test_job_promoted_ref.py::test_mark_job_promoted_refuses_a_conflicting_repromote",
+    "test=tests/test_job_promoted_ref.py::test_mark_job_promoted_reaffirming_the_same_target_is_idempotent",
+    "sym=scribble.promote.promote_job",
+    "sym=scribble.promote.assert_promote_anchor",
+    "sym=app.routes.jobs.job_to_vector",
+    "sym=app.vector_seed.assemble_graph_from_job",
+    "test=tests/test_vector_seed.py::test_job_to_vector_creates_diagram_and_redirects",
+]
+
+# Step 9 — restates DOC-DATAFLOW-40
+[[claim]]
+id = "DOC-VECTOR-TOUR-09"
+describes = "lotek-walkthrough.json"
+anchors = [
+    "manifest=scribble:mount",
+    "sym=scribble.report_html_api.register",
+]

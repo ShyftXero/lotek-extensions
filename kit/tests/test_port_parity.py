@@ -41,6 +41,14 @@ SANCTIONED_DIVERGENCES = (
     "LEGACY_SCHEMA_IDS",
     "SUPPORTED_SCHEMA_IDS",
     "is_supported_schema_id",
+    # feat/vector-tour-mode added tour mode (meta.mode, per-step image/links) and the activateAt fix to
+    # BOTH copies in one PR. This test reads vector's copy from origin/main, which lags that PR until it
+    # merges, so the new lines read as kit-only drift in the meantime. Once merged the copies are
+    # identical again and these tokens match nothing. Every new line carries one of them on purpose.
+    "tour",
+    "TOUR",
+    "activateAt",
+    "import re",
 )
 
 
@@ -165,3 +173,38 @@ def test_the_source_diff_contains_only_sanctioned_changes():
 
     assert unexplained_ours == [], f"the kit has code the origin does not: {unexplained_ours}"
     assert unexplained_theirs == [], f"the origin has code the kit does not — a patch that never landed here: {unexplained_theirs}"
+
+
+_TOUR_DOCUMENT = {
+    "meta": {"title": "t", "mode": "TOUR"},
+    "zones": [{"id": "z", "title": "Z"}],
+    "nodes": [{"id": "a", "zone": "z", "activateAt": 3}, {"id": "b", "zone": "z", "activateAt": "nope"}],
+    "phases": [
+        {"n": 1, "targets": ["a"], "image": "/static/x.png",
+         "links": [{"label": "ok", "href": "/docs#x"}, {"label": "bad", "href": "http://evil"},
+                   {"label": "bad", "href": "javascript:alert(1)"}, {"label": "bad", "href": "//evil"}]},
+        {"n": 2, "image": "https://evil/x.png"},
+    ],
+}
+
+
+def test_tour_fields_normalize_identically_to_the_working_tree_copy():
+    """The tour fields are new on both sides at once, so origin/main cannot vouch for them yet (see the
+    SANCTIONED_DIVERGENCES note). Compare against vector's copy in THIS checkout instead."""
+    path = REPO_ROOT / "vector" / "vector" / "schema.py"
+    if not path.exists():
+        pytest.skip("vector/vector/schema.py is not in this checkout")
+    spec = importlib.util.spec_from_file_location("_vector_schema_worktree", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    ours = attackpath.normalize(_TOUR_DOCUMENT)
+    theirs = module.normalize(_TOUR_DOCUMENT)
+    ours.pop("schema"), theirs.pop("schema")
+    assert ours == theirs
+    assert ours["meta"]["mode"] == "tour"
+    assert ours["nodes"][0]["activateAt"] == 3 and "activateAt" not in ours["nodes"][1]
+    assert ours["phases"][0]["image"] == "/static/x.png"
+    assert ours["phases"][0]["links"] == [{"label": "ok", "href": "/docs#x"}]
+    assert "image" not in ours["phases"][1]

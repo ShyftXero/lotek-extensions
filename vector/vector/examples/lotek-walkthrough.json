@@ -1,0 +1,588 @@
+{
+  "schema": "vector.attackpath/v1",
+  "meta": {
+    "title": "How lotek works",
+    "subtitle": "From a new runner to a delivered report",
+    "badge": "",
+    "mode": "tour",
+    "railLabels": [
+      "Setup",
+      "Scan",
+      "Triage",
+      "Deliver"
+    ],
+    "intro": {
+      "eyebrow": "Guided tour",
+      "objective": "Follow one piece of work through lotek, from a new runner to a delivered report.",
+      "readingNotes": "Each step highlights the parts it describes on the map. Columns group them: Setup, Scan, Triage, Deliver. A part turns cyan while it is in play and green once its step is done.",
+      "note": ""
+    }
+  },
+  "zones": [
+    {
+      "id": "setup",
+      "title": "Setup",
+      "subtitle": "",
+      "accent": "cyan",
+      "order": 0
+    },
+    {
+      "id": "scan",
+      "title": "Scan",
+      "subtitle": "",
+      "accent": "green",
+      "order": 1
+    },
+    {
+      "id": "triage",
+      "title": "Triage",
+      "subtitle": "",
+      "accent": "violet",
+      "order": 2
+    },
+    {
+      "id": "deliver",
+      "title": "Deliver",
+      "subtitle": "",
+      "accent": "cyan",
+      "order": 3
+    }
+  ],
+  "boundaries": [],
+  "nodes": [
+    {
+      "id": "runner",
+      "label": "Runner",
+      "ip": "",
+      "domain": "",
+      "zone": "setup",
+      "row": 0,
+      "states": [
+        {
+          "at": 1,
+          "state": "active"
+        },
+        {
+          "at": 2,
+          "state": "done"
+        },
+        {
+          "at": 5,
+          "state": "active"
+        },
+        {
+          "at": 6,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "label": "Dashboard",
+      "ip": "",
+      "domain": "",
+      "zone": "setup",
+      "row": 1,
+      "states": [
+        {
+          "at": 1,
+          "state": "active"
+        },
+        {
+          "at": 2,
+          "state": "done"
+        },
+        {
+          "at": 4,
+          "state": "active"
+        },
+        {
+          "at": 5,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "engagement",
+      "label": "Engagement",
+      "ip": "",
+      "domain": "",
+      "zone": "setup",
+      "row": 2,
+      "states": [
+        {
+          "at": 2,
+          "state": "active"
+        },
+        {
+          "at": 3,
+          "state": "active"
+        },
+        {
+          "at": 4,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "scope",
+      "label": "Scope",
+      "ip": "",
+      "domain": "",
+      "zone": "setup",
+      "row": 3,
+      "states": [
+        {
+          "at": 3,
+          "state": "active"
+        },
+        {
+          "at": 4,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "job",
+      "label": "Job",
+      "ip": "",
+      "domain": "",
+      "zone": "scan",
+      "row": 0,
+      "states": [
+        {
+          "at": 4,
+          "state": "active"
+        },
+        {
+          "at": 5,
+          "state": "active"
+        },
+        {
+          "at": 6,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "label": "Object store",
+      "ip": "",
+      "domain": "",
+      "zone": "scan",
+      "row": 1,
+      "states": [
+        {
+          "at": 5,
+          "state": "active"
+        },
+        {
+          "at": 6,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "leader",
+      "label": "Leader loop",
+      "ip": "",
+      "domain": "",
+      "zone": "scan",
+      "row": 2,
+      "states": [
+        {
+          "at": 6,
+          "state": "active"
+        },
+        {
+          "at": 7,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "findings",
+      "label": "Findings",
+      "ip": "",
+      "domain": "",
+      "zone": "triage",
+      "row": 2,
+      "states": [
+        {
+          "at": 6,
+          "state": "active"
+        },
+        {
+          "at": 7,
+          "state": "active"
+        },
+        {
+          "at": 8,
+          "state": "active"
+        },
+        {
+          "at": 9,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "label": "Operator",
+      "ip": "",
+      "domain": "",
+      "zone": "triage",
+      "row": 3,
+      "states": [
+        {
+          "at": 7,
+          "state": "active"
+        },
+        {
+          "at": 8,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "diagram",
+      "label": "Vector diagram",
+      "ip": "",
+      "domain": "",
+      "zone": "deliver",
+      "row": 0,
+      "states": [
+        {
+          "at": 8,
+          "state": "active"
+        },
+        {
+          "at": 9,
+          "state": "done"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "label": "Scribble report",
+      "ip": "",
+      "domain": "",
+      "zone": "deliver",
+      "row": 2,
+      "states": [
+        {
+          "at": 8,
+          "state": "active"
+        },
+        {
+          "at": 9,
+          "state": "active"
+        }
+      ]
+    },
+    {
+      "id": "client",
+      "label": "Client",
+      "ip": "",
+      "domain": "",
+      "zone": "deliver",
+      "row": 3,
+      "states": [
+        {
+          "at": 9,
+          "state": "active"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "runner-dashboard",
+      "from": "runner",
+      "to": "dashboard",
+      "kind": "link",
+      "at": 1,
+      "route": "intra",
+      "label": "heartbeat"
+    },
+    {
+      "id": "engagement-scope",
+      "from": "engagement",
+      "to": "scope",
+      "kind": "handoff",
+      "at": 3,
+      "route": "intra",
+      "label": "scope"
+    },
+    {
+      "id": "dashboard-job",
+      "from": "dashboard",
+      "to": "job",
+      "kind": "handoff",
+      "at": 4,
+      "route": "flow",
+      "label": "queue",
+      "offset": 6
+    },
+    {
+      "id": "runner-job",
+      "from": "runner",
+      "to": "job",
+      "kind": "flow",
+      "at": 5,
+      "route": "flow",
+      "label": "claim",
+      "offset": -6
+    },
+    {
+      "id": "job-store",
+      "from": "job",
+      "to": "store",
+      "kind": "flow",
+      "at": 5,
+      "route": "intra",
+      "label": "output"
+    },
+    {
+      "id": "leader-findings",
+      "from": "leader",
+      "to": "findings",
+      "kind": "flow",
+      "at": 6,
+      "route": "flow",
+      "label": "parse"
+    },
+    {
+      "id": "operator-findings",
+      "from": "operator",
+      "to": "findings",
+      "kind": "handoff",
+      "at": 7,
+      "route": "intra",
+      "label": "triage"
+    },
+    {
+      "id": "findings-report",
+      "from": "findings",
+      "to": "report",
+      "kind": "flow",
+      "at": 8,
+      "route": "flow",
+      "label": "adopt"
+    },
+    {
+      "id": "job-diagram",
+      "from": "job",
+      "to": "diagram",
+      "kind": "handoff",
+      "at": 8,
+      "route": "flow",
+      "label": "seed"
+    },
+    {
+      "id": "report-client",
+      "from": "report",
+      "to": "client",
+      "kind": "flow",
+      "at": 9,
+      "route": "intra",
+      "label": "share"
+    }
+  ],
+  "phases": [
+    {
+      "n": 0,
+      "intro": true,
+      "title": "How lotek works"
+    },
+    {
+      "n": 1,
+      "title": "Deploy a runner",
+      "desc": "Install a runner and point it at the dashboard. It exchanges keys once, then sends encrypted heartbeats that report its version, tools and capabilities. The runner always connects out; the dashboard never connects in.",
+      "targets": [
+        "runner",
+        "dashboard"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 3. Runners: enroll, heartbeat, claim",
+          "href": "/docs#dataflow-3-runners-enroll-heartbeat-claim"
+        }
+      ]
+    },
+    {
+      "n": 2,
+      "title": "Open an engagement",
+      "desc": "Every scan belongs to one client and one engagement. Memberships on the engagement decide who can read the work and who can run it.",
+      "targets": [
+        "engagement"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 1. Tenancy: client, engagement, job",
+          "href": "/docs#dataflow-1-tenancy-client-engagement-job"
+        },
+        {
+          "label": "How work moves through lotek — 5. Access: who may see and control a job",
+          "href": "/docs#dataflow-5-access-who-may-see-and-control-a-job"
+        }
+      ]
+    },
+    {
+      "n": 3,
+      "title": "Declare scope",
+      "desc": "Scope lists the IPs, ranges and hostnames you are allowed to test. Exclusions win. One function decides every target, and it is checked again when the job is saved.",
+      "targets": [
+        "engagement",
+        "scope"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 4. Scope: which targets are legal",
+          "href": "/docs#dataflow-4-scope-which-targets-are-legal"
+        }
+      ]
+    },
+    {
+      "n": 4,
+      "title": "Queue a scan",
+      "desc": "Pick modules and targets. A quick scan is queued now; a future assessment is scheduled.",
+      "targets": [
+        "dashboard",
+        "job"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 6. Job lifecycle",
+          "href": "/docs#dataflow-6-job-lifecycle"
+        }
+      ]
+    },
+    {
+      "n": 5,
+      "title": "The runner claims and runs it",
+      "desc": "The runner picks up work it is able to run. Exactly one runner wins each job. Output is swept into the object store as the job finishes.",
+      "targets": [
+        "runner",
+        "job",
+        "store"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 3. Runners: enroll, heartbeat, claim",
+          "href": "/docs#dataflow-3-runners-enroll-heartbeat-claim"
+        },
+        {
+          "label": "How work moves through lotek — 10. Storage: object store and retention",
+          "href": "/docs#dataflow-10-storage-object-store-and-retention"
+        }
+      ]
+    },
+    {
+      "n": 6,
+      "title": "Results become findings",
+      "desc": "The dashboard parses tool output into assets, services and de-duplicated findings. Re-parsing the same output changes nothing.",
+      "targets": [
+        "leader",
+        "findings"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 7. Normalization: raw output to findings",
+          "href": "/docs#dataflow-7-normalization-raw-output-to-findings"
+        }
+      ]
+    },
+    {
+      "n": 7,
+      "title": "Triage",
+      "desc": "An operator marks each finding: triaged, accepted risk, false positive, fixed, or needs retest. Findings group by issue or by host.",
+      "targets": [
+        "operator",
+        "findings"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 8. Triage and decisioning",
+          "href": "/docs#dataflow-8-triage-and-decisioning"
+        }
+      ]
+    },
+    {
+      "n": 8,
+      "title": "Build the deliverable",
+      "desc": "Adopt the job into a Scribble report, which copies its findings into the engagement's report. A job can also seed a Vector attack-path diagram.",
+      "targets": [
+        "findings",
+        "report",
+        "diagram"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 9. Deliverables: Scribble reports and Vector diagrams",
+          "href": "/docs#dataflow-9-deliverables-scribble-reports-and-vector-diagrams"
+        }
+      ]
+    },
+    {
+      "n": 9,
+      "title": "Deliver",
+      "desc": "Share the live HTML report or export HTML, a ZIP with artifacts, JSON, CSV or DOCX.",
+      "targets": [
+        "report",
+        "client"
+      ],
+      "links": [
+        {
+          "label": "How work moves through lotek — 9. Deliverables: Scribble reports and Vector diagrams",
+          "href": "/docs#dataflow-9-deliverables-scribble-reports-and-vector-diagrams"
+        }
+      ]
+    }
+  ],
+  "style": {
+    "edgeKinds": {
+      "flow": {
+        "accent": "cyan",
+        "width": 1.8,
+        "dash": null,
+        "flow": true,
+        "label": "data flow"
+      },
+      "handoff": {
+        "accent": "violet",
+        "width": 1.6,
+        "dash": [
+          6,
+          4
+        ],
+        "flow": false,
+        "label": "hand-off"
+      },
+      "link": {
+        "accent": "green",
+        "width": 1.6,
+        "dash": [
+          2,
+          5
+        ],
+        "flow": false,
+        "label": "connects out"
+      }
+    },
+    "nodeStates": {
+      "active": {
+        "accent": "cyan",
+        "precedence": 1,
+        "fillNode": true,
+        "label": "ACTIVE"
+      },
+      "done": {
+        "accent": "green",
+        "precedence": 1,
+        "fillNode": false,
+        "label": "DONE"
+      }
+    }
+  }
+}
