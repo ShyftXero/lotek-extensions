@@ -28,6 +28,9 @@ dev = [
     # `dependencies` is what keeps "the kit has no runtime dependencies" true — and the tests that
     # assert nothing imports flask at module scope still hold, because they read source, not imports.
     "flask>=3.0",
+    # tests/test_reporting_editor_dom.py drives reporting-editor.js in Chromium (hostile-doc XSS
+    # proofs). It skips when no browser binary is installed.
+    "playwright>=1.40.0",
 ]
 
 # NOTE: there is deliberately no [project.entry-points."lotek.extensions"] table and no
