@@ -15,6 +15,40 @@
     return { "Content-Type": "application/json" };
   }
 
+  // An artifact URL comes from the server (a route URL) or is a local blob: preview, but it is still data
+  // on its way into an attribute, so only http(s), blob: and relative URLs are set; anything else
+  // (javascript:, data:, a control-character evasion like "java\tscript:") is dropped. encodeURI then
+  // leaves no quote or bracket in the value; existing %XX escapes are kept, and a lone surrogate (which
+  // makes encodeURI throw) is refused.
+  const URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
+  const URL_CONTROL = /[\x00-\x1f\x7f]/;
+  const URL_SCHEMES = { http: 1, https: 1, blob: 1 };
+
+  function safeUrl(s) {
+    s = typeof s === "string" ? s.trim() : "";
+    if (!s || URL_CONTROL.test(s)) return "";
+    const m = URL_SCHEME.exec(s);
+    if (m && !URL_SCHEMES[m[1].toLowerCase()]) return "";
+    try {
+      return encodeURI(s).replace(/%25([0-9A-Fa-f]{2})/g, "%$1");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // createElement + setAttribute, in the order given; `text` sets textContent. kids are nodes only.
+  function el(tag, attrs, kids) {
+    const node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (kids || []).forEach(function (kid) {
+      node.appendChild(kid);
+    });
+    return node;
+  }
+
   function galleryOf(el) {
     return el.closest(".scribble-gallery");
   }
@@ -48,22 +82,29 @@
 
     const showImage = pendingInfo ? !!pendingInfo.objectUrl : isImageArtifact(artifact);
     const media = showImage
-      ? '<a class="scribble-gallery-thumb" target="_blank" rel="noopener">' +
-        '<img alt="" loading="lazy" /></a>'
-      : '<a class="scribble-gallery-file-icon pill" target="_blank" rel="noopener"></a>';
+      ? el("a", { class: "scribble-gallery-thumb", target: "_blank", rel: "noopener" }, [
+          el("img", { alt: "", loading: "lazy" }),
+        ])
+      : el("a", { class: "scribble-gallery-file-icon pill", target: "_blank", rel: "noopener" });
 
-    li.innerHTML =
-      '<span class="scribble-gallery-handle mono" title="Drag to reorder">&#x2837;</span>' +
-      media +
-      '<div class="scribble-gallery-meta">' +
-      '<div class="scribble-gallery-filename mono"></div>' +
-      '<input type="text" class="scribble-gallery-caption" placeholder="Caption" />' +
-      '<div class="scribble-gallery-pending-status muted"></div>' +
-      "</div>" +
-      '<label class="scribble-gallery-toggle">' +
-      '<input type="checkbox" class="scribble-gallery-include" checked /> include' +
-      "</label>" +
-      '<button type="button" class="btn scribble-gallery-delete" title="Delete artifact">&times;</button>';
+    li.appendChild(el("span", { class: "scribble-gallery-handle mono", title: "Drag to reorder", text: "\u2837" }));
+    li.appendChild(media);
+    li.appendChild(
+      el("div", { class: "scribble-gallery-meta" }, [
+        el("div", { class: "scribble-gallery-filename mono" }),
+        el("input", { type: "text", class: "scribble-gallery-caption", placeholder: "Caption" }),
+        el("div", { class: "scribble-gallery-pending-status muted" }),
+      ])
+    );
+    li.appendChild(
+      el("label", { class: "scribble-gallery-toggle" }, [
+        el("input", { type: "checkbox", class: "scribble-gallery-include", checked: "" }),
+        document.createTextNode(" include"),
+      ])
+    );
+    li.appendChild(
+      el("button", { type: "button", class: "btn scribble-gallery-delete", title: "Delete artifact", text: "\u00d7" })
+    );
 
     const link = li.querySelector("a");
     const img = li.querySelector("img");
@@ -75,7 +116,7 @@
       link.removeAttribute("href");
       link.removeAttribute("target");
       if (img) {
-        img.src = pendingInfo.objectUrl || "";
+        img.setAttribute("src", safeUrl(pendingInfo.objectUrl));
         img.alt = artifact.caption || artifact.filename || "";
       }
       statusEl.textContent = pendingInfo.statusText || "Uploading…";
@@ -84,9 +125,9 @@
       return li;
     }
 
-    link.href = artifact.url;
+    link.setAttribute("href", safeUrl(artifact.url));
     if (img) {
-      img.src = artifact.url;
+      img.setAttribute("src", safeUrl(artifact.url));
       img.alt = artifact.caption || artifact.filename || "";
     } else {
       link.textContent = artifact.kind || "file";
@@ -140,11 +181,11 @@
 
     const link = li.querySelector("a");
     if (link) {
-      link.setAttribute("href", data.url || "#");
+      link.setAttribute("href", safeUrl(data.url) || "#");
       link.setAttribute("target", "_blank");
     }
     const img = li.querySelector("img");
-    if (img) img.src = data.url || "";
+    if (img) img.setAttribute("src", safeUrl(data.url));
     revokeObjectUrl(li);
 
     const statusEl = li.querySelector(".scribble-gallery-pending-status");
