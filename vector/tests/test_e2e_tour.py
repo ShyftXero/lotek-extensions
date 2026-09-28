@@ -109,7 +109,15 @@ def _media_model() -> dict:
     }
 
 
+def _bad_rail_model() -> dict:
+    """UN-normalized: a raw editor model whose railLabels is not a list must still mount."""
+    return {"meta": {"title": "Bad rail", "railLabels": "not-a-list"},
+            "zones": [{"id": "z", "title": "Z"}], "nodes": [{"id": "a", "zone": "z", "label": "A"}],
+            "edges": [], "phases": [{"n": 1, "title": "one", "targets": ["a"]}]}
+
+
 MODELS = {
+    "badrail": _bad_rail_model,
     "tour": lambda: normalize(load_example(TOUR_FILE)),
     "attack": lambda: normalize(_model()),
     "media": _media_model,
@@ -293,4 +301,11 @@ def test_the_progress_rail_renders_and_drives_the_viewer_in_both_modes(server, o
     assert page.locator(f"{segs}.cur").count() == 1
     assert page.locator(f"{segs}.done").count() == total - 1
     assert page.get_attribute("#vap [data-next]", "disabled") is not None
+    assert _violations(page) == []
+
+
+def test_a_non_list_rail_label_field_does_not_break_the_mount(server, open_page):
+    page = open_page(f"{server}/badrail/")
+    assert page.locator("#vap [data-rail] .seg").count() == 1
+    assert page.eval_on_selector_all("#vap [data-rail-labels] span", _TEXTS) == []
     assert _violations(page) == []

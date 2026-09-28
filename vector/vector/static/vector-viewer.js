@@ -626,7 +626,8 @@
           el.rail.appendChild(seg);
         })(i);
       }
-      var labels = (state.model.meta && state.model.meta.railLabels) || [];
+      var labels = state.model.meta && state.model.meta.railLabels;
+      if (!Array.isArray(labels)) labels = [];  // the editor previews raw models; a non-array must not throw
       el.railLabels.innerHTML = labels.map(function (l) { return "<span>" + esc(l) + "</span>"; }).join("");
     }
     function paintRail() {
