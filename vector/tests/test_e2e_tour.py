@@ -266,3 +266,31 @@ def test_deep_link_selects_the_step_and_follows_it_without_history_spam(server, 
 def test_no_hash_is_written_until_the_reader_moves(server, open_page):
     page = open_page(f"{server}/tour/")
     assert page.evaluate("() => location.hash") == ""
+
+
+
+@pytest.mark.parametrize("name", ["tour", "attack"])
+def test_the_progress_rail_renders_and_drives_the_viewer_in_both_modes(server, open_page, name):
+    """The rail was dead markup: ``buildRail()`` existed but nothing called it, so ``[data-rail]`` stayed
+    empty in every mode. One segment per step, painted as the reader moves, and a click jumps."""
+    page = open_page(f"{server}/{name}/")
+    segs = "#vap [data-rail] .seg"
+    word = "Step" if name == "tour" else "Phase"
+    assert page.locator(f"{segs}.cur").count() == 0  # the intro is step 0, before the first segment
+    labels = page.eval_on_selector_all("#vap [data-rail-labels] span", _TEXTS)
+    assert labels == list(MODELS[name]()["meta"].get("railLabels") or [])
+
+    page.click("#vap [data-next]")
+    total = int(_eyebrow(page).rsplit("/", 1)[1])  # "Step 01 / 9" -> the viewer's own step count
+    assert total > 1
+    assert page.eval_on_selector_all(segs, "els => els.map(e => e.title)") == [
+        f"{word} {i}" for i in range(1, total + 1)]
+    page.click("#vap [data-next]")
+    assert page.eval_on_selector_all(segs, "els => els.map(e => e.className)")[:3] == [
+        "seg done", "seg cur", "seg"]
+
+    page.click(f"{segs}:nth-child({total})")  # the rail is a jump control, not just a readout
+    assert page.locator(f"{segs}.cur").count() == 1
+    assert page.locator(f"{segs}.done").count() == total - 1
+    assert page.get_attribute("#vap [data-next]", "disabled") is not None
+    assert _violations(page) == []

@@ -699,6 +699,7 @@
       state.g = geometry(state.model);
       state.MAX = computeMax(state.model);
       if (state.p > state.MAX) state.p = state.MAX;
+      buildRail();  // the segment count follows MAX, so a new model rebuilds it before painting
       render();
     }
 
