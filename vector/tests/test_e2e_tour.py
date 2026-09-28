@@ -116,8 +116,20 @@ def _bad_rail_model() -> dict:
             "edges": [], "phases": [{"n": 1, "title": "one", "targets": ["a"]}]}
 
 
+def _hostile_model() -> dict:
+    """UN-normalized, as a public page's hand-written island may be: a string edge offset that would
+    close the SVG ``d`` attribute, and a step number far past anything a rail can draw one segment for."""
+    return {"meta": {"title": "Hostile"},
+            "zones": [{"id": "z1", "title": "One"}, {"id": "z2", "title": "Two"}],
+            "nodes": [{"id": "a", "zone": "z1", "label": "A"}, {"id": "b", "zone": "z2", "label": "B"}],
+            "edges": [{"from": "a", "to": "b", "at": 0, "offset": '0" data-pwn="1'},
+                      {"from": "b", "to": "a", "at": 5000}],
+            "phases": [{"n": 1, "title": "one", "targets": ["a"]}]}
+
+
 MODELS = {
     "badrail": _bad_rail_model,
+    "hostile": _hostile_model,
     "tour": lambda: normalize(load_example(TOUR_FILE)),
     "attack": lambda: normalize(_model()),
     "media": _media_model,
@@ -308,4 +320,15 @@ def test_a_non_list_rail_label_field_does_not_break_the_mount(server, open_page)
     page = open_page(f"{server}/badrail/")
     assert page.locator("#vap [data-rail] .seg").count() == 1
     assert page.eval_on_selector_all("#vap [data-rail-labels] span", _TEXTS) == []
+    assert _violations(page) == []
+
+
+def test_a_hostile_raw_model_cannot_inject_markup_or_flood_the_rail(server, open_page):
+    """The runtime re-filters what normalize() would have: a non-numeric offset is not concatenated into
+    SVG markup, and a huge step number does not make the rail build one DOM node per step."""
+    page = open_page(f"{server}/hostile/")
+    assert page.locator("#vap [data-pwn]").count() == 0
+    assert page.locator("#vap svg.map path.edge").count() == 1  # the at-0 edge, drawn, attribute intact
+    assert page.locator("#vap [data-rail] .seg").count() == 0
+    page.click("#vap [data-next]")
     assert _violations(page) == []

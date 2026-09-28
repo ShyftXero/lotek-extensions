@@ -19,6 +19,9 @@ Everything under `/vector/*` is authenticated; core already serves the kit's sta
       called from `setModel`. Playwright test under the strict-CSP harness, both modes.
 - [x] Newly-live rail code tolerates a non-list `meta.railLabels` (raw editor model) instead of throwing.
 - [x] `kit/README.md` — "Embedding a tour on a public page".
+- [x] Security pass (public, unauthenticated files): a raw string `edge.offset` was concatenated into the
+      SVG `d` attribute (attribute injection via innerHTML) — now `safeNum`'d; the newly-live rail built
+      one DOM node per step with `at` unbounded (tab hang) — capped at `RAIL_MAX` = 200. Playwright test.
 
 ## Remaining
 - [ ] Core: reference `/_kit/vector-viewer.css` + `/_kit/vector-viewer.js` from `/docs` (separate repo).

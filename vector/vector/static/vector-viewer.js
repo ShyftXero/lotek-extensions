@@ -74,6 +74,8 @@
     }
   };
 
+  var RAIL_MAX = 200;  // the most segments the progress rail draws; schema.py caps phases at 200 too
+
   // ---- helpers ------------------------------------------------------------
   function esc(s) {
     return String(s == null ? "" : s)
@@ -329,7 +331,7 @@
     if (e.route === "arcTop") return pArc(a, b, typeof e.lane === "number" ? e.lane : BAND_T - 34);
     if (e.route === "arcBot") return pArcBot(a, b, typeof e.lane === "number" ? e.lane : g.bandBottom + 34);
     if (e.route === "intra") return pIntra(a, b);
-    return pFlow(a, b, e.offset || 0);
+    return pFlow(a, b, safeNum(e.offset, 0));  // a raw string offset would otherwise land in d=""
   }
 
   function edgesSvg(model, g, p, style) {
@@ -617,7 +619,9 @@
 
     function buildRail() {
       el.rail.innerHTML = "";
-      for (var i = 1; i <= state.MAX; i++) {
+      // `at` has no upper bound, even after normalize(): past RAIL_MAX a rail is unreadable anyway, and one
+      // DOM node per step would hang the tab. Leave it empty; Prev/Next/keys still drive the viewer.
+      for (var i = 1; state.MAX <= RAIL_MAX && i <= state.MAX; i++) {
         (function (idx) {
           var seg = document.createElement("div");
           seg.className = "seg";
