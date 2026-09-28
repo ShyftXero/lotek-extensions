@@ -17,6 +17,7 @@ Everything under `/vector/*` is authenticated; core already serves the kit's sta
       divergences; #287 is on main and origin/main's schema.py now matches the kit port on those lines.
 - [x] Viewer bug: `buildRail()` was never called, so the progress rail was empty in both modes. Now
       called from `setModel`. Playwright test under the strict-CSP harness, both modes.
+- [x] Newly-live rail code tolerates a non-list `meta.railLabels` (raw editor model) instead of throwing.
 - [x] `kit/README.md` — "Embedding a tour on a public page".
 
 ## Remaining
