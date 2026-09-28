@@ -76,7 +76,7 @@ def test_the_served_path_has_no_extra_static_segment(app):
     assert client.get("/_kit/static/reorder.js").status_code == 404
 
 
-@pytest.mark.parametrize("filename", ["reorder.js", "reorder.css"])
+@pytest.mark.parametrize("filename", ["reorder.js", "reorder.css", "vector-viewer.js", "vector-viewer.css"])
 def test_every_shipped_asset_is_actually_reachable(app, filename):
     """The tripwire for a renamed asset: without it, a rename is a 404 in the browser, dead
     drag-and-drop, and nothing at all in the server log."""

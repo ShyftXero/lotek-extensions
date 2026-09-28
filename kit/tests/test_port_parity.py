@@ -41,14 +41,6 @@ SANCTIONED_DIVERGENCES = (
     "LEGACY_SCHEMA_IDS",
     "SUPPORTED_SCHEMA_IDS",
     "is_supported_schema_id",
-    # feat/vector-tour-mode added tour mode (meta.mode, per-step image/links) and the activateAt fix to
-    # BOTH copies in one PR. This test reads vector's copy from origin/main, which lags that PR until it
-    # merges, so the new lines read as kit-only drift in the meantime. Once merged the copies are
-    # identical again and these tokens match nothing. Every new line carries one of them on purpose.
-    "tour",
-    "TOUR",
-    "activateAt",
-    "import re",
 )
 
 
@@ -189,8 +181,9 @@ _TOUR_DOCUMENT = {
 
 
 def test_tour_fields_normalize_identically_to_the_working_tree_copy():
-    """The tour fields are new on both sides at once, so origin/main cannot vouch for them yet (see the
-    SANCTIONED_DIVERGENCES note). Compare against vector's copy in THIS checkout instead."""
+    """The tour fields, normalized through vector's copy in THIS checkout rather than origin/main's, so
+    a branch that edits one copy's tour handling and not the other fails before it merges rather than
+    after — the origin-backed checks above can only see drift once it has reached main."""
     path = REPO_ROOT / "vector" / "vector" / "schema.py"
     if not path.exists():
         pytest.skip("vector/vector/schema.py is not in this checkout")

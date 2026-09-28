@@ -21,6 +21,39 @@ is known by core as a hardcoded string literal.
 | `lotek_kit.attackpath` | The `attackpath/v1` document model — `normalize()`, `blank_model()`, `is_supported_schema_id()`. Ported from `vector/vector/schema.py`. |
 | `lotek_kit.assets` | Stdlib access to shipped browser assets, for inlining into a self-contained deliverable. |
 | `lotek_kit.static/` | The browser assets themselves — `reorder.{js,css}`, and the shared **reporting editor** primitive `reporting-editor.{js,css}` + `reporting-outbox.js` (a `contenteditable` ProseMirror-JSON editor with image paste→upload; extension-neutral — the host supplies its own `apiBase` (image upload POSTs to `apiBase + "/artifacts"`) and mounts via `window.LotekReportingEditor.mount`). |
+| `lotek_kit.static/vector-viewer.{js,css}` | A **byte-identical copy** of vector's attack-path / tour viewer, so a public page can load it from `/_kit/` without a login (everything under `/vector/*` is authenticated). Fix vector's copy, then `cp` it here — `tests/test_viewer_parity.py` fails on any drift. |
+
+## Embedding a tour on a public page
+
+Core serves this package's `static/` at `/_kit/` with no login, so a public page (core's `/docs`, the
+landing page) embeds a vector tour with two same-origin files and a JSON data block:
+
+```html
+<link rel="stylesheet" href="/_kit/vector-viewer.css">
+...
+<div id="vap"></div>
+<script type="application/json" id="vap-model">{"schema":"attackpath/v1","meta":{"mode":"tour", ...}, ...}</script>
+<script src="/_kit/vector-viewer.js"></script>
+```
+
+In a Jinja template, prefer `url_for("lotek_kit.static", filename="vector-viewer.js")` over the literal
+path — it resolves under whatever prefix the kit was registered at (see `lotek_kit.flask_assets`).
+
+- **No inline script, no inline style, no iframe.** The runtime boots itself: on `DOMContentLoaded` it
+  parses `#vap-model` and mounts into `#vap` (or `<body>` if there is none). Colours reach the SVG
+  through the CSSOM, not `style=` attributes, so the page works under
+  `Content-Security-Policy: script-src 'self'; style-src 'self'`. vector's Playwright suite
+  (`vector/tests/test_e2e_tour.py`) asserts zero violations under exactly that policy.
+- **The JSON block must be escaped for a `<script>` element.** A `</script>` inside a string would
+  close the element early. Escape `<`, `>`, `&` and U+2028/U+2029 — `vector.render.json_for_script`
+  does exactly this; core should do the same rather than `json.dumps` alone.
+- **Normalize the model first** (`lotek_kit.attackpath.normalize`). The runtime filters hostile
+  content on its own, but a normalized document is the one the caps were designed for.
+- **What the runtime refuses.** A step `image` must be same-origin or a base64 `data:image/...` URI; a
+  step `links[].href` must be same-origin, and an absolute path must sit under `/docs`. Anything else is
+  dropped silently rather than rendered.
+- **One viewer per page.** The auto-boot reads one `#vap-model`, captures the arrow / Space / Home keys,
+  and keeps `#step-N` in the URL hash (via `replaceState`, so stepping does not add history entries).
 
 ## The admission rule
 
