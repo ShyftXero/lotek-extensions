@@ -23,8 +23,11 @@ the ``draft_api`` seam posture: the host's ``ai_stream`` egress gate defaults OF
 switch, and the deterministic string above is always the source of truth.
 
 The strings below are Ghostwriter's Lotek-voice copy (delivered on LOT-72, honesty-doctrine-correct,
-run through unsloppify), wired here by Hardcopy. The final voice pass is Ghostwriter's LOT-74, which is a
-check against this copy, not a rewrite. Jinja placeholders map to the structured facts the engine already
+run through unsloppify), wired here by Hardcopy. Ghostwriter's LOT-74 voice pass read every rendered
+branch against the voice guide and unsloppify's six failure modes, and tightened three: the multi-CVE
+clause no longer stutters "CVEs CVE-...", the could-not-run branch says "the scope we assessed" in the
+active voice, and the highest-risk sentence agrees in number with a single finding. Jinja placeholders
+map to the structured facts the engine already
 carries on ``ReportContext``/``FindingCtx``; where Ghostwriter's copy referenced facts the engine does
 not yet carry (named gap_reason / covered_scope / unassessed_scope), the could-not-run branches render on
 the coverage-limited-job COUNT instead of naming scope, so no scope prose is fabricated (evidence-first).
@@ -65,8 +68,7 @@ _ENV = Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
 _EXEC_SUMMARY_SRC = """
 {%- if total == 0 and coverage_limited_jobs > 0 -%}
   We could not complete the assessment of {{ company }}. {{ gap_clause }}. This report covers only the
-  portions of scope that were assessed. No findings here does not mean the rest is clean. It means we did
-  not test it.
+  scope we assessed. No findings here does not mean the rest is clean. It means we did not test it.
 {%- elif total == 0 -%}
   We assessed {{ company }} and found no issues in the tested scope. That is a clean result for what we
   tested, not a clean bill for what we did not.
@@ -140,10 +142,15 @@ def _path_sentence(path_count: int) -> str:
 
 def _top_sentence(top_titles: list[str]) -> str:
     """The highest-risk-findings sentence, with a leading space, or "" when there is no LIVE crit/high
-    finding to name. ``top_titles`` is already LIVE-only, ordered, and capped at 3 by the caller."""
-    prose = _oxford([t for t in (top_titles or []) if t])
+    finding to name. ``top_titles`` is already LIVE-only, ordered, and capped at 3 by the caller. Number
+    agrees with the count: one finding reads "finding is", more read "findings are" (voice: it must not
+    say "findings are X" for a single X)."""
+    names = [t for t in (top_titles or []) if t]
+    prose = _oxford(names)
     if not prose:
         return ""
+    if len(names) == 1:
+        return f" The highest-risk finding is {prose}."
     return f" The highest-risk findings are {prose}."
 
 
@@ -224,13 +231,13 @@ def _one_liner_location(finding: FindingCtx) -> str:
 
 
 def _cve_clause(cve_ids: list[str]) -> str:
-    """", CVE-..." (one) / ", CVEs A, B" (several) / "" (none). No CVE is silence, not a safety claim."""
+    """", CVE-..." (one) / ", CVE-A and CVE-B" (several, oxford-joined) / "" (none). Each id already
+    says "CVE", so a "CVEs" label would just stutter (voice: cut the word that adds no meaning). No CVE
+    is silence, not a safety claim."""
     ids = [str(c).strip() for c in (cve_ids or []) if str(c).strip()]
     if not ids:
         return ""
-    if len(ids) == 1:
-        return f", {ids[0]}"
-    return ", CVEs " + ", ".join(ids)
+    return f", {_oxford(ids)}"
 
 
 def _kev_sentence(finding: FindingCtx) -> str:

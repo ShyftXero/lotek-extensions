@@ -125,7 +125,7 @@ def test_one_liner_multiple_cves():
         title="Chained CVEs", severity="critical", target_host="10.0.0.9",
         cve_ids=["CVE-2021-1", "CVE-2021-2"],
     ))
-    assert out == "Critical severity on 10.0.0.9, CVEs CVE-2021-1, CVE-2021-2."
+    assert out == "Critical severity on 10.0.0.9, CVE-2021-1 and CVE-2021-2."
 
 
 def test_one_liner_info_word_and_scope_floor():
