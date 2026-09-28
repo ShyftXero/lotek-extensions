@@ -47,8 +47,9 @@ path — it resolves under whatever prefix the kit was registered at (see `lotek
 - **The JSON block must be escaped for a `<script>` element.** A `</script>` inside a string would
   close the element early. Escape `<`, `>`, `&` and U+2028/U+2029 — `vector.render.json_for_script`
   does exactly this; core should do the same rather than `json.dumps` alone.
-- **Normalize the model first** (`lotek_kit.attackpath.normalize`). The runtime escapes every string
-  it renders and re-narrows colours, numbers and URLs on its own, but a normalized document is the one
+- **Normalize the model first** (`lotek_kit.attackpath.normalize`). The runtime never parses a model
+  string as HTML (every element is built as a DOM node; text goes in as text) and re-narrows colours,
+  numbers and URLs on its own, but a normalized document is the one
   the caps were designed for. (A model whose step numbers run past 200 gets no progress rail.)
 - **`/_kit/` is the whole of `lotek_kit/static/`, public.** Anything added to that directory is served
   without a login, so it must never hold anything but browser assets.

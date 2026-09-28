@@ -42,8 +42,10 @@ def test_the_kit_copy_is_byte_identical_to_vectors(name):
 def test_the_viewer_needs_nothing_a_strict_csp_page_would_refuse(name):
     """A public page embeds this under ``script-src 'self'; style-src 'self'``. The behaviour is proven
     by vector's Playwright suite (``vector/tests/test_e2e_tour.py``); this only pins that the shipped
-    file reaches for nothing off-origin and evaluates no strings."""
+    file reaches for nothing off-origin, evaluates no strings and hands nothing to an HTML parser (the
+    full sink list is ``vector/tests/test_viewer_static.py``; this is the part that outlives vector)."""
     # The SVG namespace is an identifier the browser never fetches, not a resource.
     text = asset_bytes(name).decode("utf-8").replace('"http://www.w3.org/2000/svg"', "")
-    for needle in ("@import", "http://", "https://", "eval(", "new Function"):
+    for needle in ("@import", "http://", "https://", "eval(", "new Function",
+                   ".innerHTML", ".outerHTML", "insertAdjacentHTML", "document.write"):
         assert needle not in text, f"{name} contains {needle!r}"

@@ -22,6 +22,10 @@ Everything under `/vector/*` is authenticated; core already serves the kit's sta
 - [x] Security pass (public, unauthenticated files): a raw string `edge.offset` was concatenated into the
       SVG `d` attribute (attribute injection via innerHTML) — now `safeNum`'d; the newly-live rail built
       one DOM node per step with `at` unbounded (tab hang) — capped at `RAIL_MAX` = 200. Playwright test.
+- [x] CodeQL js/xss-through-dom (4 alerts on the kit copy, 5 already open on vector's on main): the viewer
+      no longer uses innerHTML at all — createElement/createElementNS + textContent/setAttribute, URLs
+      through encodeURI. Hostile-everything Playwright test; `vector/tests/test_viewer_static.py` bans
+      HTML sinks. Rendered DOM verified identical to the old renderer for both example models.
 
 ## Remaining
 - [ ] Core: reference `/_kit/vector-viewer.css` + `/_kit/vector-viewer.js` from `/docs` (separate repo).

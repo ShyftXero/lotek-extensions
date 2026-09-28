@@ -127,8 +127,62 @@ def _hostile_model() -> dict:
             "phases": [{"n": 1, "title": "one", "targets": ["a"]}]}
 
 
+# Markup that would survive into the DOM if any model string reached an HTML parser unescaped: both
+# quote styles to leave an attribute, an HTML element, and an SVG one for the <svg> sinks.
+X = "\"'><i data-pwn=1></i><svg><g data-pwn=1></g></svg>"
+# The same, without whitespace, for the fields that are narrowed rather than escaped (colours,
+# numbers, ids, URLs): if one were concatenated into markup it would add an attribute.
+XA = '"data-pwn="1'
+
+
+def _everything_hostile(mode: str) -> dict:
+    """UN-normalized. Every string field the viewer renders carries X; every narrowed one carries XA."""
+    return {
+        "meta": {"title": X, "subtitle": X, "badge": X, "mode": mode, "railLabels": [X, X],
+                 "intro": {"eyebrow": X, "objective": X, "readingNotes": X, "note": X}},
+        "style": {
+            "edgeKinds": {"attack": {"accent": XA, "width": XA, "dash": [XA], "label": X, "flow": True,
+                                     "both": True},
+                          X: {"accent": XA, "label": X, "dash": [XA]}},
+            "nodeStates": {"owned": {"accent": XA, "label": X, "ring": XA, "precedence": 9, "fillNode": True},
+                           X: {"accent": XA, "label": X}},
+            "roles": {"c2": {"accent": XA, "status": X, "idle": True, "idleStatus": X}},
+            "tacticKinds": {"attack": XA, X: XA},
+        },
+        "zones": [{"id": X, "title": X, "subtitle": X, "accent": XA, "order": XA},
+                  {"id": "z2", "title": X, "subtitle": X, "accent": X}],
+        "boundaries": [{"afterZone": X, "top": X, "bottom": X}, {"x": XA, "top": X}],
+        "nodes": [
+            {"id": "a", "zone": X, "label": X, "ip": X, "domain": X, "dualIp": X, "role": "c2", "row": XA,
+             "activateAt": 2, "states": [{"at": 1, "state": "owned", "label": X}, {"at": 2, "state": X}],
+             "reIp": {"at": 2, "ip": X, "domain": X}},
+            {"id": X, "zone": "z2", "label": X, "ip": X, "context": False,
+             "states": [{"at": 1, "state": "owned"}]},
+        ],
+        "edges": [
+            {"from": "a", "to": X, "at": 1, "kind": "attack", "label": X, "offset": XA, "lane": XA,
+             "route": X},
+            {"from": X, "to": "a", "at": 2, "kind": X, "label": X, "route": "arcTop", "lane": XA},
+            {"from": "a", "to": X, "at": 2, "kind": "attack", "label": X, "route": "arcBot"},
+        ],
+        "phases": [
+            {"n": XA, "title": X},
+            {"n": 1, "title": X, "desc": X, "watch": X, "note": X, "mitre": X, "targets": ["a", X, "nope"],
+             "tactics": [{"kind": "attack", "label": X}, {"kind": X, "label": X}],
+             "blue": {"tool": X, "finding": X, "query": X, "seen": X, "note": X, "gap": True},
+             "image": "javascript:window.__pwned=1",
+             "links": [{"label": X, "href": "javascript:window.__pwned=1"},
+                       {"label": X, "href": '/docs/"><i/data-pwn=1>'}]},
+            {"n": 2, "title": X, "desc": X, "image": "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+             "blue": {"tool": X, "note": X}},
+        ],
+    }
+
+
 MODELS = {
     "badrail": _bad_rail_model,
+    "hostile_tour": lambda: _everything_hostile("tour"),
+    "hostile_attack": lambda: _everything_hostile("attack"),
     "hostile": _hostile_model,
     "tour": lambda: normalize(load_example(TOUR_FILE)),
     "attack": lambda: normalize(_model()),
@@ -331,4 +385,34 @@ def test_a_hostile_raw_model_cannot_inject_markup_or_flood_the_rail(server, open
     assert page.locator("#vap svg.map path.edge").count() == 1  # the at-0 edge, drawn, attribute intact
     assert page.locator("#vap [data-rail] .seg").count() == 0
     page.click("#vap [data-next]")
+    assert _violations(page) == []
+
+
+def _assert_inert(page) -> None:
+    assert page.evaluate("() => document.querySelectorAll('[data-pwn]').length") == 0
+    assert page.evaluate("() => window.__pwned") is None
+    assert page.locator("#vap img").count() == 0  # both step images are refused
+    assert page.locator("#vap svg.map i, #vap .brief i, #vap header i, #vap .legend i").count() == 0
+
+
+@pytest.mark.parametrize("mode", ["tour", "attack"])
+def test_no_model_string_is_ever_parsed_as_markup(server, open_page, mode):
+    """Every rendered field carries markup; every narrowed one an attribute breakout. At each step (and
+    on the blue tab) nothing hostile is in the DOM, the text arrives as text, and only a safe link stays."""
+    page = open_page(f"{server}/hostile_{mode}/")
+    _assert_inert(page)
+    assert page.text_content("#vap [data-brand]") == (X if mode == "tour" else "◤ " + X)
+    assert page.eval_on_selector_all("#vap [data-rail-labels] span", _TEXTS) == [X, X]
+    assert X in page.text_content("#vap .brief-scroll")
+    for _ in range(2):  # both steps; the string-numbered phase is dropped, so the model has two
+        page.click("#vap [data-next]")
+        _assert_inert(page)
+        assert X in page.text_content("#vap .brief-scroll")
+        assert X in page.text_content("#vap svg.map")
+        if mode == "attack":
+            page.click('#vap .detail-tab[data-tab="blue"]')
+            _assert_inert(page)
+            page.click('#vap .detail-tab[data-tab="red"]')
+        hrefs = page.eval_on_selector_all("#vap .step-links a", _HREFS)
+        assert all(h.startswith("/docs/") and '"' not in h and "<" not in h for h in hrefs), hrefs
     assert _violations(page) == []

@@ -21,9 +21,13 @@
  * Modes: `meta.mode = "tour"` is a neutral guided tour (no red/blue tabs, "Step NN" headings, the
  * current step's targets highlighted on the map for that step only). Anything else is the attack path.
  *
- * CSP: nothing here writes a style="" attribute or evals. Markup built as strings carries its per-kind
- * colors in data-vs, and applyStyles() moves them onto element.style (the CSSOM), which a strict
- * `style-src 'self'` does not govern.
+ * CSP: nothing here writes a style="" attribute or evals. Per-kind colours go onto element.style (the
+ * CSSOM), which a strict `style-src 'self'` does not govern.
+ *
+ * No HTML parsing: every element is built with createElement / createElementNS, text goes in through
+ * textContent and attributes through setAttribute, so no model string ever reaches innerHTML (this file
+ * is served publicly, unauthenticated, from /_kit/). vector/tests/test_viewer_static.py fails if an HTML
+ * sink comes back.
  */
 (function () {
   "use strict";
@@ -77,11 +81,7 @@
   var RAIL_MAX = 200;  // the most segments the progress rail draws; schema.py caps phases at 200 too
 
   // ---- helpers ------------------------------------------------------------
-  function esc(s) {
-    return String(s == null ? "" : s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  function str(s) { return String(s == null ? "" : s); }
   function isObj(x) { return x && typeof x === "object" && !Array.isArray(x); }
   function mergeStyle(over) {
     var out = JSON.parse(JSON.stringify(DEFAULT_STYLE));
@@ -99,10 +99,10 @@
     });
     return out;
   }
-  // Style values come from the (un-normalized) model.style — treat as untrusted. These are inserted
-  // into data-vs="" attributes / marker ids, so a raw string with a quote could break out and
-  // inject an attribute. Restrict colors to known accents or a strict color grammar, numbers to finite
-  // floats, dash to a numeric list, and marker/id tokens to a safe charset. (Text goes through esc().)
+  // Style values come from the (un-normalized) model.style — treat as untrusted. They reach
+  // style.setProperty() and presentation attributes, never markup, but are still narrowed: colors to known
+  // accents or a strict color grammar, numbers to finite floats, dash to a numeric list, and marker/id
+  // tokens to a safe charset.
   var _COLOR_RE = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,%\s]+\)|[a-zA-Z]{3,20})$/;
   function safeColor(a) {
     if (ACCENTS[a]) return ACCENTS[a].line;
@@ -125,31 +125,54 @@
   var _DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+\/]*={0,2}$/;
   var _DOCS_PATH = /^\/docs(?:[\/#?]|$)/;
   function sameOrigin(s) { return typeof s === "string" && s !== "" && !_OFFSITE.test(s); }
+  // The checks above are what make a URL safe. encodeURI on the way out only makes the attribute value
+  // unmistakably inert (no quote, angle bracket or non-ASCII survives it); existing %XX escapes are put
+  // back so a pre-encoded URL is not double-encoded. A lone surrogate makes encodeURI throw: refuse it.
+  function inertUrl(s) {
+    try { return encodeURI(s).replace(/%25([0-9A-Fa-f]{2})/g, "%$1"); } catch (e) { return ""; }
+  }
   function safeImage(s) {
     s = typeof s === "string" ? s.trim() : "";
-    return (_DATA_IMAGE.test(s) || sameOrigin(s)) ? s : "";
+    return (_DATA_IMAGE.test(s) || sameOrigin(s)) ? inertUrl(s) : "";
   }
   function safeHref(s) {
     s = typeof s === "string" ? s.trim() : "";
     if (!sameOrigin(s)) return "";
     if (s.charAt(0) === "/" && !_DOCS_PATH.test(s)) return "";
-    return s;
+    return inertUrl(s);
   }
 
-  // Move data-vs="prop:value;..." onto element.style. Values were already narrowed by safeColor /
-  // safeNum / safeDash when the markup was built; setProperty() refuses anything that still is not a
-  // valid value for that property.
-  function applyStyles(container) {
-    var els = container.querySelectorAll("[data-vs]");
-    for (var i = 0; i < els.length; i++) {
-      var decls = els[i].getAttribute("data-vs").split(";");
-      for (var j = 0; j < decls.length; j++) {
-        var k = decls[j].indexOf(":");
-        if (k > 0) els[i].style.setProperty(decls[j].slice(0, k).trim(), decls[j].slice(k + 1).trim());
-      }
-      els[i].removeAttribute("data-vs");
+  // ---- DOM builders -------------------------------------------------------
+  // attrs: attribute name -> value (null / false = omit), plus two keys that are not attributes: `text`
+  // (textContent) and `css` (prop -> value, through style.setProperty, which refuses anything that is not
+  // a valid value for that property). kids: nodes, or anything else, which becomes a text node.
+  function build(node, attrs, kids) {
+    for (var k in attrs) {
+      if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
+      var v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k === "text") node.textContent = String(v);
+      else if (k === "css") setCss(node, v);
+      else node.setAttribute(k, String(v));
     }
+    return append(node, kids);
   }
+  function append(node, kids) {
+    (kids || []).forEach(function (c) {
+      if (c == null || c === false) return;
+      node.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+    });
+    return node;
+  }
+  function setCss(node, decls) {
+    Object.keys(decls).forEach(function (prop) {
+      if (decls[prop] != null && decls[prop] !== "") node.style.setProperty(prop, String(decls[prop]));
+    });
+  }
+  function h(tag, attrs, kids) { return build(document.createElement(tag), attrs, kids); }
+  function svg(tag, attrs, kids) { return build(document.createElementNS(NS, tag), attrs, kids); }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function fill(node, kids) { clear(node); return append(node, kids); }
   function isTourModel(model) { return !!(model && model.meta && model.meta.mode === "tour"); }
 
   function computeMax(model) {
@@ -256,43 +279,39 @@
 
   // ---- SVG builders -------------------------------------------------------
   function defsSvg() {
-    var s = "<defs>";
-    Object.keys(ACCENTS).forEach(function (a) {
-      var col = ACCENTS[a].line;
-      s += '<marker id="vap-ar-' + a + '" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="' + col + '"/></marker>';
-    });
-    return s + "</defs>";
+    return svg("defs", null, Object.keys(ACCENTS).map(function (a) {
+      return svg("marker", { id: "vap-ar-" + a, viewBox: "0 0 10 10", refX: 8.5, refY: 5, markerWidth: 7,
+                             markerHeight: 7, orient: "auto-start-reverse" },
+        [svg("path", { d: "M0,0 L10,5 L0,10 z", fill: ACCENTS[a].line })]);
+    }));
   }
 
   function bandsSvg(g) {
-    var s = "";
+    var out = [];
     g.zones.forEach(function (z) {
       var c = g.cols[z.id], col = accentLine(z.accent);
-      s += '<rect class="band" x="' + (c.x - 16) + '" y="' + BAND_T + '" width="' + (NW + 32) + '" height="' + (g.bandBottom - BAND_T) + '" rx="8"/>';
-      s += '<rect x="' + (c.x - 16) + '" y="' + BAND_T + '" width="' + (NW + 32) + '" height="3" fill="' + col + '" opacity=".85"/>';
-      s += '<text class="band-title" x="' + (c.x - 14) + '" y="46">' + esc(z.title) + "</text>";
-      if (z.subtitle) s += '<text class="band-cidr" x="' + (c.x - 14) + '" y="61">' + esc(z.subtitle) + "</text>";
+      out.push(svg("rect", { "class": "band", x: c.x - 16, y: BAND_T, width: NW + 32, height: g.bandBottom - BAND_T, rx: 8 }));
+      out.push(svg("rect", { x: c.x - 16, y: BAND_T, width: NW + 32, height: 3, fill: col, opacity: ".85" }));
+      out.push(svg("text", { "class": "band-title", x: c.x - 14, y: 46, text: str(z.title) }));
+      if (z.subtitle) out.push(svg("text", { "class": "band-cidr", x: c.x - 14, y: 61, text: z.subtitle }));
     });
     var cy = (BAND_T + g.bandBottom) / 2;
-    (function () {
-      var model = g._model || {};
-      (model.boundaries || []).forEach(function (f) {
-        var x;
-        if (typeof f.x === "number") x = f.x;
-        else if (f.afterZone && g.cols[f.afterZone]) x = g.cols[f.afterZone].x + NW + (COLSPACING - NW) / 2;
-        else return;
-        s += '<line class="fw-line" x1="' + x + '" y1="' + (BAND_T - 2) + '" x2="' + x + '" y2="' + (g.bandBottom + 2) + '"/>';
-        s += '<rect class="fw-chip" x="' + (x - 9) + '" y="' + (cy - 12) + '" width="18" height="24" rx="3"/>';
-        s += '<text class="fw-ico" x="' + x + '" y="' + (cy + 4) + '" text-anchor="middle">⛬</text>';
-        if (f.top) s += '<text class="fw-label" x="' + x + '" y="' + (cy + 28) + '" text-anchor="middle">' + esc(f.top) + "</text>";
-        if (f.bottom) s += '<text class="fw-label" x="' + x + '" y="' + (cy + 39) + '" text-anchor="middle" fill="#4a5b69">' + esc(f.bottom) + "</text>";
-      });
-    })();
-    return s;
+    ((g._model || {}).boundaries || []).forEach(function (f) {
+      var x;
+      if (typeof f.x === "number") x = f.x;
+      else if (f.afterZone && g.cols[f.afterZone]) x = g.cols[f.afterZone].x + NW + (COLSPACING - NW) / 2;
+      else return;
+      out.push(svg("line", { "class": "fw-line", x1: x, y1: BAND_T - 2, x2: x, y2: g.bandBottom + 2 }));
+      out.push(svg("rect", { "class": "fw-chip", x: x - 9, y: cy - 12, width: 18, height: 24, rx: 3 }));
+      out.push(svg("text", { "class": "fw-ico", x: x, y: cy + 4, "text-anchor": "middle", text: "⛬" }));
+      if (f.top) out.push(svg("text", { "class": "fw-label", x: x, y: cy + 28, "text-anchor": "middle", text: f.top }));
+      if (f.bottom) out.push(svg("text", { "class": "fw-label", x: x, y: cy + 39, "text-anchor": "middle", fill: "#4a5b69", text: f.bottom }));
+    });
+    return out;
   }
 
   function nodesSvg(model, g, p, style, focus) {
-    var s = "";
+    var out = [];
     (model.nodes || []).forEach(function (n) {
       var geo = g.geo[n.id];
       if (!geo) return;
@@ -302,27 +321,30 @@
       var curDom = reOn ? n.reIp.domain : n.domain;
       if (n.reIp && p === n.reIp.at && v.cls.indexOf("is-new") < 0) v.cls.push("is-new");
       var y1 = curDom ? 15 : 19, y2 = curDom ? 28 : 33;
-      var boxStyle = "";
+      var box = {};
       if (v.accent) {
-        boxStyle = 'stroke:' + accentLine(v.accent) + ';';
-        if (v.fill) boxStyle += 'fill:' + accentFill(v.accent) + ';';
+        box.stroke = accentLine(v.accent);
+        if (v.fill) box.fill = accentFill(v.accent);
       }
-      if (focus && focus[n.id]) v.cls.push("is-focus");
-      s += '<g class="' + v.cls.join(" ") + '" transform="translate(' + geo.x + "," + geo.y + ')">';
-      if (focus && focus[n.id]) s += '<rect class="focus-ring" x="-5" y="-5" width="' + (geo.w + 10) + '" height="' + (geo.h + 10) + '" rx="9"/>';
-      s += '<rect class="box" x="0" y="0" width="' + geo.w + '" height="' + geo.h + '" rx="6"' + (boxStyle ? ' data-vs="' + boxStyle + '"' : "") + "/>";
-      s += '<text class="nm" x="10" y="' + y1 + '"' + (v.accent && v.fill ? ' data-vs="fill:' + (ACCENTS[v.accent] ? ACCENTS[v.accent].text : "#fff") + '"' : "") + ">" + esc(n.label) + "</text>";
-      s += '<text class="ip" x="10" y="' + y2 + '">' + esc(curIp) + (n.dualIp ? "  ⇄ " + esc(n.dualIp) : "") + "</text>";
-      if (curDom) s += '<text class="dom" x="10" y="41">' + esc(curDom) + "</text>";
-      if (v.statusText) s += '<text class="stt" x="' + (geo.w - 10) + '" y="' + y1 + '" text-anchor="end"' + (v.accent ? ' data-vs="fill:' + accentLine(v.accent) + '"' : "") + ">" + esc(v.statusText) + "</text>";
+      var focused = !!(focus && focus[n.id]);
+      if (focused) v.cls.push("is-focus");
+      var kids = [];
+      if (focused) kids.push(svg("rect", { "class": "focus-ring", x: -5, y: -5, width: geo.w + 10, height: geo.h + 10, rx: 9 }));
+      kids.push(svg("rect", { "class": "box", x: 0, y: 0, width: geo.w, height: geo.h, rx: 6, css: box }));
+      kids.push(svg("text", { "class": "nm", x: 10, y: y1, text: str(n.label),
+                              css: v.accent && v.fill ? { fill: ACCENTS[v.accent] ? ACCENTS[v.accent].text : "#fff" } : null }));
+      kids.push(svg("text", { "class": "ip", x: 10, y: y2, text: str(curIp) + (n.dualIp ? "  ⇄ " + str(n.dualIp) : "") }));
+      if (curDom) kids.push(svg("text", { "class": "dom", x: 10, y: 41, text: curDom }));
+      if (v.statusText) kids.push(svg("text", { "class": "stt", x: geo.w - 10, y: y1, "text-anchor": "end", text: v.statusText,
+                                                css: v.accent ? { fill: accentLine(v.accent) } : null }));
       if (v.hasBeacon) {
         var rc = accentLine((style.nodeStates.beacon && style.nodeStates.beacon.ring) || "orange");
-        s += '<circle class="beacon-ring" cx="' + (geo.w - 13) + '" cy="' + y2 + '" r="4" data-vs="stroke:' + rc + '"/>';
-        s += '<circle class="pulse-ring" cx="' + (geo.w - 13) + '" cy="' + y2 + '" r="3" fill="none" stroke="' + rc + '" stroke-width="1.2"/>';
+        kids.push(svg("circle", { "class": "beacon-ring", cx: geo.w - 13, cy: y2, r: 4, css: { stroke: rc } }));
+        kids.push(svg("circle", { "class": "pulse-ring", cx: geo.w - 13, cy: y2, r: 3, fill: "none", stroke: rc, "stroke-width": 1.2 }));
       }
-      s += "</g>";
+      out.push(svg("g", { "class": v.cls.join(" "), transform: "translate(" + geo.x + "," + geo.y + ")" }, kids));
     });
-    return s;
+    return out;
   }
 
   function edgePath(e, g) {
@@ -335,7 +357,7 @@
   }
 
   function edgesSvg(model, g, p, style) {
-    var vis = "", lab = "";
+    var vis = [], lab = [];
     (model.edges || []).slice().sort(function (x, y) { return (x.at || 0) - (y.at || 0); }).forEach(function (e) {
       if ((e.at || 0) > p) return;
       var pt = edgePath(e, g);
@@ -347,34 +369,34 @@
       var inlineDash = "";
       if (hot) { cls += " hot draw"; if (conf.flow) cls += " flow"; }
       else { cls += " dim"; if (conf.flow) cls += " flow"; inlineDash = conf.dash ? safeDash(conf.dash) : (conf.flow ? "6 5" : "0"); }
-      var st = "stroke:" + col + ";stroke-width:" + safeNum(conf.width, 1.6) + ";";
-      if (inlineDash) st += "stroke-dasharray:" + inlineDash + ";";
-      var mk = "vap-ar-" + (conf.accent in ACCENTS ? conf.accent : "slate");
-      var startMk = conf.both ? 'marker-start="url(#' + mk + ')" ' : "";
-      vis += '<path class="' + cls + '" d="' + pt.d + '" data-vs="' + st + 'color:' + col + '" ' + startMk + 'marker-end="url(#' + mk + ')"/>';
+      var css = { stroke: col, "stroke-width": safeNum(conf.width, 1.6), "stroke-dasharray": inlineDash, color: col };
+      var mk = "url(#vap-ar-" + (conf.accent in ACCENTS ? conf.accent : "slate") + ")";
+      vis.push(svg("path", { "class": cls, d: pt.d, css: css, "marker-start": conf.both ? mk : null, "marker-end": mk }));
       if (hot && e.label) {
-        var w = e.label.length * 5.6 + 12;
-        lab += '<g transform="translate(' + (pt.mx - w / 2) + "," + (pt.my - 9) + ')"><rect class="elabel-bg" x="0" y="0" width="' + w + '" height="15" rx="3"/><text class="elabel" x="' + (w / 2) + '" y="11" text-anchor="middle" fill="#dfe9f0">' + esc(e.label) + "</text></g>";
+        var w = str(e.label).length * 5.6 + 12;
+        lab.push(svg("g", { transform: "translate(" + (pt.mx - w / 2) + "," + (pt.my - 9) + ")" }, [
+          svg("rect", { "class": "elabel-bg", x: 0, y: 0, width: w, height: 15, rx: 3 }),
+          svg("text", { "class": "elabel", x: w / 2, y: 11, "text-anchor": "middle", fill: "#dfe9f0", text: e.label })
+        ]));
       }
     });
-    return vis + lab;
+    return vis.concat(lab);
   }
 
-  function legendSvg(style) {
+  function legendItem(swatchClass, col, label) {
+    return h("span", { "class": "lg" }, [h("span", { "class": swatchClass, css: col ? { "border-color": col } : null }), label]);
+  }
+
+  function legendSvg() {
     // derived from the style catalogs actually used — kept simple/static-ish
-    var items = [
+    return [
       { t: "sw", accent: "red", label: "Exploit / lateral" },
       { t: "sw", accent: "orange", label: "C2 beacon" },
       { t: "swd", accent: "cyan", label: "Tunnel / SSH" },
       { t: "swd", accent: "amber", label: "Mesh / disrupt" },
       { t: "bx", accent: "red", label: "owned" },
       { t: "bx", accent: "amber", label: "impacted" }
-    ];
-    return items.map(function (it) {
-      var col = accentLine(it.accent);
-      var sw = '<span class="' + (it.t === "bx" ? "bx" : (it.t === "swd" ? "swd" : "sw")) + '" data-vs="border-color:' + col + '"></span>';
-      return '<span class="lg">' + sw + esc(it.label) + "</span>";
-    }).join("");
+    ].map(function (it) { return legendItem(it.t, accentLine(it.accent), it.label); });
   }
 
   // Tour legend: only the edge kinds and node states this model actually uses, named by the style's own
@@ -385,61 +407,53 @@
       if (seen["e:" + e.kind]) return;
       seen["e:" + e.kind] = 1;
       var conf = style.edgeKinds[e.kind] || { accent: "slate" };
-      out.push('<span class="lg"><span class="' + (conf.dash ? "swd" : "sw") + '" data-vs="border-color:' + accentLine(conf.accent) + '"></span>' + esc(conf.label || e.kind) + "</span>");
+      out.push(legendItem(conf.dash ? "swd" : "sw", accentLine(conf.accent), str(conf.label || e.kind)));
     });
     (model.nodes || []).forEach(function (n) {
       (n.states || []).forEach(function (st) {
         if (!st.state || seen["s:" + st.state] || !style.nodeStates[st.state]) return;
         seen["s:" + st.state] = 1;
         var def = style.nodeStates[st.state];
-        out.push('<span class="lg"><span class="bx" data-vs="border-color:' + accentLine(def.accent) + '"></span>' + esc(String(def.label || st.state).toLowerCase()) + "</span>");
+        out.push(legendItem("bx", accentLine(def.accent), String(def.label || st.state).toLowerCase()));
       });
     });
-    out.push('<span class="lg"><span class="bx focus"></span>this step</span>');
-    return out.join("");
+    out.push(legendItem("bx focus", null, "this step"));
+    return out;
   }
 
   // ---- mount --------------------------------------------------------------
   function mount(root, model, opts) {
     opts = opts || {};
     root.classList.add("vap-root", "vap");
-    root.innerHTML =
-      '<div class="app">' +
-        '<header class="top">' +
-          '<div class="top-row">' +
-            '<span class="brand" data-brand></span>' +
-            '<span class="sub" data-sub></span>' +
-            '<span class="chip-demo" data-badge></span>' +
-          "</div>" +
-          '<div class="rail" data-rail></div>' +
-          '<div class="rail-labels" data-rail-labels></div>' +
-        "</header>" +
-        '<main class="grid">' +
-          '<section class="stage">' +
-            '<svg class="map" data-map role="img" aria-label="Diagram"></svg>' +
-            '<div class="legend" data-legend></div>' +
-          "</section>" +
-          '<aside class="brief">' +
-            '<div class="brief-scroll" data-brief></div>' +
-            '<div class="controls">' +
-              '<button class="vap-btn" data-prev>◄ Prev</button>' +
-              '<button class="vap-btn primary" data-next>Next ►</button>' +
-              '<span class="spacer"></span>' +
-              '<button class="vap-btn play" data-play>▶ Auto</button>' +
-              '<button class="vap-btn" data-reset>Reset</button>' +
-            "</div>" +
-          "</aside>" +
-        "</main>" +
-      "</div>";
-
-    var el = {
-      brand: root.querySelector("[data-brand]"), sub: root.querySelector("[data-sub]"),
-      badge: root.querySelector("[data-badge]"), rail: root.querySelector("[data-rail]"),
-      railLabels: root.querySelector("[data-rail-labels]"), map: root.querySelector("[data-map]"),
-      legend: root.querySelector("[data-legend]"), brief: root.querySelector("[data-brief]"),
-      prev: root.querySelector("[data-prev]"), next: root.querySelector("[data-next]"),
-      play: root.querySelector("[data-play]"), reset: root.querySelector("[data-reset]")
-    };
+    var el = {};
+    clear(root);
+    root.appendChild(h("div", { "class": "app" }, [
+      h("header", { "class": "top" }, [
+        h("div", { "class": "top-row" }, [
+          el.brand = h("span", { "class": "brand", "data-brand": "" }),
+          el.sub = h("span", { "class": "sub", "data-sub": "" }),
+          el.badge = h("span", { "class": "chip-demo", "data-badge": "" })
+        ]),
+        el.rail = h("div", { "class": "rail", "data-rail": "" }),
+        el.railLabels = h("div", { "class": "rail-labels", "data-rail-labels": "" })
+      ]),
+      h("main", { "class": "grid" }, [
+        h("section", { "class": "stage" }, [
+          el.map = svg("svg", { "class": "map", "data-map": "", role: "img", "aria-label": "Diagram" }),
+          el.legend = h("div", { "class": "legend", "data-legend": "" })
+        ]),
+        h("aside", { "class": "brief" }, [
+          el.brief = h("div", { "class": "brief-scroll", "data-brief": "" }),
+          h("div", { "class": "controls" }, [
+            el.prev = h("button", { "class": "vap-btn", "data-prev": "", text: "◄ Prev" }),
+            el.next = h("button", { "class": "vap-btn primary", "data-next": "", text: "Next ►" }),
+            h("span", { "class": "spacer" }),
+            el.play = h("button", { "class": "vap-btn play", "data-play": "", text: "▶ Auto" }),
+            el.reset = h("button", { "class": "vap-btn", "data-reset": "", text: "Reset" })
+          ])
+        ])
+      ])
+    ]));
 
     var state = { p: 0, model: null, style: null, g: null, MAX: 0, tab: "red", timer: null };
     var phaseCbs = [];
@@ -467,10 +481,8 @@
       el.map.setAttribute("viewBox", g.viewBox);
       el.map.setAttribute("aria-label", tour ? "Walkthrough map" : "Attack path topology");
       el.map.style.minWidth = Math.min(1288, g.width) + "px";
-      el.map.innerHTML = defsSvg() + bandsSvg(g) + edgesSvg(model, g, p, style) + nodesSvg(model, g, p, style, focusSet());
-      applyStyles(el.map);
-      el.legend.innerHTML = tour ? tourLegendSvg(model, style) : legendSvg(style);
-      applyStyles(el.legend);
+      fill(el.map, [defsSvg()].concat(bandsSvg(g), edgesSvg(model, g, p, style), nodesSvg(model, g, p, style, focusSet())));
+      fill(el.legend, tour ? tourLegendSvg(model, style) : legendSvg());
     }
 
     // Per-step image + links, built as DOM nodes (textContent / setAttribute) — never markup — and only
@@ -526,6 +538,12 @@
       return n ? n.ip : "";
     }
 
+    function blk(title, kids) { return h("div", { "class": "blk" }, [h("div", { "class": "blk-h", text: title })].concat(kids)); }
+    function eyebrow(word, ph) {
+      return h("div", { "class": "eyebrow" }, [word + " ", h("b", { text: String(ph.n).padStart(2, "0") }), " / " + state.MAX]);
+    }
+    function media(ph) { var box = h("div", { "data-media": "" }); appendMedia(box, ph); return box; }
+
     function renderBrief() {
       var model = state.model, p = state.p, pm = phaseMap();
       var ph = pm[p];
@@ -533,80 +551,86 @@
       var tour = isTourModel(model), word = tour ? "Step" : "Phase";
       var fallbackTitle = tour ? "Walkthrough" : "Attack path";
       if (tour) el.brand.textContent = meta.title || fallbackTitle;  // no ◤ brand glyph in a tour
-      else el.brand.innerHTML = "<b>◤</b> " + esc(meta.title || fallbackTitle);
+      else fill(el.brand, [h("b", { text: "◤" }), " " + str(meta.title || fallbackTitle)]);
       el.sub.textContent = meta.subtitle || "";
       el.badge.textContent = meta.badge || "";
       el.badge.style.display = meta.badge ? "" : "none";
 
       if (p === 0 || (ph && ph.intro)) {
         var intro = meta.intro || {};
-        el.brief.innerHTML =
-          '<div class="eyebrow">' + esc(intro.eyebrow || (tour ? "Guided tour" : "Walkthrough")) + "</div>" +
-          '<div class="ph-title">' + esc(meta.title || fallbackTitle) + "</div>" +
-          (intro.objective ? '<p class="intro-obj">' + esc(intro.objective) + "</p>" : "") +
-          (intro.readingNotes ? '<div class="blk"><div class="blk-h">Reading the map</div><p class="watch">' + esc(intro.readingNotes) + "</p></div>" : "") +
-          (intro.note ? '<div class="note">' + esc(intro.note) + "</div>" : "") +
-          '<div class="blk"><div class="blk-h">How to drive it</div><p class="watch">→ / Next · ← / Prev · Space auto-play · Home reset · click the progress bar to jump.</p></div>';
+        fill(el.brief, [
+          h("div", { "class": "eyebrow", text: intro.eyebrow || (tour ? "Guided tour" : "Walkthrough") }),
+          h("div", { "class": "ph-title", text: meta.title || fallbackTitle }),
+          intro.objective ? h("p", { "class": "intro-obj", text: intro.objective }) : null,
+          intro.readingNotes ? blk("Reading the map", [h("p", { "class": "watch", text: intro.readingNotes })]) : null,
+          intro.note ? h("div", { "class": "note", text: intro.note }) : null,
+          blk("How to drive it", [h("p", { "class": "watch",
+            text: "→ / Next · ← / Prev · Space auto-play · Home reset · click the progress bar to jump." })])
+        ]);
         return;
       }
       if (!ph) {
-        el.brief.innerHTML = '<div class="empty">' + word + " " + p + " — no content yet.</div>";
+        fill(el.brief, [h("div", { "class": "empty", text: word + " " + p + " — no content yet." })]);
         return;
       }
       var tacs = (ph.tactics || []).map(function (t) {
         var col = accentLine(state.style.tacticKinds[t.kind] || "slate");
-        return '<span class="tac" data-vs="color:' + col + ';border-color:' + col + '">' + esc(t.label) + "</span>";
-      }).join("");
+        return h("span", { "class": "tac", css: { color: col, "border-color": col }, text: str(t.label) });
+      });
       var tgts = (ph.targets || []).map(function (id) {
-        return '<div class="tgt"><span class="dot" data-vs="background:' + dotColor(id) + '"></span><span class="thn">' + esc(nodeLabel(id)) + '</span><span class="tip">' + esc(nodeIp(id)) + '</span><span class="tz">' + esc(zoneTitle(id)) + "</span></div>";
-      }).join("");
+        return h("div", { "class": "tgt" }, [
+          h("span", { "class": "dot", css: { background: dotColor(id) } }),
+          h("span", { "class": "thn", text: nodeLabel(id) }),
+          h("span", { "class": "tip", text: nodeIp(id) }),
+          h("span", { "class": "tz", text: zoneTitle(id) })
+        ]);
+      });
+      var desc = ph.desc ? h("p", { "class": "desc", text: ph.desc }) : null;
+      var note = ph.note ? h("div", { "class": "note", text: ph.note }) : null;
+      var watch = function (title) { return ph.watch ? blk(title, [h("p", { "class": "watch", text: ph.watch })]) : null; };
       if (tour) {
-        el.brief.innerHTML =
-          '<div class="eyebrow">Step <b>' + String(ph.n).padStart(2, "0") + "</b> / " + state.MAX + "</div>" +
-          '<div class="ph-title">' + esc(ph.title) + "</div>" +
-          (tacs ? '<div class="tacs">' + tacs + "</div>" : "") +
-          (ph.desc ? '<p class="desc">' + esc(ph.desc) + "</p>" : "") +
-          '<div data-media></div>' +
-          (tgts ? '<div class="blk"><div class="blk-h">On the map</div>' + tgts + "</div>" : "") +
-          (ph.watch ? '<div class="blk"><div class="blk-h">Look for</div><p class="watch">' + esc(ph.watch) + "</p></div>" : "") +
-          (ph.note ? '<div class="note">' + esc(ph.note) + "</div>" : "");
-        applyStyles(el.brief);
-        appendMedia(el.brief.querySelector("[data-media]"), ph);
+        fill(el.brief, [
+          eyebrow("Step", ph),
+          h("div", { "class": "ph-title", text: str(ph.title) }),
+          tacs.length ? h("div", { "class": "tacs" }, tacs) : null,
+          desc,
+          media(ph),
+          tgts.length ? blk("On the map", tgts) : null,
+          watch("Look for"),
+          note
+        ]);
         return;
       }
-      var b = ph.blue;
-      var blueHtml = "";
+      var b = ph.blue, blue;
       if (b) {
-        var toolCls = b.gap ? "blue-tool gap" : "blue-tool";
-        var toolLabel = b.gap ? "Gap / unvalidated" : "Tool";
-        blueHtml =
-          '<div class="' + toolCls + '"><span>' + toolLabel + ":</span> " + esc(b.tool || "—") + "</div>" +
-          (b.finding ? '<p class="desc">' + esc(b.finding) + "</p>" : "") +
-          (b.query ? '<div class="blue-signal">Example query</div><pre class="blue-query">' + esc(b.query) + "</pre>" : "") +
-          (b.seen ? '<div class="blue-seen"><b>What is seen:</b> ' + esc(b.seen) + "</div>" : "") +
-          (b.note ? '<div class="blue-note ' + (b.gap ? "gap-note" : "") + '"><b>' + (b.gap ? "Gap / caveat:" : "Notes:") + "</b> " + esc(b.note) + "</div>" : "");
+        blue = [
+          h("div", { "class": b.gap ? "blue-tool gap" : "blue-tool" },
+            [h("span", { text: (b.gap ? "Gap / unvalidated" : "Tool") + ":" }), " " + str(b.tool || "—")]),
+          b.finding ? h("p", { "class": "desc", text: b.finding }) : null,
+          b.query ? h("div", { "class": "blue-signal", text: "Example query" }) : null,
+          b.query ? h("pre", { "class": "blue-query", text: b.query }) : null,
+          b.seen ? h("div", { "class": "blue-seen" }, [h("b", { text: "What is seen:" }), " " + str(b.seen)]) : null,
+          b.note ? h("div", { "class": "blue-note " + (b.gap ? "gap-note" : "") },
+            [h("b", { text: b.gap ? "Gap / caveat:" : "Notes:" }), " " + str(b.note)]) : null
+        ];
       } else {
-        blueHtml = '<div class="empty">No blue-team detail for this phase.</div>';
+        blue = [h("div", { "class": "empty", text: "No blue-team detail for this phase." })];
       }
-      el.brief.innerHTML =
-        '<div class="eyebrow">Phase <b>' + String(ph.n).padStart(2, "0") + "</b> / " + state.MAX + "</div>" +
-        '<div class="ph-title">' + esc(ph.title) + "</div>" +
-        '<div class="tacs">' + tacs + "</div>" +
-        (ph.mitre ? '<div class="mitre">' + esc(ph.mitre) + "</div>" : "") +
-        '<div class="detail-tabs" role="tablist">' +
-          '<button type="button" class="detail-tab ' + (state.tab === "red" ? "active" : "") + '" data-tab="red">Red Team Action</button>' +
-          '<button type="button" class="detail-tab ' + (state.tab === "blue" ? "active" : "") + '" data-tab="blue">Blue Team Detection</button>' +
-        "</div>" +
-        '<div class="tab-pane ' + (state.tab === "red" ? "active" : "") + '" data-pane="red">' +
-          (ph.desc ? '<p class="desc">' + esc(ph.desc) + "</p>" : "") +
-          '<div data-media></div>' +
-          (tgts ? '<div class="blk"><div class="blk-h">Targets this phase</div>' + tgts + "</div>" : "") +
-          (ph.watch ? '<div class="blk"><div class="blk-h">On the map</div><p class="watch">' + esc(ph.watch) + "</p></div>" : "") +
-          (ph.note ? '<div class="note">' + esc(ph.note) + "</div>" : "") +
-        "</div>" +
-        '<div class="tab-pane ' + (state.tab === "blue" ? "active" : "") + '" data-pane="blue">' + blueHtml + "</div>";
-      applyStyles(el.brief);
-      appendMedia(el.brief.querySelector("[data-media]"), ph);
+      var tab = function (key, label) {
+        return h("button", { type: "button", "class": "detail-tab" + (state.tab === key ? " active" : ""), "data-tab": key, text: label });
+      };
+      var pane = function (key, kids) {
+        return h("div", { "class": "tab-pane" + (state.tab === key ? " active" : ""), "data-pane": key }, kids);
+      };
+      fill(el.brief, [
+        eyebrow("Phase", ph),
+        h("div", { "class": "ph-title", text: str(ph.title) }),
+        h("div", { "class": "tacs" }, tacs),
+        ph.mitre ? h("div", { "class": "mitre", text: ph.mitre }) : null,
+        h("div", { "class": "detail-tabs", role: "tablist" }, [tab("red", "Red Team Action"), tab("blue", "Blue Team Detection")]),
+        pane("red", [desc, media(ph), tgts.length ? blk("Targets this phase", tgts) : null, watch("On the map"), note]),
+        pane("blue", blue)
+      ]);
 
       root.querySelectorAll(".detail-tab").forEach(function (btn) {
         btn.addEventListener("click", function () {
@@ -618,7 +642,7 @@
     }
 
     function buildRail() {
-      el.rail.innerHTML = "";
+      clear(el.rail);
       // `at` has no upper bound, even after normalize(): past RAIL_MAX a rail is unreadable anyway, and one
       // DOM node per step would hang the tab. Leave it empty; Prev/Next/keys still drive the viewer.
       for (var i = 1; state.MAX <= RAIL_MAX && i <= state.MAX; i++) {
@@ -632,7 +656,7 @@
       }
       var labels = state.model.meta && state.model.meta.railLabels;
       if (!Array.isArray(labels)) labels = [];  // the editor previews raw models; a non-array must not throw
-      el.railLabels.innerHTML = labels.map(function (l) { return "<span>" + esc(l) + "</span>"; }).join("");
+      fill(el.railLabels, labels.map(function (l) { return h("span", { text: str(l) }); }));
     }
     function paintRail() {
       var kids = el.rail.children;
@@ -725,7 +749,7 @@
         stopAuto();
         if (opts.captureKeys) document.removeEventListener("keydown", onKey);
         if (opts.deepLink) window.removeEventListener("hashchange", onHash);
-        root.innerHTML = "";
+        clear(root);
       }
     };
   }
