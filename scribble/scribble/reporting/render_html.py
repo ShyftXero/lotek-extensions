@@ -2717,6 +2717,16 @@ table.index td.ix-cwe, table.index td.ix-cve {
   font-family: var(--font-mono); font-size: 13px;
 }
 .empty { color: var(--muted); font-style: italic; }
+/* LOT-63: a template tag that never resolved — an unknown variable, or a known one left unpopulated —
+   is highlighted yellow so a missing client name (or any gap) is impossible to miss before the report ships.
+   Dark ink is forced regardless of theme so the token stays legible on the yellow fill, and
+   print-color-adjust:exact carries the fill onto paper/PDF even when "Background graphics" is off. */
+.unresolved-var {
+  background: #ffff00; color: #131b24;
+  padding: 0 2px; border-radius: 2px;
+  box-decoration-break: clone; -webkit-box-decoration-break: clone;
+  print-color-adjust: exact; -webkit-print-color-adjust: exact;
+}
 .finding-body .asset-list {
   margin: 4px 0 0; padding-left: 18px;
   /* A fleet vuln can affect dozens of hosts — flow them into balanced ~14em columns instead of one tall

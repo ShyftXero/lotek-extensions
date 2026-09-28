@@ -16,7 +16,11 @@ dependencies = [
     "jinja2>=3.1.0",
     "markupsafe>=2.1.0",
     "nh3>=0.2.0",
-    "docxtpl>=0.16.0",
+    # Floor is 0.16.6, not 0.16.0: LOT-63's unresolved-tag highlight relies on RichText emitting
+    # ``<w:shd w:fill="ffff00"/>`` for a hex ``highlight``. 0.16.0-0.16.5 emitted ``<w:highlight
+    # w:val="ffff00"/>`` instead, and ``ffff00`` is not a valid named highlight color, so the yellow
+    # silently dropped out of the DOCX/PDF. 0.16.6 switched to shading; that is the real floor.
+    "docxtpl>=0.16.6",
     "python-docx>=1.1.0",
     "loguru>=0.7.0",
     # Phase B live co-editing (WS11). Core, not optional: the collab routes are wired into the app

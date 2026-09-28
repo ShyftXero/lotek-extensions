@@ -8,6 +8,7 @@ template text can never reach attribute access or arbitrary evaluation.
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -47,6 +48,15 @@ _ENV = SandboxedEnvironment(
 
 def _fmt_date(value) -> str:
     return value.isoformat() if value else ""
+
+
+def is_unpopulated(value: Any) -> bool:
+    """True when a variable has no usable value — ``None`` or a string that is empty/whitespace-only.
+
+    This is the "unpopulated" test LOT-63 hinges on: a known variable that was never filled in (e.g. a
+    blank ``COMPANY_NAME``) must be surfaced exactly like an unknown tag, not shipped as a silent blank.
+    """
+    return value is None or (isinstance(value, str) and value.strip() == "")
 
 
 def build_context(engagement, finding=None, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -100,8 +110,12 @@ def resolve_text(text: str, ctx: dict[str, Any]) -> str:
         return text
     if len(text) > _MAX_TEMPLATE_LEN:
         return text  # too large to safely render — pass through unrendered (W-12)
+    # LOT-63: an unpopulated known variable is rendered as *undefined*, not as "", so the literal
+    # ``{{KEY}}`` survives (via ``_KeepUndefined``) for the doc walker to highlight. Dropping the empty
+    # entries here means a blank ``COMPANY_NAME`` is loud in the report instead of a silent gap.
+    render_ctx = {k: v for k, v in ctx.items() if not is_unpopulated(v)}
     try:
-        return _ENV.from_string(text).render(**ctx)
+        return _ENV.from_string(text).render(**render_ctx)
     except TemplateError:
         return text
 
@@ -116,23 +130,99 @@ def make_var_resolver(ctx: dict[str, Any]) -> Callable[[str], str]:
     return _resolve
 
 
+# A rendered ``{{...}}`` that stayed unresolved: either an unknown tag left literal by ``_KeepUndefined``,
+# or a foreign token (``{{.pass_pol}}``) the resolver passed through verbatim. Both get highlighted.
+# The body is ``[^{}]*`` (not ``.*?``) on purpose: a real token never nests braces, and the negated
+# class matches newlines too, so this needs no DOTALL. It also stays linear on adversarial input like
+# ``{{{{{{...`` — ``.*?`` there is O(n^2) backtracking (a polynomial-ReDoS flag), because every ``{{``
+# start rescans to end hunting a ``}}``; ``[^{}]*`` fails at the next brace, so each start is O(1).
+_UNRESOLVED_TOKEN_RE = re.compile(r"\{\{[^{}]*\}\}")
+
+
+def _with_unresolved_mark(marks: list[dict] | None) -> list[dict]:
+    """Return ``marks`` plus the ``unresolvedVar`` mark (idempotent — never doubles it)."""
+    existing = list(marks or [])
+    if any(m.get("type") == schema.MARK_UNRESOLVED for m in existing):
+        return existing
+    return existing + [{"type": schema.MARK_UNRESOLVED}]
+
+
+def _split_resolved_text(node: dict, ctx: dict[str, Any]) -> list[dict]:
+    """Resolve one text node's ``{{ }}`` and split it into text nodes, marking any token that stayed
+    unresolved so the renderers can highlight it (LOT-63). Preserves the node's existing marks."""
+    rendered = resolve_text(node.get("text", ""), ctx)
+    base_marks = node.get("marks") or []
+
+    segments: list[tuple[str, bool]] = []
+    last = 0
+    for m in _UNRESOLVED_TOKEN_RE.finditer(rendered):
+        if m.start() > last:
+            segments.append((rendered[last:m.start()], False))
+        segments.append((m.group(0), True))
+        last = m.end()
+    if last < len(rendered):
+        segments.append((rendered[last:], False))
+
+    if len(segments) <= 1 and not (segments and segments[0][1]):
+        # Nothing unresolved: keep it a single text node (identical shape to the old behavior).
+        node["text"] = rendered
+        return [node]
+
+    out: list[dict] = []
+    for text, unresolved in segments:
+        if not text:
+            continue
+        piece: dict = {"type": schema.TEXT, "text": text}
+        marks = _with_unresolved_mark(base_marks) if unresolved else list(base_marks)
+        if marks:
+            piece["marks"] = marks
+        out.append(piece)
+    return out or [node]
+
+
+def _resolve_variable_node(node: dict, ctx: dict[str, Any]) -> dict:
+    """Turn a ``variable`` node into a text node: its value if populated, else a highlighted ``{{KEY}}``."""
+    key = node.get("attrs", {}).get("key", "")
+    value = ctx.get(key)
+    base_marks = node.get("marks") or []
+    if key in ctx and not is_unpopulated(value):
+        out: dict = {"type": schema.TEXT, "text": str(value)}
+        if base_marks:
+            out["marks"] = list(base_marks)
+        return out
+    return {
+        "type": schema.TEXT,
+        "text": "{{" + key + "}}",
+        "marks": _with_unresolved_mark(base_marks),
+    }
+
+
 def resolve_doc(doc: dict | None, ctx: dict[str, Any]) -> dict | None:
-    """Return a copy of a ProseMirror doc with ``{{ }}`` in text nodes and ``variable`` nodes resolved."""
+    """Return a copy of a ProseMirror doc with ``{{ }}`` in text nodes and ``variable`` nodes resolved.
+
+    Unresolved tags (unknown, or known-but-unpopulated) are stamped with the ``unresolvedVar`` mark so the
+    HTML/DOCX renderers highlight them in yellow (LOT-63) rather than shipping a literal ``{{KEY}}`` or a
+    silent blank.
+    """
     if not doc:
         return doc
     out = copy.deepcopy(doc)
 
     def _walk(node: dict) -> None:
-        t = node.get("type")
-        if t == schema.TEXT and node.get("text"):
-            node["text"] = resolve_text(node["text"], ctx)
-        elif t == schema.VARIABLE:
-            key = node.get("attrs", {}).get("key", "")
-            node["type"] = schema.TEXT
-            node["text"] = str(ctx.get(key, "{{" + key + "}}"))
-            node.pop("attrs", None)
-        for child in node.get("content", []) or []:
-            _walk(child)
+        children = node.get("content")
+        if not children:
+            return
+        new_children: list[dict] = []
+        for child in children:
+            ctype = child.get("type")
+            if ctype == schema.TEXT and child.get("text") and "{{" in child["text"]:
+                new_children.extend(_split_resolved_text(child, ctx))
+            elif ctype == schema.VARIABLE:
+                new_children.append(_resolve_variable_node(child, ctx))
+            else:
+                _walk(child)
+                new_children.append(child)
+        node["content"] = new_children
 
     _walk(out)
     return out

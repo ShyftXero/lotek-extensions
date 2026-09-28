@@ -66,6 +66,12 @@ _CODE_BLOCK_STYLE = "NoSpacing"
 # lotek-gotenberg image; Word substitutes a local mono if a reader's machine lacks it (mono→mono, fine).
 _MONOSPACE_FONT = "JetBrains Mono"
 
+# LOT-63: an unresolved ``{{KEY}}`` reaches this walker as ``<span class="unresolved-var">``. It becomes a
+# run with a yellow shading fill (``<w:shd w:fill="...">``, via RichText's ``highlight``) so the gap the
+# HTML shows in yellow survives into the DOCX — and the PDF a client actually receives. Hex, no ``#``.
+_UNRESOLVED_HIGHLIGHT = "ffff00"
+_UNRESOLVED_VAR_CLASS = "unresolved-var"
+
 
 def _list_item_style(list_stack: list[str]) -> str:
     """The list-paragraph styleId for a ``<li>`` at the current nesting depth (capped at 3, the
@@ -109,6 +115,8 @@ class _DocxHtmlWalker(HTMLParser):
         self._list_item_styles: list[str] = []  # list-paragraph styleId per currently-open <li>
         self._block_stack: list[str] = []  # "blockquote" | "figure"
         self._pre_depth = 0
+        # One bool per open <span>: True if it pushed the unresolved-var highlight (so </span> pops it).
+        self._span_stack: list[bool] = []
 
     # -- paragraph management -------------------------------------------------------------------
 
@@ -140,6 +148,8 @@ class _DocxHtmlWalker(HTMLParser):
         for kind, val in self._mark_stack:
             if kind == "font":
                 props["font"] = val
+            elif kind == "highlight":
+                props["highlight"] = val
             else:
                 props[kind] = val
         for href in reversed(self._link_stack):
@@ -249,7 +259,14 @@ class _DocxHtmlWalker(HTMLParser):
             self._mark_stack.append(("underline", "single"))
         elif tag == "a":
             self._link_stack.append(_safe_href(attrs.get("href")))
-        # span/div/table/tr/td/th/thead/tbody/unknown tags: transparent — children flow inline into
+        elif tag == "span":
+            # LOT-63: an unresolved-var span applies a yellow highlight to its runs; any other span is
+            # transparent. Track per-span whether we pushed, so the matching </span> pops correctly.
+            highlighted = _UNRESOLVED_VAR_CLASS in (attrs.get("class") or "").split()
+            if highlighted:
+                self._mark_stack.append(("highlight", _UNRESOLVED_HIGHLIGHT))
+            self._span_stack.append(highlighted)
+        # div/table/tr/td/th/thead/tbody/unknown tags: transparent — children flow inline into
         # the current paragraph context; never raises, never drops content.
 
     def handle_endtag(self, tag: str) -> None:
@@ -283,6 +300,9 @@ class _DocxHtmlWalker(HTMLParser):
             self._pop_mark("underline")
         elif tag == "a" and self._link_stack:
             self._link_stack.pop()
+        elif tag == "span" and self._span_stack:
+            if self._span_stack.pop():
+                self._pop_mark("highlight")
 
     def _pop_mark(self, kind: str) -> None:
         for i in range(len(self._mark_stack) - 1, -1, -1):
