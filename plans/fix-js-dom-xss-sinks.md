@@ -20,8 +20,13 @@ PR #288's vector-viewer approach.
       `test_e2e_artifacts_dom.py`, `test_artifacts_static.py`.
 - [x] Rendered DOM compared against main for representative inputs: identical in all three files.
 
+- [x] Polly/human decision (2026-09-28): no sanitizer, no HTML sink, links only (http/https/mailto/
+      same-origin relative; no data:, //host, whitespace, control chars or backslash; off-site links
+      target=_blank rel="noopener noreferrer").
+- [x] Gates green: ruff, pyrefly, kit 162 / vector 206 / scribble 1805 collected.
+
 ## Remaining
-- [ ] Gates, PR, CodeQL result.
+- [ ] PR review + merge; CodeQL result on the PR.
 
 ## Notes / gotchas
 - reporting-editor.js has no mirrored copy (scribble and bugreport load the kit's), so no parity test.
@@ -30,5 +35,7 @@ PR #288's vector-viewer approach.
   #10 is exploitable only with an un-normalized `#ved-model` island (edge `at` / phase `n` were printed
   unescaped). `edit_diagram` normalizes it today. #29, #27, #13 and #6 are not exploitable (img src
   never runs script, blob: previews, server-controlled URLs/ids).
+- Stored link marks keep their author-written text (not the URL). The directive's "link text is the URL"
+  applies to linkified plain text, and none of these files linkifies plain text.
 - Playwright is now in the kit's dev extra. The lock is pinned to 1.61.0 so it uses the same Chromium
   build as vector and scribble.
