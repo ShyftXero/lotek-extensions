@@ -15,6 +15,63 @@
     return { "Content-Type": "application/json" };
   }
 
+  // An artifact URL comes from the server (a route URL) or is a local blob: preview, but it is still data
+  // on its way into an attribute, so only http(s) and same-origin relative URLs are set (plus blob:, for
+  // an image preview). Refused: javascript:, data:, vbscript:, any other scheme, a protocol-relative
+  // "//host", and any string holding whitespace, a control character or a backslash (the URL parser
+  // strips or rewrites those before it reads the scheme). encodeURI then leaves no quote or bracket in
+  // the value; existing %XX escapes are kept, and a lone surrogate (encodeURI throws) is refused.
+  const URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
+  const URL_REFUSED_CHARS = /[\s\x00-\x1f\x7f\\]/;
+  const HREF_SCHEMES = { http: 1, https: 1 };
+  const SRC_SCHEMES = { http: 1, https: 1, blob: 1 };
+
+  function allowedUrl(s, schemes) {
+    if (typeof s !== "string" || !s || URL_REFUSED_CHARS.test(s) || s.indexOf("//") === 0) return "";
+    const m = URL_SCHEME.exec(s);
+    if (m && !schemes[m[1].toLowerCase()]) return "";
+    try {
+      return encodeURI(s).replace(/%25([0-9A-Fa-f]{2})/g, "%$1");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function safeHref(s) {
+    return allowedUrl(s, HREF_SCHEMES);
+  }
+
+  function safeSrc(s) {
+    return allowedUrl(s, SRC_SCHEMES);
+  }
+
+  // Point a row's link at an artifact URL. A refused (or missing) URL leaves the thumbnail unlinked. An
+  // off-site URL also gets no referrer; every artifact link already opens in a new tab with no opener.
+  function setArtifactLink(link, url) {
+    const href = safeHref(url);
+    if (!href) {
+      link.removeAttribute("href");
+      link.removeAttribute("target");
+      return;
+    }
+    link.setAttribute("href", href);
+    link.setAttribute("target", "_blank");
+    if (/^https?:/i.test(href)) link.setAttribute("rel", "noopener noreferrer");
+  }
+
+  // createElement + setAttribute, in the order given; `text` sets textContent. kids are nodes only.
+  function el(tag, attrs, kids) {
+    const node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "text") node.textContent = attrs[k];
+      else node.setAttribute(k, attrs[k]);
+    });
+    (kids || []).forEach(function (kid) {
+      node.appendChild(kid);
+    });
+    return node;
+  }
+
   function galleryOf(el) {
     return el.closest(".scribble-gallery");
   }
@@ -48,22 +105,29 @@
 
     const showImage = pendingInfo ? !!pendingInfo.objectUrl : isImageArtifact(artifact);
     const media = showImage
-      ? '<a class="scribble-gallery-thumb" target="_blank" rel="noopener">' +
-        '<img alt="" loading="lazy" /></a>'
-      : '<a class="scribble-gallery-file-icon pill" target="_blank" rel="noopener"></a>';
+      ? el("a", { class: "scribble-gallery-thumb", target: "_blank", rel: "noopener" }, [
+          el("img", { alt: "", loading: "lazy" }),
+        ])
+      : el("a", { class: "scribble-gallery-file-icon pill", target: "_blank", rel: "noopener" });
 
-    li.innerHTML =
-      '<span class="scribble-gallery-handle mono" title="Drag to reorder">&#x2837;</span>' +
-      media +
-      '<div class="scribble-gallery-meta">' +
-      '<div class="scribble-gallery-filename mono"></div>' +
-      '<input type="text" class="scribble-gallery-caption" placeholder="Caption" />' +
-      '<div class="scribble-gallery-pending-status muted"></div>' +
-      "</div>" +
-      '<label class="scribble-gallery-toggle">' +
-      '<input type="checkbox" class="scribble-gallery-include" checked /> include' +
-      "</label>" +
-      '<button type="button" class="btn scribble-gallery-delete" title="Delete artifact">&times;</button>';
+    li.appendChild(el("span", { class: "scribble-gallery-handle mono", title: "Drag to reorder", text: "\u2837" }));
+    li.appendChild(media);
+    li.appendChild(
+      el("div", { class: "scribble-gallery-meta" }, [
+        el("div", { class: "scribble-gallery-filename mono" }),
+        el("input", { type: "text", class: "scribble-gallery-caption", placeholder: "Caption" }),
+        el("div", { class: "scribble-gallery-pending-status muted" }),
+      ])
+    );
+    li.appendChild(
+      el("label", { class: "scribble-gallery-toggle" }, [
+        el("input", { type: "checkbox", class: "scribble-gallery-include", checked: "" }),
+        document.createTextNode(" include"),
+      ])
+    );
+    li.appendChild(
+      el("button", { type: "button", class: "btn scribble-gallery-delete", title: "Delete artifact", text: "\u00d7" })
+    );
 
     const link = li.querySelector("a");
     const img = li.querySelector("img");
@@ -75,7 +139,7 @@
       link.removeAttribute("href");
       link.removeAttribute("target");
       if (img) {
-        img.src = pendingInfo.objectUrl || "";
+        img.setAttribute("src", safeSrc(pendingInfo.objectUrl));
         img.alt = artifact.caption || artifact.filename || "";
       }
       statusEl.textContent = pendingInfo.statusText || "Uploading…";
@@ -84,9 +148,9 @@
       return li;
     }
 
-    link.href = artifact.url;
+    setArtifactLink(link, artifact.url);
     if (img) {
-      img.src = artifact.url;
+      img.setAttribute("src", safeSrc(artifact.url));
       img.alt = artifact.caption || artifact.filename || "";
     } else {
       link.textContent = artifact.kind || "file";
@@ -139,12 +203,9 @@
     li.dataset.rawUrl = data.url || "";
 
     const link = li.querySelector("a");
-    if (link) {
-      link.setAttribute("href", data.url || "#");
-      link.setAttribute("target", "_blank");
-    }
+    if (link) setArtifactLink(link, data.url);
     const img = li.querySelector("img");
-    if (img) img.src = data.url || "";
+    if (img) img.setAttribute("src", safeSrc(data.url));
     revokeObjectUrl(li);
 
     const statusEl = li.querySelector(".scribble-gallery-pending-status");

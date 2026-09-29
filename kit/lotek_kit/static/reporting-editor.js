@@ -66,6 +66,54 @@
   var MARK_TAGS = { strong: "bold", b: "bold", em: "italic", i: "italic", code: "code", s: "strike", strike: "strike", del: "strike", u: "underline", a: "link" };
   var MARK_OPEN_TAG = { bold: "strong", italic: "em", code: "code", strike: "s", underline: "u" };
 
+  // ---------------------------------------------------------------------------- URL allowlist
+  // A doc's link/image URLs come from whoever wrote the doc (a collaborator's autosave, a stored report
+  // body, pasted HTML), and the exported walkers may be rendered outside a contenteditable, where a link
+  // is live. So a URL reaches the DOM only if it is http(s) (mailto: too, for a link; blob: too, for an
+  // image, which is how an upload previews) or same-origin relative. Anything else is refused: a
+  // javascript:, data: or vbscript: URL, any other scheme, a protocol-relative "//host", and any string
+  // holding whitespace, a control character or a backslash (the URL parser strips or rewrites those
+  // before it reads the scheme, which is how "java\tscript:" gets past a naive check). One exception, for
+  // an image src only: a raster base64 data: URL (a pasted screenshot), the same rule as vector-viewer's
+  // safeImage. An img src never runs script; SVG data URLs, non-base64 data URLs and data: hrefs are
+  // still refused. A refused link renders as its text; a refused image keeps an empty src.
+  var URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
+  var URL_REFUSED_CHARS = /[\s\x00-\x1f\x7f\\]/;
+  var LINK_SCHEMES = { http: 1, https: 1, mailto: 1 };
+  var IMAGE_SCHEMES = { http: 1, https: 1, blob: 1 };
+  var DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+\/]*={0,2}$/i;
+
+  function allowedUrl(s, schemes) {
+    if (typeof s !== "string" || !s || URL_REFUSED_CHARS.test(s) || s.indexOf("//") === 0) return "";
+    var m = URL_SCHEME.exec(s);
+    if (m && !schemes[m[1].toLowerCase()]) return "";
+    return inertUrl(s);
+  }
+
+  // The allowlist is what makes a URL safe. encodeURI on the way out only makes the attribute value
+  // unmistakably inert (no quote, angle bracket or non-ASCII survives it); existing %XX escapes are put
+  // back so a pre-encoded URL is not double-encoded. A lone surrogate makes encodeURI throw: refuse it.
+  function inertUrl(s) {
+    try {
+      return encodeURI(s).replace(/%25([0-9A-Fa-f]{2})/g, "%$1");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function safeHref(s) {
+    return allowedUrl(s, LINK_SCHEMES);
+  }
+
+  function safeImageSrc(s) {
+    if (typeof s === "string" && DATA_IMAGE.test(s)) return inertUrl(s);
+    return allowedUrl(s, IMAGE_SCHEMES);
+  }
+
+  function clearChildren(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
   var AUTOSAVE_DEBOUNCE_MS = 800;
   var AUTOSAVE_RETRY_MS = 2500;
   var PRESENCE_HEARTBEAT_MS = 8000; // keep well under the server's presence TTL (~20s)
@@ -182,7 +230,7 @@
       var attrs = node.attrs || {};
       var img = document.createElement("img");
       img.dataset.type = "image";
-      img.src = attrs.src || "";
+      img.setAttribute("src", safeImageSrc(attrs.src));
       img.alt = attrs.alt || "";
       img.contentEditable = "false";
       return img;
@@ -192,8 +240,18 @@
 
   function wrapMark(mark, child) {
     if (mark.type === "link") {
+      var raw = mark.attrs && mark.attrs.href;
+      // A link without an href has always rendered as "#". One whose href is not allowed renders as its
+      // text alone, the same outcome scribble's server-side sanitizer gives the stored doc.
+      var href = raw ? safeHref(raw) : "#";
+      if (!href) return child;
       var a = document.createElement("a");
-      a.href = (mark.attrs && mark.attrs.href) || "#";
+      a.setAttribute("href", href);
+      // An off-site link opens in a new tab, with no opener handle and no referrer.
+      if (/^https?:/i.test(href)) {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      }
       a.appendChild(child);
       return a;
     }
@@ -221,7 +279,7 @@
     if (attrs.artifactId != null) img.dataset.artifactId = String(attrs.artifactId);
     if (attrs.caption) img.dataset.caption = attrs.caption;
     img.alt = attrs.alt || "";
-    img.src = srcOverride || attrs.src || "";
+    img.setAttribute("src", safeImageSrc(srcOverride || attrs.src));
     img.contentEditable = "false";
     return img;
   }
@@ -371,8 +429,12 @@
     }
     var markType = MARK_TAGS[tag];
     if (markType) {
-      var mark = markType === "link" ? { type: "link", attrs: { href: node.getAttribute("href") || "#" } } : { type: markType };
-      return collectInlineChildren(node, marks.concat([mark]));
+      if (markType !== "link") return collectInlineChildren(node, marks.concat([{ type: markType }]));
+      // Pasted markup can carry any href: an unsafe one is not saved (the text is).
+      var rawHref = node.getAttribute("href");
+      var href = rawHref ? safeHref(rawHref) : "#";
+      if (!href) return collectInlineChildren(node, marks);
+      return collectInlineChildren(node, marks.concat([{ type: "link", attrs: { href: href } }]));
     }
     // Unknown inline element (e.g. a stray <font>/<span> from pasted HTML): descend without a mark.
     return collectInlineChildren(node, marks);
@@ -394,7 +456,7 @@
       if (img.dataset.caption) attrs.caption = img.dataset.caption;
       return { type: NODE.INLINE_IMAGE, attrs: attrs };
     }
-    return { type: NODE.IMAGE, attrs: { src: img.getAttribute("src") || "", alt: img.getAttribute("alt") || "" } };
+    return { type: NODE.IMAGE, attrs: { src: safeImageSrc(img.getAttribute("src")), alt: img.getAttribute("alt") || "" } };
   }
 
   function cloneMark(mark) {
@@ -527,7 +589,7 @@
       })
       .then(function (data) {
         if (data && data.doc) {
-          state.editableEl.innerHTML = "";
+          clearChildren(state.editableEl);
           state.editableEl.appendChild(docToFragment(data.doc));
           ensureNotEmpty(state.editableEl);
         }
@@ -660,7 +722,7 @@
     // artifactId to serialize -- defense in depth for the "never persist a blank inlineImage" invariant.
     img.dataset.frPreview = "1";
     img.alt = alt || "";
-    img.src = objectUrl || "";
+    img.setAttribute("src", safeImageSrc(objectUrl));
     img.contentEditable = "false";
     img.title = "Uploading…";
     return img;
@@ -901,7 +963,7 @@
 
   function mountFallbackEditor(container, opts) {
     container.classList.add("fr-editor-mounted");
-    container.innerHTML = "";
+    clearChildren(container);
 
     var state = {
       findingId: opts.findingId,
@@ -964,7 +1026,7 @@
         return domToDoc(state.editableEl);
       },
       setDoc: function (doc) {
-        editableEl.innerHTML = "";
+        clearChildren(editableEl);
         editableEl.appendChild(docToFragment(doc));
         ensureNotEmpty(editableEl);
       },

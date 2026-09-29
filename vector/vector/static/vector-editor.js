@@ -21,7 +21,6 @@
     dashboard: rootEl.getAttribute("data-dashboard"),
     exportHtmlBase: rootEl.getAttribute("data-export-html-base")
   };
-  var baseUrl = cfg.apiBase.replace(/\/api$/, "");
   var token = (document.querySelector('meta[name=csrf-token]') || {}).content || "";
 
   var model;
@@ -46,7 +45,6 @@
     m.phases = m.phases || [];
     if (!m.phases.some(function (p) { return p.n === 0 || p.intro; })) m.phases.unshift({ n: 0, intro: true });
   }
-  function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
   function getPath(o, path) {
     var parts = path.split("."), cur = o;
     for (var i = 0; i < parts.length; i++) { if (cur == null) return undefined; var k = /^\d+$/.test(parts[i]) ? +parts[i] : parts[i]; cur = cur[k]; }
@@ -79,196 +77,255 @@
     }, 90);
   }
 
+  // ---- DOM builders -------------------------------------------------------
+  // The panels are built from nodes, never from an HTML string: model text goes in through textContent /
+  // createTextNode and attributes through setAttribute, so a string in the model (which may be an
+  // imported or hand-edited file) is never parsed as markup. attrs: attribute name -> value (null / false
+  // = omit; true = present with no value), plus `text` (textContent) and `css` (prop -> value, through
+  // style.setProperty). kids: nodes, arrays of nodes, null / false (skipped); loose text goes in as t(s).
+  function el(tag, attrs, kids) {
+    var node = document.createElement(tag);
+    for (var k in attrs) {
+      if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
+      var v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k === "text") node.textContent = str(v);
+      else if (k === "css") { for (var c in v) if (Object.prototype.hasOwnProperty.call(v, c)) node.style.setProperty(c, v[c]); }
+      else node.setAttribute(k, v === true ? "" : String(v));
+    }
+    append(node, kids);
+    return node;
+  }
+  function append(node, kids) {
+    (kids || []).forEach(function (c) {
+      if (Array.isArray(c)) append(node, c);
+      else if (c != null && c !== false) node.appendChild(c);
+    });
+    return node;
+  }
+  function str(s) { return String(s == null ? "" : s); }
+  function t(s) { return document.createTextNode(str(s)); }
+  function btn(cls, action, text, i, j) {
+    return el("button", { "class": cls, "data-action": action, "data-i": i, "data-j": j, text: text });
+  }
+  function inline(kids) { return el("div", { "class": "ved-inline" }, kids); }
+  function sectionH(text) { return el("div", { "class": "ved-section-h", text: text }); }
+  function hint(kids) { return el("p", { "class": "ved-hint" }, kids); }
+  function rowTools(kids) { return el("div", { "class": "ved-row-tools" }, kids); }
+  function field(label, control) { return el("div", { "class": "ved-field" }, [el("label", { text: label }), control]); }
+
   // ---- field builders -----------------------------------------------------
   function fText(label, path, opts) {
     opts = opts || {};
     var v = getPath(model, path); v = v == null ? "" : v;
-    var tag = opts.textarea
-      ? '<textarea data-bind="' + path + '" data-type="text" ' + (opts.rows ? 'rows="' + opts.rows + '"' : "") + '>' + esc(v) + "</textarea>"
-      : '<input type="text" data-bind="' + path + '" data-type="text" value="' + esc(v) + '" ' + (opts.ph ? 'placeholder="' + esc(opts.ph) + '"' : "") + ">";
-    return '<div class="ved-field"><label>' + esc(label) + "</label>" + tag + "</div>";
+    var control = opts.textarea
+      ? el("textarea", { "data-bind": path, "data-type": "text", rows: opts.rows || null, text: v })
+      : el("input", { type: "text", "data-bind": path, "data-type": "text", value: str(v), placeholder: opts.ph || null });
+    return field(label, control);
   }
   function fNum(label, path) {
     var v = getPath(model, path); v = (v == null ? "" : v);
-    return '<div class="ved-field"><label>' + esc(label) + '</label><input type="number" data-bind="' + path + '" data-type="num" value="' + esc(v) + '"></div>';
+    return field(label, el("input", { type: "number", "data-bind": path, "data-type": "num", value: str(v) }));
+  }
+  function option(value, label, selected) {
+    return el("option", { value: str(value), selected: !!selected, text: label });
   }
   function fSelect(label, path, options, opts) {
     opts = opts || {};
     var v = getPath(model, path); v = v == null ? "" : String(v);
-    var opts_html = (opts.blank ? '<option value="">' + esc(opts.blank) + "</option>" : "");
+    var kids = opts.blank ? [option("", opts.blank)] : [];
     options.forEach(function (o) {
       var val = typeof o === "object" ? o.value : o, lbl = typeof o === "object" ? o.label : o;
-      opts_html += '<option value="' + esc(val) + '"' + (String(val) === v ? " selected" : "") + ">" + esc(lbl) + "</option>";
+      kids.push(option(val, lbl, String(val) === v));
     });
-    return '<div class="ved-field"><label>' + esc(label) + '</label><select data-bind="' + path + '" data-type="text">' + opts_html + "</select></div>";
+    return field(label, el("select", { "data-bind": path, "data-type": "text" }, kids));
   }
   function fCheck(label, path) {
     var v = !!getPath(model, path);
-    return '<div class="ved-field ved-check"><input type="checkbox" data-bind="' + path + '" data-type="bool"' + (v ? " checked" : "") + '><label>' + esc(label) + "</label></div>";
+    return el("div", { "class": "ved-field ved-check" }, [
+      el("input", { type: "checkbox", "data-bind": path, "data-type": "bool", checked: v }),
+      el("label", { text: label })
+    ]);
   }
 
   // ---- panels -------------------------------------------------------------
   function renderMeta() {
     var rail = (model.meta.railLabels || []).join(", ");
-    return fText("Title", "meta.title") +
-      '<div class="ved-inline">' + fText("Subtitle", "meta.subtitle") + fText("Badge", "meta.badge") + "</div>" +
-      '<div class="ved-field"><label>Rail labels (comma-separated)</label><input type="text" data-bind="meta.railLabels" data-type="csv" value="' + esc(rail) + '"></div>' +
-      '<div class="ved-section-h">Intro slide</div>' +
-      fText("Eyebrow", "meta.intro.eyebrow") +
-      fText("Objective", "meta.intro.objective", { textarea: true, rows: 3 }) +
-      fText("Reading the map", "meta.intro.readingNotes", { textarea: true, rows: 3 }) +
-      fText("Note", "meta.intro.note", { textarea: true, rows: 2 });
+    return [
+      fText("Title", "meta.title"),
+      inline([fText("Subtitle", "meta.subtitle"), fText("Badge", "meta.badge")]),
+      field("Rail labels (comma-separated)", el("input", { type: "text", "data-bind": "meta.railLabels", "data-type": "csv", value: rail })),
+      sectionH("Intro slide"),
+      fText("Eyebrow", "meta.intro.eyebrow"),
+      fText("Objective", "meta.intro.objective", { textarea: true, rows: 3 }),
+      fText("Reading the map", "meta.intro.readingNotes", { textarea: true, rows: 3 }),
+      fText("Note", "meta.intro.note", { textarea: true, rows: 2 })
+    ];
   }
 
   function renderZones() {
-    var h = '<p class="ved-hint">Trust zones become the left→right columns (ordered). Nodes are placed into a zone + row.</p>';
+    var out = [hint([t("Trust zones become the left→right columns (ordered). Nodes are placed into a zone + row.")])];
     model.zones.forEach(function (z, i) {
-      h += '<div class="ved-card" open><div class="ved-card-body">' +
-        '<div class="ved-inline">' + fText("id", "zones." + i + ".id") + fText("Title", "zones." + i + ".title") + "</div>" +
-        fText("Subtitle", "zones." + i + ".subtitle") +
-        '<div class="ved-inline">' + fSelect("Accent", "zones." + i + ".accent", ACCENTS) + fNum("Order", "zones." + i + ".order") + "</div>" +
-        '<div class="ved-row-tools"><button class="ved-btn sm" data-action="move-zone-up" data-i="' + i + '">▲</button>' +
-        '<button class="ved-btn sm" data-action="move-zone-down" data-i="' + i + '">▼</button>' +
-        '<button class="ved-btn sm danger" data-action="del-zone" data-i="' + i + '">Delete</button></div>' +
-        "</div></div>";
+      out.push(el("div", { "class": "ved-card", open: true }, [el("div", { "class": "ved-card-body" }, [
+        inline([fText("id", "zones." + i + ".id"), fText("Title", "zones." + i + ".title")]),
+        fText("Subtitle", "zones." + i + ".subtitle"),
+        inline([fSelect("Accent", "zones." + i + ".accent", ACCENTS), fNum("Order", "zones." + i + ".order")]),
+        rowTools([btn("ved-btn sm", "move-zone-up", "▲", i), btn("ved-btn sm", "move-zone-down", "▼", i),
+          btn("ved-btn sm danger", "del-zone", "Delete", i)])
+      ])]));
     });
-    h += '<button class="ved-btn add" data-action="add-zone">＋ Add zone</button>';
-    return h;
+    out.push(btn("ved-btn add", "add-zone", "＋ Add zone"));
+    return out;
   }
 
   function zoneOptions() { return model.zones.map(function (z) { return { value: z.id, label: z.title || z.id }; }); }
   function nodeOptions() { return model.nodes.map(function (n) { return { value: n.id, label: n.label || n.id }; }); }
 
+  function card(title, sub, body) {
+    return el("details", { "class": "ved-card" }, [
+      el("summary", {}, [el("span", { "class": "grow", text: title }), el("span", { "class": "sub", text: sub })]),
+      el("div", { "class": "ved-card-body" }, body)
+    ]);
+  }
+
   function renderNodes() {
-    var h = '<p class="ved-hint">Hosts/assets. A node\'s <b>state timeline</b> drives how it lights up per phase.</p>';
+    var out = [hint([t("Hosts/assets. A node's "), el("b", { text: "state timeline" }), t(" drives how it lights up per phase.")])];
     model.nodes.forEach(function (n, i) {
       var zTitle = (model.zones.filter(function (z) { return z.id === n.zone; })[0] || {}).title || n.zone || "?";
-      h += '<details class="ved-card"><summary><span class="grow">' + esc(n.label || n.id) + '</span><span class="sub">' + esc(zTitle) + " · " + esc(n.ip || "") + "</span></summary>" +
-        '<div class="ved-card-body">' +
-        '<div class="ved-inline">' + fText("id", "nodes." + i + ".id") + fText("Label", "nodes." + i + ".label") + "</div>" +
-        '<div class="ved-inline">' + fText("IP", "nodes." + i + ".ip") + fText("Domain", "nodes." + i + ".domain") + "</div>" +
-        '<div class="ved-inline">' + fSelect("Zone", "nodes." + i + ".zone", zoneOptions()) + fNum("Row", "nodes." + i + ".row") + "</div>" +
-        '<div class="ved-inline">' + fSelect("Role", "nodes." + i + ".role", ROLE_KINDS, { blank: "— none —" }) + fText("Dual-home IP", "nodes." + i + ".dualIp") + "</div>" +
-        '<div class="ved-inline">' + fCheck("Context only (greyed)", "nodes." + i + ".context") + fNum("Activate at phase", "nodes." + i + ".activateAt") + "</div>" +
-        renderStates(n, i) +
-        renderReip(n, i) +
-        '<div class="ved-row-tools"><button class="ved-btn sm danger" data-action="del-node" data-i="' + i + '">Delete node</button></div>' +
-        "</div></details>";
+      out.push(card(str(n.label || n.id), str(zTitle) + " · " + str(n.ip || ""), [
+        inline([fText("id", "nodes." + i + ".id"), fText("Label", "nodes." + i + ".label")]),
+        inline([fText("IP", "nodes." + i + ".ip"), fText("Domain", "nodes." + i + ".domain")]),
+        inline([fSelect("Zone", "nodes." + i + ".zone", zoneOptions()), fNum("Row", "nodes." + i + ".row")]),
+        inline([fSelect("Role", "nodes." + i + ".role", ROLE_KINDS, { blank: "— none —" }), fText("Dual-home IP", "nodes." + i + ".dualIp")]),
+        inline([fCheck("Context only (greyed)", "nodes." + i + ".context"), fNum("Activate at phase", "nodes." + i + ".activateAt")]),
+        renderStates(n, i),
+        renderReip(n, i),
+        rowTools([btn("ved-btn sm danger", "del-node", "Delete node", i)])
+      ]));
     });
-    h += '<button class="ved-btn add" data-action="add-node">＋ Add node</button>';
-    return h;
+    out.push(btn("ved-btn add", "add-node", "＋ Add node"));
+    return out;
   }
 
   function renderStates(n, i) {
-    var h = '<div class="ved-section-h">State timeline</div>';
+    var out = [sectionH("State timeline")];
     (n.states || []).forEach(function (s, j) {
-      h += '<div class="ved-mini"><div class="ved-mini-head"><span>state ' + (j + 1) + '</span><button class="ved-btn sm danger" data-action="del-node-state" data-i="' + i + '" data-j="' + j + '">✕</button></div>' +
-        '<div class="ved-inline">' + fNum("At phase", "nodes." + i + ".states." + j + ".at") +
-        fSelect("State", "nodes." + i + ".states." + j + ".state", STATE_KINDS, { blank: "— label only —" }) + "</div>" +
-        fText("Status label", "nodes." + i + ".states." + j + ".label") + "</div>";
+      out.push(el("div", { "class": "ved-mini" }, [
+        el("div", { "class": "ved-mini-head" }, [el("span", { text: "state " + (j + 1) }), btn("ved-btn sm danger", "del-node-state", "✕", i, j)]),
+        inline([fNum("At phase", "nodes." + i + ".states." + j + ".at"),
+          fSelect("State", "nodes." + i + ".states." + j + ".state", STATE_KINDS, { blank: "— label only —" })]),
+        fText("Status label", "nodes." + i + ".states." + j + ".label")
+      ]));
     });
-    h += '<button class="ved-btn sm add" data-action="add-node-state" data-i="' + i + '">＋ Add state</button>';
-    return h;
+    out.push(btn("ved-btn sm add", "add-node-state", "＋ Add state", i));
+    return out;
   }
 
   function renderReip(n, i) {
     if (!n.reIp) {
-      return '<div style="margin-top:8px"><button class="ved-btn sm" data-action="toggle-reip" data-i="' + i + '">＋ Add re-IP event</button></div>';
+      return el("div", { css: { "margin-top": "8px" } }, [btn("ved-btn sm", "toggle-reip", "＋ Add re-IP event", i)]);
     }
-    return '<div class="ved-section-h">Re-IP event</div><div class="ved-mini">' +
-      '<div class="ved-inline">' + fNum("At phase", "nodes." + i + ".reIp.at") + fText("New IP", "nodes." + i + ".reIp.ip") + "</div>" +
-      fText("New domain", "nodes." + i + ".reIp.domain") +
-      '<button class="ved-btn sm danger" data-action="toggle-reip" data-i="' + i + '">Remove re-IP</button></div>';
+    return [sectionH("Re-IP event"), el("div", { "class": "ved-mini" }, [
+      inline([fNum("At phase", "nodes." + i + ".reIp.at"), fText("New IP", "nodes." + i + ".reIp.ip")]),
+      fText("New domain", "nodes." + i + ".reIp.domain"),
+      btn("ved-btn sm danger", "toggle-reip", "Remove re-IP", i)
+    ])];
   }
 
   function renderEdges() {
-    var h = '<p class="ved-hint">Attacker actions between nodes. <b>Route</b>: flow (side curve), arcTop/arcBot (over/under), intra (same column).</p>';
+    var out = [hint([t("Attacker actions between nodes. "), el("b", { text: "Route" }),
+      t(": flow (side curve), arcTop/arcBot (over/under), intra (same column).")])];
     var nOpts = nodeOptions();
     model.edges.forEach(function (e, i) {
-      h += '<details class="ved-card"><summary><span class="grow">' + esc((e.from || "?") + " → " + (e.to || "?")) + '</span><span class="sub">' + esc(e.kind || "") + " @" + (e.at || 0) + "</span></summary>" +
-        '<div class="ved-card-body">' +
-        fText("id", "edges." + i + ".id") +
-        '<div class="ved-inline">' + fSelect("From", "edges." + i + ".from", nOpts) + fSelect("To", "edges." + i + ".to", nOpts) + "</div>" +
-        '<div class="ved-inline">' + fSelect("Kind", "edges." + i + ".kind", EDGE_KINDS) + fNum("At phase", "edges." + i + ".at") + "</div>" +
-        '<div class="ved-inline">' + fSelect("Route", "edges." + i + ".route", ROUTES) + fNum("Offset / lane", "edges." + i + ".offset") + "</div>" +
-        fText("Label", "edges." + i + ".label") +
-        '<div class="ved-row-tools"><button class="ved-btn sm danger" data-action="del-edge" data-i="' + i + '">Delete edge</button></div>' +
-        "</div></details>";
+      out.push(card(str(e.from || "?") + " → " + str(e.to || "?"), str(e.kind || "") + " @" + str(e.at || 0), [
+        fText("id", "edges." + i + ".id"),
+        inline([fSelect("From", "edges." + i + ".from", nOpts), fSelect("To", "edges." + i + ".to", nOpts)]),
+        inline([fSelect("Kind", "edges." + i + ".kind", EDGE_KINDS), fNum("At phase", "edges." + i + ".at")]),
+        inline([fSelect("Route", "edges." + i + ".route", ROUTES), fNum("Offset / lane", "edges." + i + ".offset")]),
+        fText("Label", "edges." + i + ".label"),
+        rowTools([btn("ved-btn sm danger", "del-edge", "Delete edge", i)])
+      ]));
     });
-    h += '<button class="ved-btn add" data-action="add-edge">＋ Add edge</button>';
-    return h;
+    out.push(btn("ved-btn add", "add-edge", "＋ Add edge"));
+    return out;
   }
 
   function renderPhases() {
-    var h = '<p class="ved-hint">The ordered walkthrough. Phase 0 is the intro slide.</p>';
+    var out = [hint([t("The ordered walkthrough. Phase 0 is the intro slide.")])];
     var nOpts = nodeOptions();
     model.phases.slice().sort(function (a, b) { return (a.n || 0) - (b.n || 0); }).forEach(function (ph) {
       var i = model.phases.indexOf(ph);
       if (ph.intro || ph.n === 0) {
-        h += '<details class="ved-card"><summary><span class="grow">Intro slide</span><span class="sub">phase 0</span></summary><div class="ved-card-body">' +
-          '<p class="ved-hint">The intro text lives on the Meta tab.</p>' +
-          '<div class="ved-row-tools"><button class="ved-btn sm danger" data-action="del-phase" data-i="' + i + '">Delete</button></div></div></details>';
+        out.push(card("Intro slide", "phase 0", [
+          hint([t("The intro text lives on the Meta tab.")]),
+          rowTools([btn("ved-btn sm danger", "del-phase", "Delete", i)])
+        ]));
         return;
       }
-      h += '<details class="ved-card"><summary><span class="grow">' + esc(ph.title || "(untitled)") + '</span><span class="sub">phase ' + (ph.n || 0) + "</span></summary>" +
-        '<div class="ved-card-body">' +
-        '<div class="ved-inline">' + fNum("Phase #", "phases." + i + ".n") + fText("Title", "phases." + i + ".title") + "</div>" +
-        fText("MITRE", "phases." + i + ".mitre") +
-        renderTactics(ph, i) +
-        fText("Description", "phases." + i + ".desc", { textarea: true, rows: 3 }) +
-        fMulti("Targets (nodes)", "phases." + i + ".targets", nOpts, ph.targets || []) +
-        fText("On the map (watch)", "phases." + i + ".watch", { textarea: true, rows: 2 }) +
-        fText("Note", "phases." + i + ".note", { textarea: true, rows: 2 }) +
-        renderBlue(ph, i) +
-        '<div class="ved-row-tools"><button class="ved-btn sm danger" data-action="del-phase" data-i="' + i + '">Delete phase</button></div>' +
-        "</div></details>";
+      out.push(card(str(ph.title || "(untitled)"), "phase " + str(ph.n || 0), [
+        inline([fNum("Phase #", "phases." + i + ".n"), fText("Title", "phases." + i + ".title")]),
+        fText("MITRE", "phases." + i + ".mitre"),
+        renderTactics(ph, i),
+        fText("Description", "phases." + i + ".desc", { textarea: true, rows: 3 }),
+        fMulti("Targets (nodes)", "phases." + i + ".targets", nOpts, ph.targets || []),
+        fText("On the map (watch)", "phases." + i + ".watch", { textarea: true, rows: 2 }),
+        fText("Note", "phases." + i + ".note", { textarea: true, rows: 2 }),
+        renderBlue(ph, i),
+        rowTools([btn("ved-btn sm danger", "del-phase", "Delete phase", i)])
+      ]));
     });
-    h += '<button class="ved-btn add" data-action="add-phase">＋ Add phase</button>';
-    return h;
+    out.push(btn("ved-btn add", "add-phase", "＋ Add phase"));
+    return out;
   }
 
   function renderTactics(ph, i) {
-    var h = '<div class="ved-section-h">Tactics</div>';
-    (ph.tactics || []).forEach(function (t, j) {
-      h += '<div class="ved-mini"><div class="ved-inline">' +
-        fText("Label", "phases." + i + ".tactics." + j + ".label") +
-        fSelect("Kind", "phases." + i + ".tactics." + j + ".kind", TACTIC_KINDS) +
-        "</div><button class=\"ved-btn sm danger\" data-action=\"del-tactic\" data-i=\"" + i + "\" data-j=\"" + j + "\">✕ remove</button></div>";
+    var out = [sectionH("Tactics")];
+    (ph.tactics || []).forEach(function (tc, j) {
+      out.push(el("div", { "class": "ved-mini" }, [
+        inline([fText("Label", "phases." + i + ".tactics." + j + ".label"),
+          fSelect("Kind", "phases." + i + ".tactics." + j + ".kind", TACTIC_KINDS)]),
+        btn("ved-btn sm danger", "del-tactic", "✕ remove", i, j)
+      ]));
     });
-    h += '<button class="ved-btn sm add" data-action="add-tactic" data-i="' + i + '">＋ Add tactic</button>';
-    return h;
+    out.push(btn("ved-btn sm add", "add-tactic", "＋ Add tactic", i));
+    return out;
   }
 
   function renderBlue(ph, i) {
-    if (!ph.blue) return '<div style="margin-top:8px"><button class="ved-btn sm" data-action="toggle-blue" data-i="' + i + '">＋ Add Blue-team detection</button></div>';
-    return '<div class="ved-section-h">Blue-team detection</div>' +
-      fText("Tool", "phases." + i + ".blue.tool") +
-      fText("Finding", "phases." + i + ".blue.finding", { textarea: true, rows: 2 }) +
-      fText("Example query", "phases." + i + ".blue.query", { textarea: true, rows: 3 }) +
-      fText("What is seen", "phases." + i + ".blue.seen", { textarea: true, rows: 2 }) +
-      fText("Gap / caveat", "phases." + i + ".blue.note", { textarea: true, rows: 2 }) +
-      fCheck("Gap / unvalidated", "phases." + i + ".blue.gap") +
-      '<button class="ved-btn sm danger" data-action="toggle-blue" data-i="' + i + '">Remove Blue block</button>';
+    if (!ph.blue) return el("div", { css: { "margin-top": "8px" } }, [btn("ved-btn sm", "toggle-blue", "＋ Add Blue-team detection", i)]);
+    return [
+      sectionH("Blue-team detection"),
+      fText("Tool", "phases." + i + ".blue.tool"),
+      fText("Finding", "phases." + i + ".blue.finding", { textarea: true, rows: 2 }),
+      fText("Example query", "phases." + i + ".blue.query", { textarea: true, rows: 3 }),
+      fText("What is seen", "phases." + i + ".blue.seen", { textarea: true, rows: 2 }),
+      fText("Gap / caveat", "phases." + i + ".blue.note", { textarea: true, rows: 2 }),
+      fCheck("Gap / unvalidated", "phases." + i + ".blue.gap"),
+      btn("ved-btn sm danger", "toggle-blue", "Remove Blue block", i)
+    ];
   }
 
   function fMulti(label, path, options, selected) {
     var sel = {}; (selected || []).forEach(function (v) { sel[v] = 1; });
-    var opts = options.map(function (o) { return '<option value="' + esc(o.value) + '"' + (sel[o.value] ? " selected" : "") + ">" + esc(o.label) + "</option>"; }).join("");
-    return '<div class="ved-field"><label>' + esc(label) + '</label><select multiple size="4" data-bind="' + path + '" data-type="multiselect">' + opts + "</select></div>";
+    var kids = options.map(function (o) { return option(o.value, o.label, sel[o.value]); });
+    return field(label, el("select", { multiple: true, size: 4, "data-bind": path, "data-type": "multiselect" }, kids));
   }
 
   function renderStyle() {
     var cur = model.style ? JSON.stringify(model.style, null, 2) : "";
-    return '<p class="ved-hint">Optional style overrides (edge kinds, node states, roles, tactic colors). Leave blank to use the built-in theme. Must be valid JSON.</p>' +
-      '<textarea class="ved-json" data-bind="style" data-type="json" placeholder="{ }">' + esc(cur) + "</textarea>" +
-      '<div class="ved-section-h">Defaults (reference)</div>' +
-      '<div class="ved-ro">' + esc(JSON.stringify(VV.DEFAULT_STYLE, null, 2)) + "</div>";
+    return [
+      hint([t("Optional style overrides (edge kinds, node states, roles, tactic colors). Leave blank to use the built-in theme. Must be valid JSON.")]),
+      el("textarea", { "class": "ved-json", "data-bind": "style", "data-type": "json", placeholder: "{ }", text: cur }),
+      sectionH("Defaults (reference)"),
+      el("div", { "class": "ved-ro", text: JSON.stringify(VV.DEFAULT_STYLE, null, 2) })
+    ];
   }
 
   var PANELS = { meta: renderMeta, zones: renderZones, nodes: renderNodes, edges: renderEdges, phases: renderPhases, style: renderStyle };
   function renderPanel(tab) {
     currentTab = tab;
-    panelEl.innerHTML = (PANELS[tab] || renderMeta)();
+    while (panelEl.firstChild) panelEl.removeChild(panelEl.firstChild);
+    append(panelEl, [(PANELS[tab] || renderMeta)()]);
     rootEl.querySelectorAll(".ved-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.tab === tab); });
     if (!cfg.canWrite) panelEl.querySelectorAll("input,select,textarea,button").forEach(function (el) { el.disabled = true; });
   }
@@ -393,7 +450,8 @@
     if (cfg.id === "new") {
       fetch(cfg.apiBase + "/diagrams", { method: "POST", headers: headers(true), body: JSON.stringify({ name: name, model: model }) })
         .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
-        .then(function (jd) { location.href = baseUrl + "/edit/" + jd.id; })
+        // Relative to this page (<base>/new), so the target is <base>/edit/<id>; the id is encoded.
+        .then(function (jd) { location.assign("edit/" + encodeURIComponent(String(jd.id))); })
         .catch(function () { toast("Save failed", true); });
     } else {
       fetch(cfg.apiBase + "/diagrams/" + cfg.id, { method: "PUT", headers: headers(true), body: JSON.stringify({ name: name, model: model }) })

@@ -89,3 +89,50 @@ def test_editor_css_uses_host_theme_tokens_and_editor_namespace():
     # `pill` is the host's shared chip class, reused in the compound `.fr-var.pill` on purpose.
     stray = {c for c in classes if not (c.startswith("fr-") or c.startswith("lotek-reporting") or c == "pill")}
     assert stray == set(), f"un-namespaced editor CSS classes: {stray}"
+
+
+# The editor builds every node with createElement / createTextNode and every URL through setAttribute
+# behind an allowlist, so no doc string is ever parsed as markup. A sink anywhere in the file fails,
+# even on a constant ("clear the container" included), so one cannot creep back in beside a constant and
+# later grow a variable. The behaviour is proven in the browser by tests/test_reporting_editor_dom.py.
+HTML_SINKS = {
+    "innerHTML": re.compile(r"\.\s*innerHTML\b|\[\s*[\"']innerHTML[\"']\s*\]"),
+    "outerHTML": re.compile(r"\.\s*outerHTML\b|\[\s*[\"']outerHTML[\"']\s*\]"),
+    "insertAdjacentHTML": re.compile(r"\binsertAdjacentHTML\b"),
+    "document.write": re.compile(r"\bdocument\s*\.\s*write(?:ln)?\b"),
+    "createContextualFragment": re.compile(r"\bcreateContextualFragment\b"),
+    "DOMParser": re.compile(r"\bDOMParser\b"),
+    "srcdoc": re.compile(r"\.\s*srcdoc\b|[\"']srcdoc[\"']"),
+    "setHTMLUnsafe": re.compile(r"\bsetHTMLUnsafe\b|\bparseHTMLUnsafe\b"),
+}
+# A URL property assignment skips the allowlist; URLs go in through setAttribute(safeHref / safeImageSrc).
+URL_PROPERTY = re.compile(r"\.\s*(?:href|src)\s*=(?!=)")
+
+
+@pytest.mark.parametrize("text,label", [(EDITOR, "reporting-editor.js"), (OUTBOX, "reporting-outbox.js")])
+@pytest.mark.parametrize("sink", sorted(HTML_SINKS))
+def test_the_editor_uses_no_html_sink(text, label, sink):
+    hits = [f"{i}: {ln.strip()}" for i, ln in enumerate(text.splitlines(), 1) if HTML_SINKS[sink].search(ln)]
+    assert hits == [], f"{label} uses {sink}; build the node with createElement / textContent"
+
+
+def test_editor_urls_go_through_the_allowlist():
+    hits = [f"{i}: {ln.strip()}" for i, ln in enumerate(EDITOR.splitlines(), 1) if URL_PROPERTY.search(ln)]
+    assert hits == [], "set href/src with setAttribute(safeHref(...) / safeImageSrc(...))"
+    for m in re.finditer(r"setAttribute\(\s*\"(href|src)\"\s*,\s*([^)]*)", EDITOR):
+        assert m.group(2).startswith(("safeHref(", "safeImageSrc(", "href")), m.group(0)
+
+
+def test_the_sink_patterns_catch_what_they_claim_to():
+    """A pattern that matches nothing would make the tests above pass vacuously."""
+    samples = {
+        "innerHTML": "el.innerHTML = x", "outerHTML": 'el["outerHTML"] = x',
+        "insertAdjacentHTML": "el.insertAdjacentHTML('beforeend', x)",
+        "document.write": "document.writeln(x)",
+        "createContextualFragment": "r.createContextualFragment(x)", "DOMParser": "new DOMParser()",
+        "srcdoc": "f.srcdoc = x", "setHTMLUnsafe": "el.setHTMLUnsafe(x)",
+    }
+    for sink, sample in samples.items():
+        assert HTML_SINKS[sink].search(sample), sink
+    assert URL_PROPERTY.search("a.href = x") and URL_PROPERTY.search("img.src=x")
+    assert not URL_PROPERTY.search("if (a.href == x)")
