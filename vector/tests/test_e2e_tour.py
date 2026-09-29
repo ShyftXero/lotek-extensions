@@ -416,3 +416,39 @@ def test_no_model_string_is_ever_parsed_as_markup(server, open_page, mode):
         hrefs = page.eval_on_selector_all("#vap .step-links a", _HREFS)
         assert all(h.startswith("/docs/") and '"' not in h and "<" not in h for h in hrefs), hrefs
     assert _violations(page) == []
+
+
+def test_pan_and_zoom_drive_the_viewbox(server, open_page):
+    """Pan/zoom is a viewBox transform: the buttons and the wheel zoom, drag pans, reset restores the
+    fit-all view. It runs under the strict CSP with no violation (the cursor/transform writes go through
+    the CSSOM, not inline attributes), and the whole map is the drag surface."""
+    page = open_page(f"{server}/attack/")
+    m = "#vap svg.map"
+    assert page.locator("#vap .zoom-ctl [data-zin]").count() == 1
+    assert page.locator("#vap .zoom-hint").count() == 1
+    base = page.get_attribute(m, "viewBox")
+
+    def w(vb):  # viewBox width
+        return float(vb.split()[2])
+
+    page.click("#vap [data-zin]")
+    zoomed = page.get_attribute(m, "viewBox")
+    assert w(zoomed) < w(base), f"zoom-in should shrink the viewBox width: {base!r} -> {zoomed!r}"
+
+    box = page.locator(m).bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    page.mouse.wheel(0, -300)
+    wheeled = page.get_attribute(m, "viewBox")
+    assert w(wheeled) < w(zoomed), "wheel up should zoom in further"
+
+    page.mouse.move(cx, cy)
+    page.mouse.down()
+    page.mouse.move(cx - 80, cy - 40, steps=5)
+    page.mouse.up()
+    panned = page.get_attribute(m, "viewBox")
+    assert panned.split()[:2] != wheeled.split()[:2], "drag should move the viewBox origin"
+
+    page.click("#vap [data-zfit]")
+    assert page.get_attribute(m, "viewBox") == base, "reset should restore the fit-all view"
+    assert _violations(page) == []
