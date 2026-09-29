@@ -73,12 +73,15 @@
   // image, which is how an upload previews) or same-origin relative. Anything else is refused: a
   // javascript:, data: or vbscript: URL, any other scheme, a protocol-relative "//host", and any string
   // holding whitespace, a control character or a backslash (the URL parser strips or rewrites those
-  // before it reads the scheme, which is how "java\tscript:" gets past a naive check). A refused link
-  // renders as its text; a refused image keeps an empty src.
+  // before it reads the scheme, which is how "java\tscript:" gets past a naive check). One exception, for
+  // an image src only: a raster base64 data: URL (a pasted screenshot), the same rule as vector-viewer's
+  // safeImage. An img src never runs script; SVG data URLs, non-base64 data URLs and data: hrefs are
+  // still refused. A refused link renders as its text; a refused image keeps an empty src.
   var URL_SCHEME = /^([a-z][a-z0-9+.\-]*):/i;
   var URL_REFUSED_CHARS = /[\s\x00-\x1f\x7f\\]/;
   var LINK_SCHEMES = { http: 1, https: 1, mailto: 1 };
   var IMAGE_SCHEMES = { http: 1, https: 1, blob: 1 };
+  var DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+\/]*={0,2}$/i;
 
   function allowedUrl(s, schemes) {
     if (typeof s !== "string" || !s || URL_REFUSED_CHARS.test(s) || s.indexOf("//") === 0) return "";
@@ -103,6 +106,7 @@
   }
 
   function safeImageSrc(s) {
+    if (typeof s === "string" && DATA_IMAGE.test(s)) return inertUrl(s);
     return allowedUrl(s, IMAGE_SCHEMES);
   }
 

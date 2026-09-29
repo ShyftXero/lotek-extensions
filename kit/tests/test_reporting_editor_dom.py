@@ -38,7 +38,10 @@ BAD_URLS = [
     "\x01javascript:window.__xss=1",
     "vbscript:window.__xss=1",
     "data:text/html,<script>parent.__xss=1</script>",
-    "data:image/png;base64,iVBORw0KGgo=",
+    "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+",
+    "data:image/svg+xml,<svg onload=window.__xss=1>",
+    "data:image/png,notbase64<>",
+    "data:image/png;base64,iVBOR w0K",
     '"><img src=x onerror=window.__xss=1>',
     "//evil.example/x",
     "/\\evil.example/x",
@@ -111,7 +114,7 @@ _INSPECT = """
 """
 
 # An empty src is what a refused image keeps. Otherwise: http(s), mailto, blob or same-origin relative.
-SAFE_URL = r"^(?:$|https?:|mailto:|blob:|/(?!/)|[#?.]|[A-Za-z0-9_\-%])"
+SAFE_URL = r"^(?:$|https?:|mailto:|blob:|data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]*={0,2}$|/(?!/)|[#?.]|[A-Za-z0-9_\-%])"
 ALLOWED_TAGS = {"blockquote", "br", "code", "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
                 "img", "li", "p", "pre", "span", "strong", "ul", "a", "div", "button", "input", "select",
                 "option"}
@@ -152,7 +155,9 @@ def _assert_inert(page, selector):
     assert set(got["tags"]) <= ALLOWED_TAGS, got["tags"]
     for url in got["hrefs"] + got["srcs"]:
         assert re.match(SAFE_URL, url), f"unsafe URL reached the DOM: {url!r}"
-        assert not re.search(r"script:|^data:|\s|\\", url, re.I), url
+        assert not re.search(r"script:|\s|\\", url, re.I), url
+        if url.lower().startswith("data:"):
+            assert url in got["srcs"] and url not in got["hrefs"], url
     for s in MARKUP:
         assert s in got["text"], f"text not shown verbatim: {s!r}"
     return got
@@ -219,7 +224,7 @@ def test_serializer_never_saves_an_unsafe_url(page):
       return JSON.stringify(LotekReportingEditor._internal.domToDoc(root));
     }""", BAD_URLS)
     assert "script:" not in got.lower()
-    assert "data:" not in got
+    assert "data:" not in got  # none of BAD_URLS is a raster base64 data: image
     assert "evil.example" not in got
 
 
@@ -326,3 +331,54 @@ def test_mixed_text_and_links_keep_their_order(page):
                            ["#text", "bad"], ["#text", " and "], ["a", "https://b.example/"], ["#text", " after"]]
     assert [lk["href"] for lk in got["links"]] == ["https://a.example/", "https://b.example/"]
     assert got["text"] == "before https://a.example/ middle bad and https://b.example/ after"
+
+
+# --- pasted screenshots: raster base64 data: images render ------------------------------------------------
+
+PNG_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+@pytest.mark.parametrize("src", [PNG_DATA, "data:image/jpeg;base64,/9j/4AAQ", "DATA:IMAGE/PNG;BASE64,iVBORw0KGgo=",
+                                 "data:image/webp;base64,UklGRg==", "data:image/gif;base64,R0lGODlhAQABAAAAACw="])
+def test_a_pasted_base64_raster_image_renders(page, src):
+    doc = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "image", "attrs": {"src": src, "alt": "shot"}}]}]}
+    got = page.evaluate("(doc) => { var d = document.createElement('div');"
+                        " d.appendChild(LotekReportingEditor._internal.docToFragment(doc));"
+                        " document.getElementById('ro').appendChild(d);"
+                        " return { srcs: Array.from(d.querySelectorAll('img')).map(i => i.getAttribute('src')),"
+                        " round: LotekReportingEditor._internal.domToDoc(d) }; }", doc)
+    assert got["srcs"] == [src]
+    assert got["round"] == doc  # re-saving keeps the screenshot
+
+
+def test_a_pasted_png_really_loads(page):
+    ok = page.evaluate("""(src) => new Promise(function (resolve) {
+      var doc = { type: 'doc', content: [{ type: 'paragraph', content: [
+        { type: 'image', attrs: { src: src, alt: 'shot' } }] }] };
+      var d = document.getElementById('ro');
+      d.appendChild(LotekReportingEditor._internal.docToFragment(doc));
+      var img = d.querySelector('img');
+      img.onload = function () { resolve(img.naturalWidth); };
+      img.onerror = function () { resolve(-1); };
+    })""", PNG_DATA)
+    assert ok == 1
+
+
+@pytest.mark.parametrize("src", ["data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+",
+                                 "data:image/svg+xml,<svg onload=window.__xss=1>", "data:image/png,iVBORw0KGgo=",
+                                 "data:text/html;base64,PHNjcmlwdD4=", "data:image/png;base64,iVBOR<w0K"])
+def test_svg_and_non_base64_data_images_are_refused(page, src):
+    doc = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "image", "attrs": {"src": src, "alt": "x"}}]}]}
+    got = page.evaluate("(doc) => { var d = document.createElement('div');"
+                        " d.appendChild(LotekReportingEditor._internal.docToFragment(doc));"
+                        " return Array.from(d.querySelectorAll('img')).map(i => i.getAttribute('src')); }", doc)
+    assert got == [""]
+
+
+@pytest.mark.parametrize("href", [PNG_DATA, "data:text/html;base64,PHNjcmlwdD4="])
+def test_a_data_href_is_refused(page, href):
+    got = page.evaluate(_LINKS, _link_doc(_text("shot", [{"type": "link", "attrs": {"href": href}}])))
+    assert got["links"] == []
+    assert got["text"] == "shot"
