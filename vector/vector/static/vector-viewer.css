@@ -41,8 +41,18 @@
 
 /* layout */
 .vap .grid{display:grid;grid-template-columns:1fr 360px;gap:0;flex:1;min-height:0}
-.vap .stage{padding:8px 8px 4px;overflow:auto;background:
+.vap .stage{position:relative;padding:8px 8px 4px;overflow:auto;background:
   linear-gradient(rgba(255,255,255,.012) 1px,transparent 1px) 0 0/100% 26px, var(--vap-bg2)}
+.vap svg.map{cursor:grab;touch-action:none}
+.vap .zoom-ctl{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:4px;z-index:6}
+.vap .zoom-hint{position:absolute;top:120px;right:12px;max-width:110px;text-align:right;font-family:var(--vap-mono);
+  font-size:10px;line-height:1.3;letter-spacing:.02em;color:var(--vap-dim);background:rgba(19,30,39,.72);
+  border:1px solid var(--vap-line);border-radius:4px;padding:4px 8px;pointer-events:none;z-index:6}
+.vap button.vap-zoom{width:30px;height:30px;padding:0;font-family:var(--vap-mono);font-size:16px;line-height:1;
+  color:var(--vap-txt);background:rgba(19,30,39,.9);border:1px solid var(--vap-line2);border-radius:6px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+.vap button.vap-zoom:hover{border-color:var(--vap-cyan);color:var(--vap-cyan)}
+.vap button.vap-zoom:focus-visible{outline:2px solid var(--vap-cyan);outline-offset:1px}
 .vap svg.map{width:100%;height:auto;display:block;min-width:760px}
 
 /* svg node/edge base styling */

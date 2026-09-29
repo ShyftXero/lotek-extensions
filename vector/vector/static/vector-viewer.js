@@ -305,8 +305,11 @@
       out.push(svg("line", { "class": "fw-line", x1: x, y1: BAND_T - 2, x2: x, y2: g.bandBottom + 2 }));
       out.push(svg("rect", { "class": "fw-chip", x: x - 9, y: cy - 12, width: 18, height: 24, rx: 3 }));
       out.push(svg("text", { "class": "fw-ico", x: x, y: cy + 4, "text-anchor": "middle", text: "⛬" }));
-      if (f.top) out.push(svg("text", { "class": "fw-label", x: x, y: cy + 28, "text-anchor": "middle", text: f.top }));
-      if (f.bottom) out.push(svg("text", { "class": "fw-label", x: x, y: cy + 39, "text-anchor": "middle", fill: "#4a5b69", text: f.bottom }));
+      // Boundary labels sit ABOVE the zones (top) and below them (bottom), clear of the node boxes: a
+      // long label like "perimeter firewall" centred on the narrow column gap used to overlap and clip
+      // against the boxes at mid-height.
+      if (f.top) out.push(svg("text", { "class": "fw-label", x: x, y: BAND_T - 6, "text-anchor": "middle", text: f.top }));
+      if (f.bottom) out.push(svg("text", { "class": "fw-label", x: x, y: g.bandBottom + 16, "text-anchor": "middle", fill: "#4a5b69", text: f.bottom }));
     });
     return out;
   }
@@ -441,7 +444,13 @@
       h("main", { "class": "grid" }, [
         h("section", { "class": "stage" }, [
           el.map = svg("svg", { "class": "map", "data-map": "", role: "img", "aria-label": "Diagram" }),
-          el.legend = h("div", { "class": "legend", "data-legend": "" })
+          el.legend = h("div", { "class": "legend", "data-legend": "" }),
+          el.zoomctl = h("div", { "class": "zoom-ctl", "data-zoom-ctl": "" }, [
+            h("button", { "class": "vap-zoom", type: "button", "data-zin": "", "aria-label": "Zoom in", text: "+" }),
+            h("button", { "class": "vap-zoom", type: "button", "data-zout": "", "aria-label": "Zoom out", text: "−" }),
+            h("button", { "class": "vap-zoom", type: "button", "data-zfit": "", "aria-label": "Reset view", text: "⤡" })
+          ]),
+          el.zoomhint = h("div", { "class": "zoom-hint", "data-zoom-hint": "", text: "drag to pan · scroll to zoom" })
         ]),
         h("aside", { "class": "brief" }, [
           el.brief = h("div", { "class": "brief-scroll", "data-brief": "" }),
@@ -458,6 +467,66 @@
 
     var state = { p: 0, model: null, style: null, g: null, MAX: 0, tab: "red", timer: null };
     var phaseCbs = [];
+
+    // ---- pan / zoom (viewBox) — drag to pan, wheel to zoom, +/-/reset buttons. Opt out with
+    // opts.zoom === false. The transform lives entirely in the SVG viewBox, so it survives every
+    // re-render (draw() calls applyView) and adds no wrapper element. ----
+    var zoom = opts.zoom === false ? null : { base: null, view: null, key: "", drag: null };
+    var _MAXZ = 8;  // deepest zoom-in, as a multiple of the fit-all view
+    function _vb(s) { var a = String(s).trim().split(/\s+/).map(Number); return { x: a[0] || 0, y: a[1] || 0, w: a[2] || 1, h: a[3] || 1 }; }
+    function _vbs(v) { return v.x + " " + v.y + " " + v.w + " " + v.h; }
+    function _clampView() {
+      var v = zoom.view, b = zoom.base; if (!b) return;
+      if (v.w < b.w / _MAXZ) { var cx = v.x + v.w / 2, cy = v.y + v.h / 2; v.w = b.w / _MAXZ; v.h = b.h / _MAXZ; v.x = cx - v.w / 2; v.y = cy - v.h / 2; }
+      if (v.w > b.w) { v.w = b.w; v.h = b.h; }               // never zoom out past fit-all
+      v.x = Math.max(b.x, Math.min(v.x, b.x + b.w - v.w));   // keep the view inside the diagram
+      v.y = Math.max(b.y, Math.min(v.y, b.y + b.h - v.h));
+    }
+    function applyView(baseStr) {
+      if (!zoom) { el.map.setAttribute("viewBox", baseStr); return; }
+      // The diagram geometry only changes between DIFFERENT graphs, not between steps — reset the zoom
+      // when (and only when) the base viewBox string actually changes.
+      if (zoom.key !== baseStr) { zoom.key = baseStr; zoom.base = _vb(baseStr); zoom.view = _vb(baseStr); }
+      el.map.setAttribute("viewBox", _vbs(zoom.view));
+    }
+    function _zoomAt(px, py, factor) {
+      var v = zoom.view, b = zoom.base; if (!b) return;
+      var r = el.map.getBoundingClientRect();
+      var fx = (px - r.left) / r.width, fy = (py - r.top) / r.height;
+      var ax = v.x + fx * v.w, ay = v.y + fy * v.h;          // anchor point in diagram coords
+      v.w *= factor; v.h *= factor;
+      v.x = ax - fx * v.w; v.y = ay - fy * v.h;              // keep the anchor under the cursor
+      _clampView(); el.map.setAttribute("viewBox", _vbs(v));
+    }
+    function _zoomCenter(factor) { var r = el.map.getBoundingClientRect(); _zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor); }
+    function _zoomReset() { if (!zoom || !zoom.base) return; zoom.view = _vb(zoom.key); el.map.setAttribute("viewBox", _vbs(zoom.view)); }
+    if (zoom) {
+      el.map.style.cursor = "grab"; el.map.style.touchAction = "none";
+      el.map.addEventListener("wheel", function (e) { if (!zoom.base) return; e.preventDefault(); _zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 0.85 : 1 / 0.85); }, { passive: false });
+      el.map.addEventListener("pointerdown", function (e) {
+        if (!zoom.base || e.button !== 0) return;
+        zoom.drag = { x: e.clientX, y: e.clientY, vx: zoom.view.x, vy: zoom.view.y };
+        try { el.map.setPointerCapture(e.pointerId); } catch (_) { }
+        el.map.style.cursor = "grabbing";
+      });
+      el.map.addEventListener("pointermove", function (e) {
+        if (!zoom.drag) return;
+        var r = el.map.getBoundingClientRect(), v = zoom.view;
+        v.x = zoom.drag.vx - (e.clientX - zoom.drag.x) / r.width * v.w;
+        v.y = zoom.drag.vy - (e.clientY - zoom.drag.y) / r.height * v.h;
+        _clampView(); el.map.setAttribute("viewBox", _vbs(v));
+      });
+      var _endDrag = function (e) { if (zoom.drag) { zoom.drag = null; el.map.style.cursor = "grab"; try { el.map.releasePointerCapture(e.pointerId); } catch (_) { } } };
+      el.map.addEventListener("pointerup", _endDrag);
+      el.map.addEventListener("pointercancel", _endDrag);
+      el.zoomctl.querySelector("[data-zin]").addEventListener("click", function () { _zoomCenter(0.8); });
+      el.zoomctl.querySelector("[data-zout]").addEventListener("click", function () { _zoomCenter(1.25); });
+      el.zoomctl.querySelector("[data-zfit]").addEventListener("click", _zoomReset);
+    } else {
+      // Zoom opted out: the controls and hint would do nothing, so keep them off the surface.
+      el.zoomctl.style.display = "none";
+      el.zoomhint.style.display = "none";
+    }
 
     function phaseMap() {
       var m = {};
@@ -479,7 +548,7 @@
       var g = state.g, model = state.model, style = state.style, p = state.p, tour = isTourModel(model);
       g._model = model;
       root.classList.toggle("vap-tour", tour);
-      el.map.setAttribute("viewBox", g.viewBox);
+      applyView(g.viewBox);
       el.map.setAttribute("aria-label", tour ? "Walkthrough map" : "Attack path topology");
       el.map.style.minWidth = Math.min(1288, g.width) + "px";
       fill(el.map, [defsSvg()].concat(bandsSvg(g), edgesSvg(model, g, p, style), nodesSvg(model, g, p, style, focusSet())));
