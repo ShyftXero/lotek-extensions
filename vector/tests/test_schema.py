@@ -82,3 +82,36 @@ def test_reference_shape():
     # intro + 16 phases
     assert len(m["phases"]) == 17
     assert any(p.get("intro") for p in m["phases"])
+
+
+# ext#250 — non-intro phase n=0 data-loss bug
+def test_non_intro_phase_n_zero_clamped_to_one():
+    """A non-intro phase whose n was set to 0 (the intro's slot) must be clamped to 1 on
+    normalize.  Before the fix, n=0 was accepted on non-intro phases, causing two phases to
+    share slot 0: the intro's data got clobbered in the viewer's phaseMap (last one wins),
+    and the editor rendered the phase as an 'intro slide' with no Phase # field —
+    making the change irreversible."""
+    m = normalize({
+        "phases": [
+            {"n": 0, "intro": True},          # real intro
+            {"n": 0, "title": "Lateral movement", "tactics": []},  # accidentally set to 0
+        ]
+    })
+    phase_ns = [p["n"] for p in m["phases"]]
+    # The non-intro phase must NOT be allowed to claim slot 0
+    assert phase_ns.count(0) == 1, f"Expected exactly one phase with n=0, got {phase_ns}"
+    # The non-intro phase should be clamped to n >= 1
+    non_intro = [p for p in m["phases"] if not p.get("intro")]
+    assert all(p["n"] >= 1 for p in non_intro), f"Non-intro phase got n=0: {non_intro}"
+
+
+def test_intro_phase_n_zero_preserved():
+    """The intro phase is allowed to have n=0 — do not break normal intro normalization."""
+    m = normalize({
+        "phases": [
+            {"n": 0, "intro": True},
+            {"n": 1, "title": "Phase 1"},
+        ]
+    })
+    intro = next(p for p in m["phases"] if p.get("intro"))
+    assert intro["n"] == 0

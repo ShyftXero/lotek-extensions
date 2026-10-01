@@ -123,9 +123,13 @@
       : el("input", { type: "text", "data-bind": path, "data-type": "text", value: str(v), placeholder: opts.ph || null });
     return field(label, control);
   }
-  function fNum(label, path) {
+  function fNum(label, path, opts) {
+    opts = opts || {};
     var v = getPath(model, path); v = (v == null ? "" : v);
-    return field(label, el("input", { type: "number", "data-bind": path, "data-type": "num", value: str(v) }));
+    var attrs = { type: "number", "data-bind": path, "data-type": "num", value: str(v) };
+    if (opts.min != null) attrs.min = str(opts.min);
+    if (opts.max != null) attrs.max = str(opts.max);
+    return field(label, el("input", attrs));
   }
   function option(value, label, selected) {
     return el("option", { value: str(value), selected: !!selected, text: label });
@@ -255,7 +259,7 @@
     var nOpts = nodeOptions();
     model.phases.slice().sort(function (a, b) { return (a.n || 0) - (b.n || 0); }).forEach(function (ph) {
       var i = model.phases.indexOf(ph);
-      if (ph.intro || ph.n === 0) {
+      if (ph.intro) {
         out.push(card("Intro slide", "phase 0", [
           hint([t("The intro text lives on the Meta tab.")]),
           rowTools([btn("ved-btn sm danger", "del-phase", "Delete", i)])
@@ -263,7 +267,7 @@
         return;
       }
       out.push(card(str(ph.title || "(untitled)"), "phase " + str(ph.n || 0), [
-        inline([fNum("Phase #", "phases." + i + ".n"), fText("Title", "phases." + i + ".title")]),
+        inline([fNum("Phase #", "phases." + i + ".n", { min: 1 }), fText("Title", "phases." + i + ".title")]),
         fText("MITRE", "phases." + i + ".mitre"),
         renderTactics(ph, i),
         fText("Description", "phases." + i + ".desc", { textarea: true, rows: 3 }),
