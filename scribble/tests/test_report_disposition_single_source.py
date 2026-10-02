@@ -172,6 +172,10 @@ INCLUSION_ALLOWLIST = {
     ("api_pat.py", "_machine_artifact_dict", "a.include_in_report"),
     ("api_pat.py", "_artifact_summary", "artifact.include_in_report"),
     ("api_pat.py", "_diagram_dict", "d.include_in_report"),
+    # `_chain_dict` (LOT-69) serialises a linked attack CHAIN back to its machine caller. Same as the
+    # diagram/artifact serialisers above: a chain is a report SECTION with no `status`, so this reports the
+    # operator's tick, it does not decide a finding's disposition.
+    ("api_pat.py", "_chain_dict", "chain.include_in_report"),
     ("api_pat.py", "scribble_upload_artifact", "existing.include_in_report"),
     ("api_pat.py", "scribble_upload_artifact", "artifact.include_in_report"),
     ("api_pat.py", "scribble_update_artifact", "artifact.include_in_report"),
