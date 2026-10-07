@@ -716,6 +716,14 @@ class AttackChain(Base, TimestampMixin):
     embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    # PROVENANCE (LOT-69): evidence-first - a chain cites the deterministic sources it was minted from, so a
+    # reader can trace the narrative back to the findings/rules that produced it. Soft reference lists (JSON,
+    # no FK): the ids are exploiteer/scan output, not necessarily rows in THIS scribble db, so a FK would
+    # refuse a legitimate cross-source citation. ``source_finding_ids`` are the finding ids this chain draws
+    # on; ``rule_ids`` are the heterogeneous rule identifiers behind them (Nuclei template id, MSF module,
+    # CVE/KEV id). Both NULLABLE and additive (migration ``b2c4e6f8a1d3``) - a legacy chain reads back NULL.
+    source_finding_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    rule_ids: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
     engagement: Mapped[ReportBoard] = relationship(back_populates="chains")
     steps: Mapped[list[AttackChainStep]] = relationship(
@@ -737,6 +745,14 @@ class AttackChainStep(Base, TimestampMixin):
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PER-STEP PROVENANCE (LOT-69), the step-granular twin of ``AttackChain.source_finding_ids`` /
+    # ``rule_ids``: the one finding + rule a single hop is evidenced by. Both NULLABLE and additive
+    # (migration ``b2c4e6f8a1d3``); staged for a per-step citing caller. ``finding_id`` is a scribble
+    # finding id (soft ref, no FK - same reason as the chain-level lists); ``rule_id`` is a heterogeneous
+    # rule identifier string. This route (``scribble_link_attack_chain``) does not populate them - its step
+    # body is title/description/order_index - so they read back NULL until a caller supplies them.
+    finding_id: Mapped[uuid.UUID | None] = mapped_column(ScribbleUuid, nullable=True)
+    rule_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     chain: Mapped[AttackChain] = relationship(back_populates="steps")
 
