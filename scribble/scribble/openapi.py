@@ -294,6 +294,10 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
         "references": {"type": "array", "items": {"type": "string"}},
         "content_json": {"type": "object"}})),
     "scribble_create_template": (201, _obj({"id": _UUID})),
+    "scribble_bulk_create_templates": (201, _obj({
+        "created": _COUNT, "skipped": _COUNT,
+        "ids": {"type": "array", "items": _UUID},
+        "note": {"type": "string"}})),
     "scribble_create_vuln_map": (201, _obj({"id": _UUID})),
     "scribble_list_vuln_map": (200, _obj({"count": _COUNT, "items": {"type": "array", "items": _obj({
         "id": _UUID, "source": _STR_N, "title_pattern": _STR_N, "dedupe_prefix": _STR_N,

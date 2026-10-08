@@ -1,0 +1,105 @@
+{
+ "slug": "webapp-auth",
+ "name": "Web Application Test (Authenticated)",
+ "kind": "coverage",
+ "category": "web-app",
+ "description": "Web app/API with valid session.",
+ "items": [
+  {
+   "section": "Web Application Backend or API",
+   "text": "Review WebRTC configuration for relay and signaling exposure",
+   "guidance": "If the application uses WebRTC, confirm that TURN server credentials are scoped per-session rather than hardcoded or long-lived. Confirm the signaling channel authenticates participants before exchanging SDP offers. Misconfigured TURN servers can be abused as open proxies to reach internal network hosts via UDP relay.",
+   "order_index": 0
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test for shared infrastructure credentials used across user sessions",
+   "guidance": "Identify how the application connects to its backend services: database, cache, message queue. If it uses a single shared credential to connect on behalf of all users, confirm that credential is least-privilege. A single compromised user session should not expose a DBA password or a privileged service account.",
+   "order_index": 1
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Scan web-facing hosts for non-HTTP services that should not be reachable",
+   "guidance": "Port scan the IP addresses of in-scope web application hosts beyond ports 80 and 443. Database ports (3306, 5432, 1433), caching services (6379, 11211), and admin consoles (8080, 9090) are frequently left open on hosts that are otherwise hardened at the application layer. A directly reachable Redis or MongoDB instance is a common and severe finding.",
+   "order_index": 2
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test registration, login, and password reset flows for account takeover",
+   "guidance": "In registration, test for duplicate account creation and username normalization (case differences, Unicode equivalents, email sub-addressing tricks). In password reset, test for predictable tokens, token reuse, and whether the token is invalidated after use. In login, test for timing differences between valid and invalid usernames. Each weakness can result in account takeover without brute force.",
+   "order_index": 3
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test CORS headers for permissive origin reflection",
+   "guidance": "Send requests with Origin: https://attacker.example.com and check whether the response reflects that origin in Access-Control-Allow-Origin and includes Access-Control-Allow-Credentials: true. A permissive CORS policy with credentials allows an attacker-controlled page to read authenticated API responses in the victim's browser. Also test null origin and origin prefix variants.",
+   "order_index": 4
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test object-level access controls across user accounts",
+   "guidance": "Create two accounts at different privilege levels. Record all requests that reference a resource ID (order, document, record) made by account A. Replay each with account B's session token. Insecure Direct Object Reference means account B can read or modify account A's resources. This is the most common authorization gap in APIs and typically requires no special tooling.",
+   "order_index": 5
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test authentication flows for user account disclosure",
+   "guidance": "Submit valid and invalid usernames through login, registration, and password reset. Compare responses for differences in HTTP status code, response body, response time, and redirect destination. A distinct response for a valid username confirms account existence and builds a target list for credential attacks.",
+   "order_index": 6
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test SSO flows for token and assertion manipulation",
+   "guidance": "For SAML, intercept the assertion in Burp and test for XML signature wrapping (insert a valid element alongside the assertion), Base64 decode to modify attributes, and comment injection to alter the NameID. For OAuth, test for authorization code reuse, absent state parameter (CSRF), and token leakage in the Referer header. These attacks often yield account takeover without touching a password.",
+   "order_index": 7
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Evaluate password policy strength and MFA enforcement",
+   "guidance": "Register with weak passwords (8 chars, all lowercase, dictionary words) to confirm what the policy actually enforces. Check whether MFA is offered and enforced for sensitive actions: password change, email change, payment. Confirm whether the password reset flow resets MFA enrollment as well — that bypass is common and allows MFA to be removed entirely.",
+   "order_index": 8
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test state-changing form submissions for CSRF protection",
+   "guidance": "Identify all requests that perform a state change: account updates, password changes, payment submissions, admin actions. Remove the CSRF token (or replace it with a modified value) and resubmit from a different browser context with the same session. If the request succeeds, the action is vulnerable. Also confirm whether SameSite=Strict or Lax is set on session cookies.",
+   "order_index": 9
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test file-referencing parameters for path traversal",
+   "guidance": "Identify parameters that reference files by name or path: file downloads, template selection, include parameters. Inject ../../etc/passwd, ..%2F..%2Fetc%2Fpasswd, and null byte variants (%00). On Windows, test ..\\ paths and UNC paths (\\\\attacker\\share) for SSRF via SMB. Successful traversal reads files outside the intended directory.",
+   "order_index": 10
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test privileged functions with lower-privilege sessions",
+   "guidance": "Map all admin or high-privilege endpoints by browsing the application as an admin. Replay each request with a standard user session token. Broken function-level authorization means the endpoint checks only whether the user is authenticated, not what role they hold. This commonly appears in API endpoints where the frontend hides the button but the backend does not enforce the restriction.",
+   "order_index": 11
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test sensitive endpoints for rate limiting enforcement",
+   "guidance": "Send 100+ rapid requests against login, password reset OTP, and one-time-passcode verification endpoints. A missing rate limit allows unlimited guessing without lockout. Also test bypass techniques: IP rotation via X-Forwarded-For header manipulation, account rotation across the same password, and alternative endpoint paths that may skip the limit.",
+   "order_index": 12
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test signed tokens and authentication codes for forgery",
+   "guidance": "Identify JWT tokens in Authorization headers or cookies. Decode and inspect the header. Test for algorithm confusion: change alg to none, or from RS256 to HS256 signed with the public key. Test for kid parameter injection if a key ID is present. For MAC-based session tokens, test length extension and key confusion. A forged token typically yields access as any user in the system.",
+   "order_index": 13
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Confirm that sensitive data is not transmitted in cleartext or exposed in logs",
+   "guidance": "Review API responses and request bodies for PII, credentials, and tokens in unexpected fields. Check whether session tokens appear in URL parameters, which puts them in server logs and Referer headers. Confirm that session cookies carry Secure and HttpOnly flags and that all sensitive data flows over HTTPS without exception.",
+   "order_index": 14
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Configure the testing environment before starting active testing",
+   "guidance": "Set up Burp Suite with the target in scope, configure the browser proxy, and install relevant extensions (Turbo Intruder, HTTP Request Smuggler, Active Scan++). Import the application's OpenAPI or Swagger spec if available to seed the target map. Document test account credentials and their privilege levels. Starting active testing without a configured proxy means missed requests and no ability to replay findings.",
+   "order_index": 15
+  }
+ ]
+}

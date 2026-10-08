@@ -62,6 +62,9 @@ _TENANT_FREE_ENDPOINTS = frozenset(
         # client: a template is a reusable vuln description ("Weak TLS configuration"), never client data.
         # Classified with its sibling read routes above for exactly that reason.
         "scribble_machine.scribble_create_template",
+        # Bulk library import — same tenant-free library write as scribble_create_template, for many
+        # templates at once; carries no engagement and no client.
+        "scribble_machine.scribble_bulk_create_templates",
         # The published OpenAPI document (#116). It describes the SHAPE of this API — route templates,
         # scopes, request and response schemas — and reads no tenant row of any kind: it is generated
         # from `app.url_map` and a static schema table, never from the database. It is still `read`-scoped

@@ -36,7 +36,7 @@ def test_seed(session_factory):
         from scribble.models import TemplateVariable
 
         assert db.query(TemplateVariable).filter_by(builtin=True).count() == len(BUILTIN_KEYS)
-        assert db.query(VulnerabilityTemplate).count() == 63  # 44 FACTION + 19 lotek entries
+        assert db.query(VulnerabilityTemplate).count() == 323  # 44 FACTION + 19 lotek + 260 merged suite
 
 
 def test_client_normalized_in_seed(session_factory):

@@ -1,0 +1,507 @@
+{
+ "slug": "internal-ceded-access",
+ "name": "Internal Penetration Test (Ceded / Authenticated Access)",
+ "kind": "coverage",
+ "category": "internal",
+ "description": "Internal with supplied credentials + on-host review.",
+ "items": [
+  {
+   "section": "AI/LLM",
+   "text": "Map exposed AI services and MCP server endpoints",
+   "guidance": "Probe the network for AI inference services and MCP endpoints — default ports, well-known paths, and service banners. Note whether each is bound to a routable interface, requires authentication, and what it exposes in its handshake or error responses. An unauthenticated MCP server can let a tester invoke tools with backend access.",
+   "order_index": 0
+  },
+  {
+   "section": "Active Directory",
+   "text": "Enumerate Active Directory Certificate Services (AD CS) and probe for misconfigurations",
+   "guidance": "Use Certify or Certipy to enumerate CA servers and certificate templates. Look for templates with dangerous attributes: ENROLLEE_SUPPLIES_SUBJECT, low enrollment restrictions, or EKUs that allow authentication. ESC1–ESC8 cover the common attack paths; focus first on templates that let a low-privileged user enroll.",
+   "order_index": 1
+  },
+  {
+   "section": "Authenticated",
+   "text": "Probe Docker APIs and registries for unauthenticated access",
+   "guidance": "Scan for the Docker daemon on TCP/2375 (unauthenticated) and TCP/2376 (TLS). An unprotected daemon gives you root-equivalent container creation — mount the host filesystem and read credentials. Also check private registries for anonymous pull access; pull images and inspect layers for embedded secrets.",
+   "order_index": 2
+  },
+  {
+   "section": "Authenticated",
+   "text": "Flag service accounts with membership in `Domain Admins` or equivalent privileged groups",
+   "guidance": "Query AD group membership for Domain Admins, Enterprise Admins, and Schema Admins. Service accounts in these groups are a risk multiplier — they tend to have weaker passwords and get used across many systems, so a single credential compromise becomes domain compromise. Document every non-interactive account you find.",
+   "order_index": 3
+  },
+  {
+   "section": "Authenticated",
+   "text": "Enumerate the Active Directory domain for users, computers, and groups",
+   "guidance": "Use BloodHound/SharpHound or ldapsearch to pull domain objects: users, groups, computers, GPOs, and ACLs. Build the attack graph in BloodHound. Shortest-path queries to DA from your current user context will show the low-hanging privilege escalation routes.",
+   "order_index": 4
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test AD computer accounts configured with legacy default passwords",
+   "guidance": "Query AD for computer objects with password last set dates older than 30 days and pre-Windows 2000 compatibility flags. These accounts often carry a default password derived from the machine name. Try the known pattern and attempt authentication via SMB or Kerberos.",
+   "order_index": 5
+  },
+  {
+   "section": "Authenticated",
+   "text": "Attempt DNS zone transfers against all internal name servers",
+   "guidance": "Run `dig AXFR @<dns-server> <domain>` against every internal DNS server in scope. A successful transfer hands you the full internal hostname map, which accelerates targeting. Even partial results can surface hosts not visible through normal LDAP enumeration.",
+   "order_index": 6
+  },
+  {
+   "section": "Authenticated",
+   "text": "Identify Elasticsearch nodes accepting unauthenticated connections",
+   "guidance": "Hit port 9200 across the subnet and check for a JSON response on `/_cat/indices`. No authentication prompt means full index access — query for passwords, PII, API keys, or anything the index name suggests is sensitive. Also check 9300 for inter-node comms if Kibana is present.",
+   "order_index": 7
+  },
+  {
+   "section": "Authenticated",
+   "text": "Probe for IPv6-enabled MitM opportunities on the local network",
+   "guidance": "If IPv6 is active, run mitm6 to answer DHCPv6 requests and poison DNS responses. Combine with ntlmrelayx to capture and relay credentials as hosts resolve names through your poisoned resolver. Even environments that 'don't use IPv6' often have it enabled and unmonitored — check before assuming it's clean.",
+   "order_index": 8
+  },
+  {
+   "section": "Authenticated",
+   "text": "Run AS-REP roasting against accounts with Kerberos pre-authentication disabled",
+   "guidance": "Use Impacket's GetNPUsers.py or Rubeus with a user list from AD enumeration. Accounts with DONT_REQ_PREAUTH set return an AS-REP blob you can crack offline with Hashcat. This works without any credentials — just domain membership — so it's usually an early-stage move.",
+   "order_index": 9
+  },
+  {
+   "section": "Authenticated",
+   "text": "Check Memcached instances for missing authentication",
+   "guidance": "Connect to port 11211 and issue a `stats` or `get` command. Memcached has no auth by default; if it's listening on a routable interface, you can read whatever the app cached — session tokens, user data, internal API responses. Check both TCP and UDP.",
+   "order_index": 10
+  },
+  {
+   "section": "Authenticated",
+   "text": "Coerce Exchange server authentication and attempt relay",
+   "guidance": "If Exchange is present, use the EWS PushSubscription or SpoolSS coercion techniques to force the Exchange server to authenticate to your listener. Relay the resulting NTLM hash with ntlmrelayx toward LDAP or SMB. Exchange servers often run as SYSTEM with high AD privileges, so a successful relay can mean direct Domain Admin.",
+   "order_index": 11
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test NFS exports for unauthenticated or anonymous mount access",
+   "guidance": "Run showmount -e against hosts with port 111/2049 open to list exports. Attempt to mount without credentials. World-readable exports can expose source code, backups, or config files with embedded credentials. Also check for exports with no_root_squash — if you can mount as UID 0 from a Linux box, you have root-level file access.",
+   "order_index": 12
+  },
+  {
+   "section": "Authenticated",
+   "text": "Brute-force the Oracle TNS listener to enumerate valid database accounts",
+   "guidance": "Use Metasploit's oracle_login scanner or a custom wordlist against the TNS listener on port 1521. Common default accounts (SCOTT/TIGER, SYS/CHANGE_ON_INSTALL) are worth hitting first. A valid low-privilege DB account can still lead to OS command execution via UTL_FILE or Java stored procedures depending on the configuration.",
+   "order_index": 13
+  },
+  {
+   "section": "Authenticated",
+   "text": "Verify Oracle TNS Listener rejects unauthenticated service registration",
+   "guidance": "Test whether you can register a spoofed service with the TNS listener without credentials. An unprotected listener accepts registrations from anyone on the network, which lets you redirect client connections to a rogue service and capture or tamper with the database traffic. Use tnscmd or Metasploit to probe.",
+   "order_index": 14
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test Rsync modules for anonymous access",
+   "guidance": "Connect to port 873 and list modules with `rsync --list-only rsync://<host>/`. Attempt to sync modules without credentials. Open Rsync shares can expose entire directory trees — check for config files, SSH keys, database dumps, or backup archives.",
+   "order_index": 15
+  },
+  {
+   "section": "Authenticated",
+   "text": "Spider accessible SMB shares for credentials and sensitive files",
+   "guidance": "Use Manspider or CrackMapExec's spider module to search reachable shares for common credential patterns: web.config, .env, *.kdbx, passwords.txt, and anything with 'cred', 'pass', or 'secret' in the filename. Document any PII or financial data encountered; the goal is to show what an attacker would actually find, not just that shares exist.",
+   "order_index": 16
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test SMB services and domain controllers for NULL session authentication",
+   "guidance": "Attempt anonymous SMB connections using smbclient with no credentials. A successful NULL session on a domain controller can expose user lists, share names, or policy information. On older servers, it may allow full guest access to IPC$. Also test with CrackMapExec: `cme smb <target> -u '' -p ''`.",
+   "order_index": 17
+  },
+  {
+   "section": "Authenticated",
+   "text": "Coerce Windows host outbound authentication to a controlled listener",
+   "guidance": "Use Coercer or individual PoC tools (PetitPotam, PrinterBug, DFSCoerce) to force Windows machines to authenticate outbound via NTLM. Point the coerced auth at ntlmrelayx. Whether you can relay depends on signing config and target — but capturing hashes for offline cracking works regardless.",
+   "order_index": 18
+  },
+  {
+   "section": "Authenticated",
+   "text": "Capture internal network traffic and look for cleartext credentials",
+   "guidance": "If you have a network tap or can put a host in a hub segment, run tcpdump or Wireshark for a dwell period during business hours. Filter for cleartext protocols: FTP, Telnet, HTTP Basic, LDAP, SMTP. Credentials traveling in the clear are an automatic finding regardless of whether anyone 'actually does this in practice.'",
+   "order_index": 19
+  },
+  {
+   "section": "Authenticated",
+   "text": "Attempt to pull and extract a PXE boot image from the network",
+   "guidance": "If DHCP offers a PXE boot option, attempt to download the boot image using tftp or a custom DHCP client. Mount the image and search for embedded credentials: unattend.xml, sysprep answer files, hardcoded service account passwords. Some images also contain domain join credentials.",
+   "order_index": 20
+  },
+  {
+   "section": "Authenticated",
+   "text": "Attempt Timeroasting to collect crackable NTP hashes from domain computer accounts",
+   "guidance": "Send specially crafted NTP requests to domain controllers targeting specific computer accounts by RID. The DC responds with an MD5-keyed hash you can crack offline. Timeroasting is low-noise and requires no special privileges — a domain user account is sufficient. Use timeroast.py or equivalent.",
+   "order_index": 21
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test any recovered SSH keys for lateral movement across all SSH-enabled hosts",
+   "guidance": "Collect private keys from ~/.ssh/, deployment config, Git repos, and backup directories. Attempt each key against every SSH host in the environment. Key reuse is common in environments that generate a 'standard' key pair for automation — one key breaking dozens of hosts is not unusual.",
+   "order_index": 22
+  },
+  {
+   "section": "Authenticated",
+   "text": "Configure NTLM relay capture to intercept and forward domain credentials",
+   "guidance": "Run Responder to answer LLMNR/NBT-NS/MDNS queries and ntlmrelayx to forward captured hashes toward targets without SMB signing. If SMB relay is blocked, try LDAP or HTTP targets — these often have fewer signing requirements. Time this to run during business hours when user traffic is highest.",
+   "order_index": 23
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test high-value targets against known default and common credential pairs",
+   "guidance": "Research vendor defaults for every identified device, appliance, and application. Build a targeted list — not a generic spray — and test against web UIs, SSH, RDP, and database ports. Devices that left the factory with credentials nobody changed are low-effort wins that tell a story about patching discipline.",
+   "order_index": 24
+  },
+  {
+   "section": "Authenticated",
+   "text": "Test recovered credentials for reuse across local and domain accounts",
+   "guidance": "Check the domain lockout policy before spraying — if it's tight, go slowly. For every plaintext credential or cracked hash, test it against local admin accounts, other domain accounts, and service interfaces. Password reuse across privilege boundaries is one of the most common ways an engagement goes from foothold to full compromise.",
+   "order_index": 25
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check the UAC notification level and whether it's configured to block silent elevation",
+   "guidance": "Read the ConsentPromptBehaviorAdmin and PromptOnSecureDesktop registry values. 'Never notify' is the worst case — any process can silently elevate without a prompt. Document the current level and cross-reference against the UAC bypass tests later in this section.",
+   "order_index": 26
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Measure the gap between the most recent installed patch and today",
+   "guidance": "Pull the installed hotfix list with `Get-HotFix` and compare the most recent KB date against today. A gap larger than 30 days is worth noting; 90+ days is a finding. Cross-reference against Patch Tuesday releases in that window to see what specific CVEs were skipped.",
+   "order_index": 27
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Statically analyze DLL search order vulnerabilities on installed services and applications",
+   "guidance": "Use Process Monitor filters or tools like PowerSploit's Find-PathDLLHijack to identify DLL load attempts that fall through to user-writable directories. Focus on services running as SYSTEM or high-privilege accounts — a missing DLL in a writable path means arbitrary code execution under that context.",
+   "order_index": 28
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Monitor DLL load events at runtime to catch hijack opportunities static analysis misses",
+   "guidance": "Run Process Monitor with a filter for NAME_NOT_FOUND on .dll paths. Let it collect for several minutes while triggering application activity. Dynamic monitoring catches DLLs loaded conditionally — code paths that only run under specific conditions won't show up in a static walk of the binary.",
+   "order_index": 29
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Locate DPAPI-protected credential stores and assess offline decryptability",
+   "guidance": "DPAPI encrypts browser saved passwords, Wi-Fi credentials, and RDP passwords among other things. Use Mimikatz's dpapi module or SharpDPAPI to enumerate master key blobs in %APPDATA%/Microsoft/Protect. If you hold the user's session or the domain backup key, you can decrypt them without knowing the user's password.",
+   "order_index": 30
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit Defender exclusion paths and processes for attacker-usable gaps",
+   "guidance": "Read exclusion lists from HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Exclusions. Excluded directories are free real estate for dropping payloads — a common misconfiguration is excluding an entire backup or temp directory that any user can write to. Note whether any exclusion paths are user-writable.",
+   "order_index": 31
+  },
+  {
+   "section": "Host-based Review",
+   "text": "List all network-listening ports and map each to its owning process",
+   "guidance": "Run `netstat -anob` or `Get-NetTCPConnection` with the owning process. Compare the result against expected services. Anything listening on a loopback address is still exploitable from local context — look for unexpected ports that might belong to a vulnerable service or debug interface.",
+   "order_index": 32
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Review system and user environment variables for embedded secrets or attack surface",
+   "guidance": "Dump system and user environment variables. Look for embedded API keys, passwords in PATH-like vars, or entries that point to user-writable directories (PATH hijack). Also check for variables that override behavior of security tools — some AV and EDR products check env vars for disable flags.",
+   "order_index": 33
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Find private keys, RDP shortcuts, and cloud CLI credentials stored on the host",
+   "guidance": "Search ~/.ssh/, the user's profile, and common service directories for private keys, .rdp files, and cloud provider credential files (e.g., ~/.aws/credentials, ~/.config/gcloud). Also check PuTTY's saved sessions in the registry — they sometimes store plaintext passwords.",
+   "order_index": 34
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Find binaries that auto-elevate and can be weaponized for UAC bypass",
+   "guidance": "Use the UACME project's list or check for binaries with both the autoElevate manifest flag and access to a COM hijack or DLL side-load path. Focus on binaries in System32 that run at high integrity without a UAC prompt — these are the ones that make UAC bypass reliable without triggering a dialog.",
+   "order_index": 35
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Locate browser password stores accessible to the current user",
+   "guidance": "Find Chrome/Edge Login Data and Firefox logins.json in the user profile. Copy the files and decrypt offline using the user's session key or DPAPI master key. Browser credentials are often the fastest path to high-value accounts — people save VPN portals, cloud consoles, and admin interfaces in their browser.",
+   "order_index": 36
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Enumerate the current session's identity, group memberships, and privilege tokens",
+   "guidance": "Run `whoami /all` and record the full output: username, SID, group memberships, and privilege list. Cross-reference privileges against known escalation vectors (SeImpersonatePrivilege → Potato attacks, SeDebugPrivilege → LSASS dump, SeBackupPrivilege → SAM/SYSTEM read). This output frames the rest of the host review.",
+   "order_index": 37
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Enumerate COM objects registered for auto-elevation that can be hijacked",
+   "guidance": "Check the registry under HKLM\\SOFTWARE\\Classes\\CLSID for COM objects with Elevation\\Enabled=1 and an APPID configured for auto-elevation. If the object's DLL can be substituted via HKCU (user-writable COM hijack), you can run arbitrary code in a high-integrity context without a UAC prompt.",
+   "order_index": 38
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Flag installed software that no longer receives security patches",
+   "guidance": "Compare the installed software inventory against vendor EOL/EOS dates. EOL software doesn't get CVE patches, so vulnerabilities accumulate silently. Prioritize anything with a network-facing component — an EOL web server or database driver is a higher-risk finding than an EOL desktop utility.",
+   "order_index": 39
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Search for Windows deployment answer files containing embedded credentials",
+   "guidance": "Look for unattend.xml, sysprep.xml, and Autounattend.xml in C:\\, C:\\Windows\\Panther, and C:\\Windows\\System32\\sysprep. These files sometimes contain administrator account passwords in plaintext or base64. A single find here can hand you local admin across every machine imaged from the same template.",
+   "order_index": 40
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Build a complete inventory of installed software with version numbers",
+   "guidance": "Pull the installed application list from the registry (HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall and the Wow6432Node equivalent). Export with version strings. This feeds the CVE lookup and gives you a baseline for comparing against other hosts in the environment.",
+   "order_index": 41
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Cross-reference installed versions against known vulnerability databases",
+   "guidance": "Feed the software inventory into WES-NG (Windows Exploit Suggester Next Generation) or run it against the NVD API. Focus on CVEs with public PoC code and local privilege escalation impact — these are directly exploitable in the current host context. Remote-code CVEs matter too if the host runs services.",
+   "order_index": 42
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Review AppLocker rules for executable control gaps",
+   "guidance": "Pull AppLocker policy with `Get-AppLockerPolicy -Effective`. Check whether rules cover all four categories: Exe, Dll, Script, and Appx. Path rules with user-writable directories are a bypass — anything under %TEMP% or %APPDATA% that's allowed is exploitable. DLL rules in particular are rarely enforced and worth checking separately.",
+   "order_index": 43
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check the registry for cleartext autologon credentials",
+   "guidance": "Read HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon for DefaultUserName, DefaultPassword, and DefaultDomainName. Any stored password here is in cleartext. Autologon is common on kiosk machines and shared workstations — check it early since it can hand you a different account context with minimal effort.",
+   "order_index": 44
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check the NTLM compatibility level for legacy protocol exposure",
+   "guidance": "Read the LmCompatibilityLevel from HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa. Level 0–2 allows LM and NTLMv1 — both are crackable offline in seconds with modern hardware. Level 3+ requires NTLMv2. Also check whether NTLM is enabled at all — environments trying to go Kerberos-only sometimes leave it on for compatibility.",
+   "order_index": 45
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit PowerShell execution policy, logging, and language mode restrictions",
+   "guidance": "Check execution policy (Get-ExecutionPolicy), constrained language mode (Test-Path Variable:ExecutionContext), script block logging (HKLM\\...\\PowerShell\\ScriptBlockLogging), and whether PowerShell v2 is installed. CLM without v2 disabled is a bypass: `powershell -version 2` drops to full language mode without logging.",
+   "order_index": 46
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Document the full UAC enforcement configuration on the host",
+   "guidance": "Pull both ConsentPromptBehaviorAdmin and ConsentPromptBehaviorUser from HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System. A value of 0 on the admin prompt means silent elevation for all admin-group processes — effectively no UAC. Cross-reference with the auto-elevating binary findings; a lax UAC config makes those bypasses trivial.",
+   "order_index": 47
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether WDigest caches cleartext passwords in LSASS",
+   "guidance": "Read the UseLogonCredential value from HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest. A value of 1 means Windows is caching cleartext credentials in LSASS for backward compatibility — Mimikatz's sekurlsa::wdigest will pull them. This is disabled by default on modern Windows but sometimes re-enabled by legacy applications.",
+   "order_index": 48
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Enumerate Windows Credential Manager for stored passwords",
+   "guidance": "Use cmdkey /list or Mimikatz's vault::list to enumerate saved credentials. Credential Manager stores RDP passwords, network share credentials, and sometimes application passwords. If the account's DPAPI master key is accessible (it is in your current session), you can decrypt the stored values directly.",
+   "order_index": 49
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether WSUS uses an encrypted connection for update delivery",
+   "guidance": "Read WUServer from HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate. If the URL starts with http:// rather than https://, WSUS update traffic is unencrypted and interceptable. WSUSpect and similar tools can push a malicious 'update' over a MitM position if signing isn't enforced. Even read-only, the WSUS URL tells you where the server is.",
+   "order_index": 50
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether any `PATH` directory is writable by the current user",
+   "guidance": "Enumerate the system PATH and test each entry with icacls. A user-writable directory earlier in the PATH than a legitimate binary location enables a hijack — drop a DLL or binary with the right name and wait for a privileged process to invoke it. This is most impactful when a service or scheduled task is the consumer.",
+   "order_index": 51
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check how many domain credential hashes are cached locally",
+   "guidance": "Read the CachedLogonsCount from HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon. The default is 10. Each cached logon hash is a DCC2 hash stored in the SECURITY hive and crackable offline. If you can access the SECURITY hive (requires SYSTEM), pull and crack them with Hashcat using DCC2 mode (-m 2100).",
+   "order_index": 52
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit local group memberships for accounts with unnecessary administrative access",
+   "guidance": "List members of Administrators, Remote Desktop Users, and Backup Operators with `net localgroup`. Backup Operators can read any file on the system — it's a path to NTDS.dit and the SYSTEM hive without needing explicit admin. Flag any accounts that shouldn't have these memberships based on the engagement scope.",
+   "order_index": 53
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit local user accounts for security misconfigurations",
+   "guidance": "List local users with `net user`. Flag accounts with 'Password never expires' set, accounts that haven't logged in for 90+ days, and any accounts with blank or simple passwords (try `net use \\\\localhost IPC$ /user:<account> ''`). Stale accounts with admin rights are a common lateral movement path.",
+   "order_index": 54
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit hosted SMB shares for overly permissive access controls",
+   "guidance": "Run `net share` to list all hosted shares including admin$ and IPC$. For each non-default share, check permissions with icacls and `net share <name>`. 'Everyone' read access on a share with sensitive content is a finding; 'Everyone' write access is higher-severity — it's a staging area for lateral movement.",
+   "order_index": 55
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Identify high-privilege processes with weak ACLs accessible to the current user",
+   "guidance": "Use tools like PowerSploit's Get-ModifiableServiceFile or manual icacls checks on running process executables. If a SYSTEM-context process binary is writable by the current user, replacing it means arbitrary code execution as SYSTEM on next service restart. Look at processes loaded from non-standard directories first.",
+   "order_index": 56
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether scheduled task executables are writable by the current user",
+   "guidance": "List scheduled tasks with `Get-ScheduledTask` and pull the action executable paths. Run icacls against each binary path. If you can overwrite the binary that a SYSTEM-scheduled task runs, you have a privilege escalation vector that fires on next task execution. Check both the binary and its parent directory.",
+   "order_index": 57
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Test whether the current user can modify Windows service configuration",
+   "guidance": "Use sc.exe sdshow or AccessChk to check service ACLs. If the current user has SERVICE_CHANGE_CONFIG permission, you can redirect the service binary path to an arbitrary executable. Combined with a service restart, this is a reliable SYSTEM escalation.",
+   "order_index": 58
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Test for user-writable access in critical Windows directories",
+   "guidance": "Run icacls against C:\\Windows, C:\\Windows\\System32, and C:\\Program Files. These should be write-restricted to Administrators and TrustedInstaller. Any current-user write access here means you can plant a DLL or binary that gets loaded by a higher-privilege process — either via search order or explicit path.",
+   "order_index": 59
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether scheduled task executable directories are user-writable",
+   "guidance": "Pull executable paths from scheduled task definitions and check permissions on the containing directories — not just the binaries themselves. A user-writable directory in the path means you can drop a file with the right name and wait for the task to execute it. Directory permissions are often overlooked when the binary itself is locked down.",
+   "order_index": 60
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Audit the current session's token for dangerous privilege assignments",
+   "guidance": "Run `whoami /priv` and check for exploitable privileges. SeImpersonatePrivilege and SeAssignPrimaryTokenPrivilege enable Potato-family escalation. SeBackupPrivilege allows reading any file. SeDebugPrivilege allows injecting into any process including LSASS. SeLoadDriverPrivilege allows loading an unsigned kernel driver. Any of these on a non-admin account is a finding.",
+   "order_index": 61
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether the current user can overwrite service executable files",
+   "guidance": "Enumerate service binary paths from the registry or via `Get-WmiObject Win32_Service` and run icacls on each. If the service binary itself is writable, replace it with your payload and trigger a restart. This is the simplest form of service binary abuse — no configuration change required, just a file write.",
+   "order_index": 62
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether service executable directories allow the current user to plant files",
+   "guidance": "Even if a service binary is locked, a writable parent directory enables planting a replacement. Check directory permissions with icacls. Services installed in non-standard directories are the most common offenders — vendors sometimes install to directories with permissive ACLs inherited from the root.",
+   "order_index": 63
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Verify that LLMNR and NBT-NS name resolution poisoning is not possible",
+   "guidance": "Check whether LLMNR is disabled via GPO (HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient\\EnableMulticast) and NBT-NS disabled per-adapter. If either is active, run Responder in analyze mode first to see what queries are flying before touching anything. Active LLMNR/NBT-NS means captured NTLM hashes with no user interaction required.",
+   "order_index": 64
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Test whether the SilentCleanup task can be hijacked via environment variable",
+   "guidance": "Set %windir% to a user-controlled path in the current process environment and trigger SilentCleanup. The task uses %windir%\\system32\\cleanmgr.exe — if %windir% resolves to your path first, your binary runs at high integrity without a UAC prompt. This is one of the more reliable UAC bypasses on unpatched systems.",
+   "order_index": 65
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Extract saved wireless passwords from the host",
+   "guidance": "Run `netsh wlan show profile name=\"<SSID>\" key=clear` for each saved Wi-Fi profile. Cleartext PSKs appear under 'Key Content'. These passwords often get reused on internal services, and corporate Wi-Fi credentials can be used for further access if the SSID is in range. Document every non-empty result.",
+   "order_index": 66
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether the `AlwaysInstallElevated` policy allows unprivileged MSI installation",
+   "guidance": "Read AlwaysInstallElevated from both HKCU and HKLM under SOFTWARE\\Policies\\Microsoft\\Windows\\Installer. Both must be 1 for the policy to take effect. If set, any user can install an MSI package as SYSTEM — craft a malicious .msi with msfvenom and execute it for instant privilege escalation.",
+   "order_index": 67
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether the current user can read SAM and SYSTEM registry backup files",
+   "guidance": "Check C:\\Windows\\Repair and C:\\Windows\\System32\\config\\RegBack for SAM, SYSTEM, and SECURITY backup files. If readable, pull all three and use Impacket's secretsdump.py offline to extract local account hashes. Also check VSS shadow copies — Windows often stores accessible backups there even when the live registry is locked.",
+   "order_index": 68
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Identify Windows services with unquoted executable paths containing spaces",
+   "guidance": "Query service image paths from HKLM\\SYSTEM\\CurrentControlSet\\Services. Any path with spaces that isn't quoted is vulnerable — Windows tries each prefix as an executable before reaching the real binary. If you can write to an earlier path component (e.g., C:\\Program.exe before C:\\Program Files\\...), you escalate when the service restarts.",
+   "order_index": 69
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Verify whether local admin passwords are managed by LAPS or a PAM solution",
+   "guidance": "Check for the LAPS AdmPwd.dll in C:\\Program Files\\LAPS\\CSE or query AD for the ms-Mcs-AdmPwd attribute on computer objects. If LAPS is deployed, verify that you can't read the attribute with your current account. If LAPS is absent, local admin passwords are probably uniform across the environment — one cracked hash opens everything.",
+   "order_index": 70
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether the domain requires LDAP signing to prevent relay attacks",
+   "guidance": "Read LDAPServerIntegrity from HKLM\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters. A value of 1 (Require signing) means unsigned LDAP connections are rejected. Without required signing, NTLM relay to LDAP can succeed — ntlmrelayx can create computer accounts or modify AD objects. Also check channel binding, which mitigates relay over LDAPS.",
+   "order_index": 71
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether LSASS runs with PPL and Credential Guard enabled",
+   "guidance": "Read RunAsPPL from HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa. A value of 1 means LSASS runs as a Protected Process Light, which blocks standard Mimikatz. Also check whether Credential Guard is active (VirtualIsolatedMode in the DeviceGuard WMI class) — if it is, NTLM hashes and Kerberos tickets are held in a VSM enclave that Mimikatz can't reach without a kernel driver.",
+   "order_index": 72
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether SMB signing is required to prevent relay attacks",
+   "guidance": "Query hosts with CrackMapExec or Nmap's smb-security-mode script. An SMB signing policy of 'not required' means captured NTLM hashes can be relayed directly to that host. Domain controllers require signing by default; workstations and member servers usually don't. A subnet full of non-DCs without required signing is a relay playground.",
+   "order_index": 73
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check WinLogon shell and userinit values for persistence or tampering",
+   "guidance": "Read Shell and Userinit from HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon. Default values are explorer.exe and C:\\Windows\\system32\\userinit.exe. Any additional binary appended to these values runs at every logon as the logging-in user — it's a classic persistence technique that's easy to miss in a registry survey.",
+   "order_index": 74
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Confirm that Group Policy Objects are applied and security baselines are enforced",
+   "guidance": "Run `gpresult /r` or `gpresult /h report.html` and check the Applied GPOs list. If the host has no GPOs beyond the defaults, it's likely not managed — look for a missing security baseline. Also check for GPO processing errors or deliberate exclusions (security filtering that removes the machine from key policy scope).",
+   "order_index": 75
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Confirm that endpoint protection is installed, running, and current",
+   "guidance": "Check Defender's status with Get-MpComputerStatus or query the WSC service for third-party AV. Look for: real-time protection enabled, signature age under 24 hours, tamper protection enabled. A disabled or outdated AV isn't just a vulnerability — it's an indicator that the host may not be managed at all.",
+   "order_index": 76
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Confirm the Windows firewall is active on all network profiles",
+   "guidance": "Check all three profiles (Domain, Private, Public) with `Get-NetFirewallProfile`. A disabled firewall on the Public profile is the most common finding on machines that travel between networks. Also pull the inbound rule list — overly permissive 'allow any' rules added by installers are common and reduce the value of having a firewall at all.",
+   "order_index": 77
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Confirm the OS version is still supported and security patches are current",
+   "guidance": "Check the OS build number and compare against Microsoft's servicing lifecycle. Windows 10 has per-feature-update EOL dates — a version that's out of support gets no patches at all, even critical ones. Also note the UBR (update build revision) to see if the latest cumulative update is installed.",
+   "order_index": 78
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check for loaded kernel drivers with known exploitable vulnerabilities",
+   "guidance": "Run `driverquery /fo list /v` and cross-reference driver versions against loldrivers.io. BYOVD attacks use a legitimate, signed driver with a known kernel-mode vulnerability to disable security tools or escalate to kernel context. If any loaded driver appears on the loldrivers list, document the version and the associated CVE.",
+   "order_index": 79
+  },
+  {
+   "section": "Host-based Review",
+   "text": "Check whether the WinVerifyTrust signature validation registry mitigation is applied",
+   "guidance": "Read the EnableCertPaddingCheck value from HKLM\\SOFTWARE\\Microsoft\\Cryptography\\Wintrust\\Config. The mitigation for CVE-2013-3900 is opt-in and often missing even on fully patched systems. Without it, an attacker can append arbitrary data after a valid Authenticode signature and Windows will still consider the binary signed. Relevant for any environment that relies on signature-based allow-listing.",
+   "order_index": 80
+  },
+  {
+   "section": "Host-based Review",
+   "text": "test",
+   "guidance": "test",
+   "order_index": 81
+  },
+  {
+   "section": "credentials",
+   "text": "Look for credentials stored in cleartext across the filesystem and registry",
+   "guidance": "Search common locations for unprotected credentials: web.config and application.properties for DB connection strings, .env files, scripts in task scheduler directories, and PowerShell profile files. Also check the registry under SOFTWARE\\<vendor> keys. Grep for 'password', 'pwd', 'secret', and 'apikey' with Snaffler or similar tools.",
+   "order_index": 82
+  }
+ ]
+}

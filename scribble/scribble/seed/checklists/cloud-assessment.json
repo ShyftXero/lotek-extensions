@@ -1,0 +1,627 @@
+{
+ "slug": "cloud-assessment",
+ "name": "Cloud Penetration Test",
+ "kind": "coverage",
+ "category": "cloud",
+ "description": "Cloud configuration + control-plane review.",
+ "items": [
+  {
+   "section": "Attack",
+   "text": "Probe the ``kubelet`` API for unauthenticated access",
+   "guidance": "Try curl http://{node-ip}:10250/pods without credentials. If it responds, the kubelet is serving its API without authentication — pod specs on the node are readable, and exec access may follow. If port 10255 is open (the read-only port), check it too; older versions expose node and pod state there without auth by design.",
+   "order_index": 0
+  },
+  {
+   "section": "Attack",
+   "text": "Check whether image pulls are restricted to approved registries",
+   "guidance": "Attempt to schedule a pod using an image from Docker Hub or another public registry. If the scheduler accepts it, no image pull policy or admission controller is blocking external sources. An attacker who can schedule pods can introduce images carrying embedded tooling or backdoors.",
+   "order_index": 1
+  },
+  {
+   "section": "Attack",
+   "text": "Map the Kubernetes API server's external reachability",
+   "guidance": "Probe port 6443 on the API server's public IP with nmap or curl. If reachable, check whether anonymous authentication is enabled (--anonymous-auth=true) or an insecure port is listening (--insecure-port). Public reachability paired with weak auth is a direct path to cluster-admin.",
+   "order_index": 2
+  },
+  {
+   "section": "Attack",
+   "text": "Check Helm 2 Tiller for unauthorized access",
+   "guidance": "If Helm 2 is deployed, probe port 44134 for the Tiller daemon. Run helm version --host {tiller-address} without credentials. Tiller commonly runs with cluster-admin — unauthorized access means arbitrary Kubernetes resource creation.",
+   "order_index": 3
+  },
+  {
+   "section": "Attack",
+   "text": "Mount the node filesystem from a pod via ``hostPath``",
+   "guidance": "Deploy a pod with a hostPath volume mounting /. If the pod security policy (or OPA/Kyverno) permits it, write a cron job to the host or read /etc/shadow directly. This bypasses container filesystem isolation entirely.",
+   "order_index": 4
+  },
+  {
+   "section": "Attack",
+   "text": "Access the node network stack via ``hostNetwork``",
+   "guidance": "Deploy a pod with hostNetwork: true. If the admission policy allows it, the pod sees node-level network interfaces and can reach services bound to localhost on the node — including the kubelet API and the cloud metadata server.",
+   "order_index": 5
+  },
+  {
+   "section": "Attack",
+   "text": "Access the node process namespace via ``hostPID``",
+   "guidance": "Deploy a pod with hostPID: true. If allowed, the pod can enumerate and signal host processes. Combined with nsenter, this gives a shell on the host outside the container boundary.",
+   "order_index": 6
+  },
+  {
+   "section": "Attack",
+   "text": "Deploy a privileged pod to break out to the node",
+   "guidance": "Deploy a pod with securityContext.privileged: true. A privileged container has full access to the host device tree. From there: mount the host filesystem, escape via cgroup writes, or load kernel modules. This is one of the most direct container escape paths when pod security controls are absent.",
+   "order_index": 7
+  },
+  {
+   "section": "Attack",
+   "text": "Check the Kubernetes dashboard for unauthorized access",
+   "guidance": "Determine whether the dashboard is exposed on a NodePort or ingress without requiring authentication. If accessible, attempt to use the service account token the dashboard runs under to query the Kubernetes API. Dashboards exposed without auth or with overly permissive service accounts are a reliable path to cluster-admin.",
+   "order_index": 8
+  },
+  {
+   "section": "Azure",
+   "text": "Audit Entra ID dynamic group membership rules for exploitable conditions",
+   "guidance": "Enumerate dynamic groups using the Graph API or the Azure portal. Look for rules that evaluate user-controlled attributes — department, jobTitle, extensionAttribute. If a member can modify their own profile attribute, they can add themselves to a privileged group without admin approval.",
+   "order_index": 9
+  },
+  {
+   "section": "Azure",
+   "text": "Find bypass paths in Conditional Access policies",
+   "guidance": "Use ROADtools or the Azure portal to list all Conditional Access policies. Look for policies that exclude specific users, groups, legacy auth protocols, or named locations. A CAP that requires MFA but exempts legacy auth is bypassed with ROPC or basic authentication.",
+   "order_index": 10
+  },
+  {
+   "section": "Azure",
+   "text": "Check whether Entra ID enterprise app consent requires admin approval",
+   "guidance": "In the Azure portal, navigate to Enterprise Applications > User settings. If admin consent is not required, a user can be phished into granting a malicious app read access to mail, calendars, or Teams messages — no admin interaction needed.",
+   "order_index": 11
+  },
+  {
+   "section": "Azure",
+   "text": "Map public-facing Azure assets and tenant exposure",
+   "guidance": "Use AADInternals, the az CLI, or MicroBurst to enumerate public workloads, tenant IDs, and federation providers. This establishes the external attack surface before credential testing begins.",
+   "order_index": 12
+  },
+  {
+   "section": "Azure",
+   "text": "Enumerate Azure storage blobs and pull accessible data",
+   "guidance": "Run az storage account list then az storage blob list for each account. Try anonymous access first. Common finds in accessible blobs: database backups, deployment scripts with embedded credentials, and exported user lists.",
+   "order_index": 13
+  },
+  {
+   "section": "Azure",
+   "text": "Find Azure-backed subdomains eligible for takeover",
+   "guidance": "Use dnsrecon or subjack to find CNAME records pointing to deprovisioned Azure resources — Blob endpoints, CDN profiles, Traffic Manager entries. If the backing resource is gone and the name is available for creation, an attacker can serve content under the victim's subdomain.",
+   "order_index": 14
+  },
+  {
+   "section": "Azure",
+   "text": "Identify tenant-managed domains available for public registration",
+   "guidance": "Enumerate the tenant's verified domains via the Azure portal or Graph API. Check each against a public registrar. A domain listed as managed but actually expired can be registered by an attacker to impersonate the organization.",
+   "order_index": 15
+  },
+  {
+   "section": "Azure",
+   "text": "Map attack paths to high-privilege roles",
+   "guidance": "Run AzureHound and load the results into BloodHound. Trace attack paths from low-privilege accounts to Global Administrator or equivalent. Service principals, app registrations, and managed identities with high-privilege role assignments are often overlooked compared to user accounts.",
+   "order_index": 16
+  },
+  {
+   "section": "Azure",
+   "text": "Spray legacy ROPC authentication against Entra ID applications",
+   "guidance": "Enumerate internal app registrations that support the legacy Resource Owner Password Credentials grant. Submit a direct token request against the OAuth2 token endpoint. ROPC requests do not trigger MFA challenges for apps that have not explicitly required it — a gap that can survive even when Conditional Access is broadly deployed.",
+   "order_index": 17
+  },
+  {
+   "section": "Azure",
+   "text": "Enumerate internal Azure services and network resources",
+   "guidance": "Once authenticated, use the az CLI to enumerate VMs, VNets, subnets, NSGs, private endpoints, and App Services visible from the internal network. The goal is a topology map that shows where lateral movement leads.",
+   "order_index": 18
+  },
+  {
+   "section": "Azure",
+   "text": "Access sensitive data through Azure Virtual Machine resources",
+   "guidance": "Attach managed disks or access VM snapshots using the compromised account. Review disk contents for credential files, SSH keys, and application configs. Check the serial console if network access to the VM is unavailable.",
+   "order_index": 19
+  },
+  {
+   "section": "Azure",
+   "text": "Obtain tokens without MFA enforcement using valid credentials",
+   "guidance": "Request OAuth tokens using direct API calls, the device code flow, or legacy auth protocols with known-good credentials. If access or refresh tokens are returned without an MFA challenge, the account's MFA policy has a gap. Check whether refresh tokens can be exchanged for access to higher-value resources that should require step-up authentication.",
+   "order_index": 20
+  },
+  {
+   "section": "CPT",
+   "text": "Set up the Azure CLI using provided account credentials",
+   "guidance": "Run az login with the provided credentials. After authentication, run az account list to confirm visible subscriptions. Note any additional tenants or delegated access — those often represent unintended scope.",
+   "order_index": 21
+  },
+  {
+   "section": "CPT",
+   "text": "Pull accessible Azure storage blobs and review their contents",
+   "guidance": "Run az storage account list then az storage blob list for each account. Try anonymous access before authenticated. Common finds: database backups, deployment scripts with embedded secrets, exported user lists.",
+   "order_index": 22
+  },
+  {
+   "section": "CPT",
+   "text": "Plant persistence footholds in the GCP environment",
+   "guidance": "Try the following techniques:\n* Create a service account key for a high-privilege account.\n* Deploy a Cloud Run function that POSTs new service account keys to an external server on a schedule.\n* Deploy a Cloud Run function that backdoors role bindings when new roles are created.\n* Create a new IAM user or service account in the project.\n* Add a firewall rule granting ingress access to an assessment-controlled IP.\n* Add an IAM binding that lets a compromised identity assume a privileged role later.",
+   "order_index": 23
+  },
+  {
+   "section": "CPT",
+   "text": "Plant persistence footholds in the AWS environment",
+   "guidance": "Try the following techniques:\n* Create an access key for a high-privilege IAM user.\n* Deploy a Lambda function that POSTs new IAM keys to an external server.\n* Deploy a Lambda function that modifies a role trust to add the assessment account whenever a new role is created.\n* Create a new IAM user in the environment.\n* Create a security group granting ingress access to an assessment-controlled IP.\n* Add a role trust policy entry that lets the compromised account assume the role later.",
+   "order_index": 24
+  },
+  {
+   "section": "CPT",
+   "text": "Exfiltrate data from the restricted AWS environment",
+   "guidance": "Attempt to move data out via DNS queries to an assessment-controlled resolver, S3 bucket uploads to an external account, SES email sends, SNS messages, and Lambda HTTP calls. The goal is to confirm which egress paths are blocked and which are not.",
+   "order_index": 25
+  },
+  {
+   "section": "CPT",
+   "text": "Exfiltrate data from the restricted GCP environment",
+   "guidance": "Attempt to move data out via DNS queries to an assessment-controlled resolver, Cloud Storage uploads to an external bucket, and Cloud Run function HTTP calls to external endpoints. Confirms which egress channels are unblocked.",
+   "order_index": 26
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit AWS IAM and instance metadata for privilege escalation",
+   "guidance": "Perform the following tests:\n* Enumerate IAM user and group permissions with aws iam get-account-authorization-details. Look for iam:PassRole, iam:CreatePolicyVersion, iam:AttachUserPolicy, and lambda:CreateFunction paired with iam:PassRole — common escalation combinations.\n* Pull credentials from the EC2 instance metadata service at http://169.254.169.254/latest/meta-data/iam/.\n* Use any compromised access keys found in code repositories to assume roles and move further into the environment.",
+   "order_index": 27
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit GCP IAM and VM metadata service for privilege escalation",
+   "guidance": "Perform the following tests:\n* Enumerate GCP IAM permissions with gcloud projects get-iam-policy and review for over-permissive bindings.\n* Pull credentials from the VM metadata service at http://metadata.google.internal/computeMetadata/v1/.\n* Use any compromised service account keys or OAuth tokens to escalate into higher-privilege roles.",
+   "order_index": 28
+  },
+  {
+   "section": "CPT",
+   "text": "Forge a Silver Ticket using Azure AD Connect SSO Kerberos material",
+   "guidance": "If the MSOL service account password or the Kerberos key for the SSO computer account can be retrieved, use Mimikatz or impacket to forge a Silver Ticket for the target service. This enables authenticated access without touching the domain controller.",
+   "order_index": 29
+  },
+  {
+   "section": "CPT",
+   "text": "Surface stale GCP resources and credentials exposed on the internet",
+   "guidance": "Look for the following:\n* Stale Cloud DNS host records pointing to deprovisioned GCP resources, exploitable for subdomain takeover.\n* GCP hostnames or configuration data indexed by search engines.\n* Sensitive internal DNS records.\n* Service account key files and OAuth tokens exposed in public code repositories.",
+   "order_index": 30
+  },
+  {
+   "section": "CPT",
+   "text": "Surface stale cloud resources and credentials exposed on the internet",
+   "guidance": "Look for the following:\n* Stale DNS host records pointing to deprovisioned cloud resources, exploitable for subdomain takeover.\n* Internal hostnames or configuration data indexed by search engines.\n* Sensitive internal DNS records.\n* Credentials and API keys exposed in public code repositories or credential databases.",
+   "order_index": 31
+  },
+  {
+   "section": "CPT",
+   "text": "Map non-public GCP network resources and configuration",
+   "guidance": "Identify the following:\n* Non-public IP addresses and internal DNS hostnames.\n* VPC firewall rules and their network restrictions.\n* Cloud configurations that may embed sensitive data — App Engine environment variables, Cloud SQL connection strings, Cloud Run mounted secrets.",
+   "order_index": 32
+  },
+  {
+   "section": "CPT",
+   "text": "Map non-public AWS network resources and configuration",
+   "guidance": "Identify the following:\n* Private IP ranges and internal DNS hostnames.\n* Security group rules and their network restrictions.\n* Cloud configurations that may embed sensitive data — CloudFormation outputs, Systems Manager Parameter Store values, Lambda environment variables.",
+   "order_index": 33
+  },
+  {
+   "section": "CPT",
+   "text": "Review GCP IAM for privilege escalation paths and shadow admins",
+   "guidance": "Perform the following tests:\n* Enumerate IAM bindings with gcloud projects get-iam-policy and gcloud iam roles list. Look for iam.serviceAccountTokenCreator, roles/editor, and roles/owner assignments.\n* Identify shadow admins — identities that can modify IAM without holding a named admin role.",
+   "order_index": 34
+  },
+  {
+   "section": "CPT",
+   "text": "Map high-privilege accounts and lateral movement paths",
+   "guidance": "Use the cloud provider's IAM enumeration tooling to identify users and machines with elevated access. Trace paths from lower-privilege identities toward admin-level roles — the attack path matters as much as the endpoint.",
+   "order_index": 35
+  },
+  {
+   "section": "CPT",
+   "text": "Review AWS IAM for privilege escalation paths and shadow admins",
+   "guidance": "Perform the following tests:\n* Enumerate IAM policies with aws iam get-account-authorization-details. Look for iam:PassRole, iam:CreatePolicyVersion, iam:AttachUserPolicy, and similar escalation primitives.\n* Identify shadow admins — identities that can modify IAM policies or assume privileged roles without holding a named admin role.",
+   "order_index": 36
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate internet-exposed GCP services and workloads",
+   "guidance": "Use gcloud enumeration commands or GCAT to map external-facing services — Cloud Run endpoints, App Engine applications, GKE load balancer frontends, and Cloud Functions with public HTTP triggers. Note tenant IDs, federation providers, and any storage services with public IAM bindings.",
+   "order_index": 37
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate internet-exposed AWS services and workloads",
+   "guidance": "Run aws ec2 describe-instances, aws s3api list-buckets, and Prowler or ScoutSuite to map external-facing resources. Note which EBS snapshots, RDS instances, S3 buckets, and AMIs have public access enabled — each is a potential data exposure or entry point.",
+   "order_index": 38
+  },
+  {
+   "section": "CPT",
+   "text": "Map GCP's full external attack surface including exposed storage services",
+   "guidance": "Enumerate services listening on public IPs. Confirm which Persistent Disk snapshots, Cloud SQL instances, Cloud Storage buckets, Compute Engine instances, Cloud Run services, and Cloud Functions are reachable from the internet. Any publicly accessible service or storage object is a potential data exposure.",
+   "order_index": 39
+  },
+  {
+   "section": "CPT",
+   "text": "Spray known accounts for weak or reused passwords",
+   "guidance": "Run password-spraying attacks against known user accounts using a curated wordlist. Stay under the lockout threshold — check the provider's lockout policy before starting. One password per account per spray round is the safe pattern.",
+   "order_index": 40
+  },
+  {
+   "section": "CPT",
+   "text": "Use a retrieved Primary Refresh Token to move laterally across Azure resources",
+   "guidance": "Retrieve the PRT using ROADtools or AADInternals from a compromised device. Exchange it for access and refresh tokens to reach Azure resources — including those protected by device compliance checks — without triggering a new MFA challenge.",
+   "order_index": 41
+  },
+  {
+   "section": "CPT",
+   "text": "Collect credentials from compromised accounts and services",
+   "guidance": "Gather credentials from the compromised foothold — check .env files, deployed application configs, process environment dumps, and cloud metadata APIs. Each recovered credential extends the attack surface for the next phase.",
+   "order_index": 42
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate hosts, services, and IAM state across the GCP internal network",
+   "guidance": "Identify the following:\n* Live hosts, open ports, and running services.\n* Applications hosted on the internal network.\n* Users, groups, service accounts, and their IAM role bindings.\n* Storage resources, databases, and internal APIs that may hold sensitive data.",
+   "order_index": 43
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate hosts, services, and IAM state across the AWS internal network",
+   "guidance": "Identify the following:\n* Live hosts, open ports, and running services.\n* Applications hosted on the internal network.\n* IAM users, groups, and roles with their attached policies.\n* S3 buckets, DynamoDB tables, RDS instances, and other resources accessible from the internal network.",
+   "order_index": 44
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate Azure internal hosts, storage, and Key Vault entries",
+   "guidance": "Identify the following:\n* Live hosts, open ports, and services reachable from the internal network.\n* Storage blobs accessible using the compromised identity.\n* Key Vault secrets accessible using the compromised identity.",
+   "order_index": 45
+  },
+  {
+   "section": "CPT",
+   "text": "List and pull secrets from Azure Key Vault",
+   "guidance": "Use az keyvault list to find vaults, then az keyvault secret list and az keyvault secret show to pull values. Access depends on the compromised identity's Key Vault access policies — a single misconfigured policy can expose every secret in the vault.",
+   "order_index": 46
+  },
+  {
+   "section": "CPT",
+   "text": "Pull images and review Azure Container Registry contents for sensitive data",
+   "guidance": "Use az acr list to find registries, then az acr repository list to enumerate images. Pull images with docker pull using the compromised credentials. Examine image layers for hardcoded secrets, SSH keys, and application configuration files.",
+   "order_index": 47
+  },
+  {
+   "section": "CPT",
+   "text": "Use Azure VMs to reach restricted network segments and intercept cleartext traffic",
+   "guidance": "Attempt to use virtual machines to access the following:\n* Sensitive information in attached volumes, snapshots, and storage blobs.\n* Network segments restricted from external access.\n* Cleartext traffic in transit via man-in-the-middle techniques, if in scope.",
+   "order_index": 48
+  },
+  {
+   "section": "CPT",
+   "text": "Access data in Azure relational and key-value databases",
+   "guidance": "Identify Azure SQL, Cosmos DB, and Table Storage instances using az sql server list and az cosmosdb list. Attempt connections using the compromised identity's managed identity tokens or recovered connection strings. Review stored data for PII, credentials, and business-sensitive records.",
+   "order_index": 49
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit Compute Engine instances to reach restricted data and network segments",
+   "guidance": "Attempt to use Compute Engine instances to access the following:\n* Sensitive information in Persistent Disk snapshots and custom images.\n* Network segments restricted from external access.\n* Cleartext traffic in transit via man-in-the-middle techniques, if in scope.\n* Sensitive data in instance metadata and project-level metadata at http://metadata.google.internal/.",
+   "order_index": 50
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit EC2 instances to reach restricted data and network segments",
+   "guidance": "Attempt to use EC2 instances to access the following:\n* Sensitive information in EBS volumes and AMI snapshots — attach volumes to an assessment-controlled instance and read them directly.\n* Network segments restricted from external access.\n* Cleartext traffic in transit via man-in-the-middle techniques, if in scope.",
+   "order_index": 51
+  },
+  {
+   "section": "CPT",
+   "text": "Pull images and extract data from ECS container registries",
+   "guidance": "Use the compromised credentials to access ECR repositories. Pull images and examine their layers for hardcoded credentials, configuration files, and sensitive environment variables baked into the image.",
+   "order_index": 52
+  },
+  {
+   "section": "CPT",
+   "text": "Access data in DynamoDB and RDS instances",
+   "guidance": "Enumerate DynamoDB tables with aws dynamodb list-tables and pull records using scan or query. Attempt RDS connections using recovered credentials or IAM database authentication. Review stored data for PII, credentials, and business-sensitive records.",
+   "order_index": 53
+  },
+  {
+   "section": "CPT",
+   "text": "Access data across GCP database services",
+   "guidance": "Enumerate and attempt connections to the following services using the compromised identity's permissions:\n* Cloud SQL\n* Spanner\n* Bigtable\n* Memorystore\n* Filestore\n* BigQuery\nReview accessible data for PII, credentials, and business-sensitive records.",
+   "order_index": 54
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate and review cloud resource configuration",
+   "guidance": "Pull the full list of deployed resources using the cloud provider's CLI or audit tooling. Review configuration settings — IAM policies, network rules, logging state, and encryption settings — against known attack patterns.",
+   "order_index": 55
+  },
+  {
+   "section": "CPT",
+   "text": "Extract secrets and sensitive data from Lambda function configurations",
+   "guidance": "Use aws lambda list-functions and aws lambda get-function-configuration to enumerate functions and their environment variables. Download function code with aws lambda get-function. Look for hardcoded API keys, database connection strings, and IAM credentials in both the code and the configuration.",
+   "order_index": 56
+  },
+  {
+   "section": "CPT",
+   "text": "Extract secrets and sensitive data from Cloud Run functions and services",
+   "guidance": "Use gcloud functions list and gcloud run services list to enumerate functions and services. Retrieve environment variables and mounted secrets with gcloud functions describe. Review function triggers — HTTP, Pub/Sub, Cloud Storage — for injection points and insecure IAM bindings.",
+   "order_index": 57
+  },
+  {
+   "section": "CPT",
+   "text": "Pull accessible S3 objects and review for sensitive data",
+   "guidance": "Use aws s3 ls and aws s3 cp with the compromised credentials. Test anonymous access first. Common finds: database backups, application configs, log archives, exported user data. Note any buckets with public read or public read-write ACLs.",
+   "order_index": 58
+  },
+  {
+   "section": "CPT",
+   "text": "Pull accessible Cloud Storage objects and review for sensitive data",
+   "guidance": "Use gsutil ls and gsutil cp with the compromised credentials. Test anonymous access first. Common finds: database backups, application configs, and exported user data. Note any buckets with allUsers or allAuthenticatedUsers IAM bindings.",
+   "order_index": 59
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate and review the GCP environment configuration",
+   "guidance": "Use gcloud projects list, gcloud config list, and gcloud asset search-all-resources to pull the GCP environment inventory. Review IAM policies, VPC firewall rules, and Cloud Audit Logs configuration for gaps.",
+   "order_index": 60
+  },
+  {
+   "section": "CPT",
+   "text": "Enumerate and review the cloud environment configuration",
+   "guidance": "Pull the full deployed resource inventory using the cloud provider's CLI or audit tooling. Review IAM policies, network security rules, logging configuration, and encryption settings for known weaknesses.",
+   "order_index": 61
+  },
+  {
+   "section": "CPT",
+   "text": "Confirm the provided GCP credentials carry the permissions the test requires",
+   "guidance": "Run the key operations required by the test scope against the GCP environment using the provided credentials. If an operation fails with a permissions error, flag it before proceeding — a missing permission discovered mid-test wastes the engagement window.",
+   "order_index": 62
+  },
+  {
+   "section": "CPT",
+   "text": "Confirm the provided AWS credentials carry the permissions the test requires",
+   "guidance": "Run the key operations required by the test scope against the AWS environment using the provided credentials. If an operation fails with a permissions error, flag it before proceeding — a missing permission discovered mid-test wastes the engagement window.",
+   "order_index": 63
+  },
+  {
+   "section": "CPT",
+   "text": "Access AWS services and applications using default and guessable credentials",
+   "guidance": "Attempt SSH to EC2 instances using default key pairs recoverable from Lightsail. Test web applications, remote desktop endpoints, and databases for default credentials — RDP with Administrator/password, RDS with admin/admin, web panels with vendor defaults. Default credentials survive in cloud environments because instances are often cloned from templates that were never hardened.",
+   "order_index": 64
+  },
+  {
+   "section": "CPT",
+   "text": "Access services and databases using default and guessable credentials",
+   "guidance": "Test web applications, remote desktop endpoints, and databases for default credentials. Common targets: management consoles, database admin panels, and VM default accounts. Default credentials persist in cloud environments because vendor images are often deployed without any hardening step.",
+   "order_index": 65
+  },
+  {
+   "section": "CPT",
+   "text": "Access Azure services and applications using default and guessable credentials",
+   "guidance": "Test Azure VMs, web applications, and database instances for default credentials. Common targets: Windows VMs with Administrator/password, SQL databases with sa/sa, and web management panels with vendor defaults. Document each finding with the service, the credentials used, and the level of access obtained.",
+   "order_index": 66
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit known weaknesses in applications running in AWS",
+   "guidance": "Enumerate applications deployed in the AWS environment — EC2-hosted web apps, ECS containers, Lambda-backed APIs. Run targeted exploitation against known CVEs for identified software versions. Note what cloud access a successful exploit grants: the IAM role attached to the instance or function is often the real prize.",
+   "order_index": 67
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit known weaknesses in applications running in Azure",
+   "guidance": "Enumerate applications deployed in the Azure environment — App Service, ACI containers, Azure Functions. Run targeted exploitation against known CVEs for identified software versions. Note what cloud access a successful exploit grants: the managed identity attached to the resource is often the real prize.",
+   "order_index": 68
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit known weaknesses in applications running in GCP",
+   "guidance": "Enumerate applications deployed in the GCP environment — GCE-hosted web apps, Cloud Run services, GKE workloads. Run targeted exploitation against known CVEs for identified software versions. Note what cloud access a successful exploit grants: the service account attached to the workload is often the real prize.",
+   "order_index": 69
+  },
+  {
+   "section": "CPT",
+   "text": "Exploit known weaknesses in services running in Azure",
+   "guidance": "Enumerate managed services in the Azure environment — Azure Cache, Service Bus, API Management, Azure SQL. Run targeted exploitation against known CVEs for identified service versions. Document what cloud access a successful exploit grants.",
+   "order_index": 70
+  },
+  {
+   "section": "CPT",
+   "text": "Confirm which GCP projects are authorized for testing",
+   "guidance": "Before testing, confirm with the team which GCP projects and accounts are in scope. Document the list. Any project not on it is out of bounds — verify before touching.",
+   "order_index": 71
+  },
+  {
+   "section": "CPT",
+   "text": "Confirm which AWS accounts are authorized for testing",
+   "guidance": "Before testing, confirm with the team which AWS accounts are in scope. Document the list. Any account not on it is out of bounds — verify before interacting.",
+   "order_index": 72
+  },
+  {
+   "section": "CSR",
+   "text": "Interview GCP subject matter experts",
+   "guidance": "When configuration data alone doesn't surface the full risk picture, interview the team responsible for the GCP environment. Ask about custom IAM roles, service account usage patterns, federation setup, and any recent access changes. Use what you learn to sharpen the test focus.",
+   "order_index": 73
+  },
+  {
+   "section": "CSR",
+   "text": "Interview AWS subject matter experts",
+   "guidance": "When configuration data alone doesn't surface the full risk picture, interview the team responsible for the AWS environment. Ask about custom IAM policies, cross-account role trusts, federation setup, and any recent access changes. Use what you learn to sharpen the test focus.",
+   "order_index": 74
+  },
+  {
+   "section": "Clean Up",
+   "text": "Remove all artifacts created during the engagement",
+   "guidance": "Once testing is complete, delete every artifact created during the assessment — IAM users and access keys, Lambda or Cloud Run functions, firewall rules, backdoored role policies, and any other resources added for testing. Verify each removal against the artifact log kept during the engagement.",
+   "order_index": 75
+  },
+  {
+   "section": "Cloud",
+   "text": "Establish persistence in the Azure environment",
+   "guidance": "Try the following techniques:\n- Add credentials (password or certificate) to an existing Entra ID application registration.\n- Create a new application registration with high-privilege API permissions.\n- Add a federated identity credential to a managed identity or application registration.\n- Create a new user or guest account in the compromised Entra ID tenant.\n- Modify an existing Conditional Access policy to exclude attacker-controlled accounts.\n- Assign a high-privilege role to an attacker-controlled identity.\n- Create or modify an Azure Automation runbook to execute on a schedule.",
+   "order_index": 76
+  },
+  {
+   "section": "Cloud",
+   "text": "Exfiltrate data from the restricted Azure environment",
+   "guidance": "Attempt to move data out via the following channels:\n- DNS tunneling through Azure DNS or Azure Private DNS zones.\n- Blob Storage uploads to an attacker-controlled or misconfigured storage account.\n- Azure Communication Services for email and SMS exfiltration.\n- HTTP-triggered Azure Functions that forward data to external endpoints.\n- Azure Logic Apps routing data via HTTP connectors, email, or Teams messages.\nDocument which channels succeed and which are blocked — unblocked egress paths are findings.",
+   "order_index": 77
+  },
+  {
+   "section": "Cloud",
+   "text": "Map Azure internal network topology and configuration stores",
+   "guidance": "Identify the following:\n- Non-public IP addresses, private endpoints, and internal DNS entries.\n- Network Security Groups and Application Security Groups with their associated rules.\n- Azure Firewall policies and route tables.\n- VNet peering configurations and service endpoints.\n- Private Link and Private Endpoint configurations.\n- Sensitive data embedded in App Configuration, Key Vault references, and ARM template parameters.",
+   "order_index": 78
+  },
+  {
+   "section": "Cloud",
+   "text": "Map authentication methods in use across in-scope accounts",
+   "guidance": "Enumerate authentication methods for in-scope user accounts. Identify which accounts rely on single-factor authentication and which MFA methods are registered. Single-factor accounts and weak MFA methods — SMS, voice call — are the first targets for credential attacks.",
+   "order_index": 79
+  },
+  {
+   "section": "Cloud",
+   "text": "Spray Google Workspace and Cloud Identity authentication for weak credentials",
+   "guidance": "Run password-spraying attacks against Google Workspace or Cloud Identity authentication endpoints using a curated wordlist. Limit request rate to avoid triggering lockouts — Google's default lockout threshold is aggressive. One password per account per round is the safe pattern.",
+   "order_index": 80
+  },
+  {
+   "section": "Cloud",
+   "text": "Install and configure the AWS CLI",
+   "guidance": "Install the AWS CLI and configure it with the provided access key and secret. Run aws sts get-caller-identity to confirm the active identity, account ID, and ARN. These establish what permissions and cross-account access are available for the engagement.",
+   "order_index": 81
+  },
+  {
+   "section": "Cloud",
+   "text": "Collect GCP credentials from compromised entities",
+   "guidance": "Gather credentials from the compromised GCP foothold. Targets: service account key files, OAuth tokens, application default credentials in ~/.config/gcloud/, and tokens from the metadata server at http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/. Each token type has different scope and expiry — note them all before moving on.",
+   "order_index": 82
+  },
+  {
+   "section": "Cloud",
+   "text": "Extract sensitive data from Azure Function app configurations",
+   "guidance": "Use az functionapp list and az functionapp config appsettings list to enumerate function apps and their application settings. Download function code where accessible. Look for hardcoded connection strings, managed identity token endpoints, and API keys in environment variables and function bindings.",
+   "order_index": 83
+  },
+  {
+   "section": "Cloud",
+   "text": "Review GCP CI/CD services for exposed secrets and overpermissive access",
+   "guidance": "Enumerate Cloud Build configurations, triggers, and build history with gcloud builds list. Check Artifact Registry repositories for image contents. Review Cloud Deploy pipelines for service account permissions and deployment targets. Look for hardcoded secrets in build step definitions and overly permissive build service account IAM bindings.",
+   "order_index": 84
+  },
+  {
+   "section": "Cloud",
+   "text": "Extract sensitive data from GKE clusters and workloads",
+   "guidance": "Enumerate GKE clusters with gcloud container clusters list. Retrieve cluster credentials with gcloud container clusters get-credentials. Enumerate Kubernetes secrets across all namespaces with kubectl get secrets -A. Check Artifact Registry for accessible container images. Review workload configurations for over-permissive service account bindings and missing security contexts.",
+   "order_index": 85
+  },
+  {
+   "section": "Cloud",
+   "text": "Access GCP Secret Manager and check for exposed credentials",
+   "guidance": "Use gcloud secrets list to enumerate secrets and gcloud secrets versions access latest to pull their values. Check for service account key files stored in Cloud Storage or hardcoded in Cloud Run environment variables. Review App Engine configurations and Compute Engine project metadata for exposed API keys.",
+   "order_index": 86
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Scan container images for known vulnerabilities",
+   "guidance": "Run trivy or grype against the container images in use. Look for known CVEs in base images and installed packages. Outdated base images — especially those built on end-of-life OS versions — carry exploitable vulnerabilities that affect every workload using them.",
+   "order_index": 87
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Confirm the cluster runs a supported Kubernetes version",
+   "guidance": "Run kubectl version or query the API server directly. Cross-reference the reported version against the Kubernetes release schedule. An unsupported version receives no security patches — check the CVE list for known issues in the running version before testing anything else.",
+   "order_index": 88
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Run CIS benchmark tooling and review for exploitable findings",
+   "guidance": "Run kube-bench against cluster nodes and the control plane. Each failed check maps to a specific configuration gap. Prioritize findings in the API Server and etcd sections — those have the most direct paths to cluster-wide access.",
+   "order_index": 89
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Check custom Kubernetes resource definitions for exploitable weaknesses",
+   "guidance": "Enumerate custom resource definitions with kubectl get crd. For each CRD, check whether the controller validates input and restricts access through RBAC. Misconfigured controllers can be exploited for privilege escalation or denial of service against the cluster.",
+   "order_index": 90
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Verify network policies enforce least-privilege between workloads",
+   "guidance": "Check whether network policies exist with kubectl get networkpolicy -A. If none are configured, all pods can reach all other pods on any port — the cluster's internal network is flat. If policies exist, verify they follow least-privilege: no catch-all allow rules, no open ingress from 0.0.0.0/0.",
+   "order_index": 91
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Verify pod security controls restrict privileged workloads",
+   "guidance": "Check whether pod security policies — or their successors, Pod Security Admission, OPA Gatekeeper, or Kyverno — are active. Run kubectl get psp or check the admission webhook list. If no policy is enforcing restrictions, any pod can run privileged, mount host paths, and use host namespaces. The controls that prevent container breakout are absent.",
+   "order_index": 92
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Audit Kubernetes RBAC for overpermissive roles and bindings",
+   "guidance": "Enumerate cluster roles and bindings with kubectl get clusterroles,clusterrolebindings -A. Look for bindings that grant * verbs on * resources, wildcard namespace access, or system:masters group membership. Also check service accounts — automated workloads with cluster-admin are a common finding.",
+   "order_index": 93
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Install ``kubectl``, ``krew``, and supporting engagement tools",
+   "guidance": "Install kubectl and krew, then add required plugins such as kubectl-who-can, rbac-tool, and kube-score. Confirm cluster access with kubectl cluster-info and note the server version before starting active testing.",
+   "order_index": 94
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Gather node configuration files and map potential attack paths",
+   "guidance": "Pull node configuration files — kubelet.conf, kube-scheduler.yaml, kube-apiserver.yaml — and review for insecure flags: anonymous auth enabled, insecure port listening, admission controllers disabled. Map the resulting attack paths before starting active testing.",
+   "order_index": 95
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Run dynamic analysis tools against the cluster",
+   "guidance": "Run kube-hunter in active mode against the cluster. Review findings for exploitable paths — unauthenticated API endpoints, exposed kubelet, and metadata server access from within pods.",
+   "order_index": 96
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Run static analysis tools against cluster manifests and configurations",
+   "guidance": "Run kube-score, Polaris, or checkov against cluster manifests and infrastructure-as-code. Surface misconfigurations before they become runtime findings — privileged containers, missing resource limits, and disabled read-only root filesystems are common escalation starting points.",
+   "order_index": 97
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Verify node access follows least-privilege",
+   "guidance": "Confirm that SSH and console access to cluster nodes is restricted to authorized identities. Check whether node IAM roles in managed clusters are scoped to minimum permissions. Verify that direct API calls to the kubelet require authentication — nodes should not accept requests from arbitrary pods.",
+   "order_index": 98
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Verify administrative roles are scoped to least-privilege",
+   "guidance": "Enumerate users and service accounts with cluster-admin or equivalent roles. Verify that each assignment is documented and intentional. Broad admin grants are common in clusters that started as development environments and were promoted to production without a permission review.",
+   "order_index": 99
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Confirm provided accounts carry only the permissions defined in scope",
+   "guidance": "Run the test operations defined in the engagement scope using the provided account credentials. Confirm each permission works before moving on. A permissions gap caught now is better than discovering it mid-test with context already loaded.",
+   "order_index": 100
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Probe network access to the cluster API server",
+   "guidance": "Use nmap or curl to test the cluster API server's listening address and port (typically 6443). Determine whether it is reachable from the external network, the internal corporate network, or only from within the cluster's VPC. The answer shapes every subsequent test.",
+   "order_index": 101
+  },
+  {
+   "section": "Kubernetes",
+   "text": "Confirm which clusters are authorized for testing",
+   "guidance": "Before testing, confirm with the team which clusters are in scope for the engagement. Document cluster names and any out-of-bounds namespaces or workloads. Don't assume everything in the cloud account is fair game.",
+   "order_index": 102
+  }
+ ]
+}

@@ -107,6 +107,7 @@ verbs = [
     "create_engagement",
     "update_engagement",
     "create_template",
+    "bulk_create_templates",
     "add_finding",
     "create_vuln_map",
     "report_read",
