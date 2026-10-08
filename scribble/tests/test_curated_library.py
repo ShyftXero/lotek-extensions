@@ -116,6 +116,11 @@ def test_bulk_create_templates_validates_widths_and_types(client, stub_host):
     assert one({"tags": "nope"}) == 400
     # a well-formed record still succeeds
     assert one({"severity": "high", "cvss_score": 7.5, "category": "Web", "tags": ["scope:webapp"]}) == 201
+    # sibling-gate parity: too many content_json blocks / references -> 400
+    assert one({"content_json": {f"b{n}": {"type": "doc", "content": []} for n in range(65)}}) == 400
+    assert one({"references": [f"r{n}" for n in range(501)]}) == 400
+    # persistent-DoS bound: an oversized single record -> 413 (bulk multiplies it x1000)
+    assert one({"Description": "x" * (300 * 1024)}) == 413
 
 
 def test_bulk_create_templates_sanitizes_content_json(client, stub_host, session_factory):

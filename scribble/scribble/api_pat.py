@@ -1037,6 +1037,7 @@ def scribble_create_template():
 # ── 3c. POST /templates/bulk — bulk-import a vuln library ─────────────────────────────────────────────
 
 _MAX_BULK_TEMPLATES = 1000
+_MAX_RECORD_BYTES = 256 * 1024  # per-record serialized ceiling — bulk multiplies any one record x1000
 
 
 @machine_bp.post("/templates/bulk")
@@ -1096,6 +1097,15 @@ def scribble_bulk_create_templates():
             return jsonify({"error": "bad_request", "detail": f"templates[{i}].references must be a list"}), 400
         if rec.get("tags") is not None and not isinstance(rec.get("tags"), list):
             return jsonify({"error": "bad_request", "detail": f"templates[{i}].tags must be a list"}), 400
+        # Sibling-gate parity with the single-create route: bound content_json block count + references
+        # length so a record can't persist an oversized document.
+        if (err := _content_bounds_error(rec)) is not None:
+            return err
+        # Persistent-DoS bound: bulk multiplies any one record up to _MAX_BULK_TEMPLATES times, so cap
+        # each record's serialized size (Description/Recommendation/content_json are otherwise unbounded).
+        if len(json.dumps(rec)) > _MAX_RECORD_BYTES:
+            return jsonify({"error": "payload_too_large",
+                            "detail": f"templates[{i}] exceeds {_MAX_RECORD_BYTES} bytes"}), 413
 
     def _produce() -> tuple[dict, int]:
         created: list = []
