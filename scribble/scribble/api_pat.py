@@ -1066,6 +1066,36 @@ def scribble_bulk_create_templates():
             return jsonify({"error": "bad_request", "detail": f"templates[{i}] needs a non-empty name"}), 400
         if (err := _too_long(f"templates[{i}].name", name, cap=_TEMPLATE_NAME_MAX_LEN)) is not None:
             return err
+        # Column widths + types, up front — a 400 here instead of a Postgres truncation/500 later, and
+        # the same guards the single-create route makes (category/cvss_vector widths, severity enum).
+        cat = rec.get("category")
+        if cat is not None:
+            if not isinstance(cat, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].category must be a string"}), 400
+            if (err := _too_long(f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
+                return err
+        cvss_vector = rec.get("cvss_vector")
+        if cvss_vector is not None:
+            if not isinstance(cvss_vector, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_vector must be a string"}), 400
+            if (err := _too_long(f"templates[{i}].cvss_vector", cvss_vector, cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
+                return err
+        sev = rec.get("severity")
+        if sev is not None:
+            if not isinstance(sev, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].severity must be a string"}), 400
+            try:
+                severity_enum()(sev.strip().lower())
+            except ValueError:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].severity must be one of info|low|medium|high|critical"}), 400
+        cvss_score = rec.get("cvss_score")
+        if cvss_score is not None and (isinstance(cvss_score, bool) or not isinstance(cvss_score, (int, float))):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_score must be a number"}), 400
+        if rec.get("references") is not None and not isinstance(rec.get("references"), list):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].references must be a list"}), 400
+        if rec.get("tags") is not None and not isinstance(rec.get("tags"), list):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].tags must be a list"}), 400
 
     def _produce() -> tuple[dict, int]:
         created: list = []

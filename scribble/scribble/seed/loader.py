@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from scribble.content import render_html
 from scribble.enums import ChecklistKind, Severity, VariableScope, VariableType
+from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.models import (
     AssessmentType,
     ChecklistTemplate,
@@ -206,6 +207,10 @@ def build_template_from_record(
         content_json = faction_parse.build_template_blocks(
             rec.get("Description", ""), rec.get("Recommendation", "")
         )
+    # Stored-XSS gate: run every block through the ProseMirror sanitizer before persist — the same
+    # control the single-create route applies — so a bulk/machine caller supplying raw content_json
+    # cannot plant markup that executes when the report is opened.
+    content_json = sanitize_content_json(content_json)
     content_html = {block: _block_html(doc) for block, doc in content_json.items()}
     try:
         severity = Severity((rec.get("severity") or "medium").strip().lower())

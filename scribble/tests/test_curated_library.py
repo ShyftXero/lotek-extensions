@@ -101,3 +101,34 @@ def test_bulk_create_templates_rejects_bad_input(client, stub_host):
     assert client.post(f"{M}/templates/bulk", json={"templates": [{"category": "x"}]}).status_code == 400
     too_many = {"templates": [{"name": f"T{i}"} for i in range(1001)]}
     assert client.post(f"{M}/templates/bulk", json=too_many).status_code == 413
+
+
+def test_bulk_create_templates_validates_widths_and_types(client, stub_host):
+    """A bulk record must fail-closed on an over-wide column, a bad severity, or a wrong-typed field —
+    a 400 up front, not a Postgres truncation/500 (or a silently defaulted severity) behind a 201."""
+    def one(extra):
+        return client.post(f"{M}/templates/bulk", json={"templates": [{"name": "Bad", **extra}]}).status_code
+    assert one({"category": "x" * 256}) == 400
+    assert one({"cvss_vector": "x" * 256}) == 400
+    assert one({"severity": "spicy"}) == 400
+    assert one({"cvss_score": "high"}) == 400
+    assert one({"references": "nope"}) == 400
+    assert one({"tags": "nope"}) == 400
+    # a well-formed record still succeeds
+    assert one({"severity": "high", "cvss_score": 7.5, "category": "Web", "tags": ["scope:webapp"]}) == 201
+
+
+def test_bulk_create_templates_sanitizes_content_json(client, stub_host, session_factory):
+    """Stored-XSS gate: a bulk caller supplying raw content_json cannot persist executable markup —
+    the ProseMirror sanitizer strips it, same as the single-create route."""
+    malicious = {"description": {"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "safe"}]},
+        {"type": "evil_script", "attrs": {"onerror": "alert(1)"}},
+    ]}}
+    r = client.post(f"{M}/templates/bulk",
+                    json={"templates": [{"name": "XSS Probe", "content_json": malicious}]})
+    assert r.status_code == 201, r.get_json()
+    with session_factory() as db:
+        t = db.query(VulnerabilityTemplate).filter_by(name="XSS Probe").one()
+        blob = str(t.content_json) + str(t.content_html)
+        assert "evil_script" not in blob and "onerror" not in blob
