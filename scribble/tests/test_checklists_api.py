@@ -27,12 +27,13 @@ def _template_id(session_factory, slug: str) -> int:
 def test_list_templates_hides_hidden_by_default(client, session_factory):
     resp = client.get(f"{API}/checklists/templates")
     data = resp.get_json()
-    assert data["ok"] and len(data["templates"]) == 7
+    # 7 original builtins + 7 assessment-bucket checklists (external/internal x2/webapp x2/cloud/red-team).
+    assert data["ok"] and len(data["templates"]) == 14
     # hide one, then it drops out of the default list but shows with ?hidden=1
     tid = _template_id(session_factory, "owasp-wstg")
     client.post(f"{API}/checklists/templates/{tid}/hide", json={"hidden": True})
-    assert len(client.get(f"{API}/checklists/templates").get_json()["templates"]) == 6
-    assert len(client.get(f"{API}/checklists/templates?hidden=1").get_json()["templates"]) == 7
+    assert len(client.get(f"{API}/checklists/templates").get_json()["templates"]) == 13
+    assert len(client.get(f"{API}/checklists/templates?hidden=1").get_json()["templates"]) == 14
 
 
 def test_suggest_groups_by_category(client):

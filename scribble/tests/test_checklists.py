@@ -24,6 +24,14 @@ _BUILTIN_SLUGS = {
     "pci-dss-segmentation",
     "owasp-wstg",
     "owasp-asvs-l1",
+    # assessment-bucket coverage checklists (suite import)
+    "external-network",
+    "internal-network-unauth",
+    "internal-ceded-access",
+    "webapp-unauth",
+    "webapp-auth",
+    "cloud-assessment",
+    "red-team-vapt",
 }
 
 
@@ -34,7 +42,7 @@ def _template(session, slug: str) -> ChecklistTemplate:
 # --------------------------------------------------------------------------- seeding
 
 
-def test_seven_builtins_seeded(session_factory):
+def test_builtin_checklists_seeded(session_factory):
     with session_factory() as db:
         rows = db.query(ChecklistTemplate).all()
         assert {r.slug for r in rows} == _BUILTIN_SLUGS

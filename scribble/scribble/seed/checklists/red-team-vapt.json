@@ -1,0 +1,471 @@
+{
+ "slug": "red-team-vapt",
+ "name": "Red Team / vAPT (Adversarial)",
+ "kind": "coverage",
+ "category": "red-team",
+ "description": "Longer adversarial-pressure engagement arranged by kill-chain phase; curated across external, internal, and web methodologies.",
+ "items": [
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Search breach databases and public sources for compromised user credentials",
+   "guidance": "Check HaveIBeenPwned, Dehashed, and public paste sites for credential dumps tied to the target domain. Validate hits against identified login endpoints before using them. A credential from a three-year-old breach that an employee reused is still a valid initial access vector.",
+   "order_index": 0
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Map the target's external attack surface using open-source data",
+   "guidance": "Use Shodan, Censys, and SecurityTrails to build a picture of internet-facing assets: hostnames, IP ranges, open ports, and service banners. Grab screenshots with Aquatone or EyeWitness. Check S3, Azure Blob, and GCS buckets for public access — misconfigured cloud storage consistently turns up sensitive files in external assessments.",
+   "order_index": 1
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Enumerate subdomains and assess any in-scope findings as additional targets",
+   "guidance": "Combine passive sources (crt.sh, SecurityTrails, Subfinder) with active DNS bruteforcing (massdns, dnsx with a large wordlist). Once you have a list, resolve everything and screenshot live hosts. Subdomains often host staging environments, internal tools exposed by mistake, or legacy apps that don't get the same security attention as the main site.",
+   "order_index": 2
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Enumerate Azure AD tenants associated with the target domain",
+   "guidance": "Use AADInternals or o365recon to probe the well-known OpenID Connect endpoints for tenant information: tenant ID, authentication type, and whether the domain is federated. Federated domains route authentication to a third-party IdP — useful context for later password spray targeting. Also check for guest access on the tenant if you hold any credentials.",
+   "order_index": 3
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Attempt to pull the Exchange Global Address List once credentials are available",
+   "guidance": "With valid credentials, use the EWS ResolveName operation or Ruler to download the full GAL. The address list gives you a validated employee roster with email addresses — far more complete and accurate than OSINT alone. This list drives credential spraying campaigns and phishing target selection.",
+   "order_index": 4
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Fingerprint WordPress versions and plugins and check for known CVEs",
+   "guidance": "Run WPScan against any identified WordPress instances. It enumerates the core version, installed plugins with versions, themes, and user accounts. Match versions against WPVulnDB. Outdated plugins are the most common WordPress attack surface — they often have unauthenticated SQLi, file upload, or RCE vulnerabilities with public PoCs.",
+   "order_index": 5
+  },
+  {
+   "section": "1. Reconnaissance & OSINT",
+   "text": "Map all services exposed to the internet across in-scope IP ranges",
+   "guidance": "Run masscan for speed across the full IP scope, then follow up with Nmap service detection on live ports. Export results to a structured format. The goal is a complete picture of what's reachable before you touch anything — a service you miss in enumeration is a service you can't test.",
+   "order_index": 6
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test BIOS/UEFI interfaces for weak or missing password protection",
+   "guidance": "Attempt to enter BIOS/UEFI setup during boot. Check whether a password is required, whether it's a common vendor default, and whether boot order can be changed without authentication. An unprotected BIOS lets an attacker boot from external media, bypass OS-level controls, and access the disk directly. Also check whether Secure Boot is enabled.",
+   "order_index": 7
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Look for shared infrastructure credentials used by client software for backend access",
+   "guidance": "Check database connection strings in application config files and environment variables for shared service accounts with privileged access. A pattern where individual users authenticate to the app but the app connects to the database as a single privileged account means any app-level compromise reaches the full database. Extract and test these credentials separately.",
+   "order_index": 8
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Spray common weak passwords against cloud identity authentication endpoints",
+   "guidance": "Use MSOLSpray or a similar tool against the target's Google Workspace or Microsoft 365 tenant. Start with a small password list (Password1!, seasonal variants, company-name combos) and keep requests well below lockout threshold. Check the tenant's MFA posture first — a successful spray against an MFA-enrolled account still needs secondary exploitation to be actionable.",
+   "order_index": 9
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Attempt Timeroasting to extract crackable NTP hashes from domain computer accounts",
+   "guidance": "Send crafted NTP Mode 3 requests to the domain controller targeting computer accounts by their RID. The DC returns an MD5-keyed response hash you can crack offline using Hashcat. No domain credentials required — this works as an unauthenticated external technique if NTP is reachable. Use timeroast.py against the DC IP.",
+   "order_index": 10
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Brute-force or dictionary-attack RADIUS authentication services",
+   "guidance": "Identify RADIUS servers by scanning for port 1812/UDP and 1813/UDP. Use hydra or a custom script with the RADIUS protocol. Slow dictionary attacks work best — lockout policies for RADIUS are sometimes misconfigured or absent entirely. Successful RADIUS auth often grants VPN access, which is a significant foothold.",
+   "order_index": 11
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Collect credentials from compromised infrastructure across all available sources",
+   "guidance": "Once you have code execution on any host, systematically pull credentials from: environment variables, process memory (LSASS via Mimikatz), browser stores, cloud metadata endpoints, and service account key files. For cloud environments, check the IMDS for ephemeral tokens — `http://169.254.169.254/latest/meta-data/iam/security-credentials/`. Document the path that yielded each credential.",
+   "order_index": 12
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Spray common passwords against AD accounts within lockout policy limits",
+   "guidance": "Pull the domain lockout threshold and observation window from the password policy first. Keep your spray rate below the threshold over the observation window — one attempt per account every 30 minutes is a common safe interval. Use DomainPasswordSpray or Spray. Seasonal passwords and company-name variants hit most often.",
+   "order_index": 13
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Spray credentials via ROPC grant against internal Entra ID applications",
+   "guidance": "Identify client IDs for internal Entra ID applications using AADInternals or manual enumeration. ROPC grant (`grant_type=password`) bypasses some MFA configurations and conditional access policies that apply to interactive logins. It also generates different sign-in logs than interactive auth, so it's lower-noise. Target apps registered without modern auth requirements.",
+   "order_index": 14
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Scan source code and VCS history for hardcoded secrets",
+   "guidance": "Run Trufflehog or Gitleaks against all accessible repositories and their full commit history. Focus on API keys, private keys, and credential strings that appear in commits even if later deleted — git history is permanent unless the repository was force-pushed. Public repos associated with the target organization are in scope for this step.",
+   "order_index": 15
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Reverse engineer ATM middleware to identify exploitable vulnerabilities",
+   "guidance": "Obtain and decompile ATM middleware binaries using IDA Pro, Ghidra, or similar. Look for: memory corruption in XFS command parsing, improper input validation in cash dispenser message handling, and insecure IPC between middleware components. Focus on message processing paths that handle external input without validation.",
+   "order_index": 16
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Check the Windows registry for cleartext autologon credentials",
+   "guidance": "Read DefaultPassword from HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon. Autologon is common on kiosk-style systems and shared workstations. The credential is stored in cleartext in the registry and readable by any user with registry access. Even a different account context is useful lateral movement if the stored account has broader permissions.",
+   "order_index": 17
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Check how many domain logon hashes are cached on the host",
+   "guidance": "Read CachedLogonsCount from HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon. If you gain SYSTEM access, extract cached hashes with secretsdump.py. Cached credentials (DCC2 format) crack slowly compared to NTLM, but the result is a plaintext domain password valid for whatever the cache contains.",
+   "order_index": 18
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Enumerate Credential Manager entries and attempt extraction",
+   "guidance": "Run cmdkey /list to see stored credentials. Use Mimikatz's vault::list and vault::cred to attempt extraction. Web Credentials sometimes include session tokens or saved passwords for internal portals. Generic Credentials can hold RDP passwords, share credentials, or anything an app chose to persist there.",
+   "order_index": 19
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Verify the authentication validity window for cryptographic key operations",
+   "guidance": "Check the `setUserAuthenticationValidityDurationSeconds` setting if `setUserAuthenticationRequired` is in use. A long validity window means a user who authenticated hours ago can still perform key operations without re-prompting — an attacker with physical access to an unlocked device exploits this window directly.",
+   "order_index": 20
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Attempt access via default SSH keys retrieved from Lightsail and common application defaults",
+   "guidance": "The AWS Lightsail service makes instance SSH keys available through its API to anyone with Lightsail access. If the same key was reused across EC2 instances, you can reach those instances too. Separately, test web applications, databases, and RDP with vendor default credentials — document every successful combination.",
+   "order_index": 21
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Research and test vendor default credentials on all high-value targets",
+   "guidance": "For each device, application, and service identified in scope, look up factory defaults. Router and switch management interfaces, industrial controllers, and database instances are the most consistent sources of unchanged defaults. Test via the appropriate protocol — not just the web UI — since some devices enforce password change only through the GUI.",
+   "order_index": 22
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test whether MFA-enrolled accounts can be accessed without completing the second factor",
+   "guidance": "With valid primary credentials, try: ROPC grant (often bypasses MFA policy), legacy protocol authentication (IMAP/POP3/SMTP/EWS), device code flow phishing, and token theft via adversary-in-the-middle proxy (Evilginx, Modlishka). Also check whether MFA is enforced consistently — conditional access gaps often exist for legacy auth or specific client apps.",
+   "order_index": 23
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Verify that the password policy meets modern complexity and length standards",
+   "guidance": "Pull the password policy from the application or directory and compare against OWASP Authentication Cheat Sheet recommendations: minimum 8 characters (12+ preferred), no forced complexity rules that encourage predictable patterns, no maximum length cap, and no periodic forced rotation. Document any gap.",
+   "order_index": 24
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test recovered credentials for reuse across accounts and services",
+   "guidance": "Check the domain lockout policy before any spray. For every plaintext password or cracked hash from the engagement, test it against other domain accounts and local accounts on other hosts. Password reuse across privilege levels — a helpdesk account password that also works for a domain admin — is one of the most common escalation paths in an assessment.",
+   "order_index": 25
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test ATM authentication mechanisms against systematic password guessing",
+   "guidance": "Check whether the ATM presents a lockout mechanism after failed authentication attempts. Use a structured wordlist — common PINs, sequential patterns, default service codes — and count how many attempts trigger a lockout or alert. No lockout is a finding; a lockout that logs to an unmonitored system is also worth noting.",
+   "order_index": 26
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Search Active Directory for accounts that permit null or blank passwords",
+   "guidance": "Query AD for accounts with the PASSWD_NOTREQD flag set (userAccountControl bit 0x20). Then actually test: `net use \\\\<dc> IPC$ /user:<domain>\\\\<account> ''`. An account that accepts a blank password over the network is usable from any host without cracking anything.",
+   "order_index": 27
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Inspect the Windows Credential Store for stored passwords and tokens",
+   "guidance": "List entries with `cmdkey /list` and attempt extraction using Mimikatz vault modules. The Credential Manager stores network credentials, certificate-based credentials, and web credentials from IE/Edge. A saved RDP password for a domain controller or a cached VPN credential converts a low-privilege host compromise into lateral movement.",
+   "order_index": 28
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test for AD computer objects using legacy pre-Windows 2000 default passwords",
+   "guidance": "Query AD for computer accounts with a pre-Win2000-compatible name and password last set matching account creation date. These accounts use a predictable password derived from the first 14 characters of the machine name, lowercased. Test with the known algorithm — successful authentication means you have a computer account that may have local admin on the machine it represents.",
+   "order_index": 29
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Search ATM software and services for default, hardcoded, or undocumented credentials",
+   "guidance": "Reverse engineer or inspect ATM application binaries for embedded credential strings. Check vendor documentation for service account defaults. Also look for undocumented maintenance interfaces — some ATM software ships with a hidden diagnostic login accessible via a specific sequence or URL. A successful login here often bypasses the main application entirely.",
+   "order_index": 30
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Find exposed administrative interfaces and test for weak credentials",
+   "guidance": "Scan for management interfaces on common ports: 8080, 8443, 9090, 10000 (Webmin), and vendor-specific ports from your inventory. Also check for admin panels at standard paths (/admin, /manager, /console). Attempt vendor defaults first, then a targeted spray. An accessible admin panel with weak credentials typically means full application compromise.",
+   "order_index": 31
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Spray passwords against domain-backed authentication services exposed to the network",
+   "guidance": "Identify services that accept domain credentials: OWA, ADFS, VPN portals, Citrix, RDP, and WinRM. Get the domain lockout policy first. Spray a single password across all valid usernames, staying under the lockout threshold. Domain-backed services share the same account lockout, so a lockout on one service locks the AD account everywhere.",
+   "order_index": 32
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Identify exposed services running software with known public exploits",
+   "guidance": "Feed Nmap service version output into a vulnerability scanner or WES-NG. Cross-reference versions against Exploit-DB for exploitable CVEs. Prioritize findings by: pre-authentication, remote code execution, CVSS 9.0+. Run commercial scanners (Nessus, Nexpose) as a second pass — they catch version-based matches that manual comparison misses.",
+   "order_index": 33
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Search ATM software, scripts, and config files for hardcoded credential strings",
+   "guidance": "Grep ATM application directories for credential patterns: password=, pwd=, secret=, token=, key=. Decompile binaries where possible and search string tables. Check configuration XML and INI files. Hardcoded credentials in ATM software are often deployment-wide — a single discovery can grant access to every unit running the same software version.",
+   "order_index": 34
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Look for credentials stored in plaintext in ATM application files and databases",
+   "guidance": "Search the ATM filesystem for credential stores: flat files, SQLite databases, and registry keys used by the application. Check whether passwords are hashed and with what algorithm — MD5 or SHA1 without salt is functionally cleartext with modern hardware. Also inspect log files, which sometimes capture credentials passed as command-line arguments or HTTP parameters.",
+   "order_index": 35
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test IPMI/BMC interfaces for the cipher zero authentication bypass and hash extraction",
+   "guidance": "Scan for port 623/UDP (IPMI). Use ipmitool with cipher suite 0 to authenticate without any credentials — a well-known vulnerability in many BMC implementations. Also use Metasploit's ipmi_dumphashes module to extract MD5 salted hashes for offline cracking. IPMI access is effectively out-of-band server access and often bypasses the main OS entirely.",
+   "order_index": 36
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Identify IPsec VPN servers permitting IKEv1 and attempt to exploit known weaknesses",
+   "guidance": "Use ike-scan to probe for IKEv1-capable endpoints. IKEv1 main mode with pre-shared key auth leaks the PSK in a crackable form — capture the handshake with ike-scan and crack with Hashcat. IKEv1 aggressive mode is worse: it sends the PSK hash with no challenge. Document the vendor and version since some implementations have additional known CVEs.",
+   "order_index": 37
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Test all exposed login-capable services for vendor default credentials",
+   "guidance": "For every service with an authentication prompt — SSH, FTP, database management, web admin panels, API endpoints — test vendor defaults before attempting any spray. Defaults from the product's official documentation are the first attempt; community-maintained lists (DefaultCreds-cheat-sheet) cover the rest. Log every successful default credential as a separate finding.",
+   "order_index": 38
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Attempt to retrieve and extract credentials from a PXE-served boot image",
+   "guidance": "If DHCP options 66/67 indicate a PXE server, try downloading the boot image over TFTP without authentication. Mount the WIM/ISO and search for: unattend.xml, sysprep answer files, and PowerShell scripts with embedded credentials. PXE images built from a standard template often contain a domain join account and the local admin password used during imaging.",
+   "order_index": 39
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Verify that password storage uses algorithms resistant to offline cracking",
+   "guidance": "Identify the hashing algorithm from application source, config, or a controlled test account. Acceptable algorithms: bcrypt, scrypt, Argon2, or PBKDF2 with a high iteration count. Unacceptable: MD5, SHA1, SHA256 without stretching, or any unsalted hash. Also check whether the algorithm is applied consistently — legacy user records sometimes carry older, weaker hashes.",
+   "order_index": 40
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Exploit IAM misconfigurations and cloud metadata access to escalate privileges",
+   "guidance": "Enumerate IAM permissions for compromised principals using enumerate-iam or ScoutSuite. Look for: wildcard resource policies, roles with iam:PassRole plus lambda:InvokeFunction, and overly permissive trust relationships. Also query the cloud metadata service — instance role tokens are the first thing to check after any EC2 compromise. A lower-privilege key that can create a Lambda function with an admin role attached is as good as an admin key.",
+   "order_index": 41
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Identify and exploit ATM network services that accept connections without authentication",
+   "guidance": "Scan the ATM's network-facing ports for services that respond to raw connections without requesting credentials. Focus on XFS-compliant interfaces, diagnostic services, and proprietary management protocols. An unauthenticated service with any write capability is a direct path to ATM software manipulation — document the exact command or request that yields access.",
+   "order_index": 42
+  },
+  {
+   "section": "2. Initial Access",
+   "text": "Locate and extract browser-stored passwords from compromised hosts",
+   "guidance": "On a compromised Windows host, find Chrome/Edge Login Data (SQLite) and Firefox logins.json. Copy both the credential database and the encryption key material (Local State for Chrome, key4.db for Firefox). Decrypt offline with SharpChrome or HackBrowserData. Browser-saved credentials cover everything from email to cloud consoles — treat them as a priority collection target on every compromised host.",
+   "order_index": 43
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Check for user-writable directories in the system `PATH`",
+   "guidance": "Enumerate PATH entries and test each with icacls. A user-writable directory that appears before a system directory in the PATH is a hijack opportunity — drop a DLL or binary with the target name and wait for a privileged process to load it. Focus on entries added by application installers; they're the most likely to have permissive ACLs.",
+   "order_index": 44
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Check running process binaries for weak permissions accessible to the current user",
+   "guidance": "Enumerate running processes and test their executable paths with icacls. A SYSTEM-context process that the current user can overwrite or replace is a direct escalation path — though it requires a restart or service cycle to trigger. Processes running from non-standard directories are worth checking first.",
+   "order_index": 45
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Test whether the current user can modify Windows service configuration",
+   "guidance": "Check service security descriptors with AccessChk or sc sdshow. SERVICE_CHANGE_CONFIG permission lets you change the binary path for any service — point it at your payload and restart. This is more reliable than binary replacement because you don't have to wait for natural process termination. Focus on services with a LOCAL SYSTEM or high-privilege account.",
+   "order_index": 46
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Verify that critical Windows directories are not writable by unprivileged users",
+   "guidance": "Test write access to C:\\Windows, C:\\Windows\\System32, and C:\\Program Files with icacls. Standard installations protect these with TrustedInstaller — any deviation is a misconfiguration. User-writable access here means you can plant a binary or DLL that a SYSTEM process loads during normal operation.",
+   "order_index": 47
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Check whether scheduled task binary directories are user-writable",
+   "guidance": "Pull scheduled task action paths and test their parent directories. A directory-level write allows you to add a file the task will execute on next run, even if the task binary itself is locked. Tasks that run as SYSTEM on a schedule are the highest-value targets — map execution time so you can trigger or wait for escalation.",
+   "order_index": 48
+  },
+  {
+   "section": "3. Privilege Escalation",
+   "text": "Identify dangerous privilege assignments in the current session token",
+   "guidance": "Run `whoami /priv` and check for escalation-enabling privileges. SeImpersonatePrivilege enables Potato attacks (PrintSpoofer, GodPotato) for SYSTEM escalation. SeBackupPrivilege allows reading any file — use it to pull NTDS.dit and SYSTEM hive directly. SeRestorePrivilege allows writing any file, which means replacing system binaries. Document each dangerous privilege and the escalation path it opens.",
+   "order_index": 49
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Configure NTLM relay infrastructure to capture and forward domain credentials",
+   "guidance": "Run Responder with HTTP and SMB off (to avoid poisoning while relay is active) and ntlmrelayx against targets without SMB signing. Combine with PetitPotam or PrinterBug to coerce authentication from high-value hosts. If SMB relay is blocked by signing, try relaying to LDAP — LDAP signing is less consistently enforced and can let you create machine accounts or modify ACLs.",
+   "order_index": 50
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Verify whether LDAP signing and channel binding are enforced",
+   "guidance": "Query LDAP signing policy via ldapsearch or registry read (LDAPServerIntegrity). Also check LdapEnforceChannelBinding for LDAPS. Without both, an NTLM relay to LDAP can succeed: ntlmrelayx can create machine accounts (useful for Resource-Based Constrained Delegation attacks) or dump AD data. These two settings are commonly absent even on otherwise well-hardened domains.",
+   "order_index": 51
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Coerce Exchange server outbound authentication and relay toward privileged targets",
+   "guidance": "Use the EWS PushSubscription API or PrivExchange to coerce the Exchange server to authenticate to your listener. Relay the NTLM hash toward LDAP with ntlmrelayx. Exchange servers typically run as a high-privilege account that can write to many AD attributes — a successful relay often lets you add yourself to privileged groups directly.",
+   "order_index": 52
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Test NFS exports for anonymous mount access and root squash configuration",
+   "guidance": "Run showmount -e against all hosts with port 2049 open. Attempt to mount any listed exports without credentials. Check whether no_root_squash is configured — if it is, you can create a SUID binary on the share from your own machine (as UID 0), then execute it on a remote host via the mount to escalate to root. Document each accessible export and its contents.",
+   "order_index": 53
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Test SMB services for anonymous NULL session access",
+   "guidance": "Attempt NULL session connections with smbclient -N or CrackMapExec with empty credentials. A successful NULL session to IPC$ can enumerate share names, user lists, and domain information without any credentials. On older servers it may provide guest-level read access to shares. Domain controllers are the priority target here.",
+   "order_index": 54
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Identify SMB hosts where signing is not required",
+   "guidance": "Use CrackMapExec (`cme smb <subnet>`) to enumerate signing status across the network. Any host showing 'signing:False' is a valid relay target for captured NTLM hashes. Compile a target list before starting relay operations — you want to hit the most valuable machines first before accounts get locked or alerted.",
+   "order_index": 55
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Search accessible SMB shares for credentials and sensitive data",
+   "guidance": "Use Manspider or CrackMapExec's spider module to crawl reachable shares. Search for common credential patterns in filenames and file contents: web.config, .env, *.kdbx, *.pfx, and strings like 'password=', 'pwd=', 'secret'. Flag any PII or financial records found. The depth of sensitive data in open shares is often the most compelling finding for the report.",
+   "order_index": 56
+  },
+  {
+   "section": "4. Lateral Movement",
+   "text": "Test SMTP servers for open relay accepting unauthenticated mail from the internal network",
+   "guidance": "Connect to port 25 on identified mail servers and attempt to relay a message: MAIL FROM an external address, RCPT TO an external address, with no authentication. An open relay enables phishing from a trusted internal IP and may contribute to spam reputation damage for the domain. Also check for SMTP auth with no TLS — credentials in cleartext.",
+   "order_index": 57
+  },
+  {
+   "section": "5. Persistence & Post-Exploitation",
+   "text": "Retrieve and use the Primary Refresh Token for authenticated lateral movement",
+   "guidance": "Use ROADtools or AADInternals to extract the PRT from a joined device's LSASS or TPM-backed storage. The PRT is used to mint access tokens for any Azure AD-integrated application without re-authenticating. On a device without TPM binding, Mimikatz's azuread extension can retrieve it directly. A valid PRT means persistent access to cloud resources even if the user's password is reset.",
+   "order_index": 58
+  },
+  {
+   "section": "5. Persistence & Post-Exploitation",
+   "text": "Plant multiple persistence mechanisms in the compromised cloud environment",
+   "guidance": "Attempt the following persistence techniques, depending on the level of access obtained: create an access key for an existing high-privilege user; deploy a serverless function that generates and exfiltrates new access keys on a schedule; add a backdoor trust relationship to an existing role; create a new user account with admin privileges; add a firewall rule granting inbound access to a controlled IP; or modify a role policy to include an additional trusted principal. Document each mechanism and the minimum permission level required to establish it.",
+   "order_index": 59
+  },
+  {
+   "section": "5. Persistence & Post-Exploitation",
+   "text": "Attempt to exfiltrate sensitive data from a restricted cloud environment via covert channels",
+   "guidance": "Test exfiltration channels available from within a restricted cloud environment: DNS queries (useful when HTTP egress is blocked), object storage uploads if the service role has write access, SES or SNS for email/SMS egress, and Lambda/Cloud Function invocation for arbitrary HTTP calls. Document which channels are unmonitored or unblocked — the goal is to show that data can leave the environment, not just that it was accessed.",
+   "order_index": 60
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Test whether the application processes external data unsafely",
+   "guidance": "Identify all input surfaces where the application processes data from outside its trust boundary: network traffic, uploaded files, parsed documents, and API responses from third parties. Probe each for parsing attacks — XML entity injection, zip bombs, malformed binary formats, and oversized inputs. External data handling bugs tend to be pre-authentication and high-impact.",
+   "order_index": 61
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Evaluate security controls on local data storage and test for bypass",
+   "guidance": "Identify where the application stores data locally: SQLite databases, flat files, shared preferences, and keychain entries. Check whether sensitive data is stored encrypted and whether the encryption key is derivable from something accessible to the application. Test for path traversal into the storage directory. On mobile, check whether data is written to external storage where other apps can read it.",
+   "order_index": 62
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Intercept application traffic to identify sensitive data sent without encryption",
+   "guidance": "Set up a MitM proxy (Burp Suite, mitmproxy) and browse through the application's core flows. Look for: HTTP rather than HTTPS, sensitive fields in query parameters, credentials in request bodies over HTTP, and session tokens in URL parameters. Also check WebSocket traffic and mobile application traffic separately — these are sometimes missed when testing focuses on the web UI.",
+   "order_index": 63
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Test AI ingestion pipelines for susceptibility to training-data poisoning",
+   "guidance": "Identify input paths that feed a fine-tuning or RAG pipeline — document ingestion endpoints, accepted file formats, and content filtering. Submit crafted samples designed to introduce predictable behavior: a RAG document that instructs the model to include a specific string in responses about a topic, or a fine-tuning sample that biases classification toward a target label. Verify the effect by querying the model after the pipeline has processed the sample.",
+   "order_index": 64
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Attempt to access Azure relational and key-value databases with compromised credentials",
+   "guidance": "With any compromised Azure credentials, check what database resources the principal can access using `az sql db list` and `az cosmosdb list`. Attempt to connect directly using the Azure CLI or database client tools. Also check for databases accessible via public endpoint without firewall restrictions — Azure SQL databases with 'Allow Azure services' enabled and a weak firewall rule are reachable from anywhere within Azure.",
+   "order_index": 65
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Attempt to access DynamoDB and RDS instances using compromised cloud credentials",
+   "guidance": "Enumerate accessible databases with `aws dynamodb list-tables` and `aws rds describe-db-instances`. For RDS, check whether the endpoint is publicly accessible and whether any security group allows your source IP. For DynamoDB, attempt a scan with `aws dynamodb scan --table-name <name>` — if the IAM policy allows it, you get the full table contents without bypassing network controls.",
+   "order_index": 66
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Verify that sensitive data is identified, labeled, and given appropriate protection",
+   "guidance": "Check whether the application's data model includes classification labels or tiers. For each sensitive data type in scope — PII, payment data, health records — verify that it's encrypted at rest, restricted to authorized principals, and logged on access. The absence of a classification scheme is itself a finding: if the team doesn't know which data is sensitive, they can't apply controls consistently.",
+   "order_index": 67
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Test whether appending `::$DATA` or ADS identifiers bypasses file access controls",
+   "guidance": "Attempt to access files by appending NTFS ADS identifiers like `::$DATA` to paths in web application URLs or API parameters. Some servers on Windows incorrectly resolve these as the base file, returning content they would otherwise restrict. Also test for security controls that filter file extensions but not ADS suffixes.",
+   "order_index": 68
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Verify that sensitive data protection does not rely on client-side secrets",
+   "guidance": "Extract the mobile app or JavaScript bundle and search for cryptographic keys or tokens used to protect or access sensitive data on the client side. If a key is embedded in client code and used to decrypt data the server sends, anyone with the client can decrypt that data — there's no meaningful access control. Test by extracting the key and decrypting the data independently of the app.",
+   "order_index": 69
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Confirm that all sensitive data in transit is encrypted end-to-end",
+   "guidance": "Set up a proxy and observe all network traffic generated by the application. Verify TLS is used for every connection carrying sensitive data. Also check TLS configuration: version (TLS 1.2+ required), cipher suites (no RC4, DES, or export ciphers), and certificate validation. A valid certificate with proper chain but missing pinning is worth noting in high-sensitivity contexts.",
+   "order_index": 70
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Confirm that each data classification tier has defined protection controls and that they're applied",
+   "guidance": "Map the data classification scheme against the implemented controls for each tier. For each tier, verify that access controls, encryption requirements, and logging requirements are documented and enforced in the architecture. Spot-check a sample of data assets at each tier and confirm they match the documented requirements. Data that falls outside any classification tier is a gap worth flagging.",
+   "order_index": 71
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Confirm that key rotation processes exist and that data can be re-encrypted without loss",
+   "guidance": "Ask for documentation of the key rotation procedure. Verify that encryption keys are stored separately from the data they protect (e.g., in a KMS or HSM, not alongside the ciphertext). Check whether a rotation event requires re-encrypting all existing data — if it does, confirm the re-encryption process has been tested. A key rotation procedure that has never been exercised is worth noting even if it exists on paper.",
+   "order_index": 72
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Confirm that trust boundaries and data flows are documented and match the deployed architecture",
+   "guidance": "Compare the architecture documentation against what you observe during the assessment: actual network paths, service-to-service authentication, and data flows that cross trust boundaries. Any data crossing a trust boundary without authentication or validation is a finding. Undocumented data flows are common — a service calling an internal API that isn't in any diagram is worth tracing.",
+   "order_index": 73
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Identify places where the UI displays sensitive data without masking",
+   "guidance": "Walk through the application's core flows and look for unmasked sensitive fields: full credit card numbers visible after entry, SSNs in profile pages, cleartext tokens in dashboard displays. Also check the page source and browser dev tools — sometimes values are hidden visually but present in the DOM or in API responses that load more data than the UI renders.",
+   "order_index": 74
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Inspect application logs for sensitive data that should not be recorded",
+   "guidance": "Review application, access, and error logs for sensitive field values: passwords, tokens, PII, and payment data. Request logs often capture URL query parameters — if the app ever passes credentials or tokens in a GET parameter, they'll be in every reverse proxy and CDN log. Also check structured logging fields; a debug level that logs request bodies will capture everything, including sensitive POST data.",
+   "order_index": 75
+  },
+  {
+   "section": "6. Exfiltration & Impact",
+   "text": "Dynamically test for sensitive data mishandling — unauthorized access and insecure storage",
+   "guidance": "Test two directions: data reaching users who shouldn't have it (IDOR on records, excessive API response fields, over-broad search results) and data stored without adequate protection (log inspection, database queries on test accounts, file system checks post-upload). Dynamic testing catches what code review misses — a field that's restricted in the happy path may leak through an error message, a batch export endpoint, or an admin view with insufficient access control.",
+   "order_index": 76
+  }
+ ]
+}

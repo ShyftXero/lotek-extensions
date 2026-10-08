@@ -127,9 +127,10 @@ def test_empty_recommendation_yields_empty_doc_not_stray_header(session_factory)
 
 
 def test_seeded_template_count(session_factory):
-    # 44 FACTION default library + 19 lotek AD/network entries (lotek_vulnerabilities.json).
+    # 44 FACTION default + 19 lotek AD/network + 260 curated entries. The suite file has 263
+    # records; 3 share a name with an existing entry and are idempotently skipped. See test_curated_library.
     with session_factory() as db:
-        assert db.query(VulnerabilityTemplate).count() == 63
+        assert db.query(VulnerabilityTemplate).count() == 323
 
 
 # ---------------------------------------------------------------------------

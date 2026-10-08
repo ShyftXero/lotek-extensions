@@ -1,0 +1,153 @@
+{
+ "slug": "webapp-unauth",
+ "name": "Web Application Test (Unauthenticated)",
+ "kind": "coverage",
+ "category": "web-app",
+ "description": "Web app/API, pre-authentication surface.",
+ "items": [
+  {
+   "section": "Web Application Backend or API",
+   "text": "Look for production misconfigurations that expose internal state",
+   "guidance": "Browse to /.git/, /.env, /server-status, /actuator, and /phpinfo.php early in testing. Enable directory listing detection in Burp. Source control metadata exposes the full codebase; debug endpoints expose environment variables and internal routes. These are fast wins that cost nothing to check.",
+   "order_index": 0
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test for HTTP request smuggling between proxy and backend",
+   "guidance": "Use Burp's HTTP Request Smuggler extension or manual CL.TE and TE.CL payloads to desynchronize the frontend proxy and backend server's interpretation of request boundaries. A successful smuggle can poison the response queue for other users or bypass access controls on internal endpoints. Applies where a load balancer or CDN sits in front of the backend.",
+   "order_index": 1
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test input parameters for SQL injection",
+   "guidance": "Feed single quotes, comment sequences (--, #), and Boolean conditions (1=1 vs. 1=2) into every parameter that reaches the database: URL query strings, POST bodies, JSON fields, HTTP headers. Use sqlmap for automated discovery but confirm each finding manually. Working SQL injection yields data extraction or, on MSSQL, direct command execution via xp_cmdshell.",
+   "order_index": 2
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test WebSocket connections for cross-origin hijacking",
+   "guidance": "Identify WebSocket endpoints (look for Upgrade: websocket headers). Craft a cross-origin WebSocket handshake from an attacker-controlled origin and observe whether the server accepts it. If the WebSocket carries session state or privileged operations, a successful hijack gives the attacker full access to that channel.",
+   "order_index": 3
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test XML-consuming endpoints for external entity processing",
+   "guidance": "Submit DOCTYPE declarations with external entity references to any endpoint that parses XML, including SVG uploads, DOCX imports, and SOAP calls. Use Burp Collaborator or Interactsh to catch out-of-band DNS or HTTP callbacks confirming entity resolution. Successful XXE reads local files or performs SSRF to internal services.",
+   "order_index": 4
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Probe responses for excessive system information",
+   "guidance": "Review error responses, HTTP headers, HTML comments, and JavaScript source for stack traces, server version strings, internal IP addresses, and debug output. Trigger error conditions deliberately: send invalid JSON, oversized payloads, and unexpected content types. Version disclosure narrows the CVE search space; stack traces expose internal paths and framework details.",
+   "order_index": 5
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Match application components against public vulnerability databases",
+   "guidance": "Identify libraries, frameworks, and server software from response headers, HTML source, and JavaScript files. Cross-reference each against the NVD and Snyk. Test high-confidence matches manually rather than relying on scanner output alone. Component versions in exposed package.json or composer.lock are the most reliable source.",
+   "order_index": 6
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test object creation and update endpoints for mass assignment",
+   "guidance": "Intercept user registration and profile update requests. Add extra fields to the request body corresponding to privileged attributes: isAdmin, role, verified, accountType. If the backend binds request parameters directly to model properties without an allowlist, the extra fields take effect. Confirm by re-fetching the resource after submission.",
+   "order_index": 7
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test limited-use actions for race condition vulnerabilities",
+   "guidance": "Identify actions that check a condition then perform a state change: redeeming a discount code, applying a gift card, or completing a payment step. Send 20-50 simultaneous requests using Burp's Turbo Intruder or the last-byte synchronization technique. A successful race bypasses the server's single-use check, allowing the action to execute multiple times.",
+   "order_index": 8
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test GraphQL APIs for introspection abuse and query exhaustion",
+   "guidance": "Send an introspection query to the GraphQL endpoint to map available types and operations. Introspection enabled in production exposes the full schema. Test for deeply nested queries that cause exponential resolver calls. Batch multiple queries in one request to probe whether per-query rate limits can be bypassed.",
+   "order_index": 9
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test NoSQL-backed endpoints for operator injection",
+   "guidance": "Submit MongoDB operator syntax ($ne, $gt, $where) and JSON special characters in parameters that query a NoSQL backend. A parameter like password[$ne]=x may bypass a MongoDB authentication check entirely. Also test for server-side JavaScript injection via $where clauses in MongoDB versions that support it.",
+   "order_index": 10
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test parameters where user input is concatenated into interpreted code",
+   "guidance": "Identify parameters where user input is assembled into code executed by an interpreter: PHP eval(), Python exec(), Ruby eval. Submit language-specific payloads (phpinfo(); for PHP, arithmetic expressions for eval-based detection) and observe the response. Successful code injection yields RCE as the web server process user.",
+   "order_index": 11
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test for OS command injection in shell-executing parameters",
+   "guidance": "Look for parameters that influence file names, conversion commands, or shell utilities: file uploads with user-controlled names, image processing endpoints, ping or traceroute inputs. Inject ; id, | id, and $(id). Use time-based payloads (sleep 5) to confirm blind injection without direct output. Out-of-band callbacks via Interactsh work for fully blind cases.",
+   "order_index": 12
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test for unsafe memory handling in user-controlled inputs",
+   "guidance": "Identify inputs that may feed into native code or memory buffers: file upload processors, binary parsers, format string parameters. Submit oversized inputs, format specifiers (%s, %n), and binary sequences to trigger observable behavior changes. This is most relevant for C/C++ services exposed via web interfaces or custom protocols.",
+   "order_index": 13
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test redirect parameters for open redirect to external URLs",
+   "guidance": "Find parameters named redirect, next, url, return, or similar. Supply an external URL and follow the redirect chain. If the application redirects to an attacker-controlled site, the finding supports phishing via a link under a trusted domain. Test both URL parameters and referrer-based redirects in post-login flows.",
+   "order_index": 14
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test URL-consuming parameters for server-side request forgery",
+   "guidance": "Identify any parameter that accepts a URL or hostname: webhook destinations, avatar imports, document fetchers, PDF generators. Supply URLs pointing to internal services (169.254.169.254 for cloud metadata, localhost:8080 for internal APIs). Use Burp Collaborator or Interactsh for blind SSRF detection. Cloud metadata SSRF is typically an immediate critical.",
+   "order_index": 15
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test template-rendered parameters for server-side template injection",
+   "guidance": "Inject template syntax into fields that appear in reflected responses: {{7*7}}, ${7*7}, #{7*7}, <%= 7*7 %>. A response containing 49 confirms the input is being evaluated by a template engine. Identify the engine from which syntax works (Jinja2, Twig, Freemarker, ERB) and escalate to RCE using engine-specific payload chains.",
+   "order_index": 16
+  },
+  {
+   "section": "Web Application Backend or API",
+   "text": "Test for XML, LDAP, and expression language injection",
+   "guidance": "For applications using directory services, inject LDAP special characters (*, )(, |, &) into login and search parameters. For apps with expression language (JSF, Spring), try EL syntax like ${Runtime.exec('id')}. XML injection targets parameters embedded in XML that the server constructs and re-parses. Check which applies based on the identified stack before testing.",
+   "order_index": 17
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Review HTTP security headers on application responses",
+   "guidance": "Capture responses from the main application and check for Content-Security-Policy, X-Content-Type-Options, X-Frame-Options (or frame-ancestors in CSP), Referrer-Policy, and Strict-Transport-Security. A missing or permissive CSP allows XSS to run arbitrary scripts without restriction. Document each missing or weak header and note which vulnerability class it mitigates.",
+   "order_index": 18
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Test postMessage handlers for missing origin validation",
+   "guidance": "Review JavaScript source for addEventListener('message', ...) calls. Check whether the handler validates event.origin before acting on the message. An unvalidated handler can be triggered from any origin, potentially extracting data or performing actions on the target page's behalf. Load the application in an iframe from an attacker-controlled page to test.",
+   "order_index": 19
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Test whether sensitive pages can be framed for clickjacking",
+   "guidance": "Attempt to load the application in an iframe on an external page. If the application lacks X-Frame-Options or frame-ancestors CSP, it can be overlaid with invisible elements to trick users into clicking. Focus on pages with state-changing actions: delete account, change email, approve transaction. Iframeable state-changing forms are directly exploitable.",
+   "order_index": 20
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Test reflected and stored XSS across input parameters",
+   "guidance": "Inject <script>alert(1)</script> and encoding variants into every input that reflects in the response. Identify stored XSS candidates: comments, profile fields, message subjects. Use a Burp Collaborator-based payload to confirm out-of-band callbacks for blind stored XSS. Stored XSS in an admin-facing area often yields admin session hijacking.",
+   "order_index": 21
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Test client-side frameworks for DOM-based XSS sinks",
+   "guidance": "Review JavaScript for dangerous sinks: innerHTML, document.write, eval, jQuery's .html(), and React's dangerouslySetInnerHTML. Trace data from URL fragments (location.hash), postMessage handlers, and localStorage into these sinks. DOM XSS does not hit the server, so traditional scanning misses it; manual source-to-sink tracing is required.",
+   "order_index": 22
+  },
+  {
+   "section": "Web Application Frontend",
+   "text": "Test for JSONP and deprecated Flash cross-origin access",
+   "guidance": "Search JavaScript source and network requests for JSONP callbacks (?callback=, ?jsonp=). Supply an attacker-controlled callback function name and confirm the response wraps sensitive data in it. Check for .swf files that enable cross-domain reads via Flash allowScriptAccess. JSONP is still present on many older APIs and exposes authenticated data to cross-origin requests.",
+   "order_index": 23
+  }
+ ]
+}

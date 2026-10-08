@@ -56,6 +56,7 @@ from sqlalchemy import select
 from scribble import coverage, findings_service, host, metadata
 from scribble.api_schemas import (
     AddFindingRequest,
+    BulkCreateTemplatesRequest,
     BulkMoveFindingsRequest,
     CreateEngagementRequest,
     CreateGroupRequest,
@@ -1028,6 +1029,108 @@ def scribble_create_template():
             )
             db.commit()
             return body, 201
+
+    body, status = _with_idempotency(_idempotency_key(data), _produce)
+    return jsonify(body), status
+
+
+# ── 3c. POST /templates/bulk — bulk-import a vuln library ─────────────────────────────────────────────
+
+_MAX_BULK_TEMPLATES = 1000
+_MAX_RECORD_BYTES = 256 * 1024  # per-record serialized ceiling — bulk multiplies any one record x1000
+
+
+@machine_bp.post("/templates/bulk")
+@host.require_scope("write")
+@request_body(BulkCreateTemplatesRequest)
+@idempotent_route
+def scribble_bulk_create_templates():
+    from scribble.seed.loader import build_template_from_record
+
+    data = request.get_json(silent=True) or {}
+    records = data.get("templates")
+    if not isinstance(records, list):
+        return jsonify({"error": "bad_request", "detail": "'templates' must be a list"}), 400
+    if len(records) > _MAX_BULK_TEMPLATES:
+        return (
+            jsonify({"error": "payload_too_large",
+                     "detail": f"too many templates ({len(records)}); max {_MAX_BULK_TEMPLATES}"}),
+            413,
+        )
+    # Validate every record up front so a bad element 400s the whole batch instead of committing a
+    # partial import behind a 201 (same fail-closed stance as the single-create route).
+    for i, rec in enumerate(records):
+        if not isinstance(rec, dict):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}] must be an object"}), 400
+        name = str(rec.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}] needs a non-empty name"}), 400
+        if (err := _too_long(f"templates[{i}].name", name, cap=_TEMPLATE_NAME_MAX_LEN)) is not None:
+            return err
+        # Column widths + types, up front — a 400 here instead of a Postgres truncation/500 later, and
+        # the same guards the single-create route makes (category/cvss_vector widths, severity enum).
+        cat = rec.get("category")
+        if cat is not None:
+            if not isinstance(cat, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].category must be a string"}), 400
+            if (err := _too_long(f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
+                return err
+        cvss_vector = rec.get("cvss_vector")
+        if cvss_vector is not None:
+            if not isinstance(cvss_vector, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_vector must be a string"}), 400
+            if (err := _too_long(f"templates[{i}].cvss_vector", cvss_vector, cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
+                return err
+        sev = rec.get("severity")
+        if sev is not None:
+            if not isinstance(sev, str):
+                return jsonify({"error": "bad_request", "detail": f"templates[{i}].severity must be a string"}), 400
+            try:
+                severity_enum()(sev.strip().lower())
+            except ValueError:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].severity must be one of info|low|medium|high|critical"}), 400
+        cvss_score = rec.get("cvss_score")
+        if cvss_score is not None and (isinstance(cvss_score, bool) or not isinstance(cvss_score, (int, float))):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_score must be a number"}), 400
+        if rec.get("references") is not None and not isinstance(rec.get("references"), list):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].references must be a list"}), 400
+        if rec.get("tags") is not None and not isinstance(rec.get("tags"), list):
+            return jsonify({"error": "bad_request", "detail": f"templates[{i}].tags must be a list"}), 400
+        # Sibling-gate parity with the single-create route: bound content_json block count + references
+        # length so a record can't persist an oversized document.
+        if (err := _content_bounds_error(rec)) is not None:
+            return err
+        # Persistent-DoS bound: bulk multiplies any one record up to _MAX_BULK_TEMPLATES times, so cap
+        # each record's serialized size (Description/Recommendation/content_json are otherwise unbounded).
+        if len(json.dumps(rec)) > _MAX_RECORD_BYTES:
+            return jsonify({"error": "payload_too_large",
+                            "detail": f"templates[{i}] exceeds {_MAX_RECORD_BYTES} bytes"}), 413
+
+    def _produce() -> tuple[dict, int]:
+        created: list = []
+        skipped = 0
+        with open_session() as db:
+            for rec in records:
+                # machine_authored=True: instantiable by id but excluded from AUTOMATIC promote
+                # resolution (INV-EXT-02) — same guard the single-create route applies.
+                template = build_template_from_record(db, rec, machine_authored=True)
+                if template is None:
+                    skipped += 1
+                    continue
+                db.flush()
+                created.append(template.id)
+            _audit(
+                db, "bulk_create_templates", subject_type="vuln_template",
+                subject_id=(created[0] if created else None),
+                after={"created": len(created), "skipped": skipped},
+            )
+            db.commit()
+        return (
+            {"created": len(created), "skipped": skipped, "ids": created,
+             "note": "machine_authored=true: instantiable by id, excluded from automatic promote resolution"},
+            201,
+        )
 
     body, status = _with_idempotency(_idempotency_key(data), _produce)
     return jsonify(body), status

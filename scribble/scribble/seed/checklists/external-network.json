@@ -1,0 +1,165 @@
+{
+ "slug": "external-network",
+ "name": "External Network Penetration Test",
+ "kind": "coverage",
+ "category": "external",
+ "description": "External/perimeter methodology.",
+ "items": [
+  {
+   "section": "Azure",
+   "text": "Identify Azure presence and enumerate tenant details where found",
+   "guidance": "Run AADInternals or roadrecon against scoped domains to map the tenant. Pull the tenant ID, federation type, and any exposed O365 services. Tenant visibility shapes what credential attacks are viable later.",
+   "order_index": 0
+  },
+  {
+   "section": "General",
+   "text": "Probe DNS services for common weaknesses",
+   "guidance": "Query each DNS server for zone transfer (AXFR). Test for open recursion. Check subdomain takeover candidates with dig against dangling CNAME targets. A successful zone transfer hands the team the full internal hostname map without any further recon.",
+   "order_index": 1
+  },
+  {
+   "section": "General",
+   "text": "Enumerate HTTP application content and hidden endpoints",
+   "guidance": "Run ffuf or feroxbuster against all HTTP services with a wordlist tuned to the target stack. Flag directory listings, backup files (.bak, .old, .swp), login panels, and admin interfaces. These surface credentials and bypass opportunities that web app testing can then exploit.",
+   "order_index": 2
+  },
+  {
+   "section": "General",
+   "text": "Test IPsec VPN servers for IKEv1 weaknesses",
+   "guidance": "Use ike-scan to fingerprint VPN endpoints and confirm IKEv1 support. IKEv1 aggressive mode leaks the pre-shared key hash before authentication completes. Capture it with ikeforce and feed it to hashcat. IKEv2-only configurations are not affected.",
+   "order_index": 3
+  },
+  {
+   "section": "General",
+   "text": "Probe Exchange for Global Address List access",
+   "guidance": "If credentials are available, connect to Exchange Web Services or OWA and pull the GAL using ruler or MailSniper. A full GAL accelerates both phishing and password-spraying by supplying confirmed email addresses and display names.",
+   "order_index": 4
+  },
+  {
+   "section": "General",
+   "text": "Discover overlooked subdomains and assess those in scope",
+   "guidance": "Run amass and subfinder, and pull passive sources (SecurityTrails, crt.sh) against target domains. Each new subdomain is a potential new attack surface. Flag forgotten staging and dev instances for the client — these tend to be softer targets than production.",
+   "order_index": 5
+  },
+  {
+   "section": "General",
+   "text": "Attack exposed applications and services",
+   "guidance": "Cross-reference service versions from the scan against NVD, ExploitDB, and vendor advisories. Test promising CVEs with public PoCs against non-critical targets first. End-of-life software that cannot be patched is a finding regardless of whether active exploitation succeeds.",
+   "order_index": 6
+  },
+  {
+   "section": "General",
+   "text": "Find exposed admin interfaces and test credentials",
+   "guidance": "Review scan results for ports associated with admin panels: SSH, RDP, HTTP on non-standard ports, IPMI, iDRAC, and similar. Test each reachable interface against a credential list built from defaults and OSINT. A successful login here typically yields privileged access with no further exploitation needed.",
+   "order_index": 7
+  },
+  {
+   "section": "General",
+   "text": "Test exposed web applications for application-layer weaknesses",
+   "guidance": "For each in-scope web application, run the web application test methodology. Prioritize authentication, injection points, and access controls. Applications at the perimeter carry higher risk because a web shell or stolen credential gives direct internal access without network pivoting.",
+   "order_index": 8
+  },
+  {
+   "section": "General",
+   "text": "Identify domain-backed auth services and spray with low-noise credential guesses",
+   "guidance": "Look for OWA, ADFS, VPN login pages, and Citrix portals. Pull the account lockout policy before spraying. Use one password guess per account per lockout window and a tool that enforces delays (SprayingToolkit, MSOLSpray). A hit here often means domain access without touching the internal network.",
+   "order_index": 9
+  },
+  {
+   "section": "General",
+   "text": "Assess accessible printers and scanners for information exposure",
+   "guidance": "Browse the web interfaces of reachable printers and multifunction devices. Retrieve stored fax numbers, address books, and recent scan jobs. Many devices expose an LDAP credential in their configuration pages. Older models sometimes allow unauthenticated PostScript execution.",
+   "order_index": 10
+  },
+  {
+   "section": "General",
+   "text": "Review exposed services for missing authentication or authorization controls",
+   "guidance": "For each service that presents a login prompt or an unauthenticated API, confirm whether authentication is actually enforced. Attempt direct access to restricted resources without credentials. A service that answers queries without authentication is a finding even if the data returned looks benign in this instance.",
+   "order_index": 11
+  },
+  {
+   "section": "General",
+   "text": "Scan exposed services for known exploitable software versions",
+   "guidance": "Run Nessus or OpenVAS, credentialed where possible. Map each identified CVE to a CVSS score and available exploit. Prioritize CVEs with Metasploit modules or weaponized public PoCs for immediate manual testing. Critical CVEs (CVSS 9+) go to the front of the queue.",
+   "order_index": 12
+  },
+  {
+   "section": "General",
+   "text": "Test file sharing services for unauthorized access and sensitive data",
+   "guidance": "Probe FTP, NFS, SMB, and TFTP for unauthenticated or anonymous access. On SMB, use smbclient or CrackMapExec to list shares and check read/write permissions. Writable shares on paths that domain controllers access can be used for credential capture or code execution.",
+   "order_index": 13
+  },
+  {
+   "section": "General",
+   "text": "Enumerate SSL/TLS weaknesses across exposed services",
+   "guidance": "Run testssl.sh or sslyze against all TLS-enabled services. Flag SSLv2, SSLv3, TLS 1.0, and TLS 1.1 support. Note weak ciphers (RC4, DES, export-grade). Check certificate validity, hostname matching, and HSTS presence. Deprecated protocol support allows downgrade attacks and plaintext recovery.",
+   "order_index": 14
+  },
+  {
+   "section": "General",
+   "text": "Confirm which services transmit data in cleartext",
+   "guidance": "For each exposed service, verify whether it enforces encryption. Connect to common cleartext services (Telnet, FTP, HTTP, SMTP without STARTTLS) and confirm that credentials are visible in a packet capture. A service transmitting authentication in cleartext is a finding even if no credentials are actively in use.",
+   "order_index": 15
+  },
+  {
+   "section": "General",
+   "text": "Test login-capable services for default or factory credentials",
+   "guidance": "Build a target list from scan results: SSH, Telnet, HTTP admin panels, databases. Check vendor documentation for default credentials on each identified product. Test a short list of high-probability defaults before broader dictionary attacks to avoid lockout. Default credentials on internet-facing services are typically immediate criticals.",
+   "order_index": 16
+  },
+  {
+   "section": "General",
+   "text": "Test mail services for user enumeration and relay abuse",
+   "guidance": "Connect to exposed SMTP servers and test for open relay with a message addressed outside the target domain. Issue VRFY and EXPN commands to check for user enumeration. Note whether STARTTLS is available and enforced. An open relay allows spoofing; VRFY enumeration feeds the password-spray target list.",
+   "order_index": 17
+  },
+  {
+   "section": "General",
+   "text": "Test for Log4Shell (CVE-2021-44228)",
+   "guidance": "Inject JNDI lookup payloads (${jndi:ldap://...}) into HTTP headers (User-Agent, X-Forwarded-For, X-Api-Version) and form fields. Use Interactsh or Burp Collaborator to catch DNS callbacks confirming payload execution. A callback confirms a vulnerable Log4j version and that outbound DNS egress is permitted from the target.",
+   "order_index": 18
+  },
+  {
+   "section": "General",
+   "text": "Fingerprint web applications and their technology stack",
+   "guidance": "Use whatweb, Wappalyzer, or manual header inspection to identify server software, framework, and version for each web application. Stack knowledge focuses subsequent testing on the correct vulnerability classes and avoids time spent on inapplicable attack paths.",
+   "order_index": 19
+  },
+  {
+   "section": "General",
+   "text": "Triage scan output for attack-relevant services",
+   "guidance": "After scanning, read the service list as an attacker would. Group by risk tier: authentication services, admin interfaces, potentially vulnerable software, and unexpectedly open ports. This review sets the testing priority — not just what is reachable, but what is worth hitting first.",
+   "order_index": 20
+  },
+  {
+   "section": "General",
+   "text": "Map the exposed attack surface",
+   "guidance": "Run a full TCP port scan against all in-scope IPs (nmap -sV -p- or masscan for speed). Follow with UDP scans on common ports (53, 161, 500). The complete picture of what is reachable from outside is the baseline every subsequent check depends on.",
+   "order_index": 21
+  },
+  {
+   "section": "General",
+   "text": "Collect previously compromised credentials from public sources",
+   "guidance": "Search Have I Been Pwned, DeHashed, and paste sites for credentials tied to the target domain. Test discovered passwords against identified login services. Reused passwords from old breaches are one of the most reliable initial access paths and require no exploitation.",
+   "order_index": 22
+  },
+  {
+   "section": "General",
+   "text": "Map the target's digital footprint through passive sources",
+   "guidance": "Use Shodan, Censys, WHOIS, and certificate transparency logs to build an asset inventory independent of what the client declared in scope. Check cloud storage (S3, Azure Blob, GCS) for publicly accessible buckets. EyeWitness or gowitness gives a fast visual triage of what is running on each host.",
+   "order_index": 23
+  },
+  {
+   "section": "General",
+   "text": "Stand up the testing environment",
+   "guidance": "Configure the attack host with required tooling: Nmap, Metasploit, Burp Suite, Nessus or OpenVAS, and credential lists. Connect via VPN or jump box to the target network. Document the source IPs that will generate traffic so the client can correlate them in their logs if needed.",
+   "order_index": 24
+  },
+  {
+   "section": "Wordpress",
+   "text": "Enumerate WordPress versions and plugins",
+   "guidance": "Run WPScan against identified WordPress installations. Pull the WordPress core version, active plugins, and plugin versions. Cross-reference each against WPVulnDB. Outdated plugins are the most common initial access path into WordPress sites and frequently have public exploit code ready to go.",
+   "order_index": 25
+  }
+ ]
+}

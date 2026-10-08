@@ -1,0 +1,225 @@
+{
+ "slug": "internal-network-unauth",
+ "name": "Internal Network Penetration Test (Unauthenticated)",
+ "kind": "coverage",
+ "category": "internal",
+ "description": "Internal methodology, no credentials supplied.",
+ "items": [
+  {
+   "section": "Active Directory",
+   "text": "Assess LAPS and PAM service deployment",
+   "guidance": "Query Active Directory for ms-Mcs-AdmPwdExpirationTime and related LAPS attributes to confirm whether LAPS is deployed and on which systems. Check which accounts beyond Domain Admins can read ms-Mcs-AdmPwd. Missing LAPS coverage means local admin passwords are likely identical across machines, making lateral movement trivial after a single compromise.",
+   "order_index": 0
+  },
+  {
+   "section": "Active Directory",
+   "text": "Test accounts for null or blank passwords",
+   "guidance": "Search Active Directory for accounts with the PASSWD_NOTREQD flag set in userAccountControl. Attempt authentication to SMB and LDAP with a blank password for each. Accounts that accept blank passwords bypass credential hardening entirely.",
+   "order_index": 1
+  },
+  {
+   "section": "Active Directory",
+   "text": "Enumerate domain accounts via Kerberos pre-authentication responses",
+   "guidance": "Submit username guesses to the KDC on port 88 using kerbrute. A KDC_ERR_PREAUTH_REQUIRED response confirms the account exists; KDC_ERR_C_PRINCIPAL_UNKNOWN means it does not. Valid account names feed both the password spray and AS-REP roasting phases.",
+   "order_index": 2
+  },
+  {
+   "section": "Network",
+   "text": "Request service tickets for Kerberoastable accounts",
+   "guidance": "Use GetUserSPNs.py (Impacket) or Rubeus to request TGS tickets for all accounts with service principal names. Write the hashes to file and crack offline with hashcat mode 13100. Service accounts with SPNs and weak passwords are common; a cracked hash often enables privileged lateral movement without touching the domain controller.",
+   "order_index": 3
+  },
+  {
+   "section": "Network",
+   "text": "Test FTP servers for anonymous access",
+   "guidance": "Connect to each FTP server with username 'anonymous' and any password. List the directory tree and download anything that looks sensitive: config files, backups, scripts. Writable anonymous FTP can also stage files for delivery to other internal hosts.",
+   "order_index": 4
+  },
+  {
+   "section": "Network",
+   "text": "Test for HSRP and assess the authentication secret",
+   "guidance": "Listen for HSRP multicast traffic on the network segment with Wireshark or Scapy. If HSRP is present, check whether the default plaintext key ('cisco') is in use. An attacker who wins the HSRP election becomes the virtual gateway and can intercept all traffic routed through it.",
+   "order_index": 5
+  },
+  {
+   "section": "Network",
+   "text": "Probe IPMI for cipher zero and unauthenticated BMC access",
+   "guidance": "Scan for UDP 623 with ipmitool or Metasploit's IPMI scanner. Test for cipher zero (authentication type 0), which accepts any password. Attempt to dump BMC password hashes using the RAKP flaw (MSF module ipmi_dumphashes). IPMI access yields out-of-band console control over the host.",
+   "order_index": 6
+  },
+  {
+   "section": "Network",
+   "text": "Test exposed JDWP ports for remote code execution",
+   "guidance": "Scan for JDWP on common ports (5005, 8000, 9000). If found, use jdwp-shellifier or a Metasploit module to attempt code injection into the running JVM. JDWP with no authentication grants full code execution as the JVM process user, typically on an application server.",
+   "order_index": 7
+  },
+  {
+   "section": "Network",
+   "text": "Test JMS brokers for deserialization vulnerabilities",
+   "guidance": "Scan for JMS brokers (ActiveMQ on 61616, RabbitMQ on 5672). Send a ysoserial payload targeting the identified broker's classpath. Successful deserialization executes arbitrary commands on the server. ActiveMQ has multiple historical CVEs in this class; confirm the version before testing.",
+   "order_index": 8
+  },
+  {
+   "section": "Network",
+   "text": "Confirm LDAP signing and channel binding enforcement",
+   "guidance": "Use ldapdomaindump or an Impacket LDAP check to verify whether the domain requires LDAP signing and channel binding. Without both controls, NTLM relay to LDAP can create new computer accounts or modify ACLs, enabling privilege escalation from any user with relay access.",
+   "order_index": 9
+  },
+  {
+   "section": "Network",
+   "text": "Test domain controllers for anonymous LDAP read access",
+   "guidance": "Attempt an anonymous LDAP bind to domain controllers on ports 389 and 636. If successful, query for all user, group, and computer objects. Read-only anonymous LDAP access exposes the full AD structure and is enough to run AS-REP roasting and targeted password spraying without any credentials.",
+   "order_index": 10
+  },
+  {
+   "section": "Network",
+   "text": "Test SAP services for known exploitation paths",
+   "guidance": "Identify SAP services by port (3200-3299 for DIAG, 8000/8443 for ICM). Use Metasploit SAP modules or bizploit to test for anonymous access and known CVEs. SAP systems often hold ERP data and financial records; command execution through a misconfigured ICM is an immediate critical.",
+   "order_index": 11
+  },
+  {
+   "section": "Network",
+   "text": "Check SMB signing enforcement across the network",
+   "guidance": "Use CrackMapExec (cme smb) or Nmap's smb-security-mode script to identify hosts where signing is not required. Hosts without required SMB signing accept NTLM relay attacks. In most environments the majority of workstations are vulnerable; the question is whether there is a useful relay target.",
+   "order_index": 12
+  },
+  {
+   "section": "Network",
+   "text": "Test SMTP servers for open relay",
+   "guidance": "Connect to each SMTP server and attempt to relay a message from an external address to an external address (both outside the target domain). Use swaks or manual SMTP commands. An open relay allows sending mail as any address, which supports phishing; it is a finding regardless of whether exploitation occurs.",
+   "order_index": 13
+  },
+  {
+   "section": "Network",
+   "text": "Test SNMP with default community strings",
+   "guidance": "Scan for UDP 161 and 162. Send SNMP GET requests using 'public', 'private', and 'community' strings. A successful read returns system information, interface tables, and sometimes full routing tables. SNMPv1 and v2c transmit community strings in cleartext, making them capturable from a passive position on the same segment.",
+   "order_index": 14
+  },
+  {
+   "section": "Network",
+   "text": "Test SQL servers for misconfigurations and weak credentials",
+   "guidance": "Scan for SQL services (MSSQL on 1433, MySQL on 3306, PostgreSQL on 5432). Attempt authentication with blank credentials and service-default accounts (sa for MSSQL). On MSSQL, check whether xp_cmdshell is enabled. Linked server chains sometimes allow privilege escalation across multiple database servers with a single credential.",
+   "order_index": 15
+  },
+  {
+   "section": "Network",
+   "text": "Test TFTP servers for configuration file access",
+   "guidance": "Connect to identified TFTP servers and attempt to retrieve common configuration files by name (startup-config, running-config). TFTP has no authentication. Network device configurations stored on TFTP often contain SNMP community strings, enable secrets, and VPN pre-shared keys in plaintext.",
+   "order_index": 16
+  },
+  {
+   "section": "Network",
+   "text": "Test for VLAN hopping via trunk negotiation",
+   "guidance": "Determine whether any switch port is configured with DTP auto-negotiation enabled. Send DTP frames using Yersinia or Scapy to trigger trunk negotiation. A successful attack moves traffic into VLANs the test host is not assigned to, bypassing network segmentation. Note: this requires physical or layer-2 access to the target segment.",
+   "order_index": 17
+  },
+  {
+   "section": "Network",
+   "text": "Identify internal applications and enumerate their attack surface",
+   "guidance": "From service scan results, build a list of internal web applications, custom services, and management consoles. For each, fingerprint the stack and apply the web application testing methodology. Internal apps tend to be less hardened than perimeter-facing ones and often lack WAF protection or egress filtering.",
+   "order_index": 18
+  },
+  {
+   "section": "Network",
+   "text": "Test known-vulnerable software for deserialization flaws",
+   "guidance": "Target JBoss, Jenkins, and WebLogic with ysoserial payloads generated against the identified classpath. Deliver payloads through the relevant interface (HTTP, T3, AMF). Deserialization vulnerabilities typically yield RCE as the service account without any credentials needed.",
+   "order_index": 19
+  },
+  {
+   "section": "Network",
+   "text": "Map privileged group membership for compromised accounts",
+   "guidance": "For each account that yields access, run a recursive group membership query (Get-ADGroupMember -Recursive or ldapsearch). Flag membership in Domain Admins, Enterprise Admins, Backup Operators, Account Operators, and any custom delegation groups. Nested group membership is frequently overlooked and grants unexpected privilege.",
+   "order_index": 20
+  },
+  {
+   "section": "Network",
+   "text": "Check deployed software against current critical advisories",
+   "guidance": "Cross-reference identified service versions against current critical CVEs, focusing on those with weaponized PoCs or active exploitation (check CISA KEV and EPSS scores). For Log4j, inject JNDI payloads in HTTP headers and monitor for DNS callbacks via Interactsh. Emerging threats are worth checking before the formal vulnerability scan completes.",
+   "order_index": 21
+  },
+  {
+   "section": "Network",
+   "text": "Spoof LLMNR and NetBIOS-NS to capture authentication hashes",
+   "guidance": "Run Responder on the test interface throughout the internal assessment. It poisons LLMNR, NBT-NS, and mDNS queries to capture NTLMv1 and NTLMv2 hashes from any host making a failed name resolution request. Feed captured hashes to hashcat. NTLMv1 cracks in hours; NTLMv2 depends on password complexity.",
+   "order_index": 22
+  },
+  {
+   "section": "Network",
+   "text": "Build a live host and subnet map of the target environment",
+   "guidance": "Obtain the IP range list from the client or derive it from Active Directory and DNS. Run a fast host discovery pass (nmap -sn or masscan ping sweep) before full scanning. Mapping subnets early reveals segmentation gaps and helps prioritize which ranges to scan in depth.",
+   "order_index": 23
+  },
+  {
+   "section": "Network",
+   "text": "Run a credentialed vulnerability scan of target networks",
+   "guidance": "Configure Nessus with domain credentials for a credentialed scan against all discovered hosts. Credentialed results surface local configuration weaknesses (missing patches, insecure service configs, local user accounts) that an unauthenticated scan misses. Review output manually before relying on automated severity prioritization.",
+   "order_index": 24
+  },
+  {
+   "section": "Network",
+   "text": "Confirm PCI DSS applicability and adjust testing scope",
+   "guidance": "Clarify with the engagement team whether any in-scope systems are part of the cardholder data environment. If so, PCI DSS v4.0 penetration testing requirements apply, including explicit scope validation and segmentation testing. Confirm this before testing begins — it affects deliverable format and required coverage.",
+   "order_index": 25
+  },
+  {
+   "section": "Network",
+   "text": "Catalog service versions and flag known vulnerabilities",
+   "guidance": "Run nmap -sV against live hosts and collect service banners. Feed results to the vulners NSE script or cross-match against NVD manually for high-value targets. The goal at this stage is building the target list for manual exploitation, not producing a scan report.",
+   "order_index": 26
+  },
+  {
+   "section": "Network",
+   "text": "Escalate privileges on Unix hosts after gaining a shell",
+   "guidance": "Once a shell is obtained on a Unix host, run LinPEAS or check manually: SUID binaries, writable cron jobs, sudo misconfigurations, kernel version against known local exploits, and world-writable paths in root-owned scripts. Document the effective UID at each step. The goal is root or an account with domain or service-level access.",
+   "order_index": 27
+  },
+  {
+   "section": "Network",
+   "text": "Escalate privileges on Windows hosts after gaining a shell",
+   "guidance": "Once a shell is obtained on a Windows host, run WinPEAS or check manually: SeImpersonatePrivilege (Potato attacks), unquoted service paths, writable service binaries, DLL hijacking candidates, and AlwaysInstallElevated registry keys. Also check for stored credentials in Credential Manager, the registry, and PowerShell history files.",
+   "order_index": 28
+  },
+  {
+   "section": "Network",
+   "text": "Test Active Directory for dangerous delegation configurations",
+   "guidance": "Use BloodHound or Get-ADComputer/Get-ADUser with -Filter {TrustedForDelegation -eq $true} to identify accounts and computers with unconstrained delegation. Unconstrained delegation on a non-DC captures the TGT of any Kerberos authenticating user, including Domain Admins. Constrained and resource-based delegation have separate exploitation paths via Impacket's getST.py.",
+   "order_index": 29
+  },
+  {
+   "section": "Network",
+   "text": "Scan target subnets for live hosts, open ports, and services",
+   "guidance": "Run a full TCP port scan (nmap -sV -p- --open) against each subnet after the host discovery sweep. Follow with service version detection on interesting ports. Organize results by host so testing can proceed host by host rather than service by service.",
+   "order_index": 30
+  },
+  {
+   "section": "Network",
+   "text": "Map which ports are available for outbound connections from inside the network",
+   "guidance": "From the internal foothold, attempt outbound connections on common ports (80, 443, 8080, 8443, 53, and a selection of higher ports) to an externally controlled listener. Open outbound ports are the channels available for C2 callbacks and data exfiltration, and confirm whether egress filtering exists at all.",
+   "order_index": 31
+  },
+  {
+   "section": "Network",
+   "text": "Spray one or two passwords against enumerated domain accounts",
+   "guidance": "Pull the domain password policy before spraying (lockout threshold, observation window). Use DomainPasswordSpray or CrackMapExec to spray one password at a time, staying below the lockout count. Start with seasonal patterns (Season+Year) and the organization name. Document the lockout policy and spray timing so the test is reproducible.",
+   "order_index": 32
+  },
+  {
+   "section": "Network",
+   "text": "Remove all testing artifacts after the assessment",
+   "guidance": "Delete all files, accounts, and scheduled tasks created during the assessment. Revert any configuration changes made to demonstrate a finding. Account for each artifact against the tool list. Unremoved tools and accounts create ongoing risk after the engagement closes.",
+   "order_index": 33
+  },
+  {
+   "section": "Network",
+   "text": "Stand up the internal testing environment",
+   "guidance": "Deploy the attack host on the target network segment with required tooling: Nmap, Metasploit, Impacket, BloodHound/SharpHound, CrackMapExec, and Responder. Confirm network connectivity to target subnets and document the source IP with the client. Establish a pivot or VPN connection if testing remotely.",
+   "order_index": 34
+  },
+  {
+   "section": "Network",
+   "text": "Test exposed JMX RMI endpoints for command execution",
+   "guidance": "Scan for JMX RMI on common ports (1099, 9010, 8686). Connect using mjet or Metasploit's JMX modules and attempt to invoke a command via MBeans. JMX with no authentication allows arbitrary Java code execution as the service account. This is common on JBoss and Tomcat instances where JMX is left enabled for monitoring.",
+   "order_index": 35
+  }
+ ]
+}

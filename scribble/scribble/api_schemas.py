@@ -187,6 +187,25 @@ class CreateTemplateRequest(BaseModel):
     )
 
 
+class BulkCreateTemplatesRequest(BaseModel):
+    """Body of ``POST /scribble/machine/templates/bulk`` — create many vuln templates at once (write
+    scope). Idempotent by template name: a name already in the library is skipped, not duplicated.
+
+    Each element accepts the merged-library record shape: ``{name, category, severity, cvss_score,
+    cvss_vector, references[], tags[], Description, Recommendation}`` (``Description``/``Recommendation``
+    are FACTION-style HTML parsed into content blocks, client tokens normalized to ``{{COMPANY_NAME}}``),
+    or a prebuilt ``content_json``. As with the single-create route, bulk-created templates are
+    ``machine_authored`` — instantiable by id but excluded from AUTOMATIC promote resolution.
+    """
+
+    templates: list[dict[str, Any]] = Field(
+        ..., description="List of template records (max 1000). Each needs at least a non-empty 'name'."
+    )
+    idempotency_key: str | None = Field(
+        None, description="Dedup key (or Idempotency-Key header); a retry replays the original response."
+    )
+
+
 class PatchFindingRequest(BaseModel):
     """Body of ``PATCH /scribble/machine/findings/{finding_id}`` (write scope) — partial edit.
 

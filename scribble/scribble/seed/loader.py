@@ -18,11 +18,13 @@ from sqlalchemy import select
 
 from scribble.content import render_html
 from scribble.enums import ChecklistKind, Severity, VariableScope, VariableType
+from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.models import (
     AssessmentType,
     ChecklistTemplate,
     ChecklistTemplateItem,
     ScribbleVulnMap,
+    Tag,
     TemplateVariable,
     VulnerabilityTemplate,
 )
@@ -141,6 +143,94 @@ def import_vuln_templates(session, json_path: str | Path | None = None) -> int:
 
 _LOTEK_JSON = Path(__file__).parent / "lotek_vulnerabilities.json"
 _DEFAULT_VULN_MAP_JSON = Path(__file__).parent / "lotek_vuln_map.json"
+_CURATED_JSON = Path(__file__).parent / "curated_vulnerabilities.json"
+
+
+def _get_or_create_tags(session, names) -> list[Tag]:
+    """Resolve tag names to Tag rows, creating any that don't exist. De-duped, order-preserving."""
+    tags: list[Tag] = []
+    seen: set[str] = set()
+    for raw in names or []:
+        name = str(raw).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        tag = session.scalar(select(Tag).where(Tag.name == name))
+        if tag is None:
+            tag = Tag(name=name)
+            session.add(tag)
+        tags.append(tag)
+    return tags
+
+
+def import_curated_templates(session, json_path: str | Path | None = None) -> int:
+    """Import the curated library (``curated_vulnerabilities.json``) into the template library.
+
+    Idempotent by name (same contract as ``import_vuln_templates``). Richer than the FACTION importer:
+    preserves ``references``, CVSS score/vector, and applicability/CWE ``tags``. Each record's
+    ``Description`` (``# Description``/``# Impact``/``# Replication Steps`` markers + HTML) and
+    ``Recommendation`` (HTML) are parsed into ``description``/``details``/``remediation`` ProseMirror
+    blocks by ``faction_parse.build_template_blocks`` -- which also normalizes ``{{client}}`` -> the
+    ``{{COMPANY_NAME}}`` builtin. Author fill-ins are single-brace (jinja-inert) by construction of the
+    seed file. Human-authored (``machine_authored=False``) so these DO take part in promote resolution.
+    """
+    path = Path(json_path) if json_path else _CURATED_JSON
+    if not path.exists():
+        return 0
+    records = json.loads(path.read_text())
+    added = 0
+    for rec in records:
+        if build_template_from_record(session, rec, machine_authored=False) is not None:
+            added += 1
+    return added
+
+
+def build_template_from_record(
+    session, rec: dict, *, machine_authored: bool
+) -> VulnerabilityTemplate | None:
+    """Create one ``VulnerabilityTemplate`` from a seed/bulk record, or None if a template with that
+    name already exists (idempotent by name). Shared by the boot seeder and the bulk machine API.
+
+    Record shape: ``{name, category, severity, cvss_score, cvss_vector, references[], tags[],
+    Description (FACTION-style HTML), Recommendation (HTML)}``. ``Description``/``Recommendation`` are
+    parsed into ProseMirror blocks (client tokens normalized to ``{{COMPANY_NAME}}``); if the record
+    instead carries a prebuilt ``content_json`` it is used verbatim.
+    """
+    name = (rec.get("name") or "").strip()
+    if not name:
+        return None
+    if session.scalar(select(VulnerabilityTemplate).where(VulnerabilityTemplate.name == name)):
+        return None
+    if isinstance(rec.get("content_json"), dict) and rec["content_json"]:
+        content_json = rec["content_json"]
+    else:
+        content_json = faction_parse.build_template_blocks(
+            rec.get("Description", ""), rec.get("Recommendation", "")
+        )
+    # Stored-XSS gate: run every block through the ProseMirror sanitizer before persist — the same
+    # control the single-create route applies — so a bulk/machine caller supplying raw content_json
+    # cannot plant markup that executes when the report is opened.
+    content_json = sanitize_content_json(content_json)
+    content_html = {block: _block_html(doc) for block, doc in content_json.items()}
+    try:
+        severity = Severity((rec.get("severity") or "medium").strip().lower())
+    except (ValueError, AttributeError):
+        severity = Severity.medium
+    template = VulnerabilityTemplate(
+        name=name,
+        category=rec.get("category"),
+        default_severity=severity,
+        cvss_score=rec.get("cvss_score"),
+        cvss_vector=rec.get("cvss_vector"),
+        content_json=content_json,
+        content_html=content_html,
+        references=list(rec.get("references") or []),
+        active=True,
+        machine_authored=machine_authored,
+    )
+    template.tags = _get_or_create_tags(session, rec.get("tags"))
+    session.add(template)
+    return template
 
 
 def seed_vuln_map(session, json_path: str | Path | None = None) -> int:
@@ -370,6 +460,7 @@ def seed_defaults(session, *, import_library: bool = True) -> dict[str, int]:
     if import_library:
         templates = import_vuln_templates(session)                 # FACTION default library
         templates += import_vuln_templates(session, _LOTEK_JSON)   # lotek AD/network vuln-DB entries
+        templates += import_curated_templates(session)                  # curated library (263 entries)
         vuln_map = seed_vuln_map(session)                           # lotek finding -> template mapping
     result = {
         "assessment_types": seed_assessment_types(session),
