@@ -334,6 +334,12 @@ class StubHost:
         # End-to-end collapse against the real bucketer is proven mounted in core's suite.
         self.group_findings_calls: list[tuple[list, str]] = []
         self.group_findings_value: list = []
+        # #1323 per-finding promotion: every mark_finding_promoted attempt, and the fill-NULL-only state
+        # that makes a conflicting re-stamp return False (mirrors core). `backfill_calls` logs each
+        # backfill batch handed to the host seam.
+        self.finding_promotion_calls: list[tuple] = []
+        self._finding_promotion_of: dict[Any, tuple[str, Any]] = {}
+        self.backfill_calls: list[list] = []
 
     def engagement_summaries(self) -> list[dict]:
         return list(self.engagement_summaries_value)
@@ -399,6 +405,29 @@ class StubHost:
         (`user_can_view_job`) is the real host's concern and proven mounted; the stub returns the
         registered index (`_actor` unused — the engagement view is already authorized upstream)."""
         return list(self._promoted_jobs.get((extension, ref_id), []))
+
+    def mark_finding_promoted(self, finding_id, actor, *, extension: str, ref_id) -> bool:
+        """Core #1323's per-finding stamp, faithfully: refuse-on-conflict (a finding already stamped to a
+        DIFFERENT target returns False) + idempotent same-target. `finding_promotion_calls` logs EVERY
+        attempt so a test can assert exactly which findings the route stamped, and with which board ref."""
+        self.finding_promotion_calls.append((finding_id, actor, extension, ref_id))
+        current = self._finding_promotion_of.get(finding_id)
+        if current is not None and current != (extension, ref_id):
+            return False
+        self._finding_promotion_of[finding_id] = (extension, ref_id)
+        return True
+
+    def finding_promoted_refs(self, job_id, actor) -> dict:  # noqa: ARG002 - job scoping is the host's
+        """Core #1323 badge read: {finding_id_str: ref} for findings stamped so far (the stub has no job
+        index, so it returns every stamped finding — a test drives one job at a time)."""
+        return {str(fid): ref for fid, (_ext, ref) in self._finding_promotion_of.items()}
+
+    def backfill_finding_promotions(self, pairs) -> int:
+        """Core #1323 backfill seam. The stub records the pairs and returns the count — the real
+        fill-NULL-only stamping is proven in core's own suite (test_host_finding_promoted.py)."""
+        pairs = list(pairs)
+        self.backfill_calls.append(pairs)
+        return len(pairs)
 
     def can_view_client(self, client_id: int | None, actor: Any | None = None) -> bool:
         """The host's client-scoped read gate (`app/extensions.py` injects the real one).
@@ -534,6 +563,9 @@ def _wire_stub_host(cfg, stub: StubHost) -> None:
     cfg.extras["pat_actor"] = pat_actor
     cfg.extras["resolve_asset"] = lambda session, identifier: None  # noqa: ARG005
     cfg.extras["mark_job_promoted"] = stub.mark_job_promoted
+    cfg.extras["mark_finding_promoted"] = stub.mark_finding_promoted
+    cfg.extras["finding_promoted_refs"] = stub.finding_promoted_refs
+    cfg.extras["backfill_finding_promotions"] = stub.backfill_finding_promotions
     cfg.extras["list_jobs"] = stub.list_jobs
     cfg.extras["remove_job_adoption"] = stub.remove_job_adoption
     cfg.extras["can_view_client"] = stub.can_view_client

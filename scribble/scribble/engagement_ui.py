@@ -522,6 +522,80 @@ def register(api_bp, bp) -> None:
             db.commit()
             return redirect(url_for("scribble.engagement_board", engagement_id=board.id))
 
+    @bp.post(
+        "/engagements/by-core/<core_id>/promote-findings/<job_id>",
+        endpoint="promote_findings_by_core",
+    )
+    def promote_findings_by_core(core_id, job_id):
+        """Per-finding "Add selected to report" (#1323): the SELECTED-subset twin of
+        ``adopt_job_by_core``. The findings tab POSTs the chosen core finding ids (``finding_ids`` form
+        fields, CSRF-protected); this pours ONLY those onto the board anchored to the job's core
+        engagement, then stamps each promoted core finding via the host ``mark_finding_promoted`` seam so
+        the Promoted badge lights without a reload.
+
+        Reuses the ONE promote implementation (``promote.promote_job`` on the selected subset — NOT a
+        second promote path): the subset nests under shared parents and dedupes exactly like a whole-job
+        promote, and ``false_positive`` / ``accepted_risk`` are skipped inside it. A requested id that is
+        not one of the job's findings 404s (``select_job_findings`` -> ``FindingNotInJob``), no existence
+        leak. WRITE-gated + tenancy-gated (``can_operate_on``, one 404 on failure), same as
+        ``adopt_job_by_core``."""
+        if not host_can_write():
+            abort(403)
+        try:
+            key = uuid.UUID(str(core_id))
+        except (ValueError, AttributeError):
+            abort(404)
+        if not host.can_operate_on(key):
+            abort(404)
+        job_id = (job_id or "").strip()
+        finding_ids = request.form.getlist("finding_ids")
+        actor = current_actor()
+        refs: dict = {}
+        board_id = None
+        with open_session() as db:
+            board = _board_for_core(db, key)
+            findings_ns = host.findings()
+            job = findings_ns.get_job(job_id, actor) if (job_id and findings_ns is not None) else None
+            if job is not None:
+                from scribble.promote import (  # lazy: promote.py is Track D's file
+                    CrossEngagementPromote,
+                    FindingNotInJob,
+                    assert_promote_anchor,
+                    promote_job,
+                    select_job_findings,
+                )
+                # Anchor FIRST (#845), before any write — a cross-engagement promote rolls the fresh
+                # board back with it (commit is last), identical to adopt_job_by_core.
+                try:
+                    assert_promote_anchor(board, getattr(job, "engagement_id", None))
+                except CrossEngagementPromote as exc:
+                    abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, but this "
+                               f"report board is anchored to engagement {exc.anchor}. Reassign it first.")
+                dtos = findings_ns.list_findings(job_id, actor)
+                try:
+                    selected = select_job_findings(dtos, finding_ids)
+                except FindingNotInJob:
+                    abort(404)  # an id outside this job — indistinguishable from a missing one
+                if selected:
+                    result = promote_job(
+                        db, engagement=board, findings=selected,
+                        actor_username=current_actor_username(),
+                        job_engagement_id=getattr(job, "engagement_id", None),
+                    )
+                    refs = result.get("refs", {})
+            board_id = board.id
+            # An unknown/unviewable job leaves the board created + empty (exactly a bare import), redirect
+            # to it — real-vs-bogus job indistinguishable in the response (no existence oracle).
+            db.commit()
+        # Host-contract stamps AFTER the scribble commit (separate engine), best-effort: a finding ref
+        # pointing at a rolled-back board row must never be written. Per-finding stamp + keep the
+        # derived job-level columns in sync for the Details-tab UI.
+        for fid, ref in refs.items():
+            host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
+        if refs:
+            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=board_id)
+        return redirect(url_for("scribble.engagement_board", engagement_id=board_id))
+
     # =============================================================================== UI: edit / delete
 
     @bp.get("/engagements/<uuid:engagement_id>/edit", endpoint="engagement_edit_page")

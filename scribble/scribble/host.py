@@ -170,6 +170,77 @@ def mark_job_promoted(job_id, actor_obj, *, extension: str, ref_id: int) -> bool
     return bool(hook(job_id, actor_obj, extension=extension, ref_id=ref_id))
 
 
+def mark_finding_promoted(finding_id, actor_obj, *, extension: str, ref_id) -> bool:
+    """Per-finding promotion stamp (core #1323): the finding-level twin of ``mark_job_promoted``.
+    View-gated on the finding's owning job + refuse-on-conflict, host-side. ``False`` when unmounted (an
+    older core that predates the seam) — the promote still succeeds, the badge just won't light until a
+    core new enough to carry the stamp is mounted."""
+    hook = host_hook("mark_finding_promoted")
+    if hook is None:
+        return False
+    return bool(hook(finding_id, actor_obj, extension=extension, ref_id=ref_id))
+
+
+def finding_promoted_refs(job_id, actor_obj) -> dict:
+    """Core #1323 badge read: ``{finding_id_str: ref}`` for a job's promoted findings the actor may view.
+    ``{}`` when unmounted."""
+    hook = host_hook("finding_promoted_refs")
+    if hook is None:
+        return {}
+    return dict(hook(job_id, actor_obj))
+
+
+def backfill_finding_promotions(pairs) -> int:
+    """Core #1323 one-time backfill seam: hand core ``(finding_id, ext, ref)`` pairs it should stamp
+    fill-NULL-only on its own findings. ``0`` when unmounted. See ``arm_promotion_backfill``."""
+    hook = host_hook("backfill_finding_promotions")
+    if hook is None:
+        return 0
+    return int(hook(pairs))
+
+
+#: app.config flag guarding the one-shot #1323 backfill below (app-scoped, so a multi-app test process
+#: runs it once per app, not once per request).
+_BACKFILL_FLAG = "_scribble_promotion_backfill_done"
+
+
+def arm_promotion_backfill(app, session_factory) -> None:
+    """Arrange the one-time #1323 promotion backfill to run once, AFTER the host injects its bundle into
+    ``cfg.extras`` (``register()`` runs before that, so the hook is absent then — exactly the
+    ``arm_core_verdict_provider`` timing).
+
+    It reads scribble's OWN ``scribble_findings.source_finding_id`` and hands core the
+    ``(core_finding_id, "scribble", board_finding_id)`` pairs through the host
+    ``backfill_finding_promotions`` seam — so pre-existing promotions light the findings-tab badge
+    without a re-promote. THROUGH THE HOST SEAM, no cross-schema SQL join: scribble reads its table, core
+    stamps its own rows fill-NULL-only. Standalone / an older core (no hook) simply never runs — there is
+    no core column to backfill."""
+
+    @app.before_request
+    def _run_promotion_backfill_once():  # noqa: ANN202 — Flask before_request hook
+        if app.config.get(_BACKFILL_FLAG):
+            return
+        hook = host_hook("backfill_finding_promotions")
+        if hook is None:
+            return  # extras not injected yet (retry on a later request), or standalone / old core
+        try:
+            from sqlalchemy import select
+
+            from scribble.models import BoardFinding
+
+            with session_factory() as db:
+                rows = db.execute(
+                    select(BoardFinding.source_finding_id, BoardFinding.id)
+                    .where(BoardFinding.source_finding_id.isnot(None))
+                ).all()
+            hook([(sfid, "scribble", bid) for sfid, bid in rows])
+        except Exception:  # noqa: BLE001 — a backfill must never take down a request
+            app.logger.exception("scribble: promotion backfill failed (non-fatal)")
+        # Latch after one ATTEMPT with the hook present (success or handled error): a re-promote still
+        # stamps via mark_finding_promoted, so there is no need to retry a failed backfill every request.
+        app.config[_BACKFILL_FLAG] = True
+
+
 def list_jobs(engagement, actor_obj) -> list:
     """Reverse of ``mark_job_promoted``: the host scan jobs promoted INTO this engagement, each carrying
     ``.id`` (the job ref) and ``.promoted_at``. The host applies its own ``user_can_view_job`` to

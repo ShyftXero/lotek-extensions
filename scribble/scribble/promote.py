@@ -46,6 +46,12 @@ from scribble.models import (
     VulnerabilityTemplate,
 )
 
+# Scan dispositions that NEVER become a client-facing finding (#1323). These are the
+# ``FindingStatus`` values a host ``FindingDTO.status`` carries for a finding the operator closed as
+# not-a-finding; promote (whole-job or selected) skips them. String values, not an enum import — this
+# module duck-types the DTO and never imports lotek.
+_SKIP_STATUSES = frozenset({"false_positive", "accepted_risk"})
+
 
 class CrossEngagementPromote(Exception):
     """A job was promoted into a report board NOT anchored to that job's core engagement (lotek#845).
@@ -352,6 +358,33 @@ def is_promote_dedup_conflict(exc: BaseException) -> bool:
     )
 
 
+class FindingNotInJob(Exception):
+    """Raised by :func:`select_job_findings` when a requested finding id is not among the job's own
+    findings. The route turns this into a 404 — a selection id outside the job is indistinguishable from
+    a missing one (no existence leak), exactly like the host's own not-found/unauthorized collapse."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(f"{len(missing)} finding id(s) not in this job")
+
+
+def select_job_findings(dtos: list, finding_ids: Any) -> list:
+    """The subset of ``dtos`` (a job's host ``FindingDTO``s) the caller selected, by id (#1323).
+
+    THE single home for "these ids belong to this job": every requested id MUST be among ``dtos`` or
+    this raises :class:`FindingNotInJob` — so the per-finding promote route can never pour a finding from
+    another job onto the board, and a bogus id leaks nothing (the route 404s identically to a missing
+    job). Ids compared as strings (a core finding id is a UUID; the body carries it as text). Order and
+    de-duplication follow ``dtos``, so the promote order is the job's own, not the request's."""
+    by_id = {str(d.id): d for d in dtos}
+    requested = [str(i) for i in (finding_ids or [])]
+    missing = [i for i in requested if i not in by_id]
+    if missing:
+        raise FindingNotInJob(missing)
+    want = set(requested)
+    return [d for d in dtos if str(d.id) in want]
+
+
 def promote_job(
     db: Any, *, engagement: Any, findings: list, actor_username: str | None, job_engagement_id: Any
 ) -> dict:
@@ -387,7 +420,9 @@ def promote_job(
     surfacing it. An ``IntegrityError`` from any OTHER constraint is never retried
     (:func:`is_promote_dedup_conflict`).
 
-    Returns ``{"promoted": int, "skipped": int, "parents": int}``.
+    Returns ``{"promoted": int, "skipped": int, "parents": int, "refs": dict}`` — ``refs`` maps each
+    represented scan-finding id to the ``BoardFinding`` id it lives on (#1323), for the caller's
+    per-finding ``mark_finding_promoted`` stamp.
 
     Refuses (``CrossEngagementPromote``) unless ``job_engagement_id`` (the SOURCE job's core engagement,
     ``JobDTO.engagement_id``) matches ``engagement.core_engagement_id`` — a report board only aggregates
@@ -422,6 +457,23 @@ def _promote_findings(
     Split out ONLY so the retry can re-run it against a freshly-read ``engagement.findings``; the tenancy
     guard stays in ``promote_job`` because it must answer once, before anything is read or written. Do
     not call this directly -- it has no anchor check and no conflict handling.
+
+    DISPOSITION SKIP (#1323): a ``false_positive`` / ``accepted_risk`` scan finding is never promoted —
+    whole-job OR selected — because both paths route through here. Filtered on ``dto.status``.
+
+    DEDUP, two layers (#1323):
+      * ``source_finding_id`` (unchanged) — the SAME scan finding re-promoted into this engagement, the
+        same-job re-promote case, refreshes the snapshot and skips.
+      * OBSERVATION identity — a DIFFERENT scan finding (a repeat scan: new job, new id) that observed the
+        SAME host:port:url. ``source_finding_id`` can't see it, so a nested child dedups on
+        ``(parent_id, target_host, target_port, target_url)`` and a flat/unmapped row on
+        ``(title, target_host, target_port)``. A hit refreshes ``source_facts`` (evidence / last-seen via
+        ``updated_at``) on the existing row instead of inserting a sibling — so a report never grows a
+        second affected-host row for the same observation.
+
+    Returns ``{"promoted", "skipped", "parents", "refs"}`` where ``refs`` maps each represented scan
+    finding's id to the ``BoardFinding`` id it lives on (new OR deduped-into), so the caller can stamp the
+    core finding via ``mark_finding_promoted``.
     """
     declarations = _load_declarations(db)
 
@@ -436,6 +488,19 @@ def _promote_findings(
     existing_by_source = {
         f.source_finding_id: f for f in engagement.findings if f.source_finding_id is not None
     }
+    # Observation-identity indexes (#1323), seeded from rows that came from a PROMOTE (source_finding_id
+    # set) or any nested child — never an authored write-up / synthesized parent / coverage note (those
+    # carry NULL source_finding_id AND NULL parent_id, so they are legitimately exempt and must not be
+    # deduped onto). Updated as this run inserts, so two findings in ONE batch collapse too.
+    child_by_target: dict[tuple, BoardFinding] = {}
+    flat_by_sig: dict[tuple, BoardFinding] = {}
+    for f in engagement.findings:
+        if f.parent_id is not None:
+            child_by_target.setdefault(
+                (f.parent_id, f.target_host, f.target_port, f.target_url), f
+            )
+        elif f.source_finding_id is not None and f.group_id is None:
+            flat_by_sig.setdefault((f.title, f.target_host, f.target_port), f)
     siblings = [f for f in engagement.findings if f.group_id is None]
 
     order_index = len(siblings)
@@ -443,6 +508,11 @@ def _promote_findings(
     # ``int`` (leftover from the int-PK era), which typechecks as a real error against ``template.id``.
     parents_by_template: dict[uuid.UUID, BoardFinding] = {}
     parent_children: dict[uuid.UUID, list[Any]] = {}
+    # Scan-finding id -> the BoardFinding it is represented by. Existing/deduped rows resolve their id
+    # immediately; freshly-inserted rows get their uuid7 PK only on flush, so they are resolved AFTER the
+    # flush below (`new_by_source`).
+    refs: dict[Any, Any] = {}
+    new_by_source: dict[Any, BoardFinding] = {}
     promoted = 0
     skipped = 0
     parents_created = 0
@@ -450,6 +520,10 @@ def _promote_findings(
     for dto in findings:
         title = getattr(dto, "title", None) or "Untitled"
         dto_id = getattr(dto, "id", None)
+        # #1323: never promote a disposition the operator already closed as not-a-finding.
+        if getattr(dto, "status", None) in _SKIP_STATUSES:
+            skipped += 1
+            continue
         if dto_id in promoted_source_ids or title in legacy_titles:
             # Re-promote: refresh the verbatim snapshot on the already-promoted row (source truth), but
             # touch NO typed column -- an operator edit is never clobbered (#617 Q5, fill-NULL-only). Only
@@ -459,6 +533,8 @@ def _promote_findings(
             existing = existing_by_source.get(dto_id) if dto_id is not None else None
             if existing is not None:
                 existing.source_facts = snapshot_source_facts(dto)
+                if dto_id is not None:
+                    refs[dto_id] = existing.id
             skipped += 1
             continue
 
@@ -473,6 +549,9 @@ def _promote_findings(
         }
         overrides.update(_target_overrides(variables, declarations))
         overrides.update(_source_overrides(dto))
+        t_host = overrides.get("target_host")
+        t_port = overrides.get("target_port")
+        t_url = overrides.get("target_url")
 
         template = _matched_template(db, dto)
         overrides["references"] = _reference_override(dto, template)
@@ -491,17 +570,41 @@ def _promote_findings(
                 parent_children[template.id] = []
                 if created:
                     parents_created += 1
+            # Observation dedup (#1323): a child for this host:port:url already under this parent (a
+            # repeat scan) refreshes evidence instead of adding a sibling affected-host row.
+            dedup_key = (parent.id, t_host, t_port, t_url)
+            existing_child = child_by_target.get(dedup_key)
+            if existing_child is not None:
+                existing_child.source_facts = snapshot_source_facts(dto)
+                if dto_id is not None:
+                    refs[dto_id] = existing_child.id
+                    promoted_source_ids.add(dto_id)
+                skipped += 1
+                continue
             overrides["parent_id"] = parent.id
             overrides["order_index"] = order_index
             finding = BoardFinding.from_template(template, **overrides)
             parent_children[template.id].append(dto)
+            child_by_target[dedup_key] = finding
         else:
+            # Flat/unmapped observation dedup (#1323): (title, host, port) within the engagement.
+            flat_key = (title, t_host, t_port)
+            existing_flat = flat_by_sig.get(flat_key)
+            if existing_flat is not None:
+                existing_flat.source_facts = snapshot_source_facts(dto)
+                if dto_id is not None:
+                    refs[dto_id] = existing_flat.id
+                    promoted_source_ids.add(dto_id)
+                skipped += 1
+                continue
             finding = BoardFinding.from_lotek_finding(dto, **overrides)
+            flat_by_sig[flat_key] = finding
 
         order_index += 1
         db.add(finding)
         if dto_id is not None:
             promoted_source_ids.add(dto_id)
+            new_by_source[dto_id] = finding
         promoted += 1
 
     # One deterministic synthesis pass per parent, once every one of its children is known.
@@ -510,7 +613,13 @@ def _promote_findings(
         if children:
             parent.variables = synthesize_parent_variables(children, declarations)
 
-    return {"promoted": promoted, "skipped": skipped, "parents": parents_created}
+    # Resolve freshly-inserted rows' PKs for the refs map. This flush is also where the
+    # ``uq_scribble_findings_engagement_source`` conflict surfaces — caught + retried by ``promote_job``.
+    db.flush()
+    for dto_id, finding in new_by_source.items():
+        refs[dto_id] = finding.id
+
+    return {"promoted": promoted, "skipped": skipped, "parents": parents_created, "refs": refs}
 
 
 # ── un-adopt (#635): the inverse of promote_job — ONE home for "did job J enrich this finding" ──────

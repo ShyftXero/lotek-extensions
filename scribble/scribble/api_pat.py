@@ -1608,6 +1608,91 @@ def scribble_promote_job(engagement_id: str, job_id: str):
     )
 
 
+# ── 8a. POST /engagements/<id>/promote-findings/<job_id> — SELECTED subset (#1323) ────────────────────
+
+
+@machine_bp.post("/engagements/<uuid:engagement_id>/promote-findings/<job_id>")
+@host.require_scope("write")
+def scribble_promote_findings(engagement_id: str, job_id: str):
+    """Promote a SELECTED subset of a lotek scan job's findings into a Scribble engagement (#1323) — the
+    machine twin of the UI ``promote_findings_by_core``. Body: ``{"finding_ids": [<core finding id>, ...]}``.
+
+    Same two-domain tenancy as ``scribble_promote_job`` (source job gated by the HOST, destination
+    engagement by ``_deny_write``) and the SAME ONE promote implementation (``promote.promote_job`` on the
+    selected subset — ``false_positive`` / ``accepted_risk`` skipped inside it, nesting + observation
+    dedupe identical to a whole-job promote). A requested id outside the job 404s with no existence leak
+    (``select_job_findings`` -> ``FindingNotInJob``). Each promoted core finding is then stamped via the
+    host ``mark_finding_promoted`` seam, and the derived job-level columns are kept in sync.
+    """
+    body, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
+    finding_ids = body.get("finding_ids")
+    if not isinstance(finding_ids, list):
+        return jsonify({"error": "bad_request", "detail": "finding_ids must be a list"}), 400
+
+    actor = host.actor()
+    actor_username = actor.username if actor else None
+    with open_session() as db:
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
+        engagement_id = engagement.id
+
+        findings_ns = host.findings()
+        job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
+        if job is None:
+            return jsonify({"error": "not_found", "detail": "job not found"}), 404
+
+        dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
+
+        from scribble.promote import (  # lazy: scribble/promote.py
+            CrossEngagementPromote,
+            FindingNotInJob,
+            promote_job,
+            select_job_findings,
+        )
+
+        try:
+            selected = select_job_findings(dtos, finding_ids)
+        except FindingNotInJob:
+            # An id not among this job's findings — indistinguishable from a missing one (no leak).
+            return jsonify({"error": "not_found", "detail": "finding not in job"}), 404
+
+        try:
+            result = promote_job(
+                db, engagement=engagement, findings=selected, actor_username=actor_username,
+                job_engagement_id=getattr(job, "engagement_id", None),
+            )
+        except CrossEngagementPromote as exc:
+            return jsonify({
+                "error": "cross_engagement",
+                "detail": (
+                    f"This report board is anchored to engagement {exc.anchor}; job {job_id} belongs to "
+                    f"engagement {exc.job_engagement_id}. Reassign the job to {exc.anchor}, or add it to "
+                    f"that engagement's report board."
+                ),
+            }), 409
+        db.commit()
+        refs = result.get("refs", {})
+
+    # Host-contract stamps AFTER the scribble commit (separate engine), best-effort.
+    for fid, ref in refs.items():
+        host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
+    if refs:
+        host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement_id)
+
+    return jsonify({
+        "engagement_id": engagement_id,
+        "promoted": result.get("promoted", 0),
+        "skipped": result.get("skipped", 0),
+        "parents": result.get("parents", 0),
+        "stamped": len(refs),
+    })
+
+
 # ── 8b. GET /engagements — list the engagements this token may see ───────────────────────────────────
 
 
