@@ -12,7 +12,7 @@ import uuid
 
 import scribble.models as fm
 from scribble.promote import FindingNotInJob, select_job_findings
-from tests.conftest import FakeFindingDTO, StubActor
+from tests.conftest import FakeFindingDTO, StubActor, StubUser, _StubRole
 
 M = "/scribble/machine"
 ACME = uuid.uuid7()
@@ -171,3 +171,45 @@ def test_repeat_scan_same_host_dedupes_to_one_child(client, stub_host, session_f
         rows = db.query(fm.BoardFinding).filter_by(engagement_id=eid).all()
         children = [row for row in rows if row.parent_id is not None]
         assert len(children) == 1  # ONE affected-host row for 10.0.0.1, not two
+
+
+# ── browser (cookie) route: by-core promote-findings (Plague #298 r1 CONCERN 4) ───────────────────
+
+
+def _session_operator(stub_host, uid: int = 7):
+    stub_host.current_user = StubUser(id=uid, username="op", role=_StubRole("operator"))
+    stub_host.actor = StubActor(id=uid, username="op", role="operator")
+    return uid
+
+
+def test_browser_promote_findings_promotes_only_selected(client, stub_host, session_factory, clean_vuln_map):
+    uid = _session_operator(stub_host)
+    eid, anchor = _engagement(client, stub_host)  # board's core_engagement_id == anchor
+    f1, f2 = uuid.uuid7(), uuid.uuid7()
+    stub_host.findings.add_job(
+        "job-1", owner_id=uid, engagement_id=anchor,
+        dtos=[FakeFindingDTO(id=f1, title="A", target_host="10.0.0.1"),
+              FakeFindingDTO(id=f2, title="B", target_host="10.0.0.2")],
+    )
+    # by-core resolves the existing board (core_engagement_id == anchor); finding_ids is a form field.
+    r = client.post(f"/scribble/engagements/by-core/{anchor}/promote-findings/job-1",
+                    data={"finding_ids": [str(f1)]})
+    assert r.status_code in (302, 303), r.data
+    with session_factory() as db:
+        eng = db.get(fm.ReportBoard, eid)
+        assert {f.title for f in eng.findings} == {"A"}
+    stamped = {fid for fid, _a, ext, _r in stub_host.finding_promotion_calls if ext == "scribble"}
+    assert stamped == {f1}  # stamped with the SESSION actor, only the selected finding
+
+
+def test_browser_promote_findings_404_for_id_outside_job(client, stub_host, session_factory, clean_vuln_map):
+    uid = _session_operator(stub_host)
+    _eid, anchor = _engagement(client, stub_host)
+    f1 = uuid.uuid7()
+    stub_host.findings.add_job(
+        "job-1", owner_id=uid, engagement_id=anchor,
+        dtos=[FakeFindingDTO(id=f1, title="A", target_host="10.0.0.1")],
+    )
+    r = client.post(f"/scribble/engagements/by-core/{anchor}/promote-findings/job-1",
+                    data={"finding_ids": [str(f1), str(uuid.uuid7())]})
+    assert r.status_code == 404

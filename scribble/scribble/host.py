@@ -238,6 +238,10 @@ def arm_promotion_backfill(app, session_factory) -> None:
             app.logger.exception("scribble: promotion backfill failed (non-fatal)")
         # Latch after one ATTEMPT with the hook present (success or handled error): a re-promote still
         # stamps via mark_finding_promoted, so there is no need to retry a failed backfill every request.
+        # ponytail: runs once PER WORKER PROCESS (app.config is per-process), so N gevent workers each run
+        # it once — harmless because the core seam is fill-NULL-only (the first worker stamps, the rest
+        # find every row already stamped and write nothing). A once-per-deployment latch isn't worth a
+        # shared-state dependency for a cheap idempotent read.
         app.config[_BACKFILL_FLAG] = True
 
 

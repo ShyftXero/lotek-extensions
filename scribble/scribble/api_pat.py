@@ -185,7 +185,7 @@ def _opt_int(data: dict, key: str):
     if v is None:
         return None, None
     # bool is an int subclass in Python — reject it explicitly (True/False is not an id).
-    if isinstance(v, bool) or not isinstance(v, (int, str)):
+    if isinstance(v, bool) or not isinstance(v, int | str):
         return None, (jsonify({"error": "bad_request", "detail": f"{key} must be an integer"}), 400)
     try:
         return int(v), None
@@ -206,7 +206,7 @@ def _opt_host_id(data: dict, key: str):
     if v is None:
         return None, None
     bad = (jsonify({"error": "bad_request", "detail": f"{key} must be an integer or a UUID"}), 400)
-    if isinstance(v, bool) or not isinstance(v, (int, str)):
+    if isinstance(v, bool) or not isinstance(v, int | str):
         return None, bad
     if isinstance(v, int):
         return v, None
@@ -504,7 +504,7 @@ def _parse_target_fields(data: dict):
         supplied[key] = value
     port = data.get("target_port")
     if port is not None:
-        if isinstance(port, bool) or not isinstance(port, (int, str)):
+        if isinstance(port, bool) or not isinstance(port, int | str):
             return None, _bad_request("target_port must be a string or an integer")
         text = str(port).strip()
         if text:
@@ -1072,29 +1072,40 @@ def scribble_bulk_create_templates():
         cat = rec.get("category")
         if cat is not None:
             if not isinstance(cat, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].category must be a string"}), 400
-            if (err := _too_long(f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].category must be a string"}), 400
+            if (err := _too_long(
+                f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
                 return err
         cvss_vector = rec.get("cvss_vector")
         if cvss_vector is not None:
             if not isinstance(cvss_vector, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_vector must be a string"}), 400
-            if (err := _too_long(f"templates[{i}].cvss_vector", cvss_vector, cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].cvss_vector must be a string"}), 400
+            if (err := _too_long(
+                f"templates[{i}].cvss_vector", cvss_vector,
+                cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
                 return err
         sev = rec.get("severity")
         if sev is not None:
             if not isinstance(sev, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].severity must be a string"}), 400
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].severity must be a string"}), 400
             try:
                 severity_enum()(sev.strip().lower())
             except ValueError:
                 return jsonify({"error": "bad_request",
-                                "detail": f"templates[{i}].severity must be one of info|low|medium|high|critical"}), 400
+                                "detail": f"templates[{i}].severity must be one of "
+                                          "info|low|medium|high|critical"}), 400
         cvss_score = rec.get("cvss_score")
-        if cvss_score is not None and (isinstance(cvss_score, bool) or not isinstance(cvss_score, (int, float))):
-            return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_score must be a number"}), 400
+        if cvss_score is not None and (
+            isinstance(cvss_score, bool) or not isinstance(cvss_score, int | float)
+        ):
+            return jsonify({"error": "bad_request",
+                            "detail": f"templates[{i}].cvss_score must be a number"}), 400
         if rec.get("references") is not None and not isinstance(rec.get("references"), list):
-            return jsonify({"error": "bad_request", "detail": f"templates[{i}].references must be a list"}), 400
+            return jsonify({"error": "bad_request",
+                            "detail": f"templates[{i}].references must be a list"}), 400
         if rec.get("tags") is not None and not isinstance(rec.get("tags"), list):
             return jsonify({"error": "bad_request", "detail": f"templates[{i}].tags must be a list"}), 400
         # Sibling-gate parity with the single-create route: bound content_json block count + references
@@ -1646,6 +1657,9 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
         if job is None:
             return jsonify({"error": "not_found", "detail": "job not found"}), 404
 
+        # No #656 coverage gate (unlike whole-job promote): a per-finding promote selects findings the
+        # job ALREADY produced, and findings ⟹ tool evidence ⟹ assessed=True, so coverage.may_promote is
+        # always True here — the inconclusive-scan refusal is vacuous. An empty selection promotes nothing.
         dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
 
         from scribble.promote import (  # lazy: scribble/promote.py
@@ -1678,11 +1692,16 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
         db.commit()
         refs = result.get("refs", {})
 
-    # Host-contract stamps AFTER the scribble commit (separate engine), best-effort.
-    for fid, ref in refs.items():
-        host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
-    if refs:
-        host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement_id)
+    # Host-contract stamps AFTER the scribble commit (separate engine), best-effort: the pour already
+    # committed, so a host-write hiccup must not 500 the response (it degrades to an unlit badge; a
+    # re-promote re-stamps).
+    try:
+        for fid, ref in refs.items():
+            host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
+        if refs:
+            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement_id)
+    except Exception:  # noqa: BLE001 — best-effort host stamp; the pour already succeeded
+        current_app.logger.exception("scribble: per-finding promotion stamp failed (non-fatal)")
 
     return jsonify({
         "engagement_id": engagement_id,
@@ -2607,7 +2626,7 @@ def _parse_finding_patch(data: dict):
     if port is not _ABSENT:
         if port is None:
             updates["target_port"] = None
-        elif isinstance(port, bool) or not isinstance(port, (int, str)):
+        elif isinstance(port, bool) or not isinstance(port, int | str):
             return None, None, _bad_request("target_port must be a string, an integer, or null")
         else:
             updates["target_port"] = _nul_safe(str(port)).strip() or None
@@ -2619,7 +2638,7 @@ def _parse_finding_patch(data: dict):
     if score is not _ABSENT:
         if score is None:
             updates["cvss_score"] = None
-        elif isinstance(score, bool) or not isinstance(score, (int, float)):
+        elif isinstance(score, bool) or not isinstance(score, int | float):
             return None, None, _bad_request("cvss_score must be a number or null")
         elif not (0.0 <= float(score) <= 10.0):
             # Bounded to the CVSS range, which also refuses the ``NaN``/``Infinity`` tokens Python's JSON

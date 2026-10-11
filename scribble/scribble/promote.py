@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import fnmatch
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -432,10 +433,12 @@ def promote_job(
     for last_attempt in (False, True):
         savepoint = db.begin_nested()
         try:
+            # _promote_findings flushes internally (to resolve new rows' PKs for `refs`), so the
+            # uq_scribble_findings_engagement_source conflict already surfaces INSIDE this try, inside the
+            # savepoint — no separate db.flush() here is needed (it would be a no-op after that flush).
             result = _promote_findings(
                 db, engagement=engagement, findings=findings, actor_username=actor_username
             )
-            db.flush()  # force the conflict HERE, inside the savepoint, not at the caller's commit
         except IntegrityError as exc:
             savepoint.rollback()
             if last_attempt or not is_promote_dedup_conflict(exc):
@@ -467,9 +470,9 @@ def _promote_findings(
       * OBSERVATION identity — a DIFFERENT scan finding (a repeat scan: new job, new id) that observed the
         SAME host:port:url. ``source_finding_id`` can't see it, so a nested child dedups on
         ``(parent_id, target_host, target_port, target_url)`` and a flat/unmapped row on
-        ``(title, target_host, target_port)``. A hit refreshes ``source_facts`` (evidence / last-seen via
-        ``updated_at``) on the existing row instead of inserting a sibling — so a report never grows a
-        second affected-host row for the same observation.
+        ``(title, target_host, target_port, target_url)``. A hit refreshes ``source_facts`` (evidence /
+        last-seen via ``updated_at``) on the existing row instead of inserting a sibling — so a report
+        never grows a second affected-host row for the same observation.
 
     Returns ``{"promoted", "skipped", "parents", "refs"}`` where ``refs`` maps each represented scan
     finding's id to the ``BoardFinding`` id it lives on (new OR deduped-into), so the caller can stamp the
@@ -500,7 +503,7 @@ def _promote_findings(
                 (f.parent_id, f.target_host, f.target_port, f.target_url), f
             )
         elif f.source_finding_id is not None and f.group_id is None:
-            flat_by_sig.setdefault((f.title, f.target_host, f.target_port), f)
+            flat_by_sig.setdefault((f.title, f.target_host, f.target_port, f.target_url), f)
     siblings = [f for f in engagement.findings if f.group_id is None]
 
     order_index = len(siblings)
@@ -587,8 +590,10 @@ def _promote_findings(
             parent_children[template.id].append(dto)
             child_by_target[dedup_key] = finding
         else:
-            # Flat/unmapped observation dedup (#1323): (title, host, port) within the engagement.
-            flat_key = (title, t_host, t_port)
+            # Flat/unmapped observation dedup (#1323): (title, host, port, url) within the engagement —
+            # url included (Plague #298 r1) so two distinct web findings on the same host:port but
+            # different paths stay separate rows, matching the nested child key.
+            flat_key = (title, t_host, t_port, t_url)
             existing_flat = flat_by_sig.get(flat_key)
             if existing_flat is not None:
                 existing_flat.source_facts = snapshot_source_facts(dto)
@@ -608,8 +613,23 @@ def _promote_findings(
         promoted += 1
 
     # One deterministic synthesis pass per parent, once every one of its children is known.
+    # Fold in the parent's EXISTING board children (Plague #298 r1 CONCERN 1): synthesizing over ONLY
+    # this run's new children would overwrite the parent write-up's affected-host rollup with just the
+    # subset on an incremental/selected promote — the aggregate would then contradict its own child rows.
+    # Existing children are reconstructed as DTO-shaped objects from their verbatim ``source_facts``
+    # snapshot (``_raw_value`` reads ``.facts`` + allowlisted attrs, all present in the snapshot), so the
+    # rollup reflects ALL of the parent's children, old and new. A deduped-this-run finding already
+    # refreshed its existing child's ``source_facts``, so the latest evidence is what gets folded in.
+    existing_children_by_parent: dict[Any, list[Any]] = {}
+    for f in engagement.findings:
+        if f.parent_id is not None and f.source_finding_id is not None:
+            existing_children_by_parent.setdefault(f.parent_id, []).append(
+                SimpleNamespace(**(f.source_facts or {}))
+            )
     for template_id, parent in parents_by_template.items():
-        children = parent_children.get(template_id) or []
+        children = (existing_children_by_parent.get(parent.id) or []) + (
+            parent_children.get(template_id) or []
+        )
         if children:
             parent.variables = synthesize_parent_variables(children, declarations)
 

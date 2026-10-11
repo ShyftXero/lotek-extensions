@@ -68,7 +68,7 @@ import json
 import uuid
 from datetime import date
 
-from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
+from flask import abort, current_app, jsonify, redirect, render_template, request, send_file, url_for
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -571,6 +571,11 @@ def register(api_bp, bp) -> None:
                 except CrossEngagementPromote as exc:
                     abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, but this "
                                f"report board is anchored to engagement {exc.anchor}. Reassign it first.")
+                # No #656 coverage gate here, unlike whole-job promote: a per-finding promote can only
+                # select findings the job ALREADY produced, and a job that produced findings is
+                # assessed=True by construction (findings ⟹ tool evidence ⟹ assessed), so
+                # coverage.may_promote is always True on this path and the inconclusive-scan refusal is
+                # vacuous. An empty selection promotes nothing.
                 dtos = findings_ns.list_findings(job_id, actor)
                 try:
                     selected = select_job_findings(dtos, finding_ids)
@@ -589,11 +594,16 @@ def register(api_bp, bp) -> None:
             db.commit()
         # Host-contract stamps AFTER the scribble commit (separate engine), best-effort: a finding ref
         # pointing at a rolled-back board row must never be written. Per-finding stamp + keep the
-        # derived job-level columns in sync for the Details-tab UI.
-        for fid, ref in refs.items():
-            host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
-        if refs:
-            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=board_id)
+        # job-level columns in sync for the Details-tab UI. Guarded: the promotion itself already
+        # committed, so a host-write hiccup must not 500 the response (it degrades to an unlit badge, and
+        # a re-promote re-stamps).
+        try:
+            for fid, ref in refs.items():
+                host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
+            if refs:
+                host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=board_id)
+        except Exception:  # noqa: BLE001 — best-effort host stamp; the pour already succeeded
+            current_app.logger.exception("scribble: per-finding promotion stamp failed (non-fatal)")
         return redirect(url_for("scribble.engagement_board", engagement_id=board_id))
 
     # =============================================================================== UI: edit / delete
