@@ -57,7 +57,10 @@ def test_new_tool_fact_populates_DOMAIN_and_AFFECTED_with_zero_python(app, sessi
             job_engagement_id=engagement.core_engagement_id,
         )
         db.commit()
-        assert result == {"promoted": 1, "skipped": 0, "parents": 1}
+        # counts only — promote_job's result also carries a `refs` map (#1323, source id -> board id).
+        assert {k: result[k] for k in ("promoted", "skipped", "parents")} == {
+            "promoted": 1, "skipped": 0, "parents": 1
+        }
 
         parent = db.query(fm.BoardFinding).filter_by(
             engagement_id=eng_id, template_id=tmpl_id, parent_id=None

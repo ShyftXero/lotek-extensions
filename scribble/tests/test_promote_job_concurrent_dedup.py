@@ -149,9 +149,12 @@ def test_the_loser_of_a_real_race_skips_instead_of_duplicating(app, session_fact
         winner.close()
         loser.close()
 
-    assert lost == {"promoted": 0, "skipped": 2, "parents": 0}, (
-        f"the loser must skip what the winner already promoted; got {lost}"
-    )
+    # counts only — promote_job's result also carries a `refs` map (#1323). The loser's refs correctly
+    # point at the WINNER's committed board rows (what the loser deduped onto), which is the right answer.
+    assert {k: lost[k] for k in ("promoted", "skipped", "parents")} == {
+        "promoted": 0, "skipped": 2, "parents": 0
+    }, f"the loser must skip what the winner already promoted; got {lost}"
+    assert len(lost.get("refs", {})) == 2, "the loser still reports a board ref for each deduped finding"
 
     with session_factory() as db:
         rows = db.query(fm.BoardFinding).filter_by(engagement_id=board_id).all()

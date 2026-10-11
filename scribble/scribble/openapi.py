@@ -308,6 +308,12 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
         "finding_id": _UUID, "engagement_id": _UUID,
         "deduped": {"type": "boolean", "description": "200 + true when this scan finding was already "
                     "promoted into this engagement — nothing was created."}})),
+    "scribble_promote_findings": (200, _obj({
+        "engagement_id": _UUID, "promoted": {"type": "integer"},
+        "skipped": {"type": "integer"}, "parents": {"type": "integer"},
+        "stamped": {"type": "integer", "description": "How many promoted core findings were stamped back "
+                    "on the host (#1323) via mark_finding_promoted — equals the number represented on the "
+                    "board (newly promoted + deduped-into)."}})),
     "scribble_promote_job": (200, _obj({
         "engagement_id": _UUID, "promoted": {"type": "integer"},
         "skipped": {"type": "integer"}, "parents": {"type": "integer"},

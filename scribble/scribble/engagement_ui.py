@@ -549,6 +549,7 @@ def register(api_bp, bp) -> None:
             abort(404)
         job_id = (job_id or "").strip()
         finding_ids = request.form.getlist("finding_ids")
+        acknowledged = _acknowledged_or_400(request.form.get("acknowledge_inconclusive"))
         actor = current_actor()
         refs: dict = {}
         board_id = None
@@ -571,11 +572,13 @@ def register(api_bp, bp) -> None:
                 except CrossEngagementPromote as exc:
                     abort(409, f"This scan job belongs to engagement {exc.job_engagement_id}, but this "
                                f"report board is anchored to engagement {exc.anchor}. Reassign it first.")
-                # No #656 coverage gate here, unlike whole-job promote: a per-finding promote can only
-                # select findings the job ALREADY produced, and a job that produced findings is
-                # assessed=True by construction (findings ⟹ tool evidence ⟹ assessed), so
-                # coverage.may_promote is always True on this path and the inconclusive-scan refusal is
-                # vacuous. An empty selection promotes nothing.
+                # #656 coverage gate — the SAME gate the whole-job route applies, before any pour. A
+                # per-finding promote is still the boundary where scan output becomes a client
+                # deliverable, and `assessed` is the HOST's verdict: an older-core host reports it None
+                # even for a job that produced findings, so "it has findings" is not proof of coverage.
+                inconclusive = not coverage.may_promote(job)
+                if inconclusive and not acknowledged:
+                    abort(409, coverage.refusal_message(job, job_id))
                 dtos = findings_ns.list_findings(job_id, actor)
                 try:
                     selected = select_job_findings(dtos, finding_ids)
@@ -588,6 +591,12 @@ def register(api_bp, bp) -> None:
                         job_engagement_id=getattr(job, "engagement_id", None),
                     )
                     refs = result.get("refs", {})
+                    # Record the coverage caveat in the same transaction when acknowledged.
+                    if inconclusive:
+                        coverage.write_coverage_note(
+                            db, engagement=board, job=job, job_id=job_id,
+                            actor_username=current_actor_username(),
+                        )
             board_id = board.id
             # An unknown/unviewable job leaves the board created + empty (exactly a bare import), redirect
             # to it — real-vs-bogus job indistinguishable in the response (no existence oracle).

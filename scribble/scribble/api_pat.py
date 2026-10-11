@@ -66,6 +66,7 @@ from scribble.api_schemas import (
     MoveFindingRequest,
     PatchEngagementRequest,
     PatchFindingRequest,
+    PromoteFindingsRequest,
     PromoteJobRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
@@ -1624,6 +1625,7 @@ def scribble_promote_job(engagement_id: str, job_id: str):
 
 @machine_bp.post("/engagements/<uuid:engagement_id>/promote-findings/<job_id>")
 @host.require_scope("write")
+@request_body(PromoteFindingsRequest)
 def scribble_promote_findings(engagement_id: str, job_id: str):
     """Promote a SELECTED subset of a lotek scan job's findings into a Scribble engagement (#1323) — the
     machine twin of the UI ``promote_findings_by_core``. Body: ``{"finding_ids": [<core finding id>, ...]}``.
@@ -1641,6 +1643,9 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
     finding_ids = body.get("finding_ids")
     if not isinstance(finding_ids, list):
         return jsonify({"error": "bad_request", "detail": "finding_ids must be a list"}), 400
+    acknowledged, refusal = _acknowledge_inconclusive_or_400(body.get("acknowledge_inconclusive"))
+    if refusal is not None:
+        return refusal
 
     actor = host.actor()
     actor_username = actor.username if actor else None
@@ -1657,9 +1662,15 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
         if job is None:
             return jsonify({"error": "not_found", "detail": "job not found"}), 404
 
-        # No #656 coverage gate (unlike whole-job promote): a per-finding promote selects findings the
-        # job ALREADY produced, and findings ⟹ tool evidence ⟹ assessed=True, so coverage.may_promote is
-        # always True here — the inconclusive-scan refusal is vacuous. An empty selection promotes nothing.
+        # #656 coverage gate — the SAME gate the whole-job route applies. A per-finding promote is still
+        # the boundary where scan output becomes a client deliverable, and `assessed` is the HOST's
+        # verdict: an older-core host (pre-#927) reports it as None even for a job that produced findings,
+        # so "it has findings" is NOT proof of coverage. Refuse an inconclusive job unless the caller
+        # acknowledges, and record the caveat IN the engagement when they do.
+        inconclusive = not coverage.may_promote(job)
+        if inconclusive and not acknowledged:
+            return jsonify(coverage.refusal_body(job, job_id)), coverage.REFUSAL_STATUS
+
         dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
 
         from scribble.promote import (  # lazy: scribble/promote.py
@@ -1689,6 +1700,13 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
                     f"that engagement's report board."
                 ),
             }), 409
+        # An acknowledged promotion records the caveat in the same transaction as the findings it
+        # qualifies (mirrors the whole-job route), placed after the cross-engagement handler so a refused
+        # pairing writes no note.
+        if inconclusive:
+            coverage.write_coverage_note(
+                db, engagement=engagement, job=job, job_id=job_id, actor_username=actor_username
+            )
         db.commit()
         refs = result.get("refs", {})
 

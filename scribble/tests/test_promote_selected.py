@@ -135,6 +135,32 @@ def test_promote_findings_skips_false_positive_and_accepted_risk(
     assert stamped == {real}  # FP/accepted-risk are never stamped either
 
 
+# ── #656 coverage gate on per-finding promote (Plague #298 r1 CONCERN 4) ──────────────────────────
+
+
+def test_promote_findings_refuses_inconclusive_without_ack(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """An inconclusive job (assessed=False, as an older-core host reports even WITH findings) is refused
+    by the #656 coverage gate — the per-finding route is the same client-deliverable boundary."""
+    stub_host.actor = StubActor(id=7, username="opA", role="operator")
+    eid, anchor = _engagement(client, stub_host)
+    f1 = uuid.uuid7()
+    stub_host.findings.add_job(
+        "job-1", owner_id=7, engagement_id=anchor, assessed=False,
+        dtos=[FakeFindingDTO(id=f1, title="A", target_host="10.0.0.1")],
+    )
+    r = client.post(f"{M}/engagements/{eid}/promote-findings/job-1", json={"finding_ids": [str(f1)]})
+    assert r.status_code == 409, r.get_json()  # coverage.REFUSAL_STATUS
+    with session_factory() as db:
+        assert db.query(fm.BoardFinding).filter_by(engagement_id=eid).count() == 0  # nothing poured
+    # The explicit override promotes (and writes a coverage note).
+    r2 = client.post(f"{M}/engagements/{eid}/promote-findings/job-1",
+                     json={"finding_ids": [str(f1)], "acknowledge_inconclusive": True})
+    assert r2.status_code == 200, r2.get_json()
+    assert r2.get_json()["promoted"] == 1
+
+
 # ── cross-job observation dedupe: a repeat scan adds no new affected-host row ──────────────────────
 
 

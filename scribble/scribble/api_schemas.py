@@ -159,6 +159,25 @@ class PromoteJobRequest(BaseModel):
     )
 
 
+class PromoteFindingsRequest(BaseModel):
+    """Body of ``POST /scribble/machine/engagements/{engagement_id}/promote-findings/{job_id}`` (#1323,
+    write scope) — promote a SELECTED subset of a scan job's findings.
+
+    ``finding_ids`` is REQUIRED: the core ``Finding`` ids to promote (UUID strings). Every id must belong
+    to ``{job_id}`` or the call is a 404 (an id outside the job is indistinguishable from a missing one —
+    no existence leak). ``false_positive`` / ``accepted_risk`` findings in the list are skipped, never
+    promoted. ``acknowledge_inconclusive`` is the same #656 coverage override as ``PromoteJobRequest``."""
+
+    finding_ids: list[str] = Field(
+        ..., description="Core Finding ids (UUID strings) to promote. Must all belong to {job_id}."
+    )
+    acknowledge_inconclusive: bool | None = Field(
+        None,
+        description="Promote anyway when this job's scan coverage is inconclusive (`assessed` is `false` "
+        "or `null`). Omitted/empty/`false` REFUSE; setting it writes a coverage note into the engagement.",
+    )
+
+
 class CreateTemplateRequest(BaseModel):
     """Body of ``POST /scribble/machine/templates`` — create a reusable vuln template (write scope)."""
 
