@@ -121,4 +121,9 @@ def register(
     # one above: the host exempts this prefix from CSRF + its session gate (manifest
     # ``[host] machine_prefix``), which must never apply to the browser surface.
     app.register_blueprint(machine_bp, url_prefix=f"{url_prefix}/machine")
+    # #1323 one-time backfill: stamp core findings scribble already holds, through the host seam, once the
+    # host has injected its bundle into cfg.extras (after this register() returns). No-op standalone.
+    from scribble.host import arm_promotion_backfill
+
+    arm_promotion_backfill(app, sf)
     return cfg

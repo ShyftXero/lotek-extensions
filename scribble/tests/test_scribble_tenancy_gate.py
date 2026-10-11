@@ -96,6 +96,11 @@ _NON_SCOPED_ENDPOINTS = frozenset(
         # (one 404 on failure) + host_can_write; the per-job tenancy is the shared #845 anchor inside
         # _adopt_job_onto_board, not a scribble board-id scope. Same non-scoped class as its GET resolver.
         "scribble.adopt_job_by_core",
+        # Per-finding "Add selected to report" POST (#1323): same non-scoped class as adopt_job_by_core —
+        # keyed on a CORE engagement id (core_id) + host.can_operate_on (one 404 on failure) +
+        # host_can_write; the per-job tenancy is the shared #845 anchor inside promote_job, not a scribble
+        # board-id scope.
+        "scribble.promote_findings_by_core",
         "scribble.library",
         "scribble.library_new",
         "scribble.library_detail",

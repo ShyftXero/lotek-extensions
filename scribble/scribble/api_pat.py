@@ -66,6 +66,7 @@ from scribble.api_schemas import (
     MoveFindingRequest,
     PatchEngagementRequest,
     PatchFindingRequest,
+    PromoteFindingsRequest,
     PromoteJobRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
@@ -185,7 +186,7 @@ def _opt_int(data: dict, key: str):
     if v is None:
         return None, None
     # bool is an int subclass in Python — reject it explicitly (True/False is not an id).
-    if isinstance(v, bool) or not isinstance(v, (int, str)):
+    if isinstance(v, bool) or not isinstance(v, int | str):
         return None, (jsonify({"error": "bad_request", "detail": f"{key} must be an integer"}), 400)
     try:
         return int(v), None
@@ -206,7 +207,7 @@ def _opt_host_id(data: dict, key: str):
     if v is None:
         return None, None
     bad = (jsonify({"error": "bad_request", "detail": f"{key} must be an integer or a UUID"}), 400)
-    if isinstance(v, bool) or not isinstance(v, (int, str)):
+    if isinstance(v, bool) or not isinstance(v, int | str):
         return None, bad
     if isinstance(v, int):
         return v, None
@@ -504,7 +505,7 @@ def _parse_target_fields(data: dict):
         supplied[key] = value
     port = data.get("target_port")
     if port is not None:
-        if isinstance(port, bool) or not isinstance(port, (int, str)):
+        if isinstance(port, bool) or not isinstance(port, int | str):
             return None, _bad_request("target_port must be a string or an integer")
         text = str(port).strip()
         if text:
@@ -1072,29 +1073,40 @@ def scribble_bulk_create_templates():
         cat = rec.get("category")
         if cat is not None:
             if not isinstance(cat, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].category must be a string"}), 400
-            if (err := _too_long(f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].category must be a string"}), 400
+            if (err := _too_long(
+                f"templates[{i}].category", cat, cap=_COLUMN_MAX_LEN.get("category"))) is not None:
                 return err
         cvss_vector = rec.get("cvss_vector")
         if cvss_vector is not None:
             if not isinstance(cvss_vector, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_vector must be a string"}), 400
-            if (err := _too_long(f"templates[{i}].cvss_vector", cvss_vector, cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].cvss_vector must be a string"}), 400
+            if (err := _too_long(
+                f"templates[{i}].cvss_vector", cvss_vector,
+                cap=_COLUMN_MAX_LEN.get("cvss_vector"))) is not None:
                 return err
         sev = rec.get("severity")
         if sev is not None:
             if not isinstance(sev, str):
-                return jsonify({"error": "bad_request", "detail": f"templates[{i}].severity must be a string"}), 400
+                return jsonify({"error": "bad_request",
+                                "detail": f"templates[{i}].severity must be a string"}), 400
             try:
                 severity_enum()(sev.strip().lower())
             except ValueError:
                 return jsonify({"error": "bad_request",
-                                "detail": f"templates[{i}].severity must be one of info|low|medium|high|critical"}), 400
+                                "detail": f"templates[{i}].severity must be one of "
+                                          "info|low|medium|high|critical"}), 400
         cvss_score = rec.get("cvss_score")
-        if cvss_score is not None and (isinstance(cvss_score, bool) or not isinstance(cvss_score, (int, float))):
-            return jsonify({"error": "bad_request", "detail": f"templates[{i}].cvss_score must be a number"}), 400
+        if cvss_score is not None and (
+            isinstance(cvss_score, bool) or not isinstance(cvss_score, int | float)
+        ):
+            return jsonify({"error": "bad_request",
+                            "detail": f"templates[{i}].cvss_score must be a number"}), 400
         if rec.get("references") is not None and not isinstance(rec.get("references"), list):
-            return jsonify({"error": "bad_request", "detail": f"templates[{i}].references must be a list"}), 400
+            return jsonify({"error": "bad_request",
+                            "detail": f"templates[{i}].references must be a list"}), 400
         if rec.get("tags") is not None and not isinstance(rec.get("tags"), list):
             return jsonify({"error": "bad_request", "detail": f"templates[{i}].tags must be a list"}), 400
         # Sibling-gate parity with the single-create route: bound content_json block count + references
@@ -1606,6 +1618,116 @@ def scribble_promote_job(engagement_id: str, job_id: str):
             "unassessed_modules": list(coverage.unassessed_modules(job)),
         }
     )
+
+
+# ── 8a. POST /engagements/<id>/promote-findings/<job_id> — SELECTED subset (#1323) ────────────────────
+
+
+@machine_bp.post("/engagements/<uuid:engagement_id>/promote-findings/<job_id>")
+@host.require_scope("write")
+@request_body(PromoteFindingsRequest)
+def scribble_promote_findings(engagement_id: str, job_id: str):
+    """Promote a SELECTED subset of a lotek scan job's findings into a Scribble engagement (#1323) — the
+    machine twin of the UI ``promote_findings_by_core``. Body: ``{"finding_ids": [<core finding id>, ...]}``.
+
+    Same two-domain tenancy as ``scribble_promote_job`` (source job gated by the HOST, destination
+    engagement by ``_deny_write``) and the SAME ONE promote implementation (``promote.promote_job`` on the
+    selected subset — ``false_positive`` / ``accepted_risk`` skipped inside it, nesting + observation
+    dedupe identical to a whole-job promote). A requested id outside the job 404s with no existence leak
+    (``select_job_findings`` -> ``FindingNotInJob``). Each promoted core finding is then stamped via the
+    host ``mark_finding_promoted`` seam, and the derived job-level columns are kept in sync.
+    """
+    body, bad_body = _json_object_or_400(request.get_json(silent=True) or {})
+    if bad_body is not None:
+        return bad_body
+    finding_ids = body.get("finding_ids")
+    if not isinstance(finding_ids, list):
+        return jsonify({"error": "bad_request", "detail": "finding_ids must be a list"}), 400
+    acknowledged, refusal = _acknowledge_inconclusive_or_400(body.get("acknowledge_inconclusive"))
+    if refusal is not None:
+        return refusal
+
+    actor = host.actor()
+    actor_username = actor.username if actor else None
+    with open_session() as db:
+        engagement = _resolve_engagement(db, engagement_id, actor)
+        if engagement is None:
+            return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
+        engagement_id = engagement.id
+
+        findings_ns = host.findings()
+        job = findings_ns.get_job(job_id, actor) if findings_ns is not None else None
+        if job is None:
+            return jsonify({"error": "not_found", "detail": "job not found"}), 404
+
+        # #656 coverage gate — the SAME gate the whole-job route applies. A per-finding promote is still
+        # the boundary where scan output becomes a client deliverable, and `assessed` is the HOST's
+        # verdict: an older-core host (pre-#927) reports it as None even for a job that produced findings,
+        # so "it has findings" is NOT proof of coverage. Refuse an inconclusive job unless the caller
+        # acknowledges, and record the caveat IN the engagement when they do.
+        inconclusive = not coverage.may_promote(job)
+        if inconclusive and not acknowledged:
+            return jsonify(coverage.refusal_body(job, job_id)), coverage.REFUSAL_STATUS
+
+        dtos = findings_ns.list_findings(job_id, actor) if findings_ns is not None else []
+
+        from scribble.promote import (  # lazy: scribble/promote.py
+            CrossEngagementPromote,
+            FindingNotInJob,
+            promote_job,
+            select_job_findings,
+        )
+
+        try:
+            selected = select_job_findings(dtos, finding_ids)
+        except FindingNotInJob:
+            # An id not among this job's findings — indistinguishable from a missing one (no leak).
+            return jsonify({"error": "not_found", "detail": "finding not in job"}), 404
+
+        try:
+            result = promote_job(
+                db, engagement=engagement, findings=selected, actor_username=actor_username,
+                job_engagement_id=getattr(job, "engagement_id", None),
+            )
+        except CrossEngagementPromote as exc:
+            return jsonify({
+                "error": "cross_engagement",
+                "detail": (
+                    f"This report board is anchored to engagement {exc.anchor}; job {job_id} belongs to "
+                    f"engagement {exc.job_engagement_id}. Reassign the job to {exc.anchor}, or add it to "
+                    f"that engagement's report board."
+                ),
+            }), 409
+        # An acknowledged promotion records the caveat in the same transaction as the findings it
+        # qualifies (mirrors the whole-job route), placed after the cross-engagement handler so a refused
+        # pairing writes no note.
+        if inconclusive:
+            coverage.write_coverage_note(
+                db, engagement=engagement, job=job, job_id=job_id, actor_username=actor_username
+            )
+        db.commit()
+        refs = result.get("refs", {})
+
+    # Host-contract stamps AFTER the scribble commit (separate engine), best-effort: the pour already
+    # committed, so a host-write hiccup must not 500 the response (it degrades to an unlit badge; a
+    # re-promote re-stamps).
+    try:
+        for fid, ref in refs.items():
+            host.mark_finding_promoted(fid, actor, extension="scribble", ref_id=ref)
+        if refs:
+            host.mark_job_promoted(job_id, actor, extension="scribble", ref_id=engagement_id)
+    except Exception:  # noqa: BLE001 — best-effort host stamp; the pour already succeeded
+        current_app.logger.exception("scribble: per-finding promotion stamp failed (non-fatal)")
+
+    return jsonify({
+        "engagement_id": engagement_id,
+        "promoted": result.get("promoted", 0),
+        "skipped": result.get("skipped", 0),
+        "parents": result.get("parents", 0),
+        "stamped": len(refs),
+    })
 
 
 # ── 8b. GET /engagements — list the engagements this token may see ───────────────────────────────────
@@ -2522,7 +2644,7 @@ def _parse_finding_patch(data: dict):
     if port is not _ABSENT:
         if port is None:
             updates["target_port"] = None
-        elif isinstance(port, bool) or not isinstance(port, (int, str)):
+        elif isinstance(port, bool) or not isinstance(port, int | str):
             return None, None, _bad_request("target_port must be a string, an integer, or null")
         else:
             updates["target_port"] = _nul_safe(str(port)).strip() or None
@@ -2534,7 +2656,7 @@ def _parse_finding_patch(data: dict):
     if score is not _ABSENT:
         if score is None:
             updates["cvss_score"] = None
-        elif isinstance(score, bool) or not isinstance(score, (int, float)):
+        elif isinstance(score, bool) or not isinstance(score, int | float):
             return None, None, _bad_request("cvss_score must be a number or null")
         elif not (0.0 <= float(score) <= 10.0):
             # Bounded to the CVSS range, which also refuses the ``NaN``/``Infinity`` tokens Python's JSON
