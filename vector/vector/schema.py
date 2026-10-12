@@ -272,8 +272,13 @@ def _norm_blue(raw: Any) -> dict | None:
 
 def _norm_phase(raw: Any, idx: int, node_ids: set[str]) -> dict:
     d = _dict(raw)
-    out: dict[str, Any] = {"n": _i(d.get("n"), default=idx, lo=0)}
-    if _b(d.get("intro")):
+    is_intro = _b(d.get("intro"))
+    # Non-intro phases must use n >= 1; n=0 is the intro slide's slot.
+    # Any saved n=0 on a non-intro phase is clamped to 1 on next normalize (repairs bad data).
+    lo = 0 if is_intro else 1
+    default_n = idx if is_intro else max(idx, 1)
+    out: dict[str, Any] = {"n": _i(d.get("n"), default=default_n, lo=lo)}
+    if is_intro:
         out["intro"] = True
     out["title"] = _s(d.get("title"), _MED)
     tactics = []
