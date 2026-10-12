@@ -34,6 +34,7 @@ from bugreport.service import (
     LIST_LIMIT,
     Denied,
     Invalid,
+    StorageError,
     admin_act,
     attach,
     create,
@@ -250,6 +251,8 @@ def upload_attachment(report_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
+        except StorageError:
+            abort(503, "file storage is unavailable")
         except Invalid:
             return _back(error="upload")
         except ValueError:
@@ -305,6 +308,8 @@ def upload_artifact(report_id: uuid.UUID):
             )
         except Denied as exc:
             abort(403, str(exc))
+        except StorageError:
+            abort(503, "file storage is unavailable")
         except Invalid as exc:
             abort(400, str(exc))
         except ValueError:

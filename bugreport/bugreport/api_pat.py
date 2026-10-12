@@ -30,6 +30,7 @@ from bugreport.deps import (
 from bugreport.service import (
     Denied,
     Invalid,
+    StorageError,
     admin_act,
     attach,
     attachment_to_dict,
@@ -247,6 +248,8 @@ def upload_attachment_api(report_id: uuid.UUID):
             )
         except Denied as exc:
             return _denied(exc)
+        except StorageError:
+            return jsonify({"error": "unavailable", "detail": "file storage is unavailable"}), 503
         except Invalid as exc:
             return _bad(exc)
         except ValueError:
