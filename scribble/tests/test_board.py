@@ -368,6 +368,26 @@ def test_finding_detail_get_renders_editor_and_gallery(app, client, session_fact
     assert "{{TARGET_HOST}}" in body
 
 
+def test_finding_detail_preview_posts_the_raw_uuid_not_parseint(client, session_factory):
+    """Regression: scribble PKs are UUIDs (lotek#335). The preview button used to ``parseInt`` the
+    engagement/finding ids, which mangled a UUID to an int the server's ``_as_uuid`` rejected ->
+    'Preview failed: engagement_id is required' for EVERY finding. The id must go over the wire as the
+    raw UUID string."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        t = _make_template(db, "XSS", Severity.high)
+        f = BoardFinding.from_template(t, engagement_id=eng.id)
+        db.add(f)
+        db.commit()
+        f_id = f.id
+
+    body = client.get(f"{UI}/findings/{f_id}").data.decode()
+    assert "parseInt(btn.dataset.engagementId" not in body
+    assert "parseInt(btn.dataset.findingId" not in body
+    assert "engagement_id: btn.dataset.engagementId" in body
+    assert "finding_id: btn.dataset.findingId" in body
+
+
 def test_finding_detail_404_for_missing(client):
     resp = client.get(f"{UI}/findings/{_MISSING_ID}")
     assert resp.status_code == 404

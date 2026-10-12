@@ -175,6 +175,21 @@ def _parse_float(value: str | None) -> float | None:
         return None
 
 
+def _findings_badge(total: int, severity_counts: dict) -> str:
+    """Compact finding/severity badge for the adopt picker label, e.g. ``5 findings (1C 2H 2M)``.
+    Only non-zero severities are shown, highest first; an empty job reads ``0 findings``. ``findings_total``
+    / ``severity_counts`` come from the core ``adoptable_jobs`` hook; an older core that doesn't supply
+    them degrades to ``0 findings`` rather than erroring."""
+    if not total:
+        return "0 findings"
+    noun = "finding" if total == 1 else "findings"
+    parts = [f"{severity_counts[sev]}{abbr}"
+             for sev, abbr in (("critical", "C"), ("high", "H"), ("medium", "M"),
+                               ("low", "L"), ("info", "I"))
+             if severity_counts.get(sev)]
+    return f"{total} {noun} ({' '.join(parts)})" if parts else f"{total} {noun}"
+
+
 def _viewable_clients(db) -> list:
     """The clients this actor may attach an engagement to, for the create/edit form's ``<select>``.
 
@@ -983,6 +998,7 @@ def register(api_bp, bp) -> None:
             name = j.get("name") or "(unnamed)"
             tgt = ((j.get("targets") or "").splitlines() or [""])[0][:40]
             label = f"{name} — {tgt} · {j.get('status', '')} · {(j.get('created_at') or '')[:10]}"
+            label += " · " + _findings_badge(j.get("findings_total", 0), j.get("severity_counts") or {})
             items.append({"value": j["id"], "label": label})
         return jsonify(items=items)
 

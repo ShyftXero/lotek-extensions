@@ -312,8 +312,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          engagement_id: parseInt(btn.dataset.engagementId, 10),
-          finding_id: parseInt(btn.dataset.findingId, 10),
+          engagement_id: btn.dataset.engagementId,
+          finding_id: btn.dataset.findingId,
         }),
       })
         .then(function (r) { return r.json(); })
