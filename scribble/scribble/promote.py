@@ -632,6 +632,13 @@ def _promote_findings(
         )
         if children:
             parent.variables = synthesize_parent_variables(children, declarations)
+            # target-A: mirror the synthesized single-value targets onto the parent's OWN columns so the
+            # finding form (which reads the columns) and the report prose (which reads {{TARGET_*}}) agree.
+            # For a MULTI-host parent TARGET_HOST/URL synthesize to "" (scalar shape — children disagree),
+            # so _target_overrides writes nothing and the column stays blank: the Affected-hosts table is
+            # the source of truth. For a single-host parent both the column and {{TARGET_HOST}} show it.
+            for _col, _val in _target_overrides(parent.variables, declarations).items():
+                setattr(parent, _col, _val)
 
     # Resolve freshly-inserted rows' PKs for the refs map. This flush is also where the
     # ``uq_scribble_findings_engagement_source`` conflict surfaces — caught + retried by ``promote_job``.
