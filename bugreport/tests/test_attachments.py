@@ -496,3 +496,100 @@ def test_a_legacy_link_with_no_expiry_still_resolves(client, report_id, session_
 
     hooks["actor"] = None
     assert client.get(f"/bugreport/s/{token}").status_code == 200
+
+
+# --------------------------------------------------------------------------- storage unavailable
+
+class _BrokenBlobs:
+    """Simulates an object store that is CONFIGURED but UNREACHABLE — put() always fails."""
+
+    def put(self, *args, **kwargs):
+        raise OSError("connection refused")  # stands in for botocore.EndpointConnectionError
+
+    def open(self, blob_id):
+        raise OSError("connection refused")
+
+    def delete(self, blob_id):
+        raise OSError("connection refused")
+
+
+@pytest.fixture
+def broken_blobs_app(tmp_path, hooks):
+    """Like the normal app but with the object store replaced by a broken one."""
+    from flask import Flask
+    from sqlalchemy import create_engine
+
+    import bugreport as bugreport_mod
+    application = Flask(__name__)
+    application.config["SECRET_KEY"] = "test"
+    engine = create_engine(f"sqlite:///{tmp_path / 'broken.db'}", future=True)
+    cfg = bugreport_mod.register(
+        application, engine, instance_path=str(tmp_path), base_template="bugreport/base.html"
+    )
+    cfg.extras["current_actor"] = lambda: hooks["actor"]
+    cfg.extras["can_write"] = lambda: hooks["can_write"]
+    cfg.extras["audit"] = hooks["audit"]
+    cfg.extras["blobs"] = _BrokenBlobs()
+    from conftest import _register_kit_assets_shim, _wire_pat_hooks
+    _wire_pat_hooks(cfg, hooks)
+    _register_kit_assets_shim(application)
+    return application
+
+
+def test_unreachable_store_upload_returns_503_browser(broken_blobs_app, hooks):
+    """With a configured but unreachable object store, the browser upload route returns 503."""
+    client = broken_blobs_app.test_client()
+    from bugreport.models import Report, ReportStatus
+    actor = hooks["actor"]
+    with broken_blobs_app.extensions["bugreport"].session_factory() as db:
+        import uuid as _uuid
+        report = Report(
+            id=_uuid.uuid7(), title="test", body="body", status=ReportStatus.open,
+            reporter_id=actor.id, reporter_name=actor.username,
+        )
+        db.add(report)
+        db.commit()
+        rid = report.id
+
+    resp = client.post(
+        f"/bugreport/{rid}/attachments",
+        data=_file(PNG, "shot.png", "image/png"),
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 503
+
+
+def test_working_store_upload_succeeds(client, report_id):
+    """Baseline: a working store completes the upload (redirect on success)."""
+    resp = _upload(client, report_id, PNG, "shot.png", "image/png")
+    assert resp.status_code in (200, 302)
+
+
+def test_unreachable_store_upload_returns_503_pat_api(broken_blobs_app, hooks):
+    """With a configured but unreachable store, the PAT machine upload returns 503."""
+    import io
+    hooks["actor"] = None
+    hooks["can_write"] = False
+    from conftest import StubActor
+    hooks["pat_actor"] = StubActor()
+    client = broken_blobs_app.test_client()
+    with broken_blobs_app.extensions["bugreport"].session_factory() as db:
+        import uuid as _uuid
+
+        from bugreport.models import Report, ReportStatus
+        report = Report(
+            id=_uuid.uuid7(), title="test2", body="body2", status=ReportStatus.open,
+            reporter_id=hooks["pat_actor"].id, reporter_name="agent",
+        )
+        db.add(report)
+        db.commit()
+        rid = report.id
+
+    resp = client.post(
+        f"/bugreport/machine/reports/{rid}/attachments",
+        data={"file": (io.BytesIO(PNG), "shot.png", "image/png")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["error"] == "unavailable"

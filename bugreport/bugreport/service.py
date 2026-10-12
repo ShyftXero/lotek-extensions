@@ -60,6 +60,11 @@ class Denied(PermissionError):
     """The caller is authenticated but not permitted (admin-only verb, or not the owner on a write)."""
 
 
+class StorageError(Exception):
+    """The object store is configured but failed to service the request (unreachable, down, or erroring).
+    Raised at the blobs.put() seam so both surfaces can return 503 without importing botocore."""
+
+
 class Invalid(ValueError):
     """Input this module rejected, carrying a message that is SAFE to show the caller.
 
@@ -344,7 +349,13 @@ def attach(
     )
     db.add(row)
     db.flush()  # assign the PK; the object key is derived from it
-    ref = blobs.put(row.id, _CappedHeadReader(head, stream, max_bytes), content_type=serve_as)
+    try:
+        ref = blobs.put(row.id, _CappedHeadReader(head, stream, max_bytes), content_type=serve_as)
+    except (Denied, Invalid):
+        raise  # our own semantic exceptions — let them surface as-is
+    except Exception as exc:
+        # ponytail: broad catch narrowed by site — blobs.put() only fails with botocore errors
+        raise StorageError("file storage is unavailable") from exc
     row.size = ref.size
     row.sha256 = ref.sha256
     try:
