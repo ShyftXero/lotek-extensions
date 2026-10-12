@@ -111,15 +111,24 @@ def _match_title(pattern: str, title: str) -> bool:
 
 
 def resolve_vuln_template(
-    db: Any, *, source: str | None, title: str | None, dedupe_key: str | None
+    db: Any, *, source: str | None, title: str | None, dedupe_key: str | None,
+    tags: Any = None, cwe: str | None = None,
 ) -> int | None:
     """Resolve a scan finding to a ``ScribbleVulnMap.template_id``, most-specific-first: ``dedupe_prefix``
-    (longest match wins, ties broken by lowest id) > ``source`` + glob ``title_pattern`` > ``source``
-    alone. ``None`` when nothing matches. Does NOT re-check the resolved template is still active/exists
-    -- callers that need the row (this module's own ``_matched_template``, and
-    ``scribble/api_pat.py::scribble_resolve_template``) re-check themselves, since a stale mapping should
-    resolve to "no template" rather than raise.
+    (longest match wins, ties broken by lowest id) > ``source`` + glob ``title_pattern`` > ``tag`` (one of
+    the finding's ``tags`` -- the tool's own classification, e.g. nuclei ``sqli``/``lfi``) > ``cwe_id``
+    (the finding's ``cwe``) > ``source`` alone. ``None`` when nothing matches. Does NOT re-check the
+    resolved template is still active/exists -- callers that need the row (this module's own
+    ``_matched_template``, and ``scribble/api_pat.py::scribble_resolve_template``) re-check themselves,
+    since a stale mapping should resolve to "no template" rather than raise.
+
+    ``tags``/``cwe`` come from the finding's neutral facts (``facts['tags']`` / ``facts['cwe']``). They
+    sit BELOW title_pattern so a specific per-signature rule always wins over the broad class rule, and
+    a tag match beats a cwe match beats the bare-source catch-all. Tag resolution is deterministic:
+    map rows ordered by id, the first whose ``tag`` is one of the finding's tags wins.
     """
+    tag_set = {str(t).strip().lower() for t in (tags or []) if str(t).strip()}
+    cwe_norm = _normalize_cwe(cwe)
     if dedupe_key:
         rows = (
             db.execute(
@@ -151,17 +160,50 @@ def resolve_vuln_template(
         for m in rows:
             if _match_title(m.title_pattern, title):
                 return m.template_id
+    if tag_set:
+        rows = (
+            db.execute(
+                select(ScribbleVulnMap)
+                .where(ScribbleVulnMap.tag.isnot(None))
+                .order_by(ScribbleVulnMap.id)
+            )
+            .scalars()
+            .all()
+        )
+        for m in rows:
+            if m.tag.strip().lower() in tag_set:
+                return m.template_id
+    if cwe_norm:
+        m = db.execute(
+            select(ScribbleVulnMap).where(ScribbleVulnMap.cwe_id == cwe_norm).order_by(ScribbleVulnMap.id)
+        ).scalars().first()
+        if m is not None:
+            return m.template_id
     if source:
         m = db.execute(
             select(ScribbleVulnMap).where(
                 ScribbleVulnMap.source == source,
                 ScribbleVulnMap.title_pattern.is_(None),
                 ScribbleVulnMap.dedupe_prefix.is_(None),
+                ScribbleVulnMap.tag.is_(None),
+                ScribbleVulnMap.cwe_id.is_(None),
             )
         ).scalars().first()
         if m is not None:
             return m.template_id
     return None
+
+
+def _normalize_cwe(cwe: Any) -> str | None:
+    """``"89"`` / ``"cwe-89"`` / ``"CWE-89"`` -> ``"CWE-89"``; a list -> its first entry; else None. The
+    seed stores ``cwe_id`` as ``CWE-<n>`` so the match is spelling-insensitive on both sides."""
+    if isinstance(cwe, list | tuple):
+        cwe = cwe[0] if cwe else None
+    if cwe is None:
+        return None
+    import re
+    m = re.search(r"(\d+)", str(cwe))
+    return f"CWE-{m.group(1)}" if m else None
 
 
 def _matched_template(db: Any, dto: Any) -> VulnerabilityTemplate | None:
@@ -176,11 +218,14 @@ def _matched_template(db: Any, dto: Any) -> VulnerabilityTemplate | None:
     excluded HERE — they stay explicitly instantiable by id (a deliberate act by someone who already
     holds the destination engagement), just never silently adopted.
     """
+    facts = getattr(dto, "facts", None) or {}
     template_id = resolve_vuln_template(
         db,
         source=getattr(dto, "source", None),
         title=getattr(dto, "title", None),
         dedupe_key=getattr(dto, "dedupe_key", None),
+        tags=facts.get("tags"),
+        cwe=facts.get("cwe"),
     )
     if template_id is None:
         return None

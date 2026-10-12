@@ -18,7 +18,6 @@ from sqlalchemy import select
 
 from scribble.content import render_html
 from scribble.enums import ChecklistKind, Severity, VariableScope, VariableType
-from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.models import (
     AssessmentType,
     ChecklistTemplate,
@@ -28,6 +27,7 @@ from scribble.models import (
     TemplateVariable,
     VulnerabilityTemplate,
 )
+from scribble.prosemirror_sanitize import sanitize_content_json
 from scribble.seed import faction_parse
 from scribble.templating import BUILTIN_KEYS
 
@@ -243,10 +243,12 @@ def seed_vuln_map(session, json_path: str | Path | None = None) -> int:
     the deleted lotek ``VulnMap``. MUST run AFTER the library import (``import_vuln_templates``) --
     ``seed_defaults`` below calls it in that order -- so the names it looks up already exist.
 
-    Idempotent on the match-key ``(source, title_pattern, dedupe_prefix)``: a prior run's row for that
-    exact key short-circuits it on later boots, so a template later renamed/retired can't silently break
-    an already-seeded mapping. On a FRESH lookup, zero active templates named ``name`` is a hard failure
-    (raises) -- a missing library entry is model drift, not something to paper over with a silent skip.
+    Idempotent on the match-key ``(source, title_pattern, dedupe_prefix, tag, cwe)``: a prior run's row
+    for that exact key short-circuits it on later boots, so a template later renamed/retired can't
+    silently break an already-seeded mapping. ``tag``/``cwe`` are the fact-classification matches
+    (nuclei's own tags / the finding's CWE) -- see ``ScribbleVulnMap`` / ``resolve_vuln_template``. On a
+    FRESH lookup, zero active templates named ``name`` is a hard failure (raises) -- a missing library
+    entry is model drift, not something to paper over with a silent skip.
     Multiple active templates sharing the name (``VulnerabilityTemplate.name`` has no unique constraint)
     resolve deterministically to the LOWEST id, logged as a warning so the ambiguity is visible without
     blocking boot.
@@ -261,19 +263,25 @@ def seed_vuln_map(session, json_path: str | Path | None = None) -> int:
     specs = json.loads(path.read_text())
     added = 0
     for spec in specs:
+        if not isinstance(spec, dict):
+            continue  # allow bare "_comment" strings in the JSON array as inline section headers
         name = spec["name"]
         source = spec.get("source")
         title_pattern = spec.get("title_pattern")
         dedupe_prefix = spec.get("dedupe_prefix")
+        tag = spec.get("tag")
+        cwe = spec.get("cwe")
+
+        def _eq(col, val):
+            return col.is_(val) if val is None else col == val
+
         existing = session.scalar(
             select(ScribbleVulnMap).where(
-                ScribbleVulnMap.source.is_(source) if source is None else ScribbleVulnMap.source == source,
-                ScribbleVulnMap.title_pattern.is_(title_pattern)
-                if title_pattern is None
-                else ScribbleVulnMap.title_pattern == title_pattern,
-                ScribbleVulnMap.dedupe_prefix.is_(dedupe_prefix)
-                if dedupe_prefix is None
-                else ScribbleVulnMap.dedupe_prefix == dedupe_prefix,
+                _eq(ScribbleVulnMap.source, source),
+                _eq(ScribbleVulnMap.title_pattern, title_pattern),
+                _eq(ScribbleVulnMap.dedupe_prefix, dedupe_prefix),
+                _eq(ScribbleVulnMap.tag, tag),
+                _eq(ScribbleVulnMap.cwe_id, cwe),
             )
         )
         if existing is not None:
@@ -302,6 +310,8 @@ def seed_vuln_map(session, json_path: str | Path | None = None) -> int:
                 source=source,
                 title_pattern=title_pattern,
                 dedupe_prefix=dedupe_prefix,
+                tag=tag,
+                cwe_id=cwe,
                 template_id=template.id,
                 created_by="seed",
             )

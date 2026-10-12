@@ -25,7 +25,9 @@ def test_seed_maps_every_shipped_entry_to_a_real_active_template(session_factory
     re-derive the expectation from the shipped JSON rather than hardcoding a count."""
     from scribble.seed.loader import _DEFAULT_VULN_MAP_JSON
 
-    specs = json.loads(_DEFAULT_VULN_MAP_JSON.read_text())
+    # Bare "_comment" strings are inline section headers in the JSON array; the loader skips them, so
+    # count only the real (dict) map specs.
+    specs = [s for s in json.loads(_DEFAULT_VULN_MAP_JSON.read_text()) if isinstance(s, dict)]
     with session_factory() as db:
         rows = db.execute(select(fm.ScribbleVulnMap)).scalars().all()
         assert len(rows) == len(specs)
@@ -33,17 +35,28 @@ def test_seed_maps_every_shipped_entry_to_a_real_active_template(session_factory
             template = db.get(fm.VulnerabilityTemplate, row.template_id)
             assert template is not None and template.active, (
                 f"ScribbleVulnMap row {row.id} (source={row.source!r}, "
-                f"title_pattern={row.title_pattern!r}, dedupe_prefix={row.dedupe_prefix!r}) points at "
-                "a missing/inactive template"
+                f"title_pattern={row.title_pattern!r}, dedupe_prefix={row.dedupe_prefix!r}, "
+                f"tag={row.tag!r}, cwe_id={row.cwe_id!r}) points at a missing/inactive template"
             )
-        by_key = {(r.source, r.title_pattern, r.dedupe_prefix): r for r in rows}
-        kerberoast = by_key[(None, None, "kerberoast:")]
+        # Key includes tag/cwe_id now: a tag/cwe row shares (source, title_pattern, dedupe_prefix) =
+        # (None, None, None) with every other tag/cwe row, so the old 3-tuple key collapsed them.
+        by_key = {(r.source, r.title_pattern, r.dedupe_prefix, r.tag, r.cwe_id): r for r in rows}
+        kerberoast = by_key[(None, None, "kerberoast:", None, None)]
         assert db.get(fm.VulnerabilityTemplate, kerberoast.template_id).name == "Kerberoasting"
-        dalfox = by_key[("dalfox", None, None)]
+        dalfox = by_key[("dalfox", None, None, None, None)]
         assert db.get(fm.VulnerabilityTemplate, dalfox.template_id).name == "Cross-Site Scripting (XSS)"
-        smb_signing = by_key[("enum4linux", "SMB signing not required", None)]
+        smb_signing = by_key[("enum4linux", "SMB signing not required", None, None, None)]
         assert (
             db.get(fm.VulnerabilityTemplate, smb_signing.template_id).name == "SMB Signing Not Required"
+        )
+        # Tag taxonomy (the durable nuclei coverage): the tool's own tag IS the classification.
+        sqli = by_key[(None, None, None, "sqli", None)]
+        assert db.get(fm.VulnerabilityTemplate, sqli.template_id).name == "SQL Injection"
+        # SSTI: the tag row points at the template this branch authored.
+        ssti = by_key[(None, None, None, "ssti", None)]
+        assert (
+            db.get(fm.VulnerabilityTemplate, ssti.template_id).name
+            == "Server-Side Template Injection (SSTI)"
         )
 
 
