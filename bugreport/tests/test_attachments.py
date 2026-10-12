@@ -593,3 +593,27 @@ def test_unreachable_store_upload_returns_503_pat_api(broken_blobs_app, hooks):
     assert resp.status_code == 503
     data = resp.get_json()
     assert data["error"] == "unavailable"
+
+
+def test_unreachable_store_upload_artifact_returns_503(broken_blobs_app, hooks):
+    """With an unreachable store, the editor inline-image sink (upload_artifact) returns 503."""
+    import io
+    client = broken_blobs_app.test_client()
+    from bugreport.models import Report, ReportStatus
+    actor = hooks["actor"]
+    with broken_blobs_app.extensions["bugreport"].session_factory() as db:
+        import uuid as _uuid
+        report = Report(
+            id=_uuid.uuid7(), title="test-artifact", body="body", status=ReportStatus.open,
+            reporter_id=actor.id, reporter_name=actor.username,
+        )
+        db.add(report)
+        db.commit()
+        rid = report.id
+
+    resp = client.post(
+        f"/bugreport/{rid}/api/artifacts",
+        data={"file": (io.BytesIO(PNG), "paste.png", "image/png")},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 503

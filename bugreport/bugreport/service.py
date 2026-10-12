@@ -355,6 +355,7 @@ def attach(
         raise  # our own semantic exceptions — let them surface as-is
     except Exception as exc:
         # ponytail: broad catch narrowed by site — blobs.put() only fails with botocore errors
+        _log.warning("bugreport: blob put failed — treating storage as unavailable", exc_info=True)
         raise StorageError("file storage is unavailable") from exc
     row.size = ref.size
     row.sha256 = ref.sha256
