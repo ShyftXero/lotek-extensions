@@ -702,3 +702,64 @@ def test_engagement_level_evidence_appendix_in_docx(session_factory):
     assert "Evidence Appendix" in text
     assert "Network overview" in text
     assert _evidence_pictures(doc) == 1
+
+
+# A sentinel lifted verbatim from render_docx._append_methodology's standing prose — the line that marks
+# the STANDING methodology description (not the checklist items). If the prose is reworded, update here.
+_METHODOLOGY_SENTINEL = "This is a standing description of method"
+
+
+def test_docx_methodology_present_with_no_checklist(session_factory):
+    """ext#118: the .docx deliverable must carry the standing Methodology section even when the
+    engagement has NO checklists — parity with render_html._render_methodology (always non-empty).
+    Before the fix the docx emitted methodology only from _append_checklists, which returns early on
+    empty ctx.checklists, so the Word report shipped with no methodology at all."""
+    with session_factory() as db:
+        eng = ReportBoard(name="No Checklist Co", company_name="Acme")
+        db.add(eng)
+        db.commit()
+        eng_id = eng.id
+
+    with session_factory() as db:
+        engagement = db.get(ReportBoard, eng_id)
+        ctx = build_report_context(engagement)
+        assert ctx.checklists == []  # the case the bug was about
+        payload = render_report_docx(ctx)
+
+    doc = docx.Document(io.BytesIO(payload))
+    assert any(p.text.strip() == "Methodology" for p in _all_paras(doc)), "no Methodology heading in docx"
+    assert _METHODOLOGY_SENTINEL in _all_text(doc), "standing methodology prose missing from docx"
+
+
+def test_docx_methodology_and_checklist_both_present(session_factory):
+    """ext#118: with a coverage checklist attached the docx must carry BOTH the standing methodology
+    prose AND the checklist items — the pre-fix docx emitted only the checklist items."""
+    from scribble.reporting.context import ChecklistCtx, ChecklistItemCtx
+
+    with session_factory() as db:
+        eng = ReportBoard(name="Checklist Co", company_name="Acme")
+        db.add(eng)
+        db.commit()
+        eng_id = eng.id
+
+    with session_factory() as db:
+        engagement = db.get(ReportBoard, eng_id)
+        ctx = build_report_context(engagement)
+        ctx.checklists = [
+            ChecklistCtx(
+                id=1, name="Web Coverage", kind="coverage",
+                rollup={"satisfied": 1}, total=1,
+                items=[ChecklistItemCtx(
+                    section="Recon", text="Enumerated all exposed services",
+                    guidance=None, framework=None, control_ref=None,
+                    status="satisfied", bucket="satisfied", bucket_label="Satisfied",
+                    note=None, finding_id=None, finding_title=None,
+                )],
+            )
+        ]
+        payload = render_report_docx(ctx)
+
+    doc = docx.Document(io.BytesIO(payload))
+    text = _all_text(doc)
+    assert _METHODOLOGY_SENTINEL in text, "standing methodology prose missing when a checklist is present"
+    assert "Enumerated all exposed services" in text, "checklist item missing from docx"
