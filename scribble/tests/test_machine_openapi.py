@@ -267,7 +267,7 @@ def test_collection_keys_in_the_document_match_what_the_routes_return(client, st
     assert set(schema["properties"]) <= set(listing), (
         "the document promises keys the route does not return"
     )
-    assert "attack_paths" in listing and "diagrams" in listing
+    assert "attack_paths" in listing and "diagrams" not in listing
 
     findings = client.get(f"{M}/engagements/{eid}/findings").get_json()
     f_schema = spec["paths"]["/scribble/machine/engagements/{engagement_id}/findings"]["get"][
