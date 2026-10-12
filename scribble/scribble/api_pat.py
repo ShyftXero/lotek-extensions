@@ -3522,17 +3522,7 @@ def scribble_list_attack_paths(engagement_id):
             return _engagement_not_found()
         rows = sorted(engagement.diagrams, key=lambda d: (d.order_index, d.id))
         out = [_diagram_dict(d) for d in rows]
-    # ``attack_paths`` is the key that matches the ROUTE; ``diagrams`` is the original one, kept as a
-    # duplicate alias so a client written against it does not break in the same release that fixes the
-    # name (#116). A client that guessed ``attack_paths`` — the obvious guess, and the one a report driver
-    # actually made — got a KeyError and reported "no attack paths" for data that was there. Both keys
-    # reference the same list objects, so the duplication costs one pointer per row, not a second
-    # serialization.
-    #
-    # 🔴 DEPRECATED — ``diagrams`` is removed by #121, which is the tracking issue for exactly that and
-    # names every site to touch. A relative deadline ("one release") in a comment is a promise nothing
-    # enforces; an open issue is a hand that can act. Do not restate a date here — point at #121.
-    return jsonify({"attack_paths": out, "diagrams": out, "count": len(out)})
+    return jsonify({"attack_paths": out, "count": len(out)})
 
 
 @machine_bp.get("/engagements/<uuid:engagement_id>/attack-paths/<uuid:attack_path_id>")

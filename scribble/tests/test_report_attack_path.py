@@ -209,7 +209,7 @@ def test_link_attack_path_round_trip(client, stub_host, session_factory):
     assert listing.status_code == 200
     lbody = listing.get_json()
     assert lbody["count"] == 1
-    assert lbody["diagrams"][0]["id"] == body["id"]
+    assert lbody["attack_paths"][0]["id"] == body["id"]
 
     with session_factory() as db:
         eng = db.get(ReportBoard, eid)

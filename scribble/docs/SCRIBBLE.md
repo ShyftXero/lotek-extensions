@@ -211,7 +211,7 @@ also could not do. The board routes below share their mutation logic with the co
 | `GET /scribble/machine/engagements/<engagement_id>/artifacts` | read | List the engagement's evidence — the review surface for what a report is about to publish. `?unattached=1` narrows to the engagement-level rows (`finding_id` null) the Evidence appendix ships. Each row carries `include_in_report`, `byte_size`, `caption`, `created_by`, `created_at`. |
 | `POST /scribble/machine/engagements/<engagement_id>/artifacts/<artifact_id>` | write | Change `include_in_report` and/or `caption` on one artifact; omitted fields are unchanged. The artifact is addressed THROUGH its engagement, so an id belonging to another engagement is 404 whatever the caller's grants are. |
 | `POST /scribble/machine/engagements/<engagement_id>/attack-paths` | write | Link a vector attack-path diagram into the report's Attack Paths block (ext#48). Scribble has no seam to reach vector directly, so the caller does the fetch: `GET` vector's `/vector/machine/diagrams/<id>/export.html` (already self-contained) and POST the result here as `embed_html`, plus optional `diagram_ref` (vector's diagram id, provenance only), `caption`, `include_in_report` (default `true`), `idempotency_key`. The snapshot is embedded verbatim in a sandboxed `<iframe sandbox="allow-scripts">` (no `allow-same-origin`) — never parsed or executed server-side. Capped at 10 MiB. An engagement with no linked diagram renders no Attack Paths section at all (the block is fully backward-compatible). |
-| `GET /scribble/machine/engagements/<engagement_id>/attack-paths` | read | List the diagrams linked to this engagement — the review surface for what the Attack Paths block will publish. Each row carries `caption`, `include_in_report`, `order_index`, `has_embed_html` (the snapshot body itself is omitted from the listing). The list is under **`attack_paths`**; the original key `diagrams` is emitted as a duplicate alias and is **deprecated** (see the note below). |
+| `GET /scribble/machine/engagements/<engagement_id>/attack-paths` | read | List the diagrams linked to this engagement — the review surface for what the Attack Paths block will publish. Each row carries `caption`, `include_in_report`, `order_index`, `has_embed_html` (the snapshot body itself is omitted from the listing). The list is under **`attack_paths`**. |
 | `GET /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | read | One linked attack path **including** its stored `embed_html` snapshot (which the listing omits — a row can be 10 MiB). |
 | `PATCH /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | write | Edit in place: `include_in_report` and/or `caption`. `include_in_report: false` is the **non-destructive** way to keep a wrongly-linked diagram out of the deliverable — reach for it before `DELETE`. An unknown field is a 400. |
 | `DELETE /scribble/machine/engagements/<engagement_id>/attack-paths/<attack_path_id>` | write | Unlink the diagram and delete its snapshot. Survivors are re-packed to a contiguous `order_index`. Only Scribble's snapshot is destroyed — the source diagram lives in vector, so a delete is recoverable by re-linking. |
@@ -280,9 +280,8 @@ page does not restate them.
 document — this is the prose version):
 
 - **`GET …/attack-paths` returns `attack_paths`.** The original key was `diagrams`, which matched
-  neither the route nor the resource. Both keys are emitted, referencing the same list; **`diagrams` is
-  DEPRECATED and is removed by [#121](https://github.com/ShyftXero/lotek-extensions/issues/121).** Read
-  `attack_paths`.
+  neither the route nor the resource. `diagrams` was kept as a deprecated alias for one release and
+  removed in [#121](https://github.com/ShyftXero/lotek-extensions/issues/121). Use `attack_paths`.
 - **`GET …/findings` nests.** Findings live in `groups[].findings[]` plus `ungrouped[]`; there is **no**
   flat top-level `findings` key, so `for f in body["findings"]` raises `KeyError`. `count` is board rows
   (children included); `top_level_count` is what the report renders.

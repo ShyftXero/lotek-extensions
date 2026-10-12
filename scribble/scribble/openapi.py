@@ -396,15 +396,8 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
         {
             "count": _COUNT,
             "attack_paths": _array("AttackPath"),
-            "diagrams": {**_array("AttackPath"),
-                         "deprecated": True,
-                         "description": "DEPRECATED alias of `attack_paths`, identical content, kept so "
-                         "clients written against the original key did not break in the release that "
-                         "fixed the name. Scheduled for removal (lotek-extensions#121). Read "
-                         "`attack_paths`."},
         },
-        description="`attack_paths` is the key that matches the route name. `diagrams` was the original "
-        "key and is deprecated (#116).",
+        description="`attack_paths` is the canonical key, matching the route name.",
     )),
     "scribble_get_attack_path": (200, _ref("AttackPathDetail")),
     "scribble_update_attack_path": (200, _ref("AttackPath")),
