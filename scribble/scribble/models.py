@@ -306,7 +306,12 @@ class ScribbleVulnMap(Base, TimestampMixin):
     -- this table lives here instead, with a REAL foreign key: Scribble always has its own
     ``scribble_vuln_templates`` table by definition. Resolution is most-specific-first: ``dedupe_prefix``
     (prefix of the lotek finding's ``dedupe_key``) beats ``source`` + ``title_pattern`` (glob on the
-    finding's ``title``) beats ``source`` alone -- see ``scribble/promote.py::resolve_vuln_template``.
+    finding's ``title``) beats ``tag`` (one of the finding's ``facts['tags']``, e.g. nuclei's own
+    ``sqli``/``lfi``/``xss`` classification) beats ``cwe_id`` (the finding's ``facts['cwe']``) beats
+    ``source`` alone -- see ``scribble/promote.py::resolve_vuln_template``. ``tag``/``cwe_id`` exist
+    because a per-``dedupe_prefix`` row per nuclei template would be thousands of brittle rows; the
+    tag IS the tool's classification, so ~15 tag rows cover ~5000 nuclei templates and a NEW template
+    inherits its tag's mapping with no edit here.
     """
 
     __tablename__ = "scribble_vuln_map"
@@ -315,6 +320,11 @@ class ScribbleVulnMap(Base, TimestampMixin):
     source: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     title_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dedupe_prefix: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # A finding fact classification: ``tag`` matches ONE of ``facts['tags']`` (nuclei tags), ``cwe_id``
+    # matches ``facts['cwe']`` (e.g. "CWE-89"). Both are coarser than dedupe_prefix/title and sit below
+    # them in precedence; see ``resolve_vuln_template``.
+    tag: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    cwe_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("scribble_vuln_templates.id"), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
 

@@ -27,7 +27,8 @@ def test_adoptable_jobs_json_returns_combobox_items(client, stub_host, session_f
     job_id = str(uuid.uuid7())
     stub_host.adoptable_jobs_value = [
         {"id": job_id, "name": "Recon scanme", "targets": "scanme.nmap.org\n10.0.0.1",
-         "status": "completed", "created_at": "2026-09-24T06:00:00"},
+         "status": "completed", "created_at": "2026-09-24T06:00:00",
+         "findings_total": 3, "severity_counts": {"critical": 1, "medium": 2}},
     ]
     r = client.get(f"{UI}/engagements/{bid}/adoptable-jobs.json")
     assert r.status_code == 200
@@ -39,6 +40,8 @@ def test_adoptable_jobs_json_returns_combobox_items(client, stub_host, session_f
     assert "Recon scanme" in it["label"]
     assert "scanme.nmap.org" in it["label"] and "10.0.0.1" not in it["label"]  # first target line only
     assert "completed" in it["label"] and "2026-09-24" in it["label"]
+    # finding/severity count shows what you're adopting before you adopt it
+    assert "3 findings (1C 2M)" in it["label"]
     assert job_id not in it["label"]
 
 

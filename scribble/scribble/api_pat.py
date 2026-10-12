@@ -1469,11 +1469,25 @@ def scribble_resolve_template():
     dedupe_key, err = _opt_str(data, "dedupe_key")
     if err:
         return err
+    cwe, err = _opt_str(data, "cwe")
+    if err:
+        return err
+    # ``tags`` is a list fact (nuclei's own classification); accept a list or a comma string, ignore
+    # anything else rather than 400 — it's an optional, lower-precedence match input.
+    raw_tags = data.get("tags")
+    if isinstance(raw_tags, str):
+        tags = [t for t in (s.strip() for s in raw_tags.split(",")) if t]
+    elif isinstance(raw_tags, list):
+        tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    else:
+        tags = None
 
     from scribble.promote import resolve_vuln_template  # lazy: scribble/promote.py is Track D's file
 
     with open_session() as db:
-        template_id = resolve_vuln_template(db, source=source, title=title, dedupe_key=dedupe_key)
+        template_id = resolve_vuln_template(
+            db, source=source, title=title, dedupe_key=dedupe_key, tags=tags, cwe=cwe
+        )
         # Re-check the mapped template still exists + is active; a stale mapping resolves to null so
         # the caller cleanly falls back to from_lotek_finding.
         if template_id is not None:

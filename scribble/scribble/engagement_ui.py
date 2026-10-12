@@ -175,6 +175,21 @@ def _parse_float(value: str | None) -> float | None:
         return None
 
 
+def _findings_badge(total: int, severity_counts: dict) -> str:
+    """Compact finding/severity badge for the adopt picker label, e.g. ``5 findings (1C 2H 2M)``.
+    Only non-zero severities are shown, highest first; an empty job reads ``0 findings``. ``findings_total``
+    / ``severity_counts`` come from the core ``adoptable_jobs`` hook; an older core that doesn't supply
+    them degrades to ``0 findings`` rather than erroring."""
+    if not total:
+        return "0 findings"
+    noun = "finding" if total == 1 else "findings"
+    parts = [f"{severity_counts[sev]}{abbr}"
+             for sev, abbr in (("critical", "C"), ("high", "H"), ("medium", "M"),
+                               ("low", "L"), ("info", "I"))
+             if severity_counts.get(sev)]
+    return f"{total} {noun} ({' '.join(parts)})" if parts else f"{total} {noun}"
+
+
 def _viewable_clients(db) -> list:
     """The clients this actor may attach an engagement to, for the create/edit form's ``<select>``.
 
@@ -983,6 +998,7 @@ def register(api_bp, bp) -> None:
             name = j.get("name") or "(unnamed)"
             tgt = ((j.get("targets") or "").splitlines() or [""])[0][:40]
             label = f"{name} — {tgt} · {j.get('status', '')} · {(j.get('created_at') or '')[:10]}"
+            label += " · " + _findings_badge(j.get("findings_total", 0), j.get("severity_counts") or {})
             items.append({"value": j["id"], "label": label})
         return jsonify(items=items)
 
@@ -1028,6 +1044,29 @@ def register(api_bp, bp) -> None:
             act = _is_source_job(engagement, job_id, actor)
         if act:  # only clear a job actually adopted HERE; a foreign/unknown job is a silent no-op
             host.remove_job_adoption(job_id, actor)
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @bp.post("/engagements/<uuid:engagement_id>/remap-job/<job_id>", endpoint="remap_job")
+    def remap_job(engagement_id: uuid.UUID, job_id: str):
+        """Re-run the vuln-map over a source job's FLAT findings and group any that NOW match a template
+        (after the mapping grew). NON-DESTRUCTIVE: ``promote.remap_job_findings`` only reparents + re-
+        synthesizes parents -- it never deletes, rebuilds content, or touches an operator's edits, so
+        this is safe to click repeatedly. WRITE-gated; scoped to THIS engagement's own source job via
+        ``_is_source_job`` + ``_job_finding_ids`` (the same reverse-index un-adopt uses), so it can't
+        reach another engagement's rows. Unknown/foreign job -> silent no-op."""
+        if not host_can_write():
+            abort(403)
+        actor = current_actor()
+        from scribble.promote import remap_job_findings  # lazy: promote.py is Track D's file
+        with open_session() as db:
+            engagement = db.get(ReportBoard, engagement_id)
+            if engagement is None:
+                abort(404)
+            if _is_source_job(engagement, job_id, actor):
+                remap_job_findings(
+                    db, engagement=engagement, job_finding_ids=_job_finding_ids(job_id, actor)
+                )
+                db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     @bp.get("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>/preview",
