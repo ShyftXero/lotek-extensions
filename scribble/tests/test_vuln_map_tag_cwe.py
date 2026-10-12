@@ -38,7 +38,7 @@ def test_resolve_precedence_dedupe_title_tag_cwe_source(session_factory, tmp_pat
     the more-specific signals are removed from the finding."""
     names = [f"{_T}-ByDedupe", f"{_T}-ByTitle", f"{_T}-ByTag", f"{_T}-ByCwe", f"{_T}-BySource"]
     with session_factory() as db:
-        ids = _mk_templates(db, names)
+        _mk_templates(db, names)  # the rows the map specs below resolve by name
     spec = [
         {"name": f"{_T}-ByDedupe", "dedupe_prefix": f"{_T}-ded:"},
         {"name": f"{_T}-ByTitle", "source": f"{_T}-src", "title_pattern": f"{_T}-title*"},
@@ -114,3 +114,52 @@ def test_promote_groups_tagged_nuclei_findings_under_one_template(app, session_f
         assert db.get(fm.VulnerabilityTemplate, parent.template_id).name == "SQL Injection"
         children = db.query(fm.BoardFinding).filter_by(parent_id=parent.id).all()
         assert {c.target_host for c in children} == {"a.example", "b.example"}
+
+
+def test_remap_reparents_flats_that_now_match_and_is_idempotent(app, session_factory):
+    """Re-run-the-mapping-on-a-job: findings promoted while UNMAPPED land flat; after the map grows,
+    `remap_job_findings` reparents them under the now-matching template WITHOUT re-adopting, and a second
+    run is a no-op (idempotent, non-destructive)."""
+    with session_factory() as db:
+        eng = fm.ReportBoard(name="Remap", scope_type="external")
+        db.add(eng)
+        db.commit()
+        eng_id, core_id = eng.id, eng.core_engagement_id
+
+    fids = [uuid.uuid7(), uuid.uuid7()]
+    findings = [
+        FakeFindingDTO(id=fids[0], title="Thing on a", source="zzz-unmapped", target_host="a",
+                       dedupe_key="zzz-unmapped:a", facts={"host": "a"}),
+        FakeFindingDTO(id=fids[1], title="Thing on b", source="zzz-unmapped", target_host="b",
+                       dedupe_key="zzz-unmapped:b", facts={"host": "b"}),
+    ]
+    with session_factory() as db:
+        engagement = db.get(fm.ReportBoard, eng_id)
+        res = promote.promote_job(db, engagement=engagement, findings=findings,
+                                  actor_username="t", job_engagement_id=core_id)
+        db.commit()
+        assert res["parents"] == 0, "an unmapped source lands flat, not grouped"
+        # The map grows: a new row now covers that source.
+        tmpl = fm.VulnerabilityTemplate(name="Zzz Unmapped Writeup", active=True)
+        db.add(tmpl)
+        db.commit()
+        db.add(fm.ScribbleVulnMap(source="zzz-unmapped", template_id=tmpl.id))
+        db.commit()
+        tmpl_id = tmpl.id
+
+    with session_factory() as db:
+        engagement = db.get(fm.ReportBoard, eng_id)
+        out = promote.remap_job_findings(db, engagement=engagement, job_finding_ids=fids)
+        db.commit()
+        assert out == {"reparented": 2, "parents_created": 1}
+        parent = db.query(fm.BoardFinding).filter_by(
+            engagement_id=eng_id, parent_id=None, source_finding_id=None
+        ).one()
+        assert parent.template_id == tmpl_id
+        children = db.query(fm.BoardFinding).filter_by(parent_id=parent.id).all()
+        assert {str(c.source_finding_id) for c in children} == {str(f) for f in fids}
+
+    with session_factory() as db:
+        engagement = db.get(fm.ReportBoard, eng_id)
+        again = promote.remap_job_findings(db, engagement=engagement, job_finding_ids=fids)
+        assert again == {"reparented": 0, "parents_created": 0}

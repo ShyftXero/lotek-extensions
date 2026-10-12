@@ -38,6 +38,10 @@ def test_board_lists_jobs_promoted_into_this_engagement(client, stub_host, sessi
     assert "job-alpha" in body              # both job refs render
     assert "job-bravo" in body
     assert "2026-09-04 13:30" in body       # ...each with its promoted_at
+    # Re-map (regroup) action is offered per source job (writer context) so the operator can re-run the
+    # vuln-map after it grows — the button posts to the non-destructive remap route.
+    assert "/remap-job/job-alpha" in body
+    assert "Re-map (regroup)" in body
 
 
 def test_board_source_jobs_empty_state_when_none(client, stub_host, session_factory):

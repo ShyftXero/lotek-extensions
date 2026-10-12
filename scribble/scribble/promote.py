@@ -687,6 +687,65 @@ def _promote_findings(
     return {"promoted": promoted, "skipped": skipped, "parents": parents_created, "refs": refs}
 
 
+def remap_job_findings(db: Any, *, engagement: Any, job_finding_ids) -> dict:
+    """Re-run vuln-map resolution over the FLAT scan rows a job poured onto ``engagement`` and reparent
+    any that NOW resolve to a template, under its find-or-created parent. The "re-run the mapping on a
+    job" action: after the ``ScribbleVulnMap`` grows (a new tag/source/signature row), an already-adopted
+    job's ungrouped findings collapse into grouped per-host children WITHOUT re-adopting.
+
+    NON-DESTRUCTIVE by design, and that is the whole point of reparent-over-repour: it only ever sets
+    ``parent_id`` and re-synthesizes the touched parents' aggregate ``variables``. It never rebuilds a
+    row's content, never rewrites a typed column, never touches an operator's edits, and never moves a
+    row that is ALREADY grouped (``parent_id`` set) or an author-owned parent (no ``source_finding_id``).
+    Idempotent: a second run finds nothing left flat that matches. The match inputs come from the row's
+    own frozen ``source_facts`` (the verbatim DTO), so no host round-trip is needed.
+
+    ``job_finding_ids`` scopes it to ONE job's scan findings (the same ``_job_finding_ids`` set un-adopt
+    uses). Returns ``{reparented, parents_created}``.
+    """
+    ids = {str(x) for x in job_finding_ids}
+    if not ids:
+        return {"reparented": 0, "parents_created": 0}
+    declarations = _load_declarations(db)
+    flats = [
+        f for f in engagement.findings
+        if f.parent_id is None and f.source_finding_id is not None
+        and str(f.source_finding_id) in ids
+    ]
+    parents_by_template: dict[Any, Any] = {}
+    reparented = 0
+    parents_created = 0
+    order_index = len(engagement.findings)
+    for f in flats:
+        dto = SimpleNamespace(**(f.source_facts or {}))
+        template = _matched_template(db, dto)
+        if template is None:
+            continue  # still no mapping for this signature -> leave it flat, exactly as before
+        parent = parents_by_template.get(template.id)
+        if parent is None:
+            parent, created = _get_or_create_parent(
+                db, engagement_id=engagement.id, template=template,
+                actor=f.created_by, order_index=order_index,
+            )
+            order_index += 1
+            parents_by_template[template.id] = parent
+            if created:
+                parents_created += 1
+        f.parent_id = parent.id
+        reparented += 1
+    # Re-synthesize each touched parent from ALL its children now (existing + just-reparented),
+    # reconstructed from their frozen source_facts -- the same pass promote_job runs after a pour.
+    for parent in parents_by_template.values():
+        child_dtos = [
+            SimpleNamespace(**(c.source_facts or {}))
+            for c in engagement.findings
+            if c.parent_id == parent.id and c.source_facts
+        ]
+        if child_dtos:
+            parent.variables = synthesize_parent_variables(child_dtos, declarations)
+    return {"reparented": reparented, "parents_created": parents_created}
+
+
 # ── un-adopt (#635): the inverse of promote_job — ONE home for "did job J enrich this finding" ──────
 
 

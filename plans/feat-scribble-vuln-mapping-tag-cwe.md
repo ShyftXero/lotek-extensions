@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/scribble-vuln-mapping-tag-cwe`  (off `origin/main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟡 in progress (core logic + tests done; target-A deferred; suite+PR pending)
 
 ## Purpose
 Scan findings promoted into a scribble engagement mostly land **flat/ungrouped** because the
@@ -17,26 +17,33 @@ classification (`sqli`→SQL Injection, `lfi`→Path Traversal, …) and the fin
 ~15 rows cover ~5000 nuclei templates and makes new templates inherit a mapping for free.
 
 ## Done
-- [x] Branch + plan.
+- [x] `ScribbleVulnMap`: `tag` + `cwe_id` columns + migration `c8e1a4f7b230` (off head `b2c4e6f8a1d3`).
+- [x] `resolve_vuln_template`: `tags`/`cwe`; precedence `dedupe_prefix > title > tag > cwe > source`.
+- [x] `_matched_template` + `api_pat.scribble_resolve_template` thread `facts['tags']`/`facts['cwe']`.
+- [x] `seed_vuln_map`: `tag`/`cwe` keys + skip bare `_comment` strings.
+- [x] `lotek_vuln_map.json`: tag taxonomy + whole-toolchain source rows + TLS/cert/metrics refinements.
+      (Dropped `nuclei:cve-` catch-all: dedupe_prefix outranks tag, it would clobber accurate tags.)
+- [x] SSTI template authored + `ssti` tag mapped to it.
+- [x] **Re-map a job** (`remap_job_findings` + `/remap-job/<job_id>` route + Source-jobs button).
+- [x] Adopt-picker finding/severity badge (extension render side).
+- [x] Finding-page preview `parseInt(uuid)` regression fixed.
+- [x] Tests: precedence, shipped sqli/TLS, end-to-end tag grouping, remap+idempotence, badge, preview
+      guard, remap-button render.
 
 ## Remaining
-- [ ] `ScribbleVulnMap`: add `tag` + `cwe_id` columns (+ migration off head `b2c4e6f8a1d3`).
-- [ ] `resolve_vuln_template`: accept `tags`/`cwe`; precedence `dedupe_prefix > title > tag > cwe > source`.
-- [ ] `_matched_template` + `api_pat.scribble_resolve_template`: thread `facts["tags"]`/`facts["cwe"]`.
-- [ ] `seed_vuln_map`: support `tag`/`cwe` keys (idempotency match-key + construction).
-- [ ] `lotek_vuln_map.json`: tag taxonomy (~15) + whole-toolchain source rows (snmp/egress/smb/…) +
-      TLS specific-id refinements + `nuclei:cve-` catch-all.
-- [ ] Author **SSTI** template (`lotek_vulnerabilities.json`) + map `ssti` tag → it.
-- [ ] **Re-map a job** (non-destructive reparent of flats that now match) + UI button.
-- [ ] Fold in the **adopt-picker findings/severity badge** (`/tmp/badge_work.patch`).
-- [ ] Bug fixes: finding-page **preview `parseInt(uuid)`** regression; **target-A** (parent target
-      columns stay blank on a multi-host parent, consistently).
-- [ ] Tests for each; evals (baseline flat-count before/after on a synthetic nuclei job).
+- [ ] **target-A** (parent target-field/prose consistency on a multi-host parent) — deferred: touches
+      CLIENT report prose (`report_variables.json` shape + applying overrides to the parent), wants its
+      own eval'd commit. Form columns are already blank-by-design today; the open bit is `{{TARGET_HOST}}`
+      prose still rendering the full host list.
+- [ ] Full extension suite + `--ack-*`; open PR.
 
 ## Notes / gotchas
-- Schema is **Alembic-owned** since #335 (`db.create_all` → `run_migrations`); single head
-  `b2c4e6f8a1d3` — chain onto it, NEVER fork a second head (silently breaks the mount, ext#169).
-- `seed_vuln_map` looks templates up **by name** and RAISES on a miss — so SSTI must seed before its map
-  row; use the exact active template name.
-- Tag match must be deterministic: order map rows by id, first `row.tag ∈ finding.tags` wins.
+- **Cross-repo:** the core half of the badge (adoptable_jobs returning counts) is lotek
+  `feat/adopt-picker-findings-count`. The scribble render degrades to "0 findings" without it.
+- Schema is **Alembic-owned** since #335 (`db.create_all` → `run_migrations`); single head is now
+  `c8e1a4f7b230` — chain onto it, NEVER fork a second head (silently breaks the mount, ext#169).
+- **Dev/test must run from `extensions/scribble/` with `uv run --extra dev`** — scribble resolves to
+  SOURCE there; the lotek-core venv imports the stale pinned package (new columns invisible).
+- `seed_vuln_map` looks templates up **by name** and RAISES on a miss — so SSTI seeds before its map row.
+- Tag match is deterministic: map rows ordered by id, first `row.tag ∈ finding.tags` wins.
 - Prod needs the migration applied (human-gated ALTER) — note in the PR; `scribble_vuln_map` exists.

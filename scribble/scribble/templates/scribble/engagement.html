@@ -146,6 +146,12 @@
       {# Un-adopt (#635): two paths per source job. Link-only is a plain form POST (no JS). The
          destructive path carries preview/destroy urls the board.js handler previews-then-confirms. #}
       <span class="scribble-unadopt">
+        {# Re-map (regroup): re-run the vuln-map over this job's flat findings and group any that now
+           match a template. Non-destructive (reparent only), so a plain form POST + safe to repeat. #}
+        <form method="post" style="display:inline"
+              action="{{ url_for('scribble.remap_job', engagement_id=engagement.id, job_id=job.id) }}">
+          <button type="submit" class="btn btn-sm" title="Regroup this job's findings using the current vulnerability mapping">Re-map (regroup)</button>
+        </form>
         <form method="post" style="display:inline"
               action="{{ url_for('scribble.unadopt_job', engagement_id=engagement.id, job_id=job.id) }}">
           <button type="submit" class="btn btn-sm">Un-adopt (keep findings)</button>

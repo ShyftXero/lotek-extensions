@@ -1046,6 +1046,29 @@ def register(api_bp, bp) -> None:
             host.remove_job_adoption(job_id, actor)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
+    @bp.post("/engagements/<uuid:engagement_id>/remap-job/<job_id>", endpoint="remap_job")
+    def remap_job(engagement_id: uuid.UUID, job_id: str):
+        """Re-run the vuln-map over a source job's FLAT findings and group any that NOW match a template
+        (after the mapping grew). NON-DESTRUCTIVE: ``promote.remap_job_findings`` only reparents + re-
+        synthesizes parents -- it never deletes, rebuilds content, or touches an operator's edits, so
+        this is safe to click repeatedly. WRITE-gated; scoped to THIS engagement's own source job via
+        ``_is_source_job`` + ``_job_finding_ids`` (the same reverse-index un-adopt uses), so it can't
+        reach another engagement's rows. Unknown/foreign job -> silent no-op."""
+        if not host_can_write():
+            abort(403)
+        actor = current_actor()
+        from scribble.promote import remap_job_findings  # lazy: promote.py is Track D's file
+        with open_session() as db:
+            engagement = db.get(ReportBoard, engagement_id)
+            if engagement is None:
+                abort(404)
+            if _is_source_job(engagement, job_id, actor):
+                remap_job_findings(
+                    db, engagement=engagement, job_finding_ids=_job_finding_ids(job_id, actor)
+                )
+                db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
     @bp.get("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>/preview",
             endpoint="unadopt_job_preview")
     def unadopt_job_preview(engagement_id: uuid.UUID, job_id: str):
