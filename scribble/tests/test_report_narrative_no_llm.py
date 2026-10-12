@@ -275,3 +275,44 @@ def test_exec_summary_honesty_end_to_end_with_coverage_note(session_factory):
     assert "found no issues in the tested scope" not in lowered
     assert "we could not assess" in lowered
     assert "makes no claim about that scope" in lowered
+
+
+# --------------------------------------------------------------------------- AI-assist seam (ai_stream shape)
+
+def test_polish_works_with_ai_stream_shaped_hook():
+    """The real host hook (ai_stream) is called as ai_stream(messages) -> Iterator[str].
+    Verify polish calls the hook with the correct positional messages arg and joins deltas."""
+    received: list = []
+
+    def ai_stream_hook(messages):
+        received.append(messages)
+        return iter(["Rephrased ", "text."])
+
+    result = N.polish("original text", kind="exec_summary", enable=True, ai_hook=ai_stream_hook)
+    assert result == "Rephrased text."
+    # Hook was called once with a messages list
+    assert len(received) == 1
+    msgs = received[0]
+    assert isinstance(msgs, list)
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"
+    assert "exec_summary" in msgs[1]["content"]
+    assert "original text" in msgs[1]["content"]
+
+
+def test_polish_fails_closed_on_empty_ai_stream_result():
+    """An ai_stream that yields nothing -> input unchanged (fail-closed)."""
+    def empty_hook(messages):
+        return iter([])
+
+    result = N.polish("keep me", kind="exec_summary", enable=True, ai_hook=empty_hook)
+    assert result == "keep me"
+
+
+def test_polish_fails_closed_on_ai_stream_exception():
+    """An ai_stream that raises mid-iteration -> input unchanged (fail-closed, byte-for-byte)."""
+    def broken_hook(messages):
+        raise RuntimeError("upstream exploded")
+
+    result = N.polish("keep me exactly", kind="exec_summary", enable=True, ai_hook=broken_hook)
+    assert result == "keep me exactly"

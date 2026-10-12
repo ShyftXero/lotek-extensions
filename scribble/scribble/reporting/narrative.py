@@ -297,13 +297,21 @@ def polish(text: str, *, kind: str, enable: bool | None = None, ai_hook=None) ->
     if hook is None:
         return text
     try:
-        # One batched call over the assembled text. The hook may return a string or an iterable of
-        # chunks (the ai_stream shape); accept either. Anything else, or an empty result, keeps ``text``.
-        out = hook(text=text, kind=kind)
-        if out is None:
-            return text
-        polished = out if isinstance(out, str) else "".join(str(chunk) for chunk in out)
-        polished = polished.strip()
+        # ai_stream contract: ai_stream(messages: list[dict]) -> Iterator[str] yielding content deltas.
+        # Build a one-shot prompt; kind labels the surface for context only, never alters facts.
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a copy editor. Rephrase the following text for flow and voice only. "
+                    "Do not add, drop, reorder, reclassify, or re-severity any fact. "
+                    "Return only the rephrased text, nothing else."
+                ),
+            },
+            {"role": "user", "content": f"[{kind}]\n{text}"},
+        ]
+        out = hook(messages)
+        polished = "".join(str(chunk) for chunk in out).strip()
         return polished or text
     except Exception:
         # A polish failure must never break a deterministic report that is already complete and valid.
