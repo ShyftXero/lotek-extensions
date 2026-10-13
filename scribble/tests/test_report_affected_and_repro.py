@@ -93,6 +93,27 @@ def _render_parent(session_factory, hosts, *, parent_vars, parent_content=None):
         return render_report_html(build_report_context(db.get(ReportBoard, eid)))
 
 
+def _parent_with_children(session_factory, hosts) -> int:
+    """Build (don't render) ONE parent finding over `hosts` (per-host children); return the engagement id."""
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="E", client_id=client.id, company_name="Acme")
+        grp = FindingGroup(engagement=eng, name="Web", order_index=0)
+        parent = BoardFinding(engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
+                              order_index=0, content_json={"description": schema.doc_from_text("XSS.")})
+        db.add(eng)
+        db.add(parent)
+        db.flush()
+        for i, h in enumerate(hosts):
+            db.add(BoardFinding(engagement=eng, group=grp, title="Reflected XSS", severity=Severity.high,
+                                order_index=i + 1, target_host=h, target_url=f"https://{h}:443/",
+                                parent_id=parent.id, variables={"AFFECTED": h}))
+        db.commit()
+        return eng.id
+
+
 def test_parent_affected_assets_are_not_double_counted(session_factory):
     """A parent's children ARE the asset set; its AFFECTED overlay is a comma-joined copy of the same
     hosts. Folding both double-counted every host (Blade's 93-for-52) and leaked the '…and N more' cap
@@ -112,6 +133,28 @@ def test_parent_inline_affected_resolves_to_a_count_reference(session_factory):
                           parent_vars={"AFFECTED": "10.0.0.1, 10.0.0.2, 10.0.0.3"}, parent_content=content)
     assert "Exposed at 3 hosts (see Affected Assets below) without authentication." in html
     assert "Exposed at 10.0.0.1, 10.0.0.2" not in html, "the raw per-host wall must not render in prose"
+
+
+def test_docx_affected_hosts_render_as_a_bulleted_list(app, session_factory):
+    """The DOCX "Affected Hosts" per-host list must render as real ListBullet paragraphs — one bullet per
+    host — not collapse into the green <h4> label run as one run-on line. Regression for the bare-<li> bug:
+    html_to_richtext (content/render_docx) opens a list paragraph only for render_html's <li><p>..</p></li>
+    shape, so _children_html's bare <li>host</li> gave NO paragraph and every host flowed into the heading
+    run. _children_html now wraps each item in <p>."""
+    import io
+    import zipfile
+
+    from scribble.reporting.render_docx import render_report_docx
+
+    eng_id = _parent_with_children(session_factory, ["a.example", "b.example", "c.example"])
+    with app.app_context(), session_factory() as db:
+        payload = render_report_docx(build_report_context(db.get(ReportBoard, eng_id)))
+    xml = zipfile.ZipFile(io.BytesIO(payload)).read("word/document.xml").decode("utf-8", "replace")
+    assert "Affected Hosts" in xml
+    # the fix: per-host entries are ListBullet paragraphs. Before it, there were none here and the hosts
+    # ran into the heading run.
+    assert 'w:val="ListBullet"' in xml, "per-host entries must be bulleted paragraphs, not a run-on"
+    assert "a.example" in xml and "b.example" in xml and "c.example" in xml
 
 
 def test_toolbar_server_export_links_only_with_export_url(session_factory):
