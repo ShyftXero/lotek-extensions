@@ -88,6 +88,19 @@ def build_context(engagement, finding=None, *, extra: dict[str, Any] | None = No
         ctx["SEVERITY"] = getattr(sev, "value", "") if sev is not None else ""
     if extra:
         ctx.update(extra)
+    # Parent (aggregation) findings have no single target_url, and their AFFECTED/TARGET_URL overlays can
+    # come out empty even when the finding spans many hosts: AFFECTED's scalar url/control_id rules hit
+    # distinct child values and resolve to a "don't-guess" empty string, short-circuiting before the
+    # target_host fallback (facts._synthesize_one / _aggregate). TARGET_HOST uses a list/host shape so it
+    # IS populated with the synthesized host list. Fall back to that host list so a write-up's
+    # {{AFFECTED}}/{{TARGET_URL}} render the affected hosts instead of a blank. Display-time only; the
+    # deeper fix is the AFFECTED fact-shape synthesis (tracked separately).
+    host_list = str(ctx.get("TARGET_HOST") or "").strip()
+    if host_list:
+        if not str(ctx.get("AFFECTED") or "").strip():
+            ctx["AFFECTED"] = host_list
+        if not str(ctx.get("TARGET_URL") or "").strip():
+            ctx["TARGET_URL"] = host_list
     return ctx
 
 

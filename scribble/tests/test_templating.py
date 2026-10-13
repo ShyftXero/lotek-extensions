@@ -399,3 +399,25 @@ def test_builtin_keys_importable_from_package_root():
         "END_DATE",
         "SEVERITY",
     }
+
+
+def test_affected_and_target_url_fall_back_to_synthesized_host_list():
+    """A parent finding has no single target_url and its AFFECTED/TARGET_URL overlays can be empty while
+    TARGET_HOST holds the synthesized host list (the AFFECTED scalar rules short-circuit to '' before the
+    target_host fallback). {{AFFECTED}}/{{TARGET_URL}} must then render the hosts, not a blank."""
+    from types import SimpleNamespace
+    eng = SimpleNamespace(company_name="Acme", name="E", start_date=None, end_date=None, created_by="")
+    finding = SimpleNamespace(target_host=None, target_port=None, target_url=None, severity=None)
+    ctx = build_context(eng, finding, extra={"TARGET_HOST": "a.example, b.example",
+                                             "AFFECTED": "", "TARGET_URL": ""})
+    assert ctx["AFFECTED"] == "a.example, b.example"
+    assert ctx["TARGET_URL"] == "a.example, b.example"
+
+
+def test_real_affected_and_target_url_are_not_clobbered_by_the_fallback():
+    from types import SimpleNamespace
+    eng = SimpleNamespace(company_name="Acme", name="E", start_date=None, end_date=None, created_by="")
+    finding = SimpleNamespace(target_host="h", target_port=None, target_url="https://x/", severity=None)
+    ctx = build_context(eng, finding, extra={"TARGET_HOST": "h", "AFFECTED": "real list"})
+    assert ctx["AFFECTED"] == "real list"
+    assert ctx["TARGET_URL"] == "https://x/"
