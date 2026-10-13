@@ -1,19 +1,25 @@
-# feat/board-collapse-children
+# feat/board-collapse-children (+ auto-section by assessment scope)
 
-- **Status:** built, pending release decision (batch with auto-section?)
+- **Status:** built + tested, releasing (gate overridden per user — fast path)
 
 ## Purpose
-The engagement board rendered every per-host child as its own card (198 cards for 9 vulns = the "not
-grouping" prod complaint). Collapse per-host children under their parent: hide children from the board's
-top-level lists and show a "N hosts" count pill on the parent card. Same nesting the report already uses
-(findings_service.nested_child_ids) — ONE rule.
+Two batched board/report changes:
+1. **Collapse children under parent** on the board — per-host children were rendered as individual cards
+   (198 for 9 vulns = the "not grouping" complaint). Hide nested children, show "N hosts" on the parent.
+2. **Auto-section by assessment scope** — a job's findings land in the report section matching its scope
+   (external -> "External", internal -> "Internal"), find-or-creating the AssessmentType + FindingGroup.
 
 ## Done
-- engagement_ui.py engagement_board: compute nested_ids + child_counts; board_groups/ungrouped exclude
-  nested children; pass nested_ids/child_counts to the template.
-- engagement.html: both finding loops skip children (filtered in context) + show "{N} hosts" pill on parents.
-- test_board.py::test_board_collapses_children_under_their_parent. 75 related tests green, ruff clean.
+- engagement_ui.py: board context computes nested_ids + child_counts; board lists exclude nested
+  children. _adopt_job_onto_board calls auto_section_job_findings. New `resection_jobs` route (backfill).
+- findings_service.py: `section_name_for_scope` + `auto_section_job_findings` (sections a job's children
+  AND their parent shell; non-clobbering, idempotent).
+- engagement.html: "N hosts" pill on parents; "Auto-section by assessment type" button in Source jobs.
+- tests: collapse + 2 auto_section unit tests. 97 related tests green, ruff clean.
 
-## Notes / ceiling
-- Children are HIDDEN (count only), not expandable-in-place. Detail stays on the parent's finding page +
-  the "Grouped by vulnerability" tab. Add a disclosure/expand later if wanted.
+## Decisions / ceiling
+- Scope comes from `JobDTO.scope_type` (already exposed) — NO core change needed. Webapp/AD/Cloud SURFACE
+  is NOT in scope_type (needs the job's run-type template category, which current jobs don't set), so
+  those are deferred until that signal exists rather than guessed from a job name.
+- Parent shells carry no source_facts.job_id, so a matched child drags its parent into the section.
+- Existing UKG findings: click "Auto-section by assessment type" (backfill) after deploy.

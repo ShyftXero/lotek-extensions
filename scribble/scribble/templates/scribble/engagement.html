@@ -137,6 +137,13 @@
      data-adopt-url="{{ url_for('scribble.adopt_job', engagement_id=engagement.id, job_id='__JOBID__') }}">
   <h2 style="margin-top:0">Source jobs</h2>
   <p class="muted">Scan jobs whose findings were promoted into this engagement.</p>
+  {% if scribble_can_write %}
+  <form method="post" style="display:inline"
+        action="{{ url_for('scribble.resection_jobs', engagement_id=engagement.id) }}">
+    <button type="submit" class="btn btn-sm"
+            title="Place each job's findings into the report section matching its assessment scope (External / Internal). Non-destructive; keeps manual placements.">Auto-section by assessment type</button>
+  </form>
+  {% endif %}
   <ul class="scribble-source-jobs-list">
     {% for job in source_jobs %}
     <li>

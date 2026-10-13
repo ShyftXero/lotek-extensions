@@ -368,6 +368,10 @@ def _adopt_job_onto_board(
     if inconclusive:
         coverage.write_coverage_note(db, engagement=engagement, job=job, job_id=job_id,
                                      actor_username=current_actor_username())
+    # Auto-place the poured findings into the report section matching the job's assessment scope
+    # (external -> "External", internal -> "Internal"). Non-clobbering, so a manual move survives.
+    findings_service.auto_section_job_findings(
+        db, engagement, job_id=job_id, scope_type=getattr(job, "scope_type", None))
 
 
 def _board_for_core(db, core_id: uuid.UUID) -> ReportBoard:
@@ -1083,6 +1087,26 @@ def register(api_bp, bp) -> None:
                     db, engagement=engagement, job_finding_ids=_job_finding_ids(job_id, actor)
                 )
                 db.commit()
+        return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+
+    @bp.post("/engagements/<uuid:engagement_id>/re-section", endpoint="resection_jobs")
+    def resection_jobs(engagement_id: uuid.UUID):
+        """Place every adopted job's still-unsectioned findings into the report section matching the job's
+        assessment scope (external -> "External", internal -> "Internal") -- the backfill for findings
+        adopted before auto-sectioning, and a safe re-run afterwards. WRITE-gated; non-clobbering (a
+        manually-placed finding keeps its section). Loops the SAME ``host.list_jobs`` reverse view the
+        Source jobs panel shows, so it only ever touches this engagement's own jobs."""
+        if not host_can_write():
+            abort(403)
+        actor = current_actor()
+        with open_session() as db:
+            engagement = db.get(ReportBoard, engagement_id)
+            if engagement is None:
+                abort(404)
+            for job in host.list_jobs(engagement, actor):
+                findings_service.auto_section_job_findings(
+                    db, engagement, job_id=job.id, scope_type=getattr(job, "scope_type", None))
+            db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
     @bp.get("/engagements/<uuid:engagement_id>/unadopt-job/<job_id>/preview",
