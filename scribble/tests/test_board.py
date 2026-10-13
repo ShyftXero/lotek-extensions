@@ -1385,3 +1385,26 @@ def test_auto_section_unknown_scope_is_a_noop(session_factory):
         assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type="webapp") == 0
         assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type=None) == 0
         assert eng.groups == []
+
+
+def test_affected_hosts_table_uses_the_shared_datatable(client, session_factory):
+    """A finding with many per-host children rendered a plain full-height table that ran the page tall.
+    It now opts into the shared DataTable widget (data-dt) so it paginates/sorts like the board rollups."""
+    import re
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        t = _make_template(db, "Cross-Site Scripting (XSS)", Severity.high)
+        parent = BoardFinding.from_template(t, engagement_id=eng.id)
+        db.add(parent)
+        db.flush()
+        db.add_all([
+            BoardFinding.from_template(t, engagement_id=eng.id, parent_id=parent.id, target_host=h)
+            for h in ("a.example", "b.example", "c.example")
+        ])
+        db.commit()
+        parent_id = parent.id
+
+    body = client.get(f"{UI}/findings/{parent_id}").data.decode()
+    assert "Affected hosts" in body
+    tag = re.search(r"<table[^>]*scribble-hosts-table[^>]*>", body)
+    assert tag and "data-dt" in tag.group(0), "affected-hosts table must carry data-dt (shared DataTable)"

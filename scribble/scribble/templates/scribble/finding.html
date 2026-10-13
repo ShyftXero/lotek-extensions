@@ -99,7 +99,11 @@
     confirm — it stays here for tracking but drops from the report. <strong>Remove</strong> a false
     positive — the per-host row is deleted.</p>
   {% if affected_children %}
-  <table class="scribble-hosts-table">
+  {# Shared DataTable widget (core static/data-table.js, loaded by the host base): paginate + sort so a
+     finding with dozens of affected hosts doesn't run the page tall. Server-rendered + static, so it
+     meets the widget's "no rows appended after init" contract. #}
+  <table class="table scribble-hosts-table" id="scribble-affected-hosts-table"
+         data-dt data-dt-page-size="25" data-dt-empty="No affected hosts.">
     <thead>
       <tr><th>Host</th><th>Port</th><th>URL</th><th>Report</th>
         {% if scribble_can_write %}<th>Actions</th>{% endif %}</tr>
