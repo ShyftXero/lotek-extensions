@@ -2,7 +2,7 @@
 
 - **Branch:** `feat/scribble-report-style-pass`  (worktree: `extensions/.claude/worktrees/report-style`, off `origin/main`)
 - **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **Status:** 🟢 ready to merge (local verify done; see Evals)
 
 ## Purpose
 Make the **DOCX→PDF** pentest report (`report_templates/build_default_docx.py`) look professional instead
@@ -23,14 +23,29 @@ converges the DOCX on the HTML's existing design language. **DOCX-only — `rend
       `test_report_cover_and_toc.py` (CONFIDENTIAL present), `test_report_print_media.py` (HTML accent
       colors — untouched here).
 
-## Remaining
-- [ ] S1: DOCX H1 `ACCENT_INK`→`INK2`; keep accent keyline. Open type scale (S4) + body leading (S5).
-- [ ] S2: replace full-bleed green cover band with ink title + accent keyline, left-aligned (match HTML cover).
-- [ ] S3: `label_chip_xml` green pills → accent-ink small-caps **text** (card + body labels). Keep the
-      severity/CVSS/affected **badge** pills (`_pill`) — `roundRect>=3` must hold.
-- [ ] S6: CONFIDENTIAL → keylined chip, not centered red. S8: pill text size 7.5pt→8.5pt.
-- [ ] Regenerate `default.docx`; run report tests + ruff + pyrefly.
-- [ ] EDD: render a LARGE engagement DOCX→PDF via gotenberg before/after; rasterize; iterate until polished.
+## Done (continued)
+- [x] S1: H1 `ACCENT_INK`→`INK2`, UPPERCASE+tracked, accent keyline (`_para_border`). Type scale opened
+      (Title 28, H1 15, H2 14, H3 12), leading 1.12→1.32.
+- [x] S2: cover band removed → ink title + accent keyline + accent-ink eyebrow; Client/Company deduped;
+      window row guarded (no dangling en-dash); left-aligned.
+- [x] S3: `label_chip_xml` green pill → accent-ink UPPERCASE text; badge pills kept (`roundRect>=3` holds).
+- [x] S6: CONFIDENTIAL → left-aligned, red keyline classification footer (pushed ~⅔ down). S8: pill 7.5→8.5pt.
+- [x] Bonus fix (polish): Affected Hosts / References were a green run-on (bare `<li>`); now bulleted.
+- [x] Regenerate `default.docx`; targeted report tests green; pinned ruff clean.
+- [x] EDD render: large (65-finding) UKG-shaped engagement → DOCX → gotenberg PDF, rasterized + eyeballed.
+
+## Evals
+- Grader: visual before/after of a large synthetic engagement rendered via the lotek-gotenberg image
+  (real Inter/JetBrains Mono). Before = original prod UKG PDF (~/ukg-pdf-review); after = /tmp/style.
+- Deltas: cover no longer a green band + dangling "Assessment window –" + duplicate Client/Company;
+  section headings restrained ink keyline not loud green; block labels text not pills; Affected Hosts
+  bulleted not a green run-on. Deterministic: `test_report_card_pills` (badge pills kept) +
+  new `test_docx_affected_hosts_render_as_a_bulleted_list` (red on bare `<li>`, green with `<p>` wrap).
+
+## Remaining (out of this style scope — flagged, not done)
+- [ ] Rollup tables (`_append_rollups`, mounted-only) dominate the real report; consider appendix placement.
+- [ ] Coverage checklist renders a wall of `[pending]` when 100% open — summarize instead.
+- [ ] Affected Hosts list + native Affected Assets grid still duplicate the host set (both now clean).
 
 ## Notes / gotchas
 - **`main` of the primary `extensions/` checkout is DIRTY** (592 lines uncommitted across 15 files incl.
