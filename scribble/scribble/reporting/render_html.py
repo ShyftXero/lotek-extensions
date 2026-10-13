@@ -423,21 +423,18 @@ def _asset_label(inst: FindingCtx) -> str | None:
     otherwise ``host:port`` — an honest ``:port`` beats a guessed ``/proto``. None when no host is known."""
     host = (inst.target_host or "").strip()
     port = str(inst.target_port).strip() if inst.target_port else ""
-    proto = ""
     if inst.target_url:
         u = urlparse(inst.target_url)
         if not host:
             host = (u.hostname or "").strip()
         if not port and u.port:
             port = str(u.port)
-        if u.scheme in _TCP_URL_SCHEMES:
-            proto = "tcp"
     if not host:
         return None
-    label = host + (f":{port}" if port else "")
-    if port and proto:
-        label += f"/{proto}"
-    return label
+    # ``host:port`` only — no ``/proto`` suffix. It added little and was the source of a double-count
+    # (a child's ``host:443/tcp`` never deduped against the same host from the AFFECTED overlay's
+    # ``host:443``), so the asset list / badge counted every host twice. One vocabulary, one count.
+    return host + (f":{port}" if port else "")
 
 
 def _label_from_text(text: str) -> str | None:
@@ -448,15 +445,16 @@ def _label_from_text(text: str) -> str | None:
     text = (text or "").strip()
     if not text:
         return None
+    # A real service label has no whitespace or ellipsis; reject the ``_join_capped`` sentinel
+    # ("host …and N more") and any other free-text junk rather than leak it in as a fake asset.
+    if "\u2026" in text or any(c.isspace() for c in text):
+        return None
     if "://" in text:
         u = urlparse(text)
         host = (u.hostname or "").strip()
         if not host:
             return None
-        label = host + (f":{u.port}" if u.port else "")
-        if u.port and u.scheme in _TCP_URL_SCHEMES:
-            label += "/tcp"
-        return label
+        return host + (f":{u.port}" if u.port else "")  # host:port only — see _asset_label
     return text
 
 
@@ -495,8 +493,11 @@ def _affected_labels(
         # belongs in Reproduction, not the asset Details. Per-host facts like "svc_sql" stay.
         if fl and "://" not in fl and fl != label and fl not in facts[label]:
             facts[label].append(fl)
+    # Fold the AFFECTED overlay in ONLY for a childless finding. For a PARENT the children ARE the
+    # authoritative asset set (looped above); the overlay is a comma-joined copy of the same hosts, so
+    # folding it just duplicated every host (and leaked the "…and N more" cap sentinel) — Blade's 93-for-52.
     affected = f.variables.get("AFFECTED") if isinstance(f.variables, dict) else None
-    if affected:
+    if affected and not f.children:
         for piece in str(affected).replace(";", ",").split(","):
             lbl = _label_from_text(piece)
             if lbl:
@@ -692,7 +693,7 @@ def _render_metadata_chips(f: FindingCtx) -> str:
             title = f' title="KEV as of {_esc(as_of)}"' if as_of else ' title="CISA KEV-listed"'
             chips.append(f'<span class="chip kev"{title}>KEV</span>')
         epss = ti.get("epss")
-        if isinstance(epss, (int, float)):
+        if isinstance(epss, int | float):
             title = f' title="EPSS as of {_esc(as_of)}"' if as_of else ""
             chips.append(f'<span class="chip epss"{title}>EPSS {epss:.2f}</span>')
     return "".join(chips)

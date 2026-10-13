@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import object_session
 
 from scribble import finding_grouping_adapter, findings_service, host, metadata
@@ -30,7 +31,7 @@ from scribble.enums import (
     risk_rating,
     severity_rank,
 )
-from scribble.models import normalize_strategic_recommendations
+from scribble.models import BoardFinding, normalize_strategic_recommendations
 from scribble.reporting.layouts import enabled_section_keys
 from scribble.templating import build_context, build_full_context, make_var_resolver
 
@@ -592,6 +593,17 @@ def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     # path lands on "the data isn't there", which every renderer already skips.
     suppressed = frozenset(finding.suppressed_sections or ())
     session = object_session(finding)
+    # Aggregation parent: {{AFFECTED}}/{{TARGET_URL}} in authored prose otherwise expand to a per-host
+    # WALL (and the host list also renders in Affected Assets right below) — unreadable. Resolve them to a
+    # concise count-reference instead (Blade UX). A flat finding keeps its real per-host values.
+    if session is not None:
+        child_count = session.scalar(
+            select(func.count()).select_from(BoardFinding).where(BoardFinding.parent_id == finding.id)
+        ) or 0
+        if child_count:
+            ref = f"{child_count} host{'' if child_count == 1 else 's'} (see Affected Assets below)"
+            variables["AFFECTED"] = ref
+            variables["TARGET_URL"] = ref
     ctx = (
         build_full_context(session, engagement, finding, extra=variables)
         if session is not None
