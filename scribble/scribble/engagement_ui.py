@@ -712,12 +712,26 @@ def register(api_bp, bp) -> None:
             if engagement is None:
                 abort(404)
 
+            # Collapse per-host children under their parent ON THE BOARD, the same nesting the report
+            # uses: a child whose parent is anywhere in this engagement is hidden from the top-level
+            # lists and represented by a host-count on the parent card (details stay on the parent's
+            # finding page + the by-vulnerability tab). ONE nesting rule, shared with the report
+            # (findings_service.nested_child_ids).
+            nested_ids = findings_service.nested_child_ids(engagement.findings)
+            child_counts: dict = {}
+            for _f in engagement.findings:
+                if _f.id in nested_ids and _f.parent_id is not None:
+                    child_counts[_f.parent_id] = child_counts.get(_f.parent_id, 0) + 1
+
             groups = sorted(engagement.groups, key=lambda g: g.order_index)
             board_groups = [
-                {"group": g, "findings": findings_service.display_order(g.findings, g.order_mode)}
+                {"group": g,
+                 "findings": [f for f in findings_service.display_order(g.findings, g.order_mode)
+                              if f.id not in nested_ids]}
                 for g in groups
             ]
-            ungrouped = findings_service.ungrouped_display_order(engagement)
+            ungrouped = [f for f in findings_service.ungrouped_display_order(engagement)
+                         if f.id not in nested_ids]
 
             templates = db.scalars(
                 select(VulnerabilityTemplate)
@@ -793,6 +807,8 @@ def register(api_bp, bp) -> None:
                 client_name=(client.name if client is not None else None),
                 board_groups=board_groups,
                 ungrouped=ungrouped,
+                nested_ids=nested_ids,
+                child_counts=child_counts,
                 findings_by_kind=findings_by_kind,
                 findings_by_host=findings_by_host,
                 templates=templates,

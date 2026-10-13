@@ -1298,3 +1298,34 @@ def test_finding_meta_form_disabled_for_read_only_viewer(client, session_factory
         assert "Delete this finding? This also deletes its artifacts and cannot be undone." not in body
     finally:
         cfg.extras.pop("can_write", None)
+
+
+def test_board_collapses_children_under_their_parent(client, session_factory):
+    """Per-host children are hidden from the board's top-level lists and shown as a host-count on the
+    PARENT card (the report nests them the same way, via findings_service.nested_child_ids). Without this
+    the board renders one card per host instead of one per vuln — the "not grouping" prod complaint."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Cross-Site Scripting (XSS)")
+        parent = BoardFinding.from_template(tmpl, engagement_id=eng.id)
+        db.add(parent)
+        db.flush()
+        hosts = ("10.0.0.10", "10.0.0.20", "10.0.0.30")
+        children = [
+            BoardFinding.from_template(
+                tmpl, engagement_id=eng.id, parent_id=parent.id, target_host=h, order_index=i + 1,
+            )
+            for i, h in enumerate(hosts)
+        ]
+        db.add_all(children)
+        db.commit()
+        eng_id, parent_id = eng.id, parent.id
+        child_ids = [c.id for c in children]
+
+    resp = client.get(f"{UI}/engagements/{eng_id}")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert f'data-finding-id="{parent_id}"' in body, "parent card must render"
+    for cid in child_ids:
+        assert f'data-finding-id="{cid}"' not in body, "children must be collapsed, not separate board cards"
+    assert f"{len(hosts)} hosts" in body, "parent card shows the collapsed host count"

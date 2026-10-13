@@ -286,6 +286,7 @@
         <span class="scribble-board-handle mono">&#x2837;</span>
         <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
         <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
+        {% if child_counts.get(f.id) %}<span class="pill scribble-board-finding-hosts" title="per-host instances collapsed under this finding">{{ child_counts[f.id] }} hosts</span>{% endif %}
         {% if not f.include_in_report %}<span class="muted">(excluded)</span>{% endif %}
         {% if scribble_can_write %}
         <form method="post" class="scribble-board-finding-delete-form"
@@ -321,6 +322,7 @@
         <span class="scribble-board-handle mono">&#x2837;</span>
         <span class="sev sev-{{ f.severity.value }}">{{ f.severity.value }}</span>
         <a href="{{ url_for('scribble.finding_detail', finding_id=f.id) }}">{{ f.title }}</a>
+        {% if child_counts.get(f.id) %}<span class="pill scribble-board-finding-hosts" title="per-host instances collapsed under this finding">{{ child_counts[f.id] }} hosts</span>{% endif %}
         {% if not f.include_in_report %}<span class="muted">(excluded)</span>{% endif %}
         {% if scribble_can_write %}
         <form method="post" class="scribble-board-finding-delete-form"
