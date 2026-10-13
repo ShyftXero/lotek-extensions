@@ -145,16 +145,19 @@ def _children_html(children: list[FindingCtx]) -> str:
     for c in children:
         host = _html_escape(_child_host_label(c))
         summary = _child_summary_text(c)
+        # Each <li> wraps its content in <p> so html_to_richtext opens a real ListBullet paragraph per
+        # item (content/render_docx handle_starttag li: it expects render_html's <li><p>..</p></li> shape).
+        # Bare <li>text</li> gave no paragraph, so every host flowed into the <h4> run — one green run-on.
         if summary:
-            items.append(f"<li><strong>{host}</strong> — {_html_escape(summary)}</li>")
+            items.append(f"<li><p><strong>{host}</strong> — {_html_escape(summary)}</p></li>")
         else:
-            items.append(f"<li><strong>{host}</strong></li>")
+            items.append(f"<li><p><strong>{host}</strong></p></li>")
         for a in c.artifacts:
             src = make_inline_artifact_url(a.storage_path)
             if not src:
                 continue
             cap = _html_escape(_numbered_caption(a))  # ext#117 — same "Figure N" the HTML prints
-            items.append(f'<li><img src="{src}" alt="{cap}"/> {cap}</li>')
+            items.append(f'<li><p><img src="{src}" alt="{cap}"/> {cap}</p></li>')
     return f"<h4>Affected Hosts ({len(children)})</h4><ul>{''.join(items)}</ul>"
 
 
@@ -196,9 +199,9 @@ def _references_html(f: FindingCtx) -> str:
             continue
         url = str(r.get("url") or "").strip()
         if url:
-            items.append(f'<li><a href="{_html_escape(url)}">{_html_escape(label)}</a></li>')
+            items.append(f'<li><p><a href="{_html_escape(url)}">{_html_escape(label)}</a></p></li>')
         else:
-            items.append(f"<li>{_html_escape(label)}</li>")
+            items.append(f"<li><p>{_html_escape(label)}</p></li>")
     if not items:
         return ""
     return f"<h4>References</h4><ul>{''.join(items)}</ul>"
@@ -446,6 +449,7 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         "scope_limitations": scope_limitations,
         "client_name": ctx.client_name or "",
         "scope_type": ctx.scope_type or "",
+        "assessor": ctx.assessor or "",
         "start_date": ctx.start_date or "",
         "end_date": ctx.end_date or "",
         "generated_date": datetime.now(UTC).strftime("%Y-%m-%d"),

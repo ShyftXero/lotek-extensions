@@ -17,7 +17,6 @@ of M" throughout. ``w:updateFields`` is set so the TOC/page numbers recompute at
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from docx import Document
@@ -210,49 +209,18 @@ def add_section_marker(container, key: str):
     return p
 
 
-def _visible_len(text: str) -> int:
-    """Rendered length of a label that may carry a Jinja expression: a ``{{ … }}`` fills to a short value
-    at render, so estimate it at 2 chars (a count like ``{{ f.assets|length }}``) rather than measuring the
-    long template source — otherwise a fixed-width chip is sized for the markup, not the text."""
-    return len(re.sub(r"\{\{.*?\}\}", "00", text))
-
-
 def label_chip_xml(text: str, *, width_in: float | None = None) -> str:
-    """A ROUNDED, padded section-label chip: an inline DrawingML ``roundRect`` (fully rounded) holding
-    left-aligned bold green small-caps text on a soft green wash — the rounded, padded form of the old flat
-    green label, so the labels match the header pills and the rounded code box.
-
-    Labels get this treatment and the PROSE blocks under them do NOT, on purpose: a DrawingML shape can't
-    break across pages, so a long Description/Remediation would clip — a label is short and fixed, so it is
-    shape-safe. ``text`` may contain Jinja ({{ }}), filled by docxtpl at render; width is fixed (a shape
-    can't autosize to a variable), estimated from the visible length when not given. Namespaces are declared
-    inline so it renders whether appended to a paragraph or embedded in a RichText body."""
-    _PILL_ID[0] += 1
-    did = _PILL_ID[0]
-    if width_in is None:
-        width_in = min(2.7, max(0.95, 0.085 * _visible_len(text) + 0.24))
-    cx, cy = int(width_in * 914400), int(0.24 * 914400)
+    """A section/block label: bold accent-ink UPPERCASE tracked TEXT, mirroring render_html's
+    ``.finding-body .block-label``. Was a filled green ``roundRect`` pill; demoted to text so a finding
+    card is not a stack of pills — the filled pill is now reserved for the severity/CVSS/affected badge
+    row (:func:`_pill`), where a colored fill carries meaning. ``width_in`` is accepted and ignored for
+    call-site compatibility. Returns a valid ``<w:r>`` run so it works both appended to a paragraph and
+    spliced into a RichText body (render_docx ``_label_run_xml``)."""
     return (
-        f'<w:r xmlns:w="{_W_NS}"><w:drawing>'
-        '<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
-        ' distT="0" distB="0" distL="0" distR="0">'
-        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
-        f'<wp:docPr id="{did}" name="label{did}"/>'
-        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
-        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
-        '<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
-        '<wps:cNvSpPr txBox="0"/>'
-        f'<wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
-        '<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 50000"/></a:avLst></a:prstGeom>'
-        f'<a:solidFill><a:srgbClr val="{ACCENT_WASH}"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr>'
-        '<wps:txbx><w:txbxContent><w:p><w:pPr><w:jc w:val="left"/>'
-        '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
-        '<w:r><w:rPr><w:b/><w:caps w:val="true"/><w:spacing w:val="8"/>'
-        f'<w:color w:val="{ACCENT_INK}"/><w:sz w:val="15"/>'
+        f'<w:r xmlns:w="{_W_NS}"><w:rPr><w:b/><w:caps w:val="true"/><w:spacing w:val="10"/>'
+        f'<w:color w:val="{ACCENT_INK}"/><w:sz w:val="17"/>'
         f'<w:rFonts w:ascii="{BODY_FONT}" w:hAnsi="{BODY_FONT}"/></w:rPr>'
-        f'<w:t xml:space="preserve">{text}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
-        '<wps:bodyPr rot="0" anchor="ctr" anchorCtr="0" lIns="64008" tIns="0" rIns="45720" bIns="0"/>'
-        '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+        f'<w:t xml:space="preserve">{text}</w:t></w:r>'
     )
 
 
@@ -263,7 +231,7 @@ def _section_label(paragraph, text):
     paragraph._p.append(parse_xml(label_chip_xml(text)))
 
 
-def _pill(paragraph, text_markup, *, fill, color, width_in, caps=False, size=15):
+def _pill(paragraph, text_markup, *, fill, color, width_in, caps=False, size=17):
     """A ROUNDED pill badge: an inline DrawingML ``roundRect`` shape (fully rounded, ``adj=50000``) with
     centered bold text. Verified to render rounded through Gotenberg/LibreOffice — the HTML card's pill,
     in the docx. ``text_markup`` may contain Jinja ({{ f.severity_label }}), filled by docxtpl at render.
@@ -339,7 +307,7 @@ def _code_box(paragraph, loop_expr, item_var, *, width_in=6.85, fill=SURFACE2, c
 # ----------------------------------------------------------------------------- doc chrome
 
 def _set_styles(doc: Document) -> None:
-    def style(name, *, fname=BODY_FONT, size, color, bold=False):
+    def style(name, *, fname=BODY_FONT, size, color, bold=False, caps=False):
         st = doc.styles[name]
         st.font.size = Pt(size)
         st.font.color.rgb = RGBColor.from_string(color)
@@ -358,6 +326,13 @@ def _set_styles(doc: Document) -> None:
         rf.set(qn("w:ascii"), fname)
         rf.set(qn("w:hAnsi"), fname)
         rf.set(qn("w:cs"), fname)
+        if caps:
+            caps_el = OxmlElement("w:caps")
+            caps_el.set(qn("w:val"), "true")
+            rpr.append(caps_el)
+            trk = OxmlElement("w:spacing")  # letter-spacing; matches render_html .sec-h tracking
+            trk.set(qn("w:val"), "10")
+            rpr.append(trk)
 
     # Document-wide default font: RichText body runs (the finding write-ups) carry no explicit font, so
     # without this LibreOffice falls back to a serif and the body clashes with the sans chrome.
@@ -385,11 +360,14 @@ def _set_styles(doc: Document) -> None:
 
     style("Normal", size=10, color=INK)
     doc.styles["Normal"].paragraph_format.space_after = Pt(5)
-    doc.styles["Normal"].paragraph_format.line_spacing = 1.12
-    style("Title", size=26, color=INK, bold=True)
-    style("Heading 1", size=16, color=ACCENT_INK, bold=True)
-    style("Heading 2", size=12.5, color=INK, bold=True)
-    style("Heading 3", size=11, color=INK, bold=True)
+    doc.styles["Normal"].paragraph_format.line_spacing = 1.32
+    style("Title", size=28, color=INK, bold=True)
+    # H1 is the restrained section divider render_html uses (.sec-h): INK2, UPPERCASE + tracked, under a
+    # thin accent keyline (added in _heading1) — not loud green text.
+    style("Heading 1", size=15, color=INK2, bold=True, caps=True)
+    style("Heading 2", size=14, color=INK, bold=True)
+    style("Heading 3", size=12, color=INK, bold=True)
+    # H4 stays accent-ink: the small sub-label role (matches render_html .fm-block h3 / block-label).
     style("Heading 4", size=9, color=ACCENT_INK, bold=True)
 
     # A content code block (a ``<pre>`` in a Description/Details block) renders under the "No Spacing"
@@ -439,61 +417,87 @@ def _add_footer(doc: Document) -> None:
     _field(p, "NUMPAGES", "1")
 
 
+def _para_border(p, *, side: str, color: str, sz: int = 8, space: int = 2) -> None:
+    """Add a single-side paragraph border (heading keylines, the cover title rule, the cover foot rule).
+    ``sz`` is in eighths of a point (Word's unit)."""
+    pPr = p._p.get_or_add_pPr()
+    bdr = pPr.find(qn("w:pBdr"))
+    if bdr is None:
+        bdr = OxmlElement("w:pBdr")
+        pPr.append(bdr)
+    el = OxmlElement(f"w:{side}")
+    el.set(qn("w:val"), "single")
+    el.set(qn("w:sz"), str(sz))
+    el.set(qn("w:space"), str(space))
+    el.set(qn("w:color"), color)
+    bdr.append(el)
+
+
 def _heading1(doc: Document, text: str):
     p = doc.add_paragraph(text, style="Heading 1")
-    _spacing(p, before=2, after=6)
-    pPr = p._p.get_or_add_pPr()
-    bdr = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "8")
-    bottom.set(qn("w:space"), "2")
-    bottom.set(qn("w:color"), ACCENT)
-    bdr.append(bottom)
-    pPr.append(bdr)
+    _spacing(p, before=12, after=6)
+    _para_border(p, side="bottom", color=ACCENT, sz=8, space=2)
     return p
 
 
 # ----------------------------------------------------------------------------- sections
 
 def _add_cover(doc: Document) -> None:
+    """Print title page — converges on render_html's cover (the HTML deliverable is the design spec): a
+    large INK engagement title under a thin ACCENT keyline, a small accent-ink client eyebrow, left-aligned
+    fact rows, and a keylined CONFIDENTIAL foot. NOT a full-bleed green band with centered red text."""
+    # Top lead-in so the title block sits off the very top edge (vertical rhythm, not a top-left crumb).
+    for _ in range(2):
+        _spacing(doc.add_paragraph(), before=0, after=0)
+
     # Cover logo (the picked library logo or the stock lotek mark) — a docxtpl InlineImage filled by
-    # render_docx; an empty context value renders nothing (a report that somehow has no logo just opens on
-    # the title band).
+    # render_docx; an empty context value renders nothing. Left-aligned to sit over the title block.
     logo_p = doc.add_paragraph()
-    logo_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _spacing(logo_p, before=0, after=8)
+    _spacing(logo_p, before=0, after=12)
     logo_p.add_run("{{ cover_logo }}")
 
-    band = doc.add_table(rows=1, cols=1)
-    band.alignment = WD_TABLE_ALIGNMENT.CENTER
-    cell = band.rows[0].cells[0]
-    _shade(cell._tc, ACCENT)
-    _cell_margins(cell, top=180, bottom=180, left=160, right=160)
-    _no_cell_borders(cell)
-    cp = cell.paragraphs[0]
-    _run(cp, "{{ engagement_name }}", size=24, color=WHITE, bold=True)
-    sub = cell.add_paragraph()
-    _run(sub, "Security Assessment Report", size=12, color="D6EFE3")
+    # Eyebrow: client name, small accent-ink caps (render_html .cover-eyebrow). Deduped — client OR company,
+    # so a report whose company override equals the client name no longer prints the same line twice.
+    eb = doc.add_paragraph()
+    _spacing(eb, before=0, after=2)
+    _run(eb, "{{ client_name or company_name }}", size=10, color=ACCENT_INK, bold=True, caps=True)
 
-    doc.add_paragraph()
+    # Title: large INK, with a thin ACCENT keyline underneath — no green wash.
+    title_p = doc.add_paragraph()
+    _spacing(title_p, before=0, after=7)
+    _run(title_p, "{{ engagement_name }}", size=28, color=INK, bold=True)
+    _para_border(title_p, side="bottom", color=ACCENT, sz=18, space=6)
+
+    kind = doc.add_paragraph()
+    _spacing(kind, before=4, after=18)
+    _run(kind, "Security Assessment Report", size=13, color=INK2)
 
     def meta(label, value_markup):
         p = doc.add_paragraph()
         _spacing(p, before=1, after=1)
-        _run(p, label + "   ", size=10, color=MUTED, bold=True)
-        _run(p, value_markup, size=10, color=INK)
+        _run(p, label + "   ", size=9, color=MUTED, bold=True, caps=True)
+        _run(p, value_markup, size=11, color=INK, bold=True)
 
-    meta("Client", "{{ client_name }}")
-    meta("Company", "{{ company_name }}")
-    meta("Scope", "{{ scope_type }}")
-    meta("Assessment window", "{{ start_date }} – {{ end_date }}")
-    meta("Report generated", "{{ generated_date }}")
+    meta("Client", "{{ client_name or company_name }}")
+    meta("Assessment type", "{{ scope_type }}")
+    # Testing-window row is guarded: with no start/end recorded, an unguarded "{{ s }} – {{ e }}" printed a
+    # dangling en-dash on the title page. Omit the row entirely rather than show a bare "–".
+    doc.add_paragraph("{%p if start_date and end_date %}")
+    meta("Testing window", "{{ start_date }} – {{ end_date }}")
+    doc.add_paragraph("{%p endif %}")
+    meta("Report date", "{{ generated_date }}")
+    # Assessor row guarded the same way as the window: omit it rather than print a bare "Assessor" label
+    # when no assessor is recorded on the engagement.
+    doc.add_paragraph("{%p if assessor %}")
+    meta("Assessor", "{{ assessor }}")
+    doc.add_paragraph("{%p endif %}")
 
-    doc.add_paragraph()
-    conf = doc.add_paragraph()
-    conf.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _run(conf, "CONFIDENTIAL", size=11, color=SEVERITY_COLORS["critical"], bold=True, caps=True)
+    # Foot: a red keyline rule over a left-aligned CONFIDENTIAL — render_html's .cover-foot, not centered
+    # red shouting.
+    foot = doc.add_paragraph()
+    _spacing(foot, before=96, after=0)  # settle the classification footer well below the title block
+    _para_border(foot, side="top", color=SEVERITY_COLORS["critical"], sz=16, space=8)
+    _run(foot, "CONFIDENTIAL", size=10, color=SEVERITY_COLORS["critical"], bold=True, caps=True)
     doc.add_page_break()
 
 

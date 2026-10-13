@@ -34,6 +34,7 @@ from scribble.enums import (
 from scribble.models import BoardFinding, normalize_strategic_recommendations
 from scribble.reporting.layouts import enabled_section_keys
 from scribble.templating import build_context, build_full_context, make_var_resolver
+from scribble.templating.resolver import client_display_name
 
 
 @dataclass
@@ -252,6 +253,7 @@ class ReportContext:
     company_name: str
     client_name: str | None
     scope_type: str | None
+    assessor: str | None
     start_date: str | None
     end_date: str | None
     groups: list[GroupCtx] = field(default_factory=list)
@@ -944,7 +946,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     # signature to take a session explicitly.
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
-    company_name = engagement.company_name or (client.name if client else "")
+    company_name = engagement.company_name or client_display_name(client)
     # Cover logo: the report's picked library logo, or the stock lotek mark — one resolver for both renderers.
     from scribble.reporting.logos import resolve_cover_logo
     _cover_logo = resolve_cover_logo(engagement, session)
@@ -975,8 +977,9 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         engagement_id=engagement.id,
         engagement_name=engagement.name,
         company_name=company_name,
-        client_name=client.name if client else None,
+        client_name=client_display_name(client) or None,
         scope_type=engagement.scope_type,
+        assessor=(engagement.created_by or None),
         start_date=engagement.start_date.isoformat() if engagement.start_date else None,
         end_date=engagement.end_date.isoformat() if engagement.end_date else None,
         groups=groups_out,

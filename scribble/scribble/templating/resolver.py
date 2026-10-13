@@ -59,14 +59,22 @@ def is_unpopulated(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value.strip() == "")
 
 
+def client_display_name(client) -> str:
+    """A client's human display name for reports: the ``company_name`` display field (the one added with
+    /api/v1/clients), falling back to the slug ``name``. The single home for this preference so every
+    report surface shows the same name instead of the bare identifier."""
+    if client is None:
+        return ""
+    return getattr(client, "company_name", "") or getattr(client, "name", "") or ""
+
+
 def build_context(engagement, finding=None, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Assemble the {{VARIABLE}} context. ``extra`` overlays custom variable values (from WS6)."""
     import datetime as _dt
 
     company = getattr(engagement, "company_name", None)
     if not company:
-        client = getattr(engagement, "client", None)
-        company = getattr(client, "name", "") if client else ""
+        company = client_display_name(getattr(engagement, "client", None))
 
     ctx: dict[str, Any] = {
         "COMPANY_NAME": company or "",
