@@ -486,6 +486,11 @@ def _add_cover(doc: Document) -> None:
     meta("Testing window", "{{ start_date }} – {{ end_date }}")
     doc.add_paragraph("{%p endif %}")
     meta("Report date", "{{ generated_date }}")
+    # Assessor row guarded the same way as the window: omit it rather than print a bare "Assessor" label
+    # when no assessor is recorded on the engagement.
+    doc.add_paragraph("{%p if assessor %}")
+    meta("Assessor", "{{ assessor }}")
+    doc.add_paragraph("{%p endif %}")
 
     # Foot: a red keyline rule over a left-aligned CONFIDENTIAL — render_html's .cover-foot, not centered
     # red shouting.

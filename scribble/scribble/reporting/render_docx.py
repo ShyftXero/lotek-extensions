@@ -449,6 +449,7 @@ def _build_context(ctx: ReportContext, *, tpl: DocxTemplate, artifact_bytes: Art
         "scope_limitations": scope_limitations,
         "client_name": ctx.client_name or "",
         "scope_type": ctx.scope_type or "",
+        "assessor": ctx.assessor or "",
         "start_date": ctx.start_date or "",
         "end_date": ctx.end_date or "",
         "generated_date": datetime.now(UTC).strftime("%Y-%m-%d"),

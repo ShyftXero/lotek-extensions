@@ -200,3 +200,54 @@ def test_export_links_have_spinner_fetch_download_js(session_factory):
     assert "data-export" in html                                  # links opt into the handler
     assert 'a[data-export]' in html and "createObjectURL" in html  # fetch-blob download handler
     assert "dl-spin" in html and "@keyframes dl-rot" in html        # spinner CSS
+
+
+def test_client_display_name_prefers_company_name_over_slug():
+    """The single display-name predicate: the client's company_name DISPLAY field wins over the slug
+    `name`. On prod resolve_client returns the core `clients` row (which has company_name); the getattr
+    default keeps it safe against the standalone scribble_clients model, which has only `name`."""
+    from scribble.templating.resolver import client_display_name
+
+    class WithDisplay:
+        company_name = "UKG"
+        name = "BF-UKG"
+
+    class SlugOnly:
+        company_name = ""
+        name = "BF-UKG"
+
+    assert client_display_name(WithDisplay()) == "UKG"
+    assert client_display_name(SlugOnly()) == "BF-UKG"
+    assert client_display_name(None) == ""
+
+
+def test_cover_carries_assessor_from_created_by(session_factory):
+    """The cover now surfaces the assessor (was absent entirely); with no display field on the standalone
+    client model, company_name falls back to the slug name rather than crashing."""
+    with session_factory() as db:
+        client = Client(name="BF-UKG")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="UKG External Pentest", client_id=client.id,
+                          company_name=None, created_by="Eli McRae")
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        ctx = build_report_context(db.get(ReportBoard, eid))
+    assert ctx.assessor == "Eli McRae"    # surfaced from created_by (nothing rendered it before)
+    assert ctx.company_name == "BF-UKG"   # standalone client: no display field -> slug, no crash
+
+
+def test_engagement_company_name_override_wins(session_factory):
+    with session_factory() as db:
+        client = Client(name="BF-UKG")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="E", client_id=client.id, company_name="UKG Software Inc.")
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        ctx = build_report_context(db.get(ReportBoard, eid))
+    assert ctx.company_name == "UKG Software Inc."  # explicit engagement override still wins
