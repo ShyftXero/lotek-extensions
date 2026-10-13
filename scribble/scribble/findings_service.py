@@ -38,6 +38,7 @@ from scribble.enums import (
     severity_rank,
 )
 from scribble.models import (
+    AssessmentType,
     BoardFinding,
     CollabDoc,
     EngagementChecklistItem,
@@ -323,6 +324,66 @@ def create_group(db, engagement: ReportBoard, *, name: str, assessment_type=None
     db.add(group)
     db.flush()
     return group
+
+
+# Assessment scope -> report-section name. Conservative: only the scopes we can name confidently.
+# external/internal are the reliable `Job.scope_type` values; a webapp/AD/cloud SURFACE is NOT carried
+# by scope_type (it needs the job's run-type template category, which the current jobs don't set), so
+# those are deliberately left for a later signal rather than guessed from a job name.
+_SCOPE_SECTION = {"external": "External", "internal": "Internal"}
+
+
+def section_name_for_scope(scope_type) -> str | None:
+    """The report section an adopted job's assessment SCOPE maps to, or None to leave it unsectioned."""
+    return _SCOPE_SECTION.get((scope_type or "").strip().lower())
+
+
+def auto_section_job_findings(db, engagement: ReportBoard, *, job_id, scope_type) -> int:
+    """Place a just-adopted job's findings into the report section matching its assessment scope
+    (external -> "External", internal -> "Internal"), find-or-creating the shared ``AssessmentType`` and
+    the engagement's ``FindingGroup`` for it. Returns the number of findings moved.
+
+    NON-CLOBBERING + idempotent: only findings still unsectioned (``group_id is None``) are moved, so a
+    manual placement and a second run are both safe. The per-host CHILDREN carry ``source_facts.job_id``;
+    the aggregation PARENT shell does not (``source_facts == {}``), so a matched child also drags its
+    parent into the section — otherwise the board (which collapses children under the parent) would show
+    the parent still unsectioned. ponytail: a parent whose children span two scopes lands in whichever
+    scope was adopted first; fine until a job is genuinely mixed-scope.
+    """
+    name = section_name_for_scope(scope_type)
+    if name is None:
+        return 0
+    slug = name.lower()
+    at = db.scalar(select(AssessmentType).where(AssessmentType.slug == slug))
+    if at is None:
+        at = AssessmentType(name=name, slug=slug)
+        db.add(at)
+        db.flush()
+    grp = db.scalar(select(FindingGroup).where(
+        FindingGroup.engagement_id == engagement.id,
+        FindingGroup.assessment_type_id == at.id,
+    ))
+    if grp is None:
+        grp = create_group(db, engagement, name=name, assessment_type=at)
+
+    rows = db.scalars(select(BoardFinding).where(
+        BoardFinding.engagement_id == engagement.id,
+        BoardFinding.group_id.is_(None),
+    )).all()
+    by_id = {f.id: f for f in rows}
+    jid = str(job_id)
+    moved = 0
+    for f in rows:
+        if str((f.source_facts or {}).get("job_id") or "") != jid:
+            continue
+        if f.group_id is None:
+            f.group_id = grp.id
+            moved += 1
+        parent = by_id.get(f.parent_id) if f.parent_id is not None else None
+        if parent is not None and parent.group_id is None:
+            parent.group_id = grp.id
+            moved += 1
+    return moved
 
 
 def delete_group(db, group: FindingGroup) -> None:

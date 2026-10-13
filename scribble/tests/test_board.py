@@ -1298,3 +1298,90 @@ def test_finding_meta_form_disabled_for_read_only_viewer(client, session_factory
         assert "Delete this finding? This also deletes its artifacts and cannot be undone." not in body
     finally:
         cfg.extras.pop("can_write", None)
+
+
+def test_board_collapses_children_under_their_parent(client, session_factory):
+    """Per-host children are hidden from the board's top-level lists and shown as a host-count on the
+    PARENT card (the report nests them the same way, via findings_service.nested_child_ids). Without this
+    the board renders one card per host instead of one per vuln — the "not grouping" prod complaint."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Cross-Site Scripting (XSS)")
+        parent = BoardFinding.from_template(tmpl, engagement_id=eng.id)
+        db.add(parent)
+        db.flush()
+        hosts = ("10.0.0.10", "10.0.0.20", "10.0.0.30")
+        children = [
+            BoardFinding.from_template(
+                tmpl, engagement_id=eng.id, parent_id=parent.id, target_host=h, order_index=i + 1,
+            )
+            for i, h in enumerate(hosts)
+        ]
+        db.add_all(children)
+        db.commit()
+        eng_id, parent_id = eng.id, parent.id
+        child_ids = [c.id for c in children]
+
+    resp = client.get(f"{UI}/engagements/{eng_id}")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert f'data-finding-id="{parent_id}"' in body, "parent card must render"
+    for cid in child_ids:
+        assert f'data-finding-id="{cid}"' not in body, "children must be collapsed, not separate board cards"
+    assert f"{len(hosts)} hosts" in body, "parent card shows the collapsed host count"
+
+
+def test_auto_section_places_children_and_their_parent_shell_by_scope(session_factory):
+    """A just-adopted job's per-host children (which carry source_facts.job_id) AND their aggregation
+    parent shell (which does NOT) land in the report section named for the job's scope. Idempotent +
+    non-clobbering on a second run. This is the auto-map-to-section behavior; the parent must move too
+    or the board (which collapses children under it) would show it still unsectioned."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Cross-Site Scripting (XSS)")
+        parent = BoardFinding.from_template(tmpl, engagement_id=eng.id)  # shell, source_facts {}
+        db.add(parent)
+        db.flush()
+        job_id = str(uuid.uuid7())
+        kids = [
+            BoardFinding.from_template(tmpl, engagement_id=eng.id, parent_id=parent.id,
+                                       target_host=h, source_facts={"job_id": job_id})
+            for h in ("10.0.0.1", "10.0.0.2")
+        ]
+        db.add_all(kids)
+        db.commit()
+        eng_id, parent_id, kid_ids = eng.id, parent.id, [k.id for k in kids]
+
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        moved = findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external")
+        db.commit()
+    assert moved == 3, "2 children + their parent shell"
+
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        sections = {g.name: g for g in eng.groups}
+        assert "External" in sections, "a section named for the scope was created"
+        grp_id = sections["External"].id
+        assert db.get(BoardFinding, parent_id).group_id == grp_id, "parent shell moved into the section"
+        for kid in kid_ids:
+            assert db.get(BoardFinding, kid).group_id == grp_id
+
+    with session_factory() as db:  # idempotent + non-clobbering
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 0
+
+
+def test_auto_section_unknown_scope_is_a_noop(session_factory):
+    """Only scopes we can name (external/internal) create a section; anything else leaves findings
+    ungrouped rather than inventing a junk section."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        eng_id = eng.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type="webapp") == 0
+        assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type=None) == 0
+        assert eng.groups == []
