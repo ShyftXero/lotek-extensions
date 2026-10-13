@@ -222,3 +222,54 @@ def test_vuln_map_create_requires_a_match_key(client, session_factory, clean_vul
     client.post(f"{UI}/library/vuln-map", data={"template_id": str(t_id)})  # no source/title/dedupe
     with session_factory() as db:
         assert db.query(ScribbleVulnMap).count() == 0
+
+
+def test_bulk_delete_removes_several_findings(client, session_factory):
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        a = _make_group(db, eng, "A", 0)
+        t = _make_template(db)
+        fs = [BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=i)
+              for i in range(3)]
+        for f in fs:
+            db.add(f)
+        db.commit()
+        eng_id = eng.id
+        doomed = [str(fs[0].id), str(fs[1].id)]
+        kept = fs[2].id
+
+    resp = client.post(f"{API}/engagements/{eng_id}/findings/delete", json={"finding_ids": doomed})
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json()["deleted"] == 2
+    with session_factory() as db:
+        for fid in doomed:
+            assert db.get(BoardFinding, uuid.UUID(fid)) is None
+        assert db.get(BoardFinding, kept) is not None, "unselected finding survives"
+
+
+def test_bulk_delete_is_atomic_a_foreign_id_deletes_nothing(client, session_factory):
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        a = _make_group(db, eng, "A", 0)
+        t = _make_template(db)
+        f = BoardFinding.from_template(t, engagement_id=eng.id, group_id=a.id, order_index=0)
+        db.add(f)
+        db.commit()
+        eng_id, f_id = eng.id, f.id
+        foreign = str(uuid.uuid7())
+
+    resp = client.post(f"{API}/engagements/{eng_id}/findings/delete",
+                       json={"finding_ids": [str(f_id), foreign]})
+    assert resp.status_code == 404
+    with session_factory() as db:
+        assert db.get(BoardFinding, f_id) is not None, "nothing deleted when any id is foreign"
+
+
+def test_bulk_delete_requires_write(client, stub_host, session_factory):
+    stub_host.can_write_value = False
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        eng_id = eng.id
+    resp = client.post(f"{API}/engagements/{eng_id}/findings/delete",
+                       json={"finding_ids": [str(uuid.uuid7())]})
+    assert resp.status_code == 403, "a writeless viewer must not bulk-delete"

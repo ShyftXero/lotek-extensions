@@ -282,6 +282,25 @@
       updateBulkBar();
       return;
     }
+    if (ev.target.closest("#scribble-bulk-delete")) {
+      var boardD = document.querySelector("[data-batch-delete-url]");
+      if (!boardD) return;
+      var delIds = checkedFindingIds();
+      if (!delIds.length) return;
+      if (!window.confirm("Delete " + delIds.length + " finding(s)? This cannot be undone.")) return;
+      fetch(boardD.dataset.batchDeleteUrl, {
+        method: "POST",
+        headers: jsonHeaders(),  // host's global fetch wrapper adds X-CSRFToken (same as bulk-move)
+        body: JSON.stringify({ finding_ids: delIds }),
+      })
+        .then(function (r) { if (!r.ok) throw new Error("bulk delete failed"); return r.json(); })
+        .then(function () { window.location.reload(); })
+        .catch(function () {
+          window.alert("Could not delete the selected findings. Reloading to resync.");
+          window.location.reload();
+        });
+      return;
+    }
     if (!ev.target.closest("#scribble-bulk-move")) return;
     var board = document.querySelector("[data-batch-move-url]");
     var groupSel = document.getElementById("scribble-bulk-group");
@@ -470,6 +489,18 @@
             var form = document.createElement("form");
             form.method = "post";
             form.action = btn.dataset.destroyUrl;
+            // A programmatic form.submit() does NOT fire the submit event, so the host's global
+            // CSRF-injector (which hooks that event) never adds the token — the POST then fails CSRF
+            // and the error handler bounces to /login (looks like a logout). Add the token explicitly
+            // from the meta tag the host renders (the same source that injector reads).
+            var meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta && meta.content) {
+              var tok = document.createElement("input");
+              tok.type = "hidden";
+              tok.name = "csrf_token";
+              tok.value = meta.content;
+              form.appendChild(tok);
+            }
             document.body.appendChild(form);
             form.submit();
           })

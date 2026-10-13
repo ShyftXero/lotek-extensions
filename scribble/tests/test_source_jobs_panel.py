@@ -27,7 +27,7 @@ def _engagement(session_factory, name: str = "E") -> object:
 def test_board_lists_jobs_promoted_into_this_engagement(client, stub_host, session_factory):
     eid = _engagement(session_factory)
     when = datetime(2026, 9, 4, 13, 30, tzinfo=UTC)
-    stub_host.add_promoted_job(eid, "job-alpha", promoted_at=when)
+    stub_host.add_promoted_job(eid, "job-alpha", name="ukg-ext-web", promoted_at=when)
     stub_host.add_promoted_job(eid, "job-bravo", promoted_at=when)
 
     resp = client.get(f"/scribble/engagements/{eid}")
@@ -35,8 +35,9 @@ def test_board_lists_jobs_promoted_into_this_engagement(client, stub_host, sessi
     body = resp.get_data(as_text=True)
 
     assert "Source jobs" in body            # the panel header exists
-    assert "job-alpha" in body              # both job refs render
-    assert "job-bravo" in body
+    assert "ukg-ext-web" in body            # the user-friendly job NAME renders, not the raw id
+    assert "job-bravo" in body              # name defaults to the id when unnamed
+    assert '/jobs/job-alpha' in body        # ...each linked to the core job view (#629 name+link)
     assert "2026-09-04 13:30" in body       # ...each with its promoted_at
     # Re-map (regroup) action is offered per source job (writer context) so the operator can re-run the
     # vuln-map after it grows — the button posts to the non-destructive remap route.
@@ -65,3 +66,18 @@ def test_board_source_jobs_scoped_to_this_engagement(client, stub_host, session_
     body = client.get(f"/scribble/engagements/{mine}").get_data(as_text=True)
     assert "job-elsewhere" not in body
     assert "No scan jobs promoted into this engagement" in body
+
+
+def test_destroy_button_js_carries_a_csrf_token():
+    """The un-adopt+delete button builds a form in JS and calls form.submit(), which does NOT fire the
+    submit event the host's global CSRF-injector hooks. Without an explicit token the POST fails CSRF and
+    the error handler bounces the browser to /login (looks like a logout — the prod bug behind #635).
+    Route tests use the test client, which bypasses CSRF, so only this static guard catches a regression
+    to a bare form.submit(). If the token injection is removed, this goes red."""
+    import pathlib
+    board_js = (pathlib.Path(__file__).parent.parent / "scribble" / "static" / "board.js").read_text()
+    # the destroy handler must append a hidden csrf_token to the form it submits
+    destroy = board_js[board_js.index("initDestructiveUnadopt"):]
+    assert 'name = "csrf_token"' in destroy or "name = 'csrf_token'" in destroy, (
+        "destroy form submits without a CSRF token -> prod logout bug"
+    )
