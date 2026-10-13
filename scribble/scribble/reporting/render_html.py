@@ -895,8 +895,8 @@ def _render_header(
     if export_url:
         base = _esc(export_url)
         export_html = (
-            f'<a class="btn" href="{base}?format=pdf">⬇ PDF</a>'
-            f'<a class="btn" href="{base}?format=docx">⬇ DOCX</a>'
+            f'<a class="btn" data-export href="{base}?format=pdf">⬇ PDF</a>'
+            f'<a class="btn" data-export href="{base}?format=docx">⬇ DOCX</a>'
         )
 
     topbar = (
@@ -2354,6 +2354,13 @@ a { color: var(--accent-ink); text-underline-offset: 2px; }
 .btn.primary:hover { background: var(--accent-ink); }
 .btn.ghost { background: transparent; color: var(--ink-2); border-color: var(--line-2); }
 .btn.ghost:hover { border-color: var(--accent); color: var(--ink); }
+.btn.is-loading { pointer-events: none; opacity: 0.65; }
+.dl-spin {
+  display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid currentColor;
+  border-right-color: transparent; border-radius: 50%; animation: dl-rot 0.6s linear infinite;
+  vertical-align: -0.1em;
+}
+@keyframes dl-rot { to { transform: rotate(360deg); } }
 
 /* masthead (flat, no gradient) */
 .masthead { border-bottom: 1px solid var(--line); padding: 44px 0 30px; }
@@ -3088,6 +3095,34 @@ _JS = """
       if (a === "print") { setAllCollapsed(false); openAllChildren(); window.print(); }
       else if (a === "expand-all") { setAllCollapsed(false); }
       else if (a === "collapse-all") { setAllCollapsed(true); }
+    });
+  });
+
+  // Export downloads: fetch as a blob with a spinner so a slow server render (PDF via LibreOffice) shows
+  // progress + a clean failure, instead of a dead link the browser silently waits on.
+  document.querySelectorAll("a[data-export]").forEach(function (a) {
+    a.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      if (a.classList.contains("is-loading")) return;
+      var label = a.innerHTML;
+      a.classList.add("is-loading");
+      a.innerHTML = '<span class="dl-spin"></span> Rendering\u2026';
+      fetch(a.href).then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        var cd = r.headers.get("Content-Disposition") || "";
+        var m = /filename="?([^"]+)"?/.exec(cd);
+        var name = m ? m[1] : "report";
+        return r.blob().then(function (b) { return { blob: b, name: name }; });
+      }).then(function (o) {
+        var url = URL.createObjectURL(o.blob);
+        var dl = document.createElement("a");
+        dl.href = url; dl.download = o.name; document.body.appendChild(dl); dl.click(); dl.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      }).catch(function () {
+        window.alert("Export failed \u2014 the PDF service may be unavailable. Try DOCX or \u2318 Print.");
+      }).finally(function () {
+        a.classList.remove("is-loading"); a.innerHTML = label;
+      });
     });
   });
 

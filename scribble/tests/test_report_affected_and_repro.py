@@ -136,3 +136,24 @@ def test_toolbar_server_export_links_only_with_export_url(session_factory):
         assert f"{base}?format=docx" in live
         exported = render_report_html(ctx)  # the deliverable passes no export_url
         assert "?format=pdf" not in exported and "?format=docx" not in exported
+
+
+def test_export_links_have_spinner_fetch_download_js(session_factory):
+    """The ⬇ PDF / ⬇ DOCX links opt into a JS handler that fetches as a blob with a spinner, so a slow
+    server render shows progress + a clean failure instead of a silent dead link."""
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="E", client_id=client.id, company_name="Acme")
+        grp = FindingGroup(engagement=eng, name="Web", order_index=0)
+        BoardFinding(engagement=eng, group=grp, title="X", severity=Severity.high, order_index=0)
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        html = render_report_html(build_report_context(db.get(ReportBoard, eid)),
+                                  export_url="/scribble/engagements/abc/report/export")
+    assert "data-export" in html                                  # links opt into the handler
+    assert 'a[data-export]' in html and "createObjectURL" in html  # fetch-blob download handler
+    assert "dl-spin" in html and "@keyframes dl-rot" in html        # spinner CSS
