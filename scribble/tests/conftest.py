@@ -377,13 +377,14 @@ class StubHost:
             self.add_promoted_job(ref_id, job_id, extension=extension)  # write the link
         return True
 
-    def add_promoted_job(self, ref_id, job_ref: str, *, extension: str = "scribble", promoted_at=None):
+    def add_promoted_job(self, ref_id, job_ref: str, *, name=None, extension: str = "scribble", promoted_at=None):
         """Register a job as already promoted INTO `ref_id`, so `list_jobs` returns it (the reverse
         of `mark_job_promoted`) AND `mark_job_promoted` sees it as promoted (refuse-on-conflict).
         `promoted_at` defaults to now; a test that asserts on the rendered timestamp should pass a fixed
-        value. Returns the job-shaped object (`.id`, `.promoted_at`)."""
+        value. `name` mirrors the real `JobDTO.name` the panel links on; defaults to the id.
+        Returns the job-shaped object (`.id`, `.name`, `.promoted_at`)."""
         from datetime import UTC, datetime
-        job = SimpleNamespace(id=job_ref, promoted_at=promoted_at or datetime.now(UTC))
+        job = SimpleNamespace(id=job_ref, name=name or job_ref, promoted_at=promoted_at or datetime.now(UTC))
         self._promoted_jobs.setdefault((extension, ref_id), []).append(job)
         self._promotion_of[job_ref] = (extension, ref_id)
         return job

@@ -140,7 +140,7 @@
   <ul class="scribble-source-jobs-list">
     {% for job in source_jobs %}
     <li>
-      <span class="mono">{{ job.id }}</span>
+      <a class="mono" href="/jobs/{{ job.id }}" title="{{ job.id }}">{{ job.name or job.id }}</a>
       {% if job.promoted_at %}<span class="muted">promoted {{ job.promoted_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
       {% if scribble_can_write %}
       {# Un-adopt (#635): two paths per source job. Link-only is a plain form POST (no JS). The
@@ -236,12 +236,14 @@
     </select>
   </label>
   <button type="button" class="btn" id="scribble-bulk-move">Move selected</button>
+  <button type="button" class="btn btn-danger" id="scribble-bulk-delete">Delete selected</button>
   <button type="button" class="btn" id="scribble-bulk-clear">Clear</button>
 </div>
 {% endif %}
 <div class="scribble-board" data-board
      data-reorder-groups-url="{{ url_for('scribble_api.reorder_groups', engagement_id=engagement.id) }}"
-     data-batch-move-url="{{ url_for('scribble_api.move_findings', engagement_id=engagement.id) }}">
+     data-batch-move-url="{{ url_for('scribble_api.move_findings', engagement_id=engagement.id) }}"
+     data-batch-delete-url="{{ url_for('scribble_api.delete_findings_bulk', engagement_id=engagement.id) }}">
 
   {% if not board_groups and not ungrouped %}
   <div class="card"><p class="muted">No sections yet. Add one above to start organizing findings.</p></div>

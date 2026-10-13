@@ -1713,6 +1713,54 @@ def register(api_bp, bp) -> None:
         return jsonify(ok=True, moved=moved,
                        group_id=str(target_group.id) if target_group is not None else None)
 
+    # ============================================================================ API: delete findings (bulk)
+
+    @api_bp.post("/engagements/<uuid:engagement_id>/findings/delete")
+    def delete_findings_bulk(engagement_id: int):
+        """Delete SEVERAL findings at once — the bulk sibling of the single ``delete_finding`` route, for
+        the board's multi-select bulk bar. Body: ``{"finding_ids": [...]}``. Write-gated at the route
+        (``host_can_write``) like every sibling mutation — a viewer who can SEE the board must not delete.
+        ATOMIC scope like ``move_findings``: every id must belong to THIS engagement or the whole request
+        is refused (the same 404 a foreign id gets) and NOTHING is deleted — a partial delete would be
+        indistinguishable from a complete one. Each row takes its artifact ROWS with it and DETACHES its
+        children (``findings_service.delete_finding``); files unlink only AFTER the commit, so a
+        rolled-back delete cannot leave the bytes orphaned (mirrors the single route)."""
+        if not host_can_write():
+            abort(403)
+        payload = request.get_json(silent=True) or {}
+        raw_ids = payload.get("finding_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify(error="finding_ids must be a non-empty list"), 400
+        if len(raw_ids) > 500:  # bound the walk BEFORE touching the DB (mirrors move_findings)
+            return jsonify(error="finding_ids may contain at most 500 ids"), 400
+        finding_ids: list[uuid.UUID] = []
+        for raw in raw_ids:
+            parsed = _as_uuid(raw)
+            if parsed is None:
+                return jsonify(error="finding_ids must contain UUIDs"), 400
+            if parsed not in finding_ids:  # dedup a multi-select artefact
+                finding_ids.append(parsed)
+
+        storage_paths: list = []
+        with open_session() as db:
+            # All-or-nothing: the present set equals the requested set only if every id is on THIS
+            # engagement. A foreign id gets the same 404 a nonexistent one does, and NOTHING is deleted.
+            present = set(db.scalars(
+                select(BoardFinding.id).where(
+                    BoardFinding.id.in_(finding_ids),
+                    BoardFinding.engagement_id == engagement_id,
+                )
+            ).all())
+            if len(present) != len(finding_ids):
+                return jsonify(error="finding not found"), 404
+            for fid in finding_ids:
+                finding = db.get(BoardFinding, fid)
+                storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
+            db.commit()
+        for storage_path in storage_paths:
+            delete_file(storage_path)
+        return jsonify(ok=True, deleted=len(finding_ids))
+
     # ======================================================================== attack paths (ext#141)
     # Link/unlink a vector attack-path diagram from the browser. Scribble has no seam to vector, so the
     # picker (board.js) fetches vector's cookie API to list the author's diagrams and its export.html,
