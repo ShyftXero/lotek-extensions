@@ -826,6 +826,7 @@ def _render_header(
     nav_keys: tuple[str, ...] = (),
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    export_url: str | None = None,
     override_theme_names: tuple[str, ...] = (),
     mark: ResolvedMark | None = None,
 ) -> str:
@@ -887,6 +888,17 @@ def _render_header(
     )
     section_nav = f'<nav class="tb-sections">{section_links}</nav>' if section_links else ""
 
+    # Server-side download links (gotenberg PDF + DOCX), only when the LIVE preview route supplies the
+    # export base url — the exported deliverable itself passes none, so a downloaded file carries no
+    # dead app links. `no-print` via the `.topbar` wrapper, so they never reach the PDF/print.
+    export_html = ""
+    if export_url:
+        base = _esc(export_url)
+        export_html = (
+            f'<a class="btn" href="{base}?format=pdf">⬇ PDF</a>'
+            f'<a class="btn" href="{base}?format=docx">⬇ DOCX</a>'
+        )
+
     topbar = (
         '<div class="topbar no-print"><div class="wrap">'
         '<div class="tb-brand"><span class="tb-mark"></span> Scribble</div>'
@@ -895,7 +907,8 @@ def _render_header(
         f'<div class="tb-actions">{switcher}'
         '<button class="btn ghost" type="button" data-action="expand-all">Expand all</button>'
         '<button class="btn ghost" type="button" data-action="collapse-all">Collapse all</button>'
-        '<button class="btn primary" type="button" data-action="print">⎙ Print / PDF</button>'
+        '<button class="btn primary" type="button" data-action="print">⎙ Print</button>'
+        f"{export_html}"
         "</div></div></div>"
     )
     # The Theme's Mark, if it has one and it survived `marks.resolve_mark`. Placed in the masthead
@@ -2076,6 +2089,7 @@ def _render_document(
     theme: ResolvedTheme = _AUTO_THEME,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    export_url: str | None = None,
     override_theme_names: tuple[str, ...] = (),
 ) -> str:
     # A Theme forces the palette by stamping <html data-theme>; "auto" leaves it unstamped so the report
@@ -2110,6 +2124,7 @@ def _render_document(
         nav_keys=nav_keys,
         engagement_url=engagement_url,
         dashboard_url=dashboard_url,
+        export_url=export_url,
         override_theme_names=override_theme_names,
         mark=assets.mark,
     )
@@ -2156,6 +2171,7 @@ def render_report_html(
     artifact_bytes: ArtifactBytes | None = None,
     engagement_url: str | None = None,
     dashboard_url: str | None = None,
+    export_url: str | None = None,
     layout: str | None = None,
     theme: str | None = None,
     template: str | None = None,
@@ -2191,7 +2207,7 @@ def render_report_html(
     return _render_document(
         ctx, resolver, theme=sel_theme,
         layout=_effective_layout(ctx, sel_layout, layout=layout, template=template),
-        engagement_url=engagement_url, dashboard_url=dashboard_url,
+        engagement_url=engagement_url, dashboard_url=dashboard_url, export_url=export_url,
         override_theme_names=override_theme_names,
     )
 

@@ -112,3 +112,27 @@ def test_parent_inline_affected_resolves_to_a_count_reference(session_factory):
                           parent_vars={"AFFECTED": "10.0.0.1, 10.0.0.2, 10.0.0.3"}, parent_content=content)
     assert "Exposed at 3 hosts (see Affected Assets below) without authentication." in html
     assert "Exposed at 10.0.0.1, 10.0.0.2" not in html, "the raw per-host wall must not render in prose"
+
+
+def test_toolbar_server_export_links_only_with_export_url(session_factory):
+    """The report toolbar gets server-side ⬇ PDF / ⬇ DOCX download links ONLY on the live preview (when
+    the route supplies export_url). The exported deliverable itself passes no export_url, so a downloaded
+    HTML file carries no dead app links."""
+    with session_factory() as db:
+        client = Client(name="Acme Co")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="E", client_id=client.id, company_name="Acme")
+        grp = FindingGroup(engagement=eng, name="Web", order_index=0)
+        BoardFinding(engagement=eng, group=grp, title="X", severity=Severity.high, order_index=0)
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        ctx = build_report_context(db.get(ReportBoard, eid))
+        base = "/scribble/engagements/abc/report/export"
+        live = render_report_html(ctx, export_url=base)
+        assert f"{base}?format=pdf" in live, "live preview offers the server PDF download"
+        assert f"{base}?format=docx" in live
+        exported = render_report_html(ctx)  # the deliverable passes no export_url
+        assert "?format=pdf" not in exported and "?format=docx" not in exported
