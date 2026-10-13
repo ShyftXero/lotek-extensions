@@ -460,7 +460,10 @@ def _add_cover(doc: Document) -> None:
     # so a report whose company override equals the client name no longer prints the same line twice.
     eb = doc.add_paragraph()
     _spacing(eb, before=0, after=2)
-    _run(eb, "{{ client_name or company_name }}", size=10, color=ACCENT_INK, bold=True, caps=True)
+    # Fallback so a clientless engagement never prints a blank eyebrow line (parity with render_html's
+    # eyebrow: client OR company OR a generic label).
+    _run(eb, "{{ client_name or company_name or 'Security Assessment' }}", size=10, color=ACCENT_INK,
+         bold=True, caps=True)
 
     # Title: large INK, with a thin ACCENT keyline underneath — no green wash.
     title_p = doc.add_paragraph()
@@ -478,8 +481,14 @@ def _add_cover(doc: Document) -> None:
         _run(p, label + "   ", size=9, color=MUTED, bold=True, caps=True)
         _run(p, value_markup, size=11, color=INK, bold=True)
 
+    # Omit the Client / Assessment-type rows when unset (parity with render_html _cover_facts) rather than
+    # printing the label with an empty value — same omit-when-empty rule as the window and assessor rows.
+    doc.add_paragraph("{%p if client_name or company_name %}")
     meta("Client", "{{ client_name or company_name }}")
+    doc.add_paragraph("{%p endif %}")
+    doc.add_paragraph("{%p if scope_type %}")
     meta("Assessment type", "{{ scope_type }}")
+    doc.add_paragraph("{%p endif %}")
     # Testing-window row is guarded: with no start/end recorded, an unguarded "{{ s }} – {{ e }}" printed a
     # dangling en-dash on the title page. Omit the row entirely rather than show a bare "–".
     doc.add_paragraph("{%p if start_date and end_date %}")
