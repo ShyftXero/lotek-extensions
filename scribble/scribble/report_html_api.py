@@ -187,6 +187,7 @@ def register(api_bp, bp) -> None:
                 artifact_bytes=artifact_bytes,
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
+                export_url=url_for("scribble.engagement_report_export", engagement_id=engagement_id),
                 layout=request.args.get("layout"),
                 theme=_selected_theme(_install_default),
                 template=request.args.get("template"),
