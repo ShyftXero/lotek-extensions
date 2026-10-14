@@ -974,9 +974,10 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or client_display_name(client)
-    # Assessor(s) from the source-job owners (not created_by); overlaid onto the variable context below so
-    # {{ASSESSOR}}, the HTML masthead, and the DOCX cover all read the ONE derived value.
-    assessor = _derive_assessor(engagement)
+    # Assessor: the operator override wins; otherwise the derived display name(s) of the source-job owners
+    # (not created_by). Overlaid onto the variable context below so {{ASSESSOR}}, the HTML masthead, and
+    # the DOCX cover all read the ONE value.
+    assessor = (getattr(engagement, "assessor", None) or "").strip() or _derive_assessor(engagement)
     variables = build_context(engagement)
     if assessor:
         variables["ASSESSOR"] = assessor

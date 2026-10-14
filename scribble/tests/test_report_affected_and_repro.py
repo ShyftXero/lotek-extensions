@@ -224,7 +224,7 @@ def test_client_display_name_prefers_company_name_over_slug():
 def test_cover_assessor_is_none_without_mounted_jobs(session_factory):
     """Assessor is derived from the SOURCE-JOB owners (host seam), not created_by — so a standalone engagement
     with no mounted core jobs resolves to None (row omitted), not the engagement creator. The owner->name
-    aggregation itself is covered in test_assessor_derivation.py. company_name still falls back to the slug."""
+    aggregation itself is covered in test_assessor_derivation.py. company_name still falls back to slug."""
     with session_factory() as db:
         client = Client(name="BF-UKG")
         db.add(client)
@@ -252,3 +252,20 @@ def test_engagement_company_name_override_wins(session_factory):
     with session_factory() as db:
         ctx = build_report_context(db.get(ReportBoard, eid))
     assert ctx.company_name == "UKG Software Inc."  # explicit engagement override still wins
+
+
+def test_assessor_override_wins_over_derived(session_factory):
+    """The operator override (ReportBoard.assessor) wins over the job-owner derivation, so a client
+    deliverable's Assessor line is editable + frozen against later job changes (mirrors company_name)."""
+    with session_factory() as db:
+        client = Client(name="BF-UKG")
+        db.add(client)
+        db.flush()
+        eng = ReportBoard(name="E", client_id=client.id, assessor="Synoptek Red Team")
+        db.add(eng)
+        db.commit()
+        eid = eng.id
+    with session_factory() as db:
+        ctx = build_report_context(db.get(ReportBoard, eid))
+    assert ctx.assessor == "Synoptek Red Team"       # override wins
+    assert ctx.variables.get("ASSESSOR") == "Synoptek Red Team"  # same value feeds {{ASSESSOR}} / masthead

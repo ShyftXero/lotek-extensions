@@ -101,6 +101,10 @@ class ReportBoard(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255))
     scope_type: Mapped[str] = mapped_column(String(64), default="external")
     company_name: Mapped[str | None] = mapped_column(String(255))  # {{COMPANY_NAME}} default
+    # Operator override for the report's Assessor line. Empty -> the renderer derives the name(s) of the
+    # source-scan owners ({{ASSESSOR}}, "Assessment Team" when several); set -> this wins, so the operator
+    # controls what the client sees and freezes it against later job changes. Mirrors company_name.
+    assessor: Mapped[str | None] = mapped_column(String(255))
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="in_progress")
