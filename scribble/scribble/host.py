@@ -134,6 +134,21 @@ def adoptable_jobs(core_engagement_id, query: str = "", limit: int = 50) -> list
     return list(hook(core_engagement_id, query, limit)) if hook is not None else []
 
 
+def job_owners(job_ids) -> dict:
+    """``{job_id: owner_id}`` for the given scan jobs. ATTRIBUTION ONLY -- ``owner_id`` is not an
+    authorization key (see host_contract.JobDTO), so this is a cosmetic lookup used to render WHO ran the
+    source scans on a report. ``{}`` when unmounted (standalone scribble has no core jobs)."""
+    hook = host_hook("job_owners")
+    return dict(hook(list(job_ids))) if hook is not None else {}
+
+
+def display_identity(user_id):
+    """Resolve a core ``user_id`` to its ``DisplayIdentity`` (``.name``/``.label``), or None. Cosmetic;
+    delegates to core's single ``resolve_display_identity`` resolver. None when unmounted / bad id."""
+    hook = host_hook("display_identity")
+    return hook(user_id) if hook is not None else None
+
+
 def group_findings(rows: list, *, by: str) -> list:
     """Bucket finding rows through core's ONE shared bucketer (``app.finding_grouping``), reached via the
     host seam so the scribble board and the core per-job report can never drift (Phase 1b, lotek #829).

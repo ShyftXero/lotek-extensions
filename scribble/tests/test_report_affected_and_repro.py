@@ -221,9 +221,10 @@ def test_client_display_name_prefers_company_name_over_slug():
     assert client_display_name(None) == ""
 
 
-def test_cover_carries_assessor_from_created_by(session_factory):
-    """The cover now surfaces the assessor (was absent entirely); with no display field on the standalone
-    client model, company_name falls back to the slug name rather than crashing."""
+def test_cover_assessor_is_none_without_mounted_jobs(session_factory):
+    """Assessor is derived from the SOURCE-JOB owners (host seam), not created_by — so a standalone engagement
+    with no mounted core jobs resolves to None (row omitted), not the engagement creator. The owner->name
+    aggregation itself is covered in test_assessor_derivation.py. company_name still falls back to the slug."""
     with session_factory() as db:
         client = Client(name="BF-UKG")
         db.add(client)
@@ -235,7 +236,7 @@ def test_cover_carries_assessor_from_created_by(session_factory):
         eid = eng.id
     with session_factory() as db:
         ctx = build_report_context(db.get(ReportBoard, eid))
-    assert ctx.assessor == "Eli McRae"    # surfaced from created_by (nothing rendered it before)
+    assert ctx.assessor is None           # jobs-derived, not created_by; no mounted jobs -> None
     assert ctx.company_name == "BF-UKG"   # standalone client: no display field -> slug, no crash
 
 

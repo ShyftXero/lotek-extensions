@@ -859,6 +859,33 @@ def _build_activity_log(engagement) -> list[ActivityEntry]:
     return [entry for _, entry in events]
 
 
+def _derive_assessor(engagement) -> str | None:
+    """Assessor(s) = the display name(s) of whoever OWNS the source scan jobs -- not who typed the
+    engagement (``created_by``). A report aggregating jobs run by several operators (one runs internal,
+    another external) resolves to "Assessment Team"; one owner -> that person's name; none -> None (the
+    row is then omitted). Owner is resolved through the host's cosmetic ``job_owners`` + ``display_identity``
+    seams (owner_id is attribution-only, never an authz key), so no per-viewer actor is needed."""
+    job_ids = {
+        str(sf.get("job_id"))
+        for f in engagement.findings
+        if (sf := (f.source_facts or {})).get("job_id")
+    }
+    if not job_ids:
+        return None
+    owners = host.job_owners(job_ids) or {}
+    names = set()
+    for owner_id in set(owners.values()):
+        if not owner_id:
+            continue
+        ident = host.display_identity(owner_id)
+        name = getattr(ident, "name", None) if ident is not None else None
+        if name:
+            names.add(name)
+    if not names:
+        return None
+    return next(iter(names)) if len(names) == 1 else "Assessment Team"
+
+
 def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     """Assemble a ``ReportContext`` from a loaded ``ReportBoard`` (with relationships available).
 
@@ -947,6 +974,12 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
     session = object_session(engagement)
     client = engagement.resolve_client(session) if session is not None else None
     company_name = engagement.company_name or client_display_name(client)
+    # Assessor(s) from the source-job owners (not created_by); overlaid onto the variable context below so
+    # {{ASSESSOR}}, the HTML masthead, and the DOCX cover all read the ONE derived value.
+    assessor = _derive_assessor(engagement)
+    variables = build_context(engagement)
+    if assessor:
+        variables["ASSESSOR"] = assessor
     # Cover logo: the report's picked library logo, or the stock lotek mark — one resolver for both renderers.
     from scribble.reporting.logos import resolve_cover_logo
     _cover_logo = resolve_cover_logo(engagement, session)
@@ -979,7 +1012,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         company_name=company_name,
         client_name=client_display_name(client) or None,
         scope_type=engagement.scope_type,
-        assessor=(engagement.created_by or None),
+        assessor=assessor,
         start_date=engagement.start_date.isoformat() if engagement.start_date else None,
         end_date=engagement.end_date.isoformat() if engagement.end_date else None,
         groups=groups_out,
@@ -990,7 +1023,7 @@ def build_report_context(engagement, *, artifact_url=None) -> ReportContext:
         retest_closeout=_retest_closeout_rows(engagement, rendered_finding_ids),
         strategic_recommendations=_strategic_rec_ctxs(engagement),
         checklists=_build_checklists(engagement),
-        variables=build_context(engagement),
+        variables=variables,
         narrative=_build_narrative(company_name, rollup, groups_out),
         activity_log=_build_activity_log(engagement),
         # lotek#620: carry the operator override (Severity enum → its ``.value`` string) + rationale.
