@@ -421,3 +421,36 @@ def test_real_affected_and_target_url_are_not_clobbered_by_the_fallback():
     ctx = build_context(eng, finding, extra={"TARGET_HOST": "h", "AFFECTED": "real list"})
     assert ctx["AFFECTED"] == "real list"
     assert ctx["TARGET_URL"] == "https://x/"
+
+
+def test_resolve_finding_applies_promoted_variable_overlay(session_factory):
+    """Preview bug: resolve_finding (the /preview path) must apply finding.variables (the promote overlay),
+    identical to the report. It was building context with NO overlay, so {{AFFECTED}} survived verbatim."""
+    block = schema.doc_from_text("Affected: {{AFFECTED}}")
+    with session_factory() as db:
+        eng = _engagement()
+        finding = _finding(eng, content_json={"description": block}, variables={"AFFECTED": "web1, web2"})
+        db.add(eng)
+        db.add(finding)
+        db.commit()
+        html = resolve_finding(db, finding)["description"]
+    assert "web1, web2" in html
+    assert "{{AFFECTED}}" not in html
+
+
+def test_resolve_finding_renders_reproduction_block_verbatim(session_factory):
+    """The reproduction block carries scanner PoC payloads ({{7*7}} SSTI checks); it must render RAW, never
+    variable-resolved (or it stops reproducing the bug) — the same verbatim contract the report honors."""
+    repro = schema.doc_from_text("curl 'http://x/?q={{7*7}}'")
+    desc = schema.doc_from_text("See {{AFFECTED}}")
+    with session_factory() as db:
+        eng = _engagement()
+        finding = _finding(eng, content_json={"description": desc, "reproduction": repro},
+                           variables={"AFFECTED": "h1"})
+        db.add(eng)
+        db.add(finding)
+        db.commit()
+        blocks = resolve_finding(db, finding)
+    assert "{{7*7}}" in blocks["reproduction"]   # raw — NOT evaluated to 49
+    assert "49" not in blocks["reproduction"]
+    assert "h1" in blocks["description"]           # other blocks still get the overlay
