@@ -63,6 +63,29 @@ across EVERY surface. Non-negotiable:
 6. **NEW: scribble engagement prose → kind** — methodology / scope / exec-summary as ProseMirror docs on
    the seam. THIS is what unblocks the original "editable prose + house editor" ask with zero new backend.
 
+## Core mount (Eli: core-mount, 2026-10-14) + the `/_kit/` security trap
+
+**`/_kit/` is a PUBLIC path.** `src/app/routes/auth.py::_is_public_path` returns True for `/_kit/`
+("pure static JS/CSS, no secrets, same class as /static/"). Mounting the autosave endpoint at
+`/_kit/autosave` naively would make it an **unauthenticated write endpoint** — a hole. The core mount MUST:
+- **Carve `/_kit/autosave` OUT of the public path** so it falls through to the cookie auth gate:
+  `if path.startswith("/_kit/") and not path.startswith("/_kit/autosave"): return True`. Assets stay
+  public; the autosave write is authed.
+- Stay **CSRF-protected** — `/_kit/` is NOT in `_CSRF_EXEMPT_PREFIXES`, so autosave keeps CSRF; the kit
+  editor already sends the token on its autosave POST (same path class as `/scribble/api` today).
+- Mount right after `ensure_kit_assets(app)` in `src/app/__init__.py`:
+  `ensure_autosave_registered(app, actor=lambda: getattr(g, "current_user", None))`.
+- **actor resolver** = the host's current dashboard user (`g.current_user`, per `extensions.py current_actor`).
+  A kind's `authorize` may use it, or resolve its own (scribble's `finding` kind reuses its EXISTING
+  `can_view_engagement` via `scribble.deps.current_actor()` — one home — rather than trusting the arg).
+  Write-ROLE (viewer vs operator) is already enforced app-wide by core's gate; the kind's `authorize` owes
+  only TENANCY (can this actor see the finding's engagement).
+
+**Cross-repo ordering (corrected):** core's mount `import lotek_kit.autosave` fails until the kit ships that
+module, so the order is: (1) ONE ext PR = kit `autosave.py` + scribble `finding` kind + editor `docHandle`
+→ ext tag; (2) ONE core PR = re-pin + the `_is_public_path` carve-out + the mount + tests → release. Do NOT
+commit the core mount before the re-pin (core won't boot).
+
 ## Notes / gotchas
 - The editor is in the kit; the seam belongs there too so scribble AND vector mount one blueprint
   (`lotek_kit.flask_assets` is the precedent for a kit-served blueprint).
