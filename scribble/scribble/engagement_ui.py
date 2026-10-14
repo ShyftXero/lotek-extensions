@@ -289,6 +289,7 @@ def _apply_engagement_form(engagement: ReportBoard, form, db) -> str | None:
     engagement.name = (form.get("name") or "").strip()
     engagement.scope_type = (form.get("scope_type") or "external").strip() or "external"
     engagement.company_name = (form.get("company_name") or "").strip() or None
+    engagement.assessor = (form.get("assessor") or "").strip() or None  # override; empty -> derived from jobs
     engagement.status = (form.get("status") or "in_progress").strip() or "in_progress"
     engagement.start_date = _parse_date(form.get("start_date"))
     engagement.end_date = _parse_date(form.get("end_date"))

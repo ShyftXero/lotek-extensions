@@ -31,6 +31,10 @@
         <input type="text" name="company_name" value="{{ engagement.company_name or '' }}"
                placeholder="Defaults to the client name" />
       </label>
+      <label>Assessor <span class="muted">({{ '{{ASSESSOR}}' }})</span>
+        <input type="text" name="assessor" value="{{ engagement.assessor or '' }}"
+               placeholder="Defaults to the source-scan owner(s)" />
+      </label>
       <label>Scope type
         <input type="text" name="scope_type" value="{{ engagement.scope_type }}" />
       </label>
