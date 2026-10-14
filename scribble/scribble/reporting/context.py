@@ -13,11 +13,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import object_session
 
 from scribble import finding_grouping_adapter, findings_service, host, metadata
-from scribble.content import render_html
 from scribble.enums import (
     DISPOSITION_LIVE,
     DISPOSITIONS,
@@ -31,9 +29,9 @@ from scribble.enums import (
     risk_rating,
     severity_rank,
 )
-from scribble.models import BoardFinding, normalize_strategic_recommendations
+from scribble.models import normalize_strategic_recommendations
 from scribble.reporting.layouts import enabled_section_keys
-from scribble.templating import build_context, build_full_context, make_var_resolver
+from scribble.templating import build_context
 from scribble.templating.resolver import client_display_name
 
 
@@ -583,53 +581,17 @@ def number_figures(
 
 def _finding_ctx(finding, *, artifact_url) -> FindingCtx:
     engagement = finding.engagement
-    # Resolve this finding's OWN report-variable overlay (``BoardFinding.variables``, filled by
-    # promote from the host's neutral facts — CONTRACT.md §5.4) into the render context so a vuln-DB
-    # write-up's ``{{AFFECTED}}``/``{{DOMAIN}}``/etc. resolve to real values instead of surviving
-    # verbatim. ``_KeepUndefined`` still applies to any token this overlay doesn't cover — a genuinely
-    # unknown ``{{TOKEN}}`` is left untouched, not blanked.
-    variables = dict(finding.variables or {})
     # Report composition: sections the operator chose to omit for this finding. A suppressed CONTENT block
-    # is dropped from ``blocks_html`` below; suppressed ``evidence``/``references`` are made empty here;
-    # the DERIVED sections (affected_assets, reproduction) carry ``suppressed`` to the renderer. Every
-    # path lands on "the data isn't there", which every renderer already skips.
+    # is dropped from ``blocks_html``; suppressed ``evidence``/``references`` are made empty below; the
+    # DERIVED sections (affected_assets, reproduction) carry ``suppressed`` to the renderer.
     suppressed = frozenset(finding.suppressed_sections or ())
     session = object_session(finding)
-    # Aggregation parent: {{AFFECTED}}/{{TARGET_URL}} in authored prose otherwise expand to a per-host
-    # WALL (and the host list also renders in Affected Assets right below) — unreadable. Resolve them to a
-    # concise count-reference instead (Blade UX). A flat finding keeps its real per-host values.
-    if session is not None:
-        child_count = session.scalar(
-            select(func.count()).select_from(BoardFinding).where(BoardFinding.parent_id == finding.id)
-        ) or 0
-        if child_count:
-            ref = f"{child_count} host{'' if child_count == 1 else 's'} (see Affected Assets below)"
-            variables["AFFECTED"] = ref
-            variables["TARGET_URL"] = ref
-    ctx = (
-        build_full_context(session, engagement, finding, extra=variables)
-        if session is not None
-        else build_context(engagement, finding, extra=variables)
-    )
-    resolve_var = make_var_resolver(ctx)
-    blocks_html = {}
-    from scribble.templating import resolve_doc  # local import avoids cycle at module import
-
-    for block, doc in (finding.content_json or {}).items():
-        if block in suppressed:
-            continue  # operator omitted this content section from the report
-        if block == "reproduction":
-            # The reproduction block is a VERBATIM code block — auto-filled from a scanner's curl PoC,
-            # which routinely carries `{{...}}` template-injection payloads (nuclei/dalfox SSTI checks).
-            # It must NOT pass through the report's Jinja variable resolver: `{{7*7}}` would render as
-            # `49` and stop reproducing the bug, breaking the block's verbatim contract. Render it raw,
-            # with NO variable substitution (doc- or inline-level).
-            blocks_html[block] = render_html.render_block(doc, artifact_url=artifact_url)
-            continue
-        resolved = resolve_doc(doc, ctx)
-        blocks_html[block] = render_html.render_block(
-            resolved, resolve_var=resolve_var, artifact_url=artifact_url
-        )
+    # ONE home for the per-finding overlay + block render (scribble.templating.lint) — the SAME path the
+    # live preview (templating_api) uses, so a preview resolves {{AFFECTED}}/{{TARGET_URL}}/{{DOMAIN}}/
+    # custom vars AND renders the verbatim reproduction block identically to the deliverable (no drift).
+    from scribble.templating.lint import finding_overlay_variables, resolve_finding
+    variables = finding_overlay_variables(session, finding)
+    blocks_html = resolve_finding(session, finding, artifact_url=artifact_url, suppressed=suppressed)
     artifacts = [] if "evidence" in suppressed else _artifact_ctxs(
         finding.artifacts, engagement_id=engagement.id
     )
