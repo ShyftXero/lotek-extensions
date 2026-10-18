@@ -93,7 +93,7 @@ lotek-kit = { path = "../kit", editable = true }
 
 `editable = true` is load-bearing, not cosmetic — a non-editable path install is cached by version, so
 after editing kit source `uv sync` reports "Audited" and does not rebuild (the trap documented in the
-repo's `CLAUDE.md`). Because the kit ships no force-included files, editable is safe here in a way it is
+repo's `AGENTS.md`). Because the kit ships no force-included files, editable is safe here in a way it is
 not for an extension.
 
 lotek core pins it as a git dependency on a release tag, in its **base** dependencies rather than the

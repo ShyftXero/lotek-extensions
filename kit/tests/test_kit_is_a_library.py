@@ -86,7 +86,7 @@ def test_flask_is_never_imported_at_module_scope():
 
 
 def test_static_assets_ship_as_package_data_without_force_include():
-    """CLAUDE.md documents a trap: a force-included file is absent from an editable install and the
+    """AGENTS.md documents a trap: a force-included file is absent from an editable install and the
     failure is silent. Keeping ``static/`` inside the package directory means there is nothing to
     force-include and nothing to lose."""
     config = _pyproject()["tool"]["hatch"]["build"]

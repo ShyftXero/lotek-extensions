@@ -59,5 +59,5 @@ git commit (from PEP 610 `direct_url.json`).
 
 ## Working here
 
-See [CLAUDE.md](CLAUDE.md) — this repo adopts lotek's flow (branch-per-change off `main` → PR →
+See [AGENTS.md](AGENTS.md) — this repo adopts lotek's flow (branch-per-change off `main` → PR →
 squash-merge → delete; `plans/<branch>.md` first; ruff + the extension's tests green before the PR).
