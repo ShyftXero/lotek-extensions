@@ -37,6 +37,7 @@ House rules honored in every string: no em dashes, no semicolons, no UTF middle 
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -234,7 +235,7 @@ def _cve_clause(cve_ids: list[str]) -> str:
     """", CVE-..." (one) / ", CVE-A and CVE-B" (several, oxford-joined) / "" (none). Each id already
     says "CVE", so a "CVEs" label would just stutter (voice: cut the word that adds no meaning). No CVE
     is silence, not a safety claim."""
-    ids = [str(c).strip() for c in (cve_ids or []) if str(c).strip()]
+    ids = [str(c).strip() for c in (cve_ids or []) if c is not None and str(c).strip()]
     if not ids:
         return ""
     return f", {_oxford(ids)}"
@@ -313,6 +314,6 @@ def polish(text: str, *, kind: str, enable: bool | None = None, ai_hook=None) ->
         out = hook(messages)
         polished = "".join(str(chunk) for chunk in out).strip()
         return polished or text
-    except Exception:
-        # A polish failure must never break a deterministic report that is already complete and valid.
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).debug("ai polish failed: %s", exc)
         return text
