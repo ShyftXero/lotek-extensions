@@ -44,7 +44,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # `static/` lives INSIDE lotek_kit/, so it ships as ordinary package data with NO force-include. That
-# matters: CLAUDE.md documents a trap where an editable path install skips the wheel build and a
+# matters: AGENTS.md documents a trap where an editable path install skips the wheel build and a
 # force-included file is silently absent at runtime. Nothing here is force-included, so nothing can go
 # missing that way.
 packages = ["lotek_kit"]
