@@ -164,3 +164,21 @@ way an unrecognised `?theme=` in a URL does.
 It is deliberately below `?theme=` in precedence, so a report link you SEND renders the Theme that \
 link names rather than the recipient's preference, and it is not consulted at all on a share link or \
 a PAT request — there is no signed-in reader to have a preference."""
+
+# SIDECAR SERVICE CONTAINERS this extension needs (lotek #1265). The host BUILDS the image (from the
+# wheel-shipped Dockerfile under `build_context`, if the image is absent) and brings the container up at
+# deploy/serve prestart (`lotek services ensure`) for every enabled extension — loudly, exit 1 on
+# failure — instead of silently deferring to the first request. Before this, Gotenberg's image was never
+# built on prod, so PDF export died silently; declaring it here is what makes "install + enable = PDF
+# works" true on a fresh deploy.
+#
+# The container is 127.0.0.1-bound on a docker-ASSIGNED host port (no fixed-port collision between two
+# tiers on one box), named `lotek-scribble-gotenberg-<tier_slug>`. scribble.reporting.exporters reads
+# the returned URL (or an operator's external SCRIBBLE_PDF_SERVICE_URL, which wins and provisions
+# nothing). `image` matches scribble's GOTENBERG_IMAGE default.
+[[service_containers]]
+name = "gotenberg"              # service slug; container is lotek-scribble-gotenberg-<tier_slug>
+image = "lotek-gotenberg:latest"  # == scribble.reporting.exporters.GOTENBERG_IMAGE default
+port = 3000                    # Gotenberg's in-container listen port (== GOTENBERG_PORT)
+build_context = "gotenberg"    # package-relative dir with the Dockerfile; resolved out of the wheel
+healthcheck_path = "/health"   # Gotenberg's liveness route; the ensure polls it before declaring OK
