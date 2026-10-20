@@ -27,10 +27,13 @@ def _gotenberg_entry() -> dict:
 
 def test_manifest_declares_gotenberg_service_container():
     entry = _gotenberg_entry()
-    # image must match scribble's own default so the prestart build and the lazy hook target one image.
     from scribble.reporting import exporters
-    assert entry["image"] == exporters.GOTENBERG_IMAGE
-    assert int(entry["port"]) == exporters.GOTENBERG_PORT
+    # image must match scribble's own DEFAULT image so the prestart build and the lazy hook target one
+    # image. Compared against the LITERAL default, env-independent: exporters.GOTENBERG_IMAGE is resolved
+    # from SCRIBBLE_GOTENBERG_IMAGE at import, and that var is a documented operator override (see the
+    # Dockerfile / exporters.py) — comparing against the live value false-REDs on a box that has it set.
+    assert entry["image"] == "lotek-gotenberg:latest"  # == exporters.GOTENBERG_IMAGE default
+    assert int(entry["port"]) == exporters.GOTENBERG_PORT  # a plain literal, no env coupling
     # build_context is package-relative; it must resolve to a real Dockerfile dir in the source tree.
     ctx = _ROOT / entry["build_context"]
     assert (ctx / "Dockerfile").is_file(), f"build_context {entry['build_context']!r} must hold a Dockerfile"
