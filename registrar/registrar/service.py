@@ -40,10 +40,14 @@ class ApprovalDenied(PermissionError):
 def _audit_detail(verb: str, args: dict) -> str:
     if verb == "send_sms":
         return "to=<redacted> body=<redacted>"  # never store the recipient or the message
-    if verb in ("create_node", "destroy_node"):
-        return f"name={str(args.get('name', ''))[:64]}"
-    if verb in ("upsert_record", "register_domain"):
+    if verb in ("create_node", "destroy_node", "start_node", "stop_node", "restart_node"):
+        return f"ref={str(args.get('provider_ref', args.get('name', '')))[:64]}"
+    if verb in ("upsert_record", "register_domain", "delete_record"):
         return f"domain={str(args.get('domain', args.get('name', '')))[:120]}"
+    if verb == "upload_ssh_key":
+        return f"name={str(args.get('name', ''))[:64]}"  # never store the public key
+    if verb == "set_firewall_rules":
+        return f"ref={str(args.get('provider_ref', ''))[:64]} rules={len(args.get('rules', []))}"
     return ""
 
 
@@ -67,21 +71,44 @@ class ActionResult:
 
 
 def _dispatch(verb: str, provider: str, args: dict) -> dict:
-    if verb in ("list_nodes", "create_node", "destroy_node"):
+    if verb in ("list_nodes", "create_node", "destroy_node",
+                "start_node", "stop_node", "restart_node",
+                "upload_ssh_key", "set_firewall_rules"):
         d = get_compute(provider)
         if verb == "list_nodes":
             return {"nodes": [n.__dict__ for n in d.list_nodes()]}
         if verb == "create_node":
-            return {"node": d.create_node(name=args.get("name", "node")).__dict__}
-        return {"destroyed": d.destroy_node(args.get("provider_ref", ""))}
-    if verb in ("list_records", "upsert_record", "register_domain"):
+            return {"node": d.create_node(
+                name=args.get("name", "node"),
+                size=args.get("size", "s-1vcpu-1gb"),
+                region=args.get("region", "nyc1"),
+                ssh_key_ids=args.get("ssh_key_ids"),
+            ).__dict__}
+        if verb == "destroy_node":
+            return {"destroyed": d.destroy_node(args.get("provider_ref", ""))}
+        if verb == "start_node":
+            return {"node": d.start_node(args.get("provider_ref", "")).__dict__}
+        if verb == "stop_node":
+            return {"node": d.stop_node(args.get("provider_ref", "")).__dict__}
+        if verb == "restart_node":
+            return {"node": d.restart_node(args.get("provider_ref", "")).__dict__}
+        if verb == "upload_ssh_key":
+            return {"key": d.upload_ssh_key(name=args.get("name", ""), public_key=args.get("public_key", ""))}
+        if verb == "set_firewall_rules":
+            return {"firewall": d.set_firewall_rules(
+                args.get("provider_ref", ""), rules=args.get("rules", []))}
+    if verb in ("list_records", "upsert_record", "register_domain", "delete_record"):
         d = get_dns(provider)
         if verb == "list_records":
             return {"records": d.list_records(args.get("domain", ""))}
         if verb == "upsert_record":
             return {"record": d.upsert_record(args.get("domain", ""), rtype=args.get("rtype", "A"),
-                                              name=args.get("name", "@"), value=args.get("value", ""))}
-        return {"domain": d.register_domain(args.get("name", ""))}
+                                              name=args.get("name", "@"), value=args.get("value", ""),
+                                              ttl=args.get("ttl", 300))}
+        if verb == "register_domain":
+            return {"domain": d.register_domain(args.get("name", ""))}
+        if verb == "delete_record":
+            return {"deleted": d.delete_record(args.get("domain", ""), args.get("record_id", ""))}
     if verb == "send_sms":
         return {"sms": get_sms(provider).send_sms(to=args.get("to", ""), body=args.get("body", ""))}
     raise ValueError(f"unknown verb: {verb}")
