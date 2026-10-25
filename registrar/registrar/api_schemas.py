@@ -31,9 +31,14 @@ class ActionRequest(BaseModel):
 
     verb: str = Field(
         ...,
-        description="Registrar driver verb. Direct-tier (run inline): 'list_nodes', 'list_records'. "
-        "Confirm-tier (staged only): 'create_node', 'destroy_node', 'upsert_record', 'register_domain', "
-        "'send_sms'. An unrecognized verb is treated as confirm-tier and staged, never executed.",
+        description=(
+            "Registrar driver verb. "
+            "Direct-tier (run inline): 'list_nodes', 'list_records'. "
+            "Confirm-tier (staged, human-approved): 'create_node', 'destroy_node', "
+            "'start_node', 'stop_node', 'restart_node', 'upload_ssh_key', 'set_firewall_rules', "
+            "'upsert_record', 'delete_record', 'register_domain', 'send_sms'. "
+            "An unrecognized verb is treated as confirm-tier and staged, never executed."
+        ),
     )
     provider: str | None = Field("null", description="Provider slug; 'null' for the no-op provider.")
     args: dict[str, Any] | None = Field(None, description="Verb arguments.")

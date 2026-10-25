@@ -11,10 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from registrar._version import __version__
-from registrar.config import RegistrarConfig
+from registrar.config import RegistrarConfig, SecurityStance
 from registrar.db import create_all, make_session_factory
 
-__all__ = ["register", "RegistrarConfig", "__version__"]
+__all__ = ["register", "RegistrarConfig", "SecurityStance", "__version__"]
 
 
 def register(
