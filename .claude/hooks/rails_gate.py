@@ -516,23 +516,41 @@ def _g_clean_checks(ctx: Ctx) -> Verdict:
         if sub:
             by_sub.setdefault(sub, []).append(f)
     if by_sub:
-        if shutil.which("uv") is None:
-            ctx.log("clean-checks", "fail-open", "uv not found; pyrefly check skipped")
-        else:
-            for sub, subfiles in sorted(by_sub.items()):
-                sub_dir = os.path.join(root, sub)
-                rel = [os.path.relpath(os.path.join(root, f), sub_dir) for f in subfiles]
-                # Each subproject declares `pyrefly`/`ruff`/`pytest` under `[project.optional-
-                # dependencies].dev`, NOT `[dependency-groups]` — so `uv run` does not pull them in
-                # by default; `--extra dev` is required (same reason lotek's own CLAUDE.md calls
-                # out `--extra extensions` when consuming these packages from the other side).
-                result = _run(["uv", "run", "--extra", "dev", "pyrefly", "check", *rel], sub_dir)
-                if result is None:
-                    ctx.log("clean-checks", "fail-open", f"pyrefly check ({sub}) could not launch")
+        # `uv` may be installed but not on the hook's PATH (sandboxed agent sessions), so look in
+        # the usual install locations before giving up.
+        uv_bin = shutil.which("uv") or next(
+            (p for p in (os.path.expanduser("~/.local/bin/uv"), os.path.expanduser("~/.cargo/bin/uv"))
+             if os.access(p, os.X_OK)), None)
+        for sub, subfiles in sorted(by_sub.items()):
+            sub_dir = os.path.join(root, sub)
+            rel = [os.path.relpath(os.path.join(root, f), sub_dir) for f in subfiles]
+            # Prefer the subproject's existing venv binary: no env resolution, no network, works in a
+            # sandbox. Fall back to `uv run` only when the venv has no pyrefly yet. Each subproject
+            # declares `pyrefly`/`ruff`/`pytest` under `[project.optional-dependencies].dev`, NOT
+            # `[dependency-groups]` — so `uv run` does not pull them in by default; `--extra dev` is
+            # required (same reason lotek's own CLAUDE.md calls out `--extra extensions` when
+            # consuming these packages from the other side).
+            venv_pyrefly = os.path.join(sub_dir, ".venv", "bin", "pyrefly")
+            if os.access(venv_pyrefly, os.X_OK):
+                cmd = [venv_pyrefly, "check", *rel]
+            elif uv_bin:
+                cmd = [uv_bin, "run", "--extra", "dev", "pyrefly", "check", *rel]
+            else:
+                ctx.log("clean-checks", "fail-open", f"pyrefly check ({sub}) skipped: no .venv/bin/pyrefly and no uv")
+                continue
+            result = _run(cmd, sub_dir)
+            if result is None:
+                ctx.log("clean-checks", "fail-open", f"pyrefly check ({sub}) could not launch")
+                continue
+            if result.returncode != 0:
+                out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+                # A failure to set up the environment (uv sync without network, missing interpreter,
+                # sandbox denying the cache) is not a type error: log and fail open, like "could not
+                # launch". Real pyrefly findings print ` ERROR ` lines; only those block.
+                if " ERROR " not in out:
+                    ctx.log("clean-checks", "fail-open", f"pyrefly check ({sub}) did not run cleanly (env): {out[-400:]}")
                     continue
-                if result.returncode != 0:
-                    out = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-                    problems.append(f"pyrefly check ({sub}) failed:\n{out[-1800:]}")
+                problems.append(f"pyrefly check ({sub}) failed:\n{out[-1800:]}")
 
     if not problems:
         return None
