@@ -17,6 +17,8 @@ Three cases:
 
 from __future__ import annotations
 
+import uuid
+
 from scribble.content import schema
 from scribble.enums import Severity
 from scribble.models import (
@@ -499,7 +501,8 @@ def test_a_non_object_json_body_is_a_400_on_every_patch_route(client, stub_host)
 
 
 def _build_chain_engagement(
-    session_factory, *, with_chain: bool, embed: bool = False, include: bool = True
+    session_factory, *, with_chain: bool, embed: bool = False, include: bool = True,
+    provenance: bool = False,
 ) -> str:
     with session_factory() as db:
         client = Client(name="Acme Co")
@@ -526,6 +529,10 @@ def _build_chain_engagement(
                 include_in_report=include,
                 embed_html=SNAPSHOT_HTML if embed else None,
                 diagram_ref="99999999-9999-9999-9999-999999999999" if embed else None,
+                # LOT-48/7: chain-level provenance (LOT-69 columns), populated only when asked so the
+                # no-provenance path stays byte-identical for the other cases.
+                source_finding_ids=[101, 102] if provenance else None,
+                rule_ids=["nuclei-CVE-2021-44228", "msf/exploit/multi/http/log4shell"] if provenance else None,
             )
             db.add(chain)
             db.flush()
@@ -535,7 +542,12 @@ def _build_chain_engagement(
                 (1, "Pivot to the DMZ web host"),
                 (0, "Initial access via reflected XSS"),
             ):
-                db.add(AttackChainStep(chain_id=chain.id, order_index=oi, title=title))
+                step = AttackChainStep(chain_id=chain.id, order_index=oi, title=title)
+                # Per-step provenance on the FIRST step only (order_index=0), proving step-granular cites.
+                if provenance and oi == 0:
+                    step.finding_id = uuid.UUID("00000000-0000-0000-0000-0000000000aa")
+                    step.rule_id = "nuclei-CVE-2021-44228"
+                db.add(step)
         db.commit()
         return eng.id
 
@@ -635,3 +647,57 @@ def test_chain_with_embed_html_reuses_the_diagram_item(session_factory):
     assert "srcdoc=" in html
     # The iframe belongs to the chains section (it appears after the section anchor).
     assert html.index("sec-chains") < html.index('<iframe class="attack-path-frame"')
+
+
+# ── 6. LOT-48/7: chain provenance citations surfaced in ChainCtx + the HTML renderer ──────────────────
+#
+# The LOT-69 provenance columns (AttackChain.source_finding_ids / rule_ids, AttackChainStep.finding_id /
+# rule_id) are DATA the report never surfaced. These pin that ChainCtx now carries them and the renderer
+# cites them — AND that a chain WITHOUT provenance renders exactly as before (no empty "Sources:" line).
+
+
+def test_chain_provenance_is_absent_when_unpopulated(session_factory):
+    """A chain with no provenance emits no citation markup — the backward-compat half: a legacy /
+    hand-authored chain reads back NULL columns and must render byte-identically to before LOT-48/7."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, provenance=False)
+    html = _render(session_factory, eng_id)
+    # Match the MARKUP, not the bare class name — the CSS block always names these classes.
+    assert '<p class="chain-provenance">' not in html
+    assert '<span class="chain-step-cite">' not in html
+    assert "chip cite-finding" not in html
+    assert "chip cite-rule" not in html
+    with session_factory() as db:
+        c = build_report_context(db.get(ReportBoard, eng_id)).chains[0]
+    assert c.source_finding_ids == [] and c.rule_ids == []
+    assert all(s.finding_id == "" and s.rule_id == "" for s in c.steps)
+
+
+def test_chain_provenance_populates_chain_ctx(session_factory):
+    """``_chain_ctxs`` surfaces the LOT-69 columns onto ChainCtx / ChainStepCtx, stringified, with the
+    per-step cite landing on the step it belongs to (order_index=0 -> number 1)."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, provenance=True)
+    with session_factory() as db:
+        c = build_report_context(db.get(ReportBoard, eng_id)).chains[0]
+    assert c.source_finding_ids == ["101", "102"]
+    assert c.rule_ids == ["nuclei-CVE-2021-44228", "msf/exploit/multi/http/log4shell"]
+    step1 = next(s for s in c.steps if s.number == 1)
+    assert step1.finding_id == "00000000-0000-0000-0000-0000000000aa"
+    assert step1.rule_id == "nuclei-CVE-2021-44228"
+    # The other steps carry no per-step cite.
+    assert all(s.finding_id == "" and s.rule_id == "" for s in c.steps if s.number != 1)
+
+
+def test_chain_provenance_renders_citations(session_factory):
+    """The HTML renderer prints the chain-level "Sources:" line and the per-step citation chips, both
+    HTML-escaped, inside the chains section."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, provenance=True)
+    html = _render(session_factory, eng_id)
+    assert '<p class="chain-provenance">' in html
+    assert '<span class="chain-cite-label">Sources:</span>' in html
+    assert '<span class="chip cite-finding">finding 101</span>' in html
+    assert '<span class="chip cite-rule">nuclei-CVE-2021-44228</span>' in html
+    # Per-step cite rides on the first step, after its title.
+    assert '<span class="chain-step-cite">' in html
+    assert '<span class="chip cite-finding">finding 00000000-0000-0000-0000-0000000000aa</span>' in html
+    # Provenance lives inside the chains section (compare against the section markup, not the CSS).
+    assert html.index('id="sec-chains"') < html.index('<p class="chain-provenance">')

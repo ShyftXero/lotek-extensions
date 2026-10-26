@@ -550,7 +550,7 @@ def test_the_status_chip_matches_what_the_viewer_prints(session_factory):
 # ── #628: the attack-chain NARRATIVE mirrors into the .docx ───────────────────────────────────────────
 
 
-def _chain_engagement(session_factory, *, embed: bool = False) -> str:
+def _chain_engagement(session_factory, *, embed: bool = False, provenance: bool = False) -> str:
     with session_factory() as db:
         client = Client(name="Acme Co")
         db.add(client)
@@ -567,11 +567,17 @@ def _chain_engagement(session_factory, *, embed: bool = False) -> str:
             engagement_id=eng.id, title="Foothold to Domain Admin",
             summary="Chained the edge XSS into a full domain compromise.",
             order_index=0, embed_html=(snapshot() if embed else None),
+            # LOT-48/7: chain-level provenance (LOT-69 columns), only when asked.
+            source_finding_ids=([101, 102] if provenance else None),
+            rule_ids=(["nuclei-CVE-2021-44228"] if provenance else None),
         )
         db.add(chain)
         db.flush()
         for oi, title in ((1, "Pivot to the DMZ web host"), (0, "Initial access via reflected XSS")):
-            db.add(AttackChainStep(chain_id=chain.id, order_index=oi, title=title))
+            step = AttackChainStep(chain_id=chain.id, order_index=oi, title=title)
+            if provenance and oi == 0:
+                step.rule_id = "msf/exploit/multi/http/log4shell"
+            db.add(step)
         db.commit()
         return eng.id
 
@@ -599,3 +605,20 @@ def test_docx_without_a_chain_has_no_attack_chains_section(session_factory):
     """Backward-compat: an engagement with no chain is byte-identical to before this section existed."""
     text = _text(_render(session_factory, _engagement(session_factory)))
     assert "Attack Chains" not in text
+
+
+def test_docx_carries_chain_provenance_citations(session_factory):
+    """LOT-48/7: the .docx mirrors the HTML "Sources:" line and the per-step citation, read back out of
+    the rendered document — the chain-level finding + rule ids and the first step's trailing rule cite."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory, provenance=True)))
+    assert "Sources: " in text
+    assert "finding 101, finding 102, nuclei-CVE-2021-44228" in text
+    # Per-step cite is bracketed after the step it belongs to (order_index=0 -> "1. …").
+    assert "[msf/exploit/multi/http/log4shell]" in text
+
+
+def test_docx_chain_without_provenance_has_no_sources_line(session_factory):
+    """Backward-compat: a chain with NULL provenance columns renders no citation — no stray "Sources:"."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory)))
+    assert "Sources:" not in text
+    assert "finding 1" not in text

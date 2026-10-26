@@ -149,6 +149,11 @@ class ChainStepCtx:
     number: int
     title: str
     description: str
+    # PROVENANCE (LOT-48/7): the per-step citation surfaced from ``AttackChainStep.finding_id`` /
+    # ``rule_id`` (LOT-69). Soft refs, stringified for display — a step cites the one finding + rule it is
+    # evidenced by, or "" when the authoring route (``scribble_link_attack_chain``) left it unpopulated.
+    finding_id: str = ""
+    rule_id: str = ""
 
 
 @dataclass
@@ -164,6 +169,11 @@ class ChainCtx:
     steps: list[ChainStepCtx]
     diagram_ref: str = ""
     embed_html: str = ""
+    # PROVENANCE (LOT-48/7): chain-level citations surfaced from ``AttackChain.source_finding_ids`` /
+    # ``rule_ids`` (LOT-69) — the deterministic sources the chain was minted from, stringified. Empty
+    # lists for a legacy / hand-authored chain that carries no provenance, so it renders exactly as before.
+    source_finding_ids: list[str] = field(default_factory=list)
+    rule_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -421,13 +431,21 @@ def _chain_ctxs(chains) -> list[ChainCtx]:
             title=c.title,
             summary=c.summary or "",
             steps=[
-                ChainStepCtx(number=i, title=s.title, description=s.description or "")
+                ChainStepCtx(
+                    number=i,
+                    title=s.title,
+                    description=s.description or "",
+                    finding_id=str(s.finding_id) if s.finding_id else "",
+                    rule_id=s.rule_id or "",
+                )
                 for i, s in enumerate(
                     sorted(c.steps, key=lambda s: (s.order_index, s.id)), start=1
                 )
             ],
             diagram_ref=c.diagram_ref or "",
             embed_html=c.embed_html or "",
+            source_finding_ids=[str(x) for x in (c.source_finding_ids or [])],
+            rule_ids=[str(x) for x in (c.rule_ids or [])],
         )
         for c in sorted(chains, key=lambda c: (c.order_index, c.id))
         if c.include_in_report

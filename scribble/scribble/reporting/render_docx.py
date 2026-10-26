@@ -933,6 +933,12 @@ def _append_attack_paths(doc, ctx: ReportContext) -> None:
         caption.add_run(figure_caption(d.figure_number, caption_text)).italic = True
 
 
+def _chain_cites_text(finding_ids: list[str], rule_ids: list[str]) -> str:
+    """Plain-text provenance citation (LOT-48/7) for the .docx: source finding ids (prefixed "finding")
+    then rule ids, comma-joined — the text twin of ``render_html._chain_cites``'s chips. "" when empty."""
+    return ", ".join([f"finding {fid}" for fid in finding_ids] + list(rule_ids))
+
+
 def _append_attack_chains(doc, ctx: ReportContext) -> None:
     """Append the Attack Chains section to the RENDERED document (#628), mirroring ``_append_attack_paths``:
     programmatic and post-render, placed right after it so the .docx section order matches the HTML
@@ -956,11 +962,24 @@ def _append_attack_chains(doc, ctx: ReportContext) -> None:
         doc.add_heading(_xml_safe(c.title) or f"Attack chain {index}", level=2)
         if c.summary:
             doc.add_paragraph(_xml_safe(c.summary))
+        # Chain-level provenance citations (LOT-48/7), mirroring the HTML "Sources:" line: the
+        # deterministic sources this chain was minted from. Omitted when the chain cites nothing.
+        chain_cite = _chain_cites_text(c.source_finding_ids, c.rule_ids)
+        if chain_cite:
+            prov = doc.add_paragraph()
+            prov.add_run("Sources: ").bold = True
+            prov.add_run(_xml_safe(chain_cite)).italic = True
         for s in c.steps:
             para = doc.add_paragraph()
             para.add_run(f"{s.number}. {_xml_safe(s.title)}").bold = True
             if s.description:
                 para.add_run(f" — {_xml_safe(s.description)}")
+            # Per-step provenance citation (LOT-48/7), the step-granular twin, as a trailing bracket.
+            step_cite = _chain_cites_text(
+                [s.finding_id] if s.finding_id else [], [s.rule_id] if s.rule_id else []
+            )
+            if step_cite:
+                para.add_run(f" [{_xml_safe(step_cite)}]").italic = True
         if c.embed_html:
             note = doc.add_paragraph()
             note.add_run(

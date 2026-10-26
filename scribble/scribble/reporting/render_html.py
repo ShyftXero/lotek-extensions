@@ -48,6 +48,7 @@ from scribble.reporting.context import (
     DIAGRAM_CAPTION_FALLBACK,
     ArtifactCtx,
     ChainCtx,
+    ChainStepCtx,
     DiagramCtx,
     FindingCtx,
     GroupCtx,
@@ -1666,18 +1667,40 @@ def _render_diagrams(ctx: ReportContext) -> str:
     )
 
 
-def _render_chain_item(c: ChainCtx) -> str:
-    """One attack-chain narrative (#628): title, optional summary, an ordered step list, and — when the
-    chain carries its own ``embed_html`` snapshot — the visual, drawn through the SAME
-    ``_render_diagram_item`` the Attack Paths block uses (a chain embed is un-numbered: ``figure_number``
-    stays None so it renders caption-only and does not disturb the report-wide figure sequence)."""
-    summary = f'<p class="chain-summary">{_esc(c.summary)}</p>' if c.summary else ""
-    steps = "".join(
+def _chain_cites(finding_ids: list[str], rule_ids: list[str]) -> str:
+    """Provenance citation chips (LOT-48/7) for a chain or a single step: the source finding ids +
+    rule ids as neutral omit-when-empty chips, mirroring the #625 metadata-chip convention. Soft refs,
+    so NO deep link — the ids may be exploiteer/scan output, not findings that render in this report."""
+    chips = [f'<span class="chip cite-finding">finding {_esc(fid)}</span>' for fid in finding_ids]
+    chips += [f'<span class="chip cite-rule">{_esc(rid)}</span>' for rid in rule_ids]
+    return "".join(chips)
+
+
+def _render_chain_step(s: ChainStepCtx) -> str:
+    """One ordered step, with its per-step provenance (LOT-48/7) appended as citation chips when the
+    step cites a ``finding_id`` / ``rule_id`` — omitted entirely for a step with neither."""
+    cite = _chain_cites([s.finding_id] if s.finding_id else [], [s.rule_id] if s.rule_id else [])
+    return (
         f'<li class="chain-step"><span class="chain-step-title">{_esc(s.title)}</span>'
         + (f'<span class="chain-step-desc">{_esc(s.description)}</span>' if s.description else "")
+        + (f'<span class="chain-step-cite">{cite}</span>' if cite else "")
         + "</li>"
-        for s in c.steps
     )
+
+
+def _render_chain_item(c: ChainCtx) -> str:
+    """One attack-chain narrative (#628): title, optional summary, chain-level provenance citations
+    (LOT-48/7), an ordered step list, and — when the chain carries its own ``embed_html`` snapshot — the
+    visual, drawn through the SAME ``_render_diagram_item`` the Attack Paths block uses (a chain embed is
+    un-numbered: ``figure_number`` stays None so it renders caption-only and does not disturb the
+    report-wide figure sequence)."""
+    summary = f'<p class="chain-summary">{_esc(c.summary)}</p>' if c.summary else ""
+    cites = _chain_cites(c.source_finding_ids, c.rule_ids)
+    provenance = (
+        f'<p class="chain-provenance"><span class="chain-cite-label">Sources:</span> {cites}</p>'
+        if cites else ""
+    )
+    steps = "".join(_render_chain_step(s) for s in c.steps)
     steps_html = f'<ol class="chain-steps">{steps}</ol>' if steps else ""
     embed = (
         _render_diagram_item(
@@ -1688,7 +1711,7 @@ def _render_chain_item(c: ChainCtx) -> str:
     )
     return (
         f'<article class="attack-chain"><h3 class="chain-h">{_esc(c.title)}</h3>'
-        f"{summary}{steps_html}{embed}</article>"
+        f"{summary}{provenance}{steps_html}{embed}</article>"
     )
 
 
@@ -2712,6 +2735,12 @@ a.chip.cwe:hover, a.chip.cve:hover { text-decoration: underline; }
   color: #fff; background: var(--sev-critical, #b42318); border-color: transparent; font-weight: 700;
 }
 .chip.epss { font-variant-numeric: tabular-nums; }
+/* LOT-48/7 chain provenance citations: a muted "Sources:" line of neutral chips under the summary, plus
+   per-step chips. Soft refs (not report findings), so they stay neutral — no link affordance. */
+.chain-provenance { margin: 6px 0 2px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chain-cite-label { font-size: 12px; color: var(--muted); }
+.chain-step-cite { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-left: 8px; }
+.chip.cite-finding, .chip.cite-rule { font-size: 11px; font-variant-numeric: tabular-nums; }
 .ref-list { margin: 0; padding-left: 18px; }
 .ref-list li { margin: 2px 0; }
 table.index td.ix-cwe, table.index td.ix-cve {
