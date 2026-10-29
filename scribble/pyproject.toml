@@ -50,6 +50,9 @@ dev = [
 # Discovery signal: lotek enumerates installed extensions via this entry-point group
 # (importlib.metadata.entry_points(group="lotek.extensions")). The value is the entrypoint MODULE that
 # exposes register(...); ep.name is the slug and ep.load() imports that module.
+[project.scripts]
+scribble-theme = "scribble.reporting.theme_management:main"
+
 [project.entry-points."lotek.extensions"]
 scribble = "scribble"
 

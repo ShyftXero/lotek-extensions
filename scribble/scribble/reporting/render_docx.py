@@ -1368,6 +1368,7 @@ def render_report_docx(
     artifact_bytes: ArtifactBytes | None = None,
     body_font: str | None = None,
     code_font: str | None = None,
+    theme: ResolvedTheme | None = None,
 ) -> bytes:
     """Render ``ctx`` to a ``.docx`` document (bytes) using ``report_templates/default.docx``.
 
@@ -1378,8 +1379,12 @@ def render_report_docx(
     ``body_font`` / ``code_font`` (operator report-font selection) swap the template's baked default
     faces for the chosen ones after render (``reporting.fonts.remap_fonts``); ``None``/unknown keeps the
     default. The chosen face must be one the lotek-gotenberg image has, or the PDF substitutes it.
+
+    ``theme`` selects a theme-specific ``.docx`` template via ``theme.docx_template_path()``; falls
+    back to ``default.docx`` when ``theme`` is ``None`` or the theme has no docx template.
     """
-    tpl = DocxTemplate(str(_TEMPLATE_PATH))
+    tpl_path = (theme.docx_template_path() if theme is not None else None) or _TEMPLATE_PATH
+    tpl = DocxTemplate(str(tpl_path))
     tpl.init_docx()
     # Content-block conversion happens eagerly (before ``tpl.render()``), so inline images need
     # ``current_rendering_part`` set now — this is the same part ``render()`` would assign for the

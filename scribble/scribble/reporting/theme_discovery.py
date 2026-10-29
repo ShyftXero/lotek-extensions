@@ -120,8 +120,11 @@ data and lets the caller decide what to do with it.
 from __future__ import annotations
 
 import importlib.metadata
+import os
+import sys
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -136,6 +139,17 @@ REPORT_THEME_ENTRY_POINT_GROUP = "scribble.report_themes"
 # registry, and wherever #104's operator-supplied override lands). Spelled out as a constant rather than
 # a literal string so every descriptor's tag and every test's assertion refer to the same value.
 PROVENANCE_INSTALLED = "installed"
+PROVENANCE_USER = "user"
+
+
+def _user_themes_dir() -> Path:
+    """User-managed themes directory. Override with ``SCRIBBLE_USER_THEMES_DIR``."""
+    override = os.environ.get("SCRIBBLE_USER_THEMES_DIR", "").strip()
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "scribble" / "themes"
 
 
 @dataclass(frozen=True)
@@ -156,6 +170,10 @@ class InstalledThemeDescriptor:
     provenance: str
     load_toml: Callable[[], str]
     distribution: str | None
+    # Optional: returns absolute path to a .docx template, or None. Set for pip-installed themes
+    # that expose a module-level docx_template_path(), and for user themes when a .docx sibling
+    # exists next to the .toml. render_docx consults it via ResolvedTheme.docx_template_path().
+    docx_template_path: Callable[[], str | None] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -363,11 +381,19 @@ def discover_installed_themes(
             # docstring's "Name collision policy".
             collisions.append(ThemeCollision(name=name, distribution=dist))
             continue
+        # If the entry-point module exposes a top-level docx_template_path() (like synoptek_brand),
+        # ep.load() already imported it — grab it from sys.modules now, before the module reference
+        # might otherwise be dropped.
+        module = sys.modules.get(getattr(target, "__module__", "") or "", None)
+        docx_fn: Callable[[], str | None] | None = getattr(module, "docx_template_path", None)
+        if not callable(docx_fn):
+            docx_fn = None
         themes[name] = InstalledThemeDescriptor(
             name=name,
             provenance=PROVENANCE_INSTALLED,
             load_toml=_wrap_load_toml(name, target),
             distribution=dist,
+            docx_template_path=docx_fn,
         )
 
     result = ThemeDiscovery(
@@ -378,3 +404,40 @@ def discover_installed_themes(
     if use_cache:
         _cached_discovery = result
     return result
+
+
+def discover_user_themes(
+    *,
+    themes_dir: Path | None = None,
+    bundled_names: Iterable[str] | None = None,
+) -> dict[str, InstalledThemeDescriptor]:
+    """Themes from the user-managed themes directory (``scribble-theme add``).
+
+    Returns a plain dict (not cached — files can change between calls). Bundled names are excluded
+    for the same reason as in ``discover_installed_themes``. pip-installed names are not excluded
+    from discovery, but ``resolve_theme`` checks pip-installed before user themes, so a pip package
+    wins in resolution — use ``pip install -e`` to actually replace an installed theme.
+    """
+    d = themes_dir if themes_dir is not None else _user_themes_dir()
+    if not d.is_dir():
+        return {}
+    bundled_folded = frozenset(
+        str(n).strip().lower() for n in (bundled_names if bundled_names is not None else _BUNDLED_THEMES)
+    )
+    out: dict[str, InstalledThemeDescriptor] = {}
+    for toml_file in sorted(d.glob("*.toml")):
+        name = toml_file.stem.strip().lower()
+        if not name or "/" in name or "\\" in name or name in bundled_folded:
+            continue
+        docx_file = toml_file.with_suffix(".docx")
+        docx_fn: Callable[[], str | None] | None = (
+            (lambda p: lambda: str(p))(docx_file) if docx_file.exists() else None
+        )
+        out[name] = InstalledThemeDescriptor(
+            name=name,
+            provenance=PROVENANCE_USER,
+            load_toml=_wrap_load_toml(name, (lambda p: lambda: p.read_text("utf-8"))(toml_file)),
+            distribution=None,
+            docx_template_path=docx_fn,
+        )
+    return out
