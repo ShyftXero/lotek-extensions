@@ -43,9 +43,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from scribble.reporting import theme_files
-from scribble.reporting.theme_discovery import discover_installed_themes
+from scribble.reporting.theme_discovery import discover_installed_themes, discover_user_themes
 from scribble.reporting.theme_files import ThemeFile, ThemeFileError
 from scribble.reporting.themes import DEFAULT_THEME, THEMES, ReportTheme
 
@@ -67,10 +68,28 @@ class ResolvedTheme:
     theme: ReportTheme
     file: ThemeFile | None
     provenance: str
+    # Explicit docx template path, populated from InstalledThemeDescriptor.docx_template_path
+    # for installed and user themes. Takes precedence over any fallback on ThemeFile.
+    docx_path: Path | None = None
 
     @property
     def carries_payload(self) -> bool:
         return self.file is not None
+
+    def docx_template_path(self) -> Path | None:
+        """Path to a theme-specific .docx template, or None (caller falls back to default.docx)."""
+        if self.docx_path is not None:
+            return self.docx_path
+        if self.file is None:
+            return None
+        fn = getattr(self.file, "docx_template_path", None)
+        if callable(fn):
+            p = fn()
+            return Path(p) if p is not None and not isinstance(p, Path) else p
+        tpl = getattr(self.file, "docx_template", None)
+        if tpl is not None:
+            return Path(tpl) if not isinstance(tpl, Path) else tpl
+        return None
 
 
 def _report_theme_from_file(file: ThemeFile) -> ReportTheme:
@@ -112,15 +131,24 @@ def resolve_theme(
     if not wanted:
         return ResolvedTheme(theme=THEMES[DEFAULT_THEME], file=None, provenance=PROVENANCE_BUNDLED)
 
-    # 2. Installed. Materialise the TOML only now, for the one Theme actually selected — discovery
-    #    deliberately does not call the loaders, so a firm-brand package's file read does not happen on
-    #    every render of every OTHER report.
+    # 2. Installed (pip entry-point). User themes checked next (step 2b) so pip wins over files.
     descriptor = discover_installed_themes().themes.get(wanted)
     if descriptor is not None:
         file = _parse_or_none(wanted, descriptor.load_toml, PROVENANCE_INSTALLED)
         if file is not None:
             return ResolvedTheme(
-                theme=_report_theme_from_file(file), file=file, provenance=PROVENANCE_INSTALLED
+                theme=_report_theme_from_file(file), file=file, provenance=PROVENANCE_INSTALLED,
+                docx_path=_call_docx_fn(descriptor.docx_template_path, wanted),
+            )
+
+    # 2b. User themes directory (scribble-theme add). Not cached — files can change.
+    user_descriptor = discover_user_themes().get(wanted)
+    if user_descriptor is not None:
+        file = _parse_or_none(wanted, user_descriptor.load_toml, user_descriptor.provenance)
+        if file is not None:
+            return ResolvedTheme(
+                theme=_report_theme_from_file(file), file=file, provenance=user_descriptor.provenance,
+                docx_path=_call_docx_fn(user_descriptor.docx_template_path, wanted),
             )
 
     # 3. Override.
@@ -132,6 +160,18 @@ def resolve_theme(
             )
 
     return ResolvedTheme(theme=THEMES[DEFAULT_THEME], file=None, provenance=PROVENANCE_BUNDLED)
+
+
+def _call_docx_fn(fn: Callable[[], str | None] | None, name: str) -> Path | None:
+    """Safely call a descriptor's docx_template_path() and return a Path, or None."""
+    if fn is None:
+        return None
+    try:
+        raw = fn()
+        return Path(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("scribble: Theme %r docx_template_path() failed: %s", name, exc)
+        return None
 
 
 def _parse_or_none(name: str, load: Callable[[], str | None], provenance: str) -> ThemeFile | None:
@@ -185,8 +225,11 @@ def list_all_themes(*, override_names: tuple[str, ...] = ()) -> list[ReportTheme
 
     for name in sorted(discover_installed_themes().themes):
         if name not in seen:
-            # Labelled from the name until its TOML is parsed. Parsing every installed Theme just to
-            # read a display label would put third-party file reads on every page view.
+            out.append(ReportTheme(name=name, label=name.replace("-", " ").title(), stamp=""))
+            seen.add(name)
+
+    for name in sorted(discover_user_themes()):
+        if name not in seen:
             out.append(ReportTheme(name=name, label=name.replace("-", " ").title(), stamp=""))
             seen.add(name)
 
