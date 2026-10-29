@@ -29,8 +29,10 @@ from scribble.artifacts_storage import artifact_bytes
 from scribble.authz import authorize_engagement_view
 from scribble.deps import open_session
 from scribble.models import ReportBoard
+from scribble.report_html_api import _override_theme_sources, _selected_theme
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
+from scribble.reporting.theme_registry import resolve_theme
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -86,8 +88,11 @@ def register(api_bp, bp) -> None:
             from scribble.reporting.fonts import fonts_from_settings
             settings = db.scalar(select(ScribbleSettings).where(ScribbleSettings.slot == "default"))
             body_font, code_font = fonts_from_settings(settings)
+            override_lookup, _override_names, install_default = _override_theme_sources(db)
+            resolved_theme = resolve_theme(_selected_theme(install_default), override_lookup=override_lookup)
             payload = render_report_docx(ctx, artifact_bytes=artifact_bytes,
-                                         body_font=body_font, code_font=code_font)
+                                         body_font=body_font, code_font=code_font,
+                                         theme=resolved_theme)
             slug = _slugify(engagement.name)
 
         return Response(
