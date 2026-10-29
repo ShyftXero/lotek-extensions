@@ -55,3 +55,49 @@ def test_board_adopt_is_a_searchable_picker_not_a_uuid_field(client, stub_host, 
     assert 'placeholder="Scan job id to adopt"' not in body
     assert "Promote a scan job" not in body
     assert 'name="job_id"' not in body  # no bare job-id text field anywhere on the board
+
+
+def test_already_adopted_jobs_are_badged_in_the_picker(client, stub_host, session_factory):
+    """#616 item 2: a job already adopted is marked so an operator doesn't adopt it twice.
+
+    Adoption state lives on the core Job row and the host hook carries it (promoted_extension/
+    promoted_ref_id). The picker distinguishes adopted-HERE (ref == this board) from adopted-ELSEWHERE,
+    and an un-adopted job carries no marker.
+    """
+    bid = _board(session_factory)
+    here, elsewhere, free = str(uuid.uuid7()), str(uuid.uuid7()), str(uuid.uuid7())
+    stub_host.adoptable_jobs_value = [
+        {"id": here, "name": "Adopted here", "targets": "a", "status": "completed",
+         "created_at": "2026-09-24T06:00:00", "findings_total": 0, "severity_counts": {},
+         "promoted_extension": "scribble", "promoted_ref_id": str(bid), "promoted_at": "2026-09-25T00:00:00"},
+        {"id": elsewhere, "name": "Adopted elsewhere", "targets": "b", "status": "completed",
+         "created_at": "2026-09-24T06:00:00", "findings_total": 0, "severity_counts": {},
+         "promoted_extension": "scribble", "promoted_ref_id": str(uuid.uuid7()), "promoted_at": "2026-09-25T00:00:00"},
+        {"id": free, "name": "Fresh recon", "targets": "c", "status": "completed",
+         "created_at": "2026-09-24T06:00:00", "findings_total": 0, "severity_counts": {}},
+    ]
+    by_id = {it["value"]: it["label"] for it in
+             client.get(f"{UI}/engagements/{bid}/adoptable-jobs.json").get_json()["items"]}
+    assert by_id[here].startswith("✓ adopted here")
+    assert by_id[elsewhere].startswith("⛔ adopted elsewhere")
+    assert "adopted" not in by_id[free].lower()  # an un-adopted job carries no marker
+
+
+def test_inconclusive_refusal_is_an_override_modal(client, stub_host, session_factory):
+    """#616 item 1: the inconclusive-coverage refusal is a prominent modal whose checkbox enables
+    "Adopt anyway" (disabled by default); Cancel is the default. No JS runs here, so pin it structurally
+    across the two files that must agree — the template renders the dialog, board.js drives it.
+    """
+    import pathlib
+
+    bid = _board(session_factory)
+    body = client.get(f"{UI}/engagements/{bid}").get_data(as_text=True)
+    assert '<dialog id="scribble-adopt-refusal"' in body
+    assert 'id="scribble-adopt-ack-inconclusive"' in body  # the enabling checkbox
+    go = body[body.index('id="scribble-adopt-refusal-go"'):][:120]
+    assert "disabled" in go  # "Adopt anyway" starts disabled until the box is ticked
+    assert 'id="scribble-adopt-refusal-cancel"' in body and "autofocus" in body  # Cancel is the default
+
+    js = (pathlib.Path(__file__).resolve().parents[1] / "scribble" / "static" / "board.js").read_text()
+    assert "scribble-adopt-refusal" in js and "showModal" in js  # board.js opens the dialog
+    assert "job_not_assessed" in js  # only the coverage refusal pops the override modal
