@@ -409,9 +409,9 @@
 
   // --- adopt a scan job (#630) ---------------------------------------------------------------------
   // The Source-jobs panel picker: POST the entered job id to the adopt route, which LINKS it into this
-  // engagement (refuse-on-conflict) and pours its findings onto the board. A 409 means the job is
-  // already adopted elsewhere — surface it, never swallow it. No host hook lists promotable jobs, so
-  // the operator supplies the id (the panel's follow-on `<select>` waits on such a hook).
+  // engagement (refuse-on-conflict) and pours its findings onto the board. A 409 means either the job
+  // is adopted elsewhere (a plain message) or its scan coverage is inconclusive (an override modal) —
+  // surface both, never swallow. The job id comes from the searchable `adoptable_jobs_json` picker.
   (function initAdoptJob() {
     var panel = document.querySelector(".scribble-source-jobs[data-adopt-url]");
     if (!panel) return;
@@ -420,42 +420,50 @@
     var msg = document.getElementById("scribble-adopt-job-msg");
     if (!input || !btn) return;
 
+    // The inconclusive-coverage refusal modal (lotek#616 item 1): its checkbox ENABLES "Adopt anyway",
+    // Cancel is the default. Absent (viewer / pre-render) -> we fall back to an inline message.
+    var dialog = document.getElementById("scribble-adopt-refusal");
+    var prose = document.getElementById("scribble-adopt-refusal-prose");
+    var ack = document.getElementById("scribble-adopt-ack-inconclusive");
+    var go = document.getElementById("scribble-adopt-refusal-go");
+
     function setMsg(t) { if (msg) msg.textContent = t || ""; }
 
-    // Two DIFFERENT things now answer 409 (lotek#656): the job is adopted elsewhere, or its scan
-    // coverage is inconclusive. Reporting the coverage refusal with the adoption-conflict sentence
-    // would send the operator to fix the wrong problem, so the refusal body's `error` code decides
-    // which sentence to show. The coverage refusal is JSON; the conflict one is not, so a failed
-    // parse falls through to the conflict wording — the shape this handler already assumed.
-    function refusalMessage(r) {
-      return r.json().then(
-        function (body) {
-          if (body && body.error === "job_not_assessed") {
-            return (body.detail || "This scan job's coverage is inconclusive.") +
-              " Tick the inconclusive-coverage box below to adopt it anyway.";
-          }
-          return "That job is already adopted by another engagement.";
-        },
-        function () { return "That job is already adopted by another engagement."; }
-      );
-    }
-
-    btn.addEventListener("click", function () {
-      var jobId = (input.value || "").trim();
-      if (!jobId) { setMsg("Pick a scan job first."); return; }
+    // ONE place adopts, with or without the override, so the first attempt and the modal's "Adopt
+    // anyway" can't drift. The lotek#656 override travels as form data and ONLY when acknowledged — an
+    // un-acknowledged request omits the field rather than sending a "false" the server must interpret;
+    // the server defaults to refusing, so a request that omits it is a refusal.
+    function postAdopt(jobId, acknowledged) {
       btn.disabled = true;
       setMsg("Adopting…");
-      // The lotek#656 override travels as form data, and ONLY when the operator ticked the box — an
-      // unticked box sends the field not at all rather than sending a "false" the server has to
-      // interpret. The server defaults to refusing, so a request that omits it is a refusal.
-      var ack = document.getElementById("scribble-adopt-ack-inconclusive");
       var payload = new FormData();
-      if (ack && ack.checked) payload.append("acknowledge_inconclusive", "true");
-      fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)),
+      if (acknowledged) payload.append("acknowledge_inconclusive", "true");
+      return fetch(panel.dataset.adoptUrl.replace("__JOBID__", encodeURIComponent(jobId)),
             { method: "POST", body: payload })
         .then(function (r) {
           if (r.status === 409) {
-            return refusalMessage(r).then(setMsg);
+            // Two DIFFERENT things answer 409 (lotek#656): the job's coverage is inconclusive (an
+            // operator can override it) or it's adopted elsewhere (a hard conflict, no override). The
+            // refusal body's `error` code decides — a coverage refusal pops the override modal, a
+            // conflict is a plain message. The coverage refusal is JSON; the conflict one is not, so a
+            // failed parse falls through to the conflict wording this handler already assumed.
+            return r.json().then(
+              function (body) {
+                if (body && body.error === "job_not_assessed" && dialog && dialog.showModal) {
+                  if (prose) prose.textContent = body.detail ||
+                    "This scan job's coverage was never measured, so adopting it may miss findings.";
+                  if (ack) ack.checked = false;
+                  if (go) { go.disabled = true; go.onclick = function () { dialog.close(); postAdopt(jobId, true); }; }
+                  setMsg("");
+                  dialog.showModal();
+                  return;
+                }
+                setMsg(body && body.error === "job_not_assessed"
+                  ? (body.detail || "This scan job's coverage is inconclusive.")
+                  : "That job is already adopted by another engagement.");
+              },
+              function () { setMsg("That job is already adopted by another engagement."); }
+            );
           }
           if (r.status === 404) { setMsg("No such scan job, or you can't see it."); return; }
           if (!r.ok && r.status !== 302) { throw new Error("adopt failed"); }
@@ -463,6 +471,15 @@
         })
         .catch(function () { setMsg("Could not adopt that job."); })
         .finally(function () { btn.disabled = false; });
+    }
+
+    // The modal checkbox gates "Adopt anyway": disabled until the operator ticks the box.
+    if (ack && go) ack.addEventListener("change", function () { go.disabled = !ack.checked; });
+
+    btn.addEventListener("click", function () {
+      var jobId = (input.value || "").trim();
+      if (!jobId) { setMsg("Pick a scan job first."); return; }
+      postAdopt(jobId, false);
     });
   })();
 

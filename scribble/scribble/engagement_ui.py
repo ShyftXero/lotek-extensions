@@ -1014,12 +1014,23 @@ def register(api_bp, bp) -> None:
                 abort(404)
             core_id = board.core_engagement_id
         q = (request.args.get("q") or "").strip()
+        here = str(engagement_id)
         items = []
         for j in host.adoptable_jobs(core_id, q, 50):
             name = j.get("name") or "(unnamed)"
             tgt = ((j.get("targets") or "").splitlines() or [""])[0][:40]
             label = f"{name} — {tgt} · {j.get('status', '')} · {(j.get('created_at') or '')[:10]}"
             label += " · " + _findings_badge(j.get("findings_total", 0), j.get("severity_counts") or {})
+            # Already-adopted indicator (#616 item 2): adoption state lives on the core Job row and the
+            # host hook carries it (promoted_extension set once mark_job_promoted stamps it) -- we never
+            # re-derive "is adopted" (one predicate, one home). Prefix the label so an operator doesn't
+            # try to adopt the same job twice; the server is still the hard guard (adopt refuses a double
+            # adopt). We distinguish adopted-HERE (ref == this board) from adopted-ELSEWHERE because the
+            # two mean different things: here is a redundant click, elsewhere is a cross-engagement
+            # conflict the server 409s. Byte-identical when the hook omits promoted_* (older core).
+            if j.get("promoted_extension"):
+                label = ("✓ adopted here · " if str(j.get("promoted_ref_id")) == here
+                         else "⛔ adopted elsewhere · ") + label
             items.append({"value": j["id"], "label": label})
         return jsonify(items=items)
 
