@@ -54,6 +54,16 @@ from scribble.enums import (
 # migration is pinned to the schema as it was, and must not shift when a model constant is renamed.
 PROMOTE_DEDUP_INDEX = "uq_scribble_findings_engagement_source"
 
+# The sibling partial-unique index for the lotek#656 coverage note (ext#258). The note descends from no
+# scan finding, so its ``source_finding_id`` is NULL and ``PROMOTE_DEDUP_INDEX`` above (partial on
+# non-null ``source_finding_id``) deliberately does not see it -- which left the note's own dedup a bare
+# read-then-write that two concurrent acknowledged promotions could both pass, doubling the note in the
+# deliverable. The durable identity is ``(engagement_id, source_job_id)``: the note's TITLE is a rendered
+# string, not an identity, and an operator may legitimately author two findings with the same title. Same
+# three-places rule as above (``__table_args__``, ``coverage.is_coverage_note_dedup_conflict``, and the
+# alembic revision ``f3b8c1e07a92`` that repeats the literal).
+COVERAGE_NOTE_DEDUP_INDEX = "uq_scribble_findings_engagement_job"
+
 # --------------------------------------------------------------------------- clients & engagements
 
 
@@ -365,6 +375,17 @@ class BoardFinding(Base, TimestampMixin):
             postgresql_where=text("source_finding_id IS NOT NULL"),
             sqlite_where=text("source_finding_id IS NOT NULL"),
         ),
+        # The coverage note's durable dedup, partial on non-null ``source_job_id`` for the SAME reason the
+        # sibling above is partial on ``source_finding_id``: only the #656 coverage note carries a job id,
+        # every other row (authored, promoted, parent write-up) has NULL here and many share an engagement.
+        Index(
+            COVERAGE_NOTE_DEDUP_INDEX,
+            "engagement_id",
+            "source_job_id",
+            unique=True,
+            postgresql_where=text("source_job_id IS NOT NULL"),
+            sqlite_where=text("source_job_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
@@ -383,6 +404,13 @@ class BoardFinding(Base, TimestampMixin):
     source_finding_id: Mapped[int | uuid.UUID | None] = mapped_column(
         SoftHostId, nullable=True, index=True
     )
+    # The host job id this row is the #656 coverage note FOR (ext#258). The durable dedup key for the
+    # note, which has no ``source_finding_id`` to key on. Plain ``String``, NOT ``SoftHostId`` like the
+    # host-id columns around it: this is only ever compared against the raw job_id string the promote
+    # route carries in its URL path, and ``SoftHostId`` would round-trip a digit id back as an ``int``,
+    # so ``finding.source_job_id == job_id`` (str) would silently stop matching. NULL on every row that is
+    # not a coverage note -- the partial unique index above is partial precisely so those stay legal.
+    source_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Self-referential nesting: a PARENT finding groups instances of the same vuln TYPE (the resolved
     # vuln-DB template, else a source/title signature) as CHILDREN. Set by promotion aggregation;
     # adjustable by drag-to-nest on the board. Children are queried WHERE parent_id = id (no ORM
