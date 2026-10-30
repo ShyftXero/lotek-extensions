@@ -1,16 +1,16 @@
-{% extends "scribble/base.html" %}
+{% extends scribble_base %}
 {% block title %}Checklists — Scribble{% endblock %}
 {% block appbar_title %}Checklists{% endblock %}
-{# This page's rows carry `.ckp-kind`, which lives in the coverage panel's stylesheet (ext#44) — link it
-   here too. (Unlike every other page this one hardcodes scribble's own base instead of `scribble_base`,
-   so a mounted host gets scribble's shell here; that is a separate defect, not this change's business —
-   the link works either way, since both bases expose `head_extra`.)
-   That hardcode is also the ONLY reason this page's `.cklib-*` rules reach a mounted host: they live in
-   scribble.css, which scribble's base links and the host's does not. So whoever switches this page to
-   `scribble_base` owes `.cklib-*` the same move into a page-linked stylesheet — see
-   `test_mounted_library_page_still_ships_its_cklib_rules`, which is what will fail. #}
+{# Extends `scribble_base` like every other scribble page, so a mounted scribble renders this in the
+   HOST's shell, not scribble's own (ext#79 — this page used to hardcode `scribble/base.html`). Both
+   bases expose `head_extra`, which is where its two stylesheets go:
+   - checklists_panel.css: the rows carry `.ckp-kind`, which lives in the coverage panel's sheet (ext#44).
+   - checklists_library.css: this page's `.cklib-*` rules, which used to ride on scribble.css via the old
+     hardcoded base; rendering in the host shell drops scribble.css, so they live in a page-linked sheet
+     now (ext#79), the same treatment the `.ckp-*` ones got. #}
 {% block head_extra %}
 <link rel="stylesheet" href="{{ url_for('scribble.static', filename='checklists_panel.css') }}" />
+<link rel="stylesheet" href="{{ url_for('scribble.static', filename='checklists_library.css') }}" />
 {% endblock %}
 {% block content %}
 <section class="cklib" id="checklist-library"
