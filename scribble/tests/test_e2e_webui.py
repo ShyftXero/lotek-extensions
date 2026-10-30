@@ -150,7 +150,9 @@ def live_app(tmp_path_factory):
     host = "127.0.0.1"
     server, thread, port = _serve(host, flask_app)
     try:
-        yield {"base_url": f"http://{host}:{port}", **ids}
+        # session_factory is exposed so a test can assert what the UI actually PERSISTED (e.g. the
+        # prose dedup storing NULL), not just what the page re-renders.
+        yield {"base_url": f"http://{host}:{port}", "session_factory": cfg.session_factory, **ids}
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -268,3 +270,70 @@ def test_rerank_by_severity_button_changes_the_visible_order(page, live_app):
     )
     assert after_ids == [str(crit_id), str(low_id)]  # worst-first now
     assert after_ids != before_ids  # the order actually changed, not a no-op click
+
+
+# ----------------------------------------------------- standing-prose editor (ext#346 item 4)
+
+
+def test_prose_editor_mounts_and_round_trips(page, live_app):
+    """The Methodology / Scope standing-prose fields are the kit reporting editor, not bare textareas,
+    and a save round-trips through the serialize-to-text + dedup path (scribble.prose):
+
+    1. the two fallback textareas are hidden and a kit editor surface mounts in their place, PREFILLED
+       with the generated standing text (ext#346 item 3);
+    2. editing the Methodology editor and clicking Save serializes the doc back to the posted
+       `methodology_text` field — proven by reloading and finding the override prefilled in the editor.
+
+    This runs LAST in the module (it mutates the demo engagement's methodology override); no other test
+    asserts the default methodology text, so the mutation is harmless.
+    """
+    eng_id = live_app["engagement_id"]
+    page.goto(f"{live_app['base_url']}/scribble/engagements/{eng_id}")
+
+    # Open the collapsible prose card so its contents are visible/clickable.
+    page.locator(".scribble-report-prose summary").click()
+
+    # Editor mounted over BOTH fields; the real posted textareas are hidden.
+    surfaces = page.locator(".scribble-report-prose [data-rp-editor].fr-editor-mounted .fr-editor-surface")
+    assert surfaces.count() == 2
+    assert page.locator("#rp-methodology").is_visible() is False
+    assert page.locator("#rp-scope").is_visible() is False
+
+    # Prefill: the generated standing Methodology text is in the editor, not an empty box.
+    methodology = surfaces.first
+    assert methodology.inner_text().strip() != ""
+
+    from scribble.models import ReportBoard
+
+    def stored_methodology():
+        with live_app["session_factory"]() as db:
+            return db.get(ReportBoard, eng_id).methodology_text
+
+    # Dedup interop (ext#346 item 3): saving the PREFILLED default untouched must store NULL, not a
+    # duplicate override row echoing the standing text. The editor serializes its doc back to text on
+    # submit, and that text flows through prose.override_for_storage -> NULL for the unchanged default.
+    with page.expect_navigation():
+        page.locator(".scribble-report-prose button[type='submit']").click()
+    assert stored_methodology() is None
+
+    # Edit the Methodology editor, then Save (the form submit serializes the doc into the textarea).
+    marker = "QA custom methodology round-trip marker."
+    page.locator(".scribble-report-prose summary").click()
+    methodology = page.locator(
+        ".scribble-report-prose [data-rp-editor].fr-editor-mounted .fr-editor-surface"
+    ).first
+    methodology.click()
+    page.keyboard.press("Control+A")
+    page.keyboard.press("Delete")
+    page.keyboard.type(marker)
+    with page.expect_navigation():
+        page.locator(".scribble-report-prose button[type='submit']").click()
+
+    # A real edit IS persisted (serialize -> store), and reloading prefills the editor from it.
+    assert stored_methodology() == marker
+    page.goto(f"{live_app['base_url']}/scribble/engagements/{eng_id}")
+    page.locator(".scribble-report-prose summary").click()
+    reloaded = page.locator(
+        ".scribble-report-prose [data-rp-editor].fr-editor-mounted .fr-editor-surface"
+    ).first
+    assert marker in reloaded.inner_text()
