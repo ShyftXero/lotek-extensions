@@ -79,6 +79,68 @@ def test_save_prose_sets_and_resets(client, session_factory):
         assert board.methodology_text is None and board.scope_limitations_text is None
 
 
+def test_saving_the_prefilled_default_untouched_stores_null(client, session_factory):
+    """ext#346 item 3 (the core ask): the editor is prefilled with the generated standing text, so saving it
+    unchanged must NOT write a duplicate override row — it stores NULL (fall back to the default)."""
+    from scribble import prose
+    eng_id = _eng(session_factory)
+    r = client.post(f"{UI}/engagements/{eng_id}/report/prose",
+                    data={"methodology_text": prose.methodology_default_text(),
+                          "scope_limitations_text": prose.scope_limitations_default_text()})
+    assert r.status_code == 302
+    with session_factory() as db:
+        board = db.get(fm.ReportBoard, eng_id)
+        assert board.methodology_text is None and board.scope_limitations_text is None
+
+
+def test_cosmetic_whitespace_change_to_the_default_stores_null(client, session_factory):
+    """ext#346 item 3: a single trailing space (or any whitespace-only change) is not a substantial diff, so
+    it does not create a duplicate override row."""
+    from scribble import prose
+    eng_id = _eng(session_factory)
+    r = client.post(f"{UI}/engagements/{eng_id}/report/prose",
+                    data={"methodology_text": prose.methodology_default_text() + "  \n",
+                          "scope_limitations_text": "  " + prose.scope_limitations_default_text()})
+    assert r.status_code == 302
+    with session_factory() as db:
+        board = db.get(fm.ReportBoard, eng_id)
+        assert board.methodology_text is None and board.scope_limitations_text is None
+
+
+def test_a_real_edit_of_the_default_is_stored(client, session_factory):
+    """ext#346 item 3: a substantive edit of the prefilled default IS persisted as an override."""
+    from scribble import prose
+    eng_id = _eng(session_factory)
+    edited = prose.methodology_default_text() + "\n\nWe also flew a kite."
+    r = client.post(f"{UI}/engagements/{eng_id}/report/prose",
+                    data={"methodology_text": edited,
+                          "scope_limitations_text": "Only the roof was in scope."})
+    assert r.status_code == 302
+    with session_factory() as db:
+        board = db.get(fm.ReportBoard, eng_id)
+        assert board.methodology_text == edited
+        assert board.scope_limitations_text == "Only the roof was in scope."
+
+
+def test_prose_editor_is_prefilled_with_the_standing_defaults(client, session_factory):
+    """ext#346 item 3: the board page renders the standing text INTO the prose textareas, not an empty box."""
+    from scribble import prose
+    eng_id = _eng(session_factory)
+    html = client.get(f"{UI}/engagements/{eng_id}").get_data(as_text=True)
+    assert "phases below" in html                  # methodology lead prefilled into the textarea
+    assert "not proof that none exists" in html    # a scope/limitations sentence prefilled
+    # and the defaults the page used are exactly the prose module's (one home)
+    assert "phases below" in prose.methodology_default_text()
+
+
+def test_normalize_and_differs_substantially_unit():
+    from scribble.prose import prose_differs_substantially
+    assert prose_differs_substantially("a", "b") is True
+    assert prose_differs_substantially("same  text ", " same text") is False
+    assert prose_differs_substantially("line\n\nline", "line line") is False
+    assert prose_differs_substantially("", "x") is True
+
+
 def test_rephrase_is_503_without_a_host_ai_hook(client):
     resp = client.post(f"{API}/report/prose/rephrase", json={"field": "methodology", "text": "hello"})
     assert resp.status_code == 503

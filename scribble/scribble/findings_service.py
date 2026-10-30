@@ -23,6 +23,7 @@ gone — the same order ``engagement_ui.delete_finding``/``engagement_delete`` a
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from datetime import date
 from typing import NamedTuple
@@ -329,8 +330,17 @@ def create_group(db, engagement: ReportBoard, *, name: str, assessment_type=None
 # Assessment scope -> report-section name. Conservative: only the scopes we can name confidently.
 # external/internal are the reliable `Job.scope_type` values; a webapp/AD/cloud SURFACE is NOT carried
 # by scope_type (it needs the job's run-type template category, which the current jobs don't set), so
-# those are deliberately left for a later signal rather than guessed from a job name.
+# those are deliberately left for a later signal rather than guessed from a job name. This is the
+# per-finding FALLBACK (``section_type_for_finding``) for a finding whose own identifier is a hostname
+# and so can't be classified on its own.
 _SCOPE_SECTION = {"external": "External", "internal": "Internal"}
+
+# Core finding ``category`` strings the AD rollup (``scripts/lotek_ad_rollup.py``) stamps on findings that
+# are inherently internal-network work. ``credential`` is deliberately NOT here: it is shared with non-AD
+# credential testing (brutus SSH/RDP/DB), and an AD credential finding targets a DC — an internal IP the
+# identifier check below already catches. ponytail: AD detection keys on these strings; a missed AD
+# category falls through to the IP/scope check (never wrong-tenant) — widen this set on a confirmed miss.
+_AD_CATEGORIES = frozenset({"ad-acl", "adcs", "delegation"})
 
 
 def section_name_for_scope(scope_type) -> str | None:
@@ -338,21 +348,49 @@ def section_name_for_scope(scope_type) -> str | None:
     return _SCOPE_SECTION.get((scope_type or "").strip().lower())
 
 
-def auto_section_job_findings(db, engagement: ReportBoard, *, job_id, scope_type) -> int:
-    """Place a just-adopted job's findings into the report section matching its assessment scope
-    (external -> "External", internal -> "Internal"), find-or-creating the shared ``AssessmentType`` and
-    the engagement's ``FindingGroup`` for it. Returns the number of findings moved.
+def _ip_internality(identifier) -> bool | None:
+    """True = an internal (RFC1918 / non-global) IP literal or CIDR, False = a global IP, None = not an IP
+    literal at all (a hostname — undecidable from the string alone).
 
-    NON-CLOBBERING + idempotent: only findings still unsectioned (``group_id is None``) are moved, so a
-    manual placement and a second run are both safe. The per-host CHILDREN carry ``source_facts.job_id``;
-    the aggregation PARENT shell does not (``source_facts == {}``), so a matched child also drags its
-    parent into the section — otherwise the board (which collapses children under the parent) would show
-    the parent still unsectioned. ponytail: a parent whose children span two scopes lands in whichever
-    scope was adopted first; fine until a job is genuinely mixed-scope.
+    Mirrors lotek core ``normalizer.is_internal_identifier``'s IP math (pure stdlib ``ipaddress``, no DB /
+    ORM), but keeps the hostname case DISTINCT from "external" so a hostname can defer to the job's
+    assessment scope instead of being forced to External the way the core predicate's bool collapses it.
+    ponytail: core exposes no host-seam hook for this predicate; call through it instead if one ever lands.
     """
-    name = section_name_for_scope(scope_type)
-    if name is None:
-        return 0
+    s = (identifier or "").strip()
+    if not s:
+        return None
+    try:
+        obj = ipaddress.ip_network(s, strict=False) if "/" in s else ipaddress.ip_address(s)
+    except ValueError:
+        return None  # a hostname -> defer to scope
+    return not obj.is_global
+
+
+def section_type_for_finding(finding, *, scope_default: str | None = None) -> str | None:
+    """The report section one adopted finding belongs to (ext#346 item 2):
+
+    1. AD findings are ALWAYS Internal (core category in ``_AD_CATEGORIES``) — "AD findings are never
+       External", whatever the job's scope.
+    2. Otherwise an internal IP identifier -> Internal, a global IP -> External.
+    3. A hostname / identifier-less finding falls back to ``scope_default`` (the job's assessment scope),
+       which may be ``None`` to leave it ungrouped rather than guess a junk section.
+    """
+    facts = finding.source_facts or {}
+    category = (getattr(finding, "category", None) or facts.get("category") or "").strip().lower()
+    if category in _AD_CATEGORIES:
+        return "Internal"
+    identifier = (getattr(finding, "target_host", None) or facts.get("target_host")
+                  or facts.get("asset_identifier") or "")
+    internal = _ip_internality(identifier)
+    if internal is None:
+        return scope_default
+    return "Internal" if internal else "External"
+
+
+def _find_or_create_section(db, engagement: ReportBoard, name: str) -> FindingGroup:
+    """The engagement's ``FindingGroup`` for section ``name``, find-or-creating both the shared
+    ``AssessmentType`` (keyed on ``slug``) and the group. Flushed, not committed."""
     slug = name.lower()
     at = db.scalar(select(AssessmentType).where(AssessmentType.slug == slug))
     if at is None:
@@ -365,17 +403,41 @@ def auto_section_job_findings(db, engagement: ReportBoard, *, job_id, scope_type
     ))
     if grp is None:
         grp = create_group(db, engagement, name=name, assessment_type=at)
+    return grp
 
+
+def auto_section_job_findings(db, engagement: ReportBoard, *, job_id, scope_type) -> int:
+    """Route a just-adopted job's findings into the report section EACH ONE belongs to (ext#346 item 2),
+    find-or-creating the shared ``AssessmentType`` + the engagement's ``FindingGroup`` per section.
+    :func:`section_type_for_finding` decides per finding (AD -> Internal; an internal/external IP ->
+    Internal/External; a hostname / identifier-less finding -> the job's ``scope_type`` section, and when
+    that is unknown too it is left ungrouped rather than guessed). Returns the number of findings moved.
+
+    NON-CLOBBERING + idempotent: only findings still unsectioned (``group_id is None``) are moved, so a
+    manual placement and a second run are both safe. The per-host CHILDREN carry ``source_facts.job_id``;
+    the aggregation PARENT shell does not (``source_facts == {}``), so a matched child also drags its
+    parent into ITS section — otherwise the board (which collapses children under the parent) would show
+    the parent still unsectioned. ponytail: a parent whose children split across sections follows
+    whichever child is placed first; fine until a job is genuinely mixed.
+    """
+    scope_default = section_name_for_scope(scope_type)
     rows = db.scalars(select(BoardFinding).where(
         BoardFinding.engagement_id == engagement.id,
         BoardFinding.group_id.is_(None),
     )).all()
     by_id = {f.id: f for f in rows}
     jid = str(job_id)
+    sections: dict[str, FindingGroup] = {}
     moved = 0
     for f in rows:
         if str((f.source_facts or {}).get("job_id") or "") != jid:
             continue
+        name = section_type_for_finding(f, scope_default=scope_default)
+        if name is None:
+            continue
+        grp = sections.get(name)
+        if grp is None:
+            grp = sections[name] = _find_or_create_section(db, engagement, name)
         if f.group_id is None:
             f.group_id = grp.id
             moved += 1

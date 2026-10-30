@@ -806,8 +806,16 @@ def register(api_bp, bp) -> None:
             # Rephrase-with-AI is offered only when the host provides an AI hook (off by default).
             ai_available = host.host_hook("ai_complete") is not None
 
+            # Standing-prose defaults (ext#346 item 3): prefill the Methodology / Scope editor with the
+            # generated standing text so an operator overrides from the real baseline, not an empty box.
+            from scribble import prose
+            methodology_default = prose.methodology_default_text()
+            scope_default = prose.scope_limitations_default_text()
+
             return render_template(
                 "scribble/engagement.html",
+                methodology_default=methodology_default,
+                scope_default=scope_default,
                 engagement=engagement,
                 client_name=(client.name if client is not None else None),
                 board_groups=board_groups,
@@ -838,8 +846,15 @@ def register(api_bp, bp) -> None:
                 abort(404)
             name = (request.form.get("name") or "").strip()
             if name:
-                assessment_type_id = _as_uuid(request.form.get("assessment_type_id"))
-                at = db.get(AssessmentType, assessment_type_id) if assessment_type_id is not None else None
+                # Report section type (ext#346 item 1): default to External when the field is absent;
+                # the explicit "Other" option posts an empty value -> no assessment type (NULL).
+                raw = request.form.get("assessment_type_id")
+                if raw is None:
+                    at = db.scalar(select(AssessmentType).where(AssessmentType.slug == "external"))
+                elif raw.strip() == "":
+                    at = None
+                else:
+                    at = db.get(AssessmentType, _as_uuid(raw))
                 findings_service.create_group(db, engagement, name=name, assessment_type=at)
                 db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
@@ -1592,15 +1607,21 @@ def register(api_bp, bp) -> None:
     @bp.post("/engagements/<uuid:engagement_id>/report/prose", endpoint="save_report_prose")
     def save_report_prose(engagement_id: int):
         """Save this report's Methodology / Scope-and-limitations override text (#Q4). An empty field RESETS
-        that section to the standing text (stored NULL). Plain form POST."""
-        methodology = (request.form.get("methodology_text") or "").strip()
-        scope = (request.form.get("scope_limitations_text") or "").strip()
+        that section to the standing text (stored NULL). A value is stored ONLY on a SUBSTANTIAL diff from
+        the generated default (ext#346 item 3): the editor is prefilled with that default, so saving it
+        untouched — or with only cosmetic whitespace changed — must not write a duplicate override row that
+        just echoes the standing text. ``prose.override_for_storage`` is the one home for that rule. Plain
+        form POST."""
+        from scribble import prose
+        methodology = request.form.get("methodology_text")
+        scope = request.form.get("scope_limitations_text")
         with open_session() as db:
             eng = db.get(ReportBoard, engagement_id)
             if eng is None:
                 abort(404)
-            eng.methodology_text = methodology or None      # "" => reset to the generated standing text
-            eng.scope_limitations_text = scope or None
+            eng.methodology_text = prose.override_for_storage(methodology, prose.methodology_default_text())
+            eng.scope_limitations_text = prose.override_for_storage(
+                scope, prose.scope_limitations_default_text())
             db.commit()
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
 
