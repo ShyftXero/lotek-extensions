@@ -43,8 +43,14 @@ def resolve_selection(
     theme: str | None = None,
     template: str | None = None,
     override_lookup: OverrideLookup | None = None,
+    resolved_theme: ResolvedTheme | None = None,
 ) -> tuple[ReportLayout, ResolvedTheme]:
     """Resolve the Layout and Theme to render with. See this module's docstring for precedence.
+
+    ``resolved_theme`` short-circuits the Theme axis: a caller holding an already-resolved Theme (a
+    Delivery Snapshot thawed from the Engagement, ext#106) passes it and this returns it verbatim,
+    resolving ONLY the Layout. The Layout is never frozen -- section composition lives in its own
+    persisted column -- so the legacy ``template`` fill still applies to it.
 
     Every argument is untrusted; an unrecognised value falls back instead of raising.
 
@@ -64,4 +70,6 @@ def resolve_selection(
         # An explicit value on an axis wins; the legacy value fills only what was left unspecified.
         layout = layout or legacy_layout
         theme = theme or legacy_theme
+    if resolved_theme is not None:
+        return get_layout(layout), resolved_theme
     return get_layout(layout), resolve_theme(theme, override_lookup=override_lookup)

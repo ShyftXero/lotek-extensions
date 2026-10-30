@@ -28,6 +28,19 @@ from scribble.models import ReportBoard, ScribbleSettings, ScribbleThemeOverride
 from scribble.reporting.context import build_report_context
 from scribble.reporting.exporters import EXPORTERS, ExportOptions, PdfExportError, get_exporter
 from scribble.reporting.render_html import make_inline_artifact_url, render_report_html
+from scribble.reporting.theme_registry import (
+    freeze_resolved_theme,
+    resolve_theme,
+    thaw_resolved_theme,
+)
+
+# ext#106: the export formats whose deliverable actually carries the HTML Theme (palette/type/Mark).
+# The FIRST such export is "delivery": it freezes ``report_theme_snapshot`` and from then on every render
+# of this engagement serves that frozen branding. docx/pdf are UNTHEMED today (themed DOCX is Tier B) and
+# json/csv are structured data, so none of them freezes -- freezing a Theme a format never rendered would
+# make the live HTML diverge from the copy the client actually holds. ponytail: add docx/pdf here once
+# they carry the Theme, so a PDF-only delivery freezes too.
+_DELIVERY_FORMATS = frozenset({"html", "zip"})
 
 # CRIT-4's tenancy predicate now lives in ``scribble/authz.py`` (it's also the primitive the
 # blueprint-wide ``before_request`` gate uses — see that module's docstring for the full history).
@@ -134,9 +147,16 @@ def _override_theme_sources(db):
     return lookup, names, install_default
 
 
-def _selected_theme(install_default: str | None) -> str | None:
+def _selected_theme(install_default: str | None, engagement_theme: str | None = None) -> str | None:
     """The Theme name to render with: an explicit `?theme=` wins, then the READER'S OWN preference,
-    then this install's default.
+    then this ENGAGEMENT's own Theme (ext#106), then this install's default.
+
+    ``engagement_theme`` (``ReportBoard.report_theme``, NULL = inherit) sits directly above the install
+    default because that is exactly what it is: a per-engagement replacement for it. A reader's personal
+    preference still outranks it -- a preference is about how one operator likes to READ, the frozen
+    snapshot is what governs a delivered copy -- and ``?theme=`` outranks everything here so the switcher
+    and a shared link keep working. (This precedence only matters BEFORE delivery; once a snapshot is
+    frozen it is rendered verbatim and none of these rungs is consulted.)
 
     Without this the per-install default was settable, validated and audited but had NO READER -- an
     admin could pick the Theme every report inherits and nothing inherited it. An explicit query value
@@ -162,7 +182,7 @@ def _selected_theme(install_default: str | None) -> str | None:
     if requested:
         return requested
     preferred = str(host_user_setting("preferred_report_theme", "") or "").strip()
-    return preferred or install_default
+    return preferred or (engagement_theme or None) or install_default
 
 
 def register(api_bp, bp) -> None:
@@ -181,6 +201,12 @@ def register(api_bp, bp) -> None:
             authorize_engagement_view(engagement)
             _override_lookup, _override_names, _install_default = _override_theme_sources(db)
             ctx = build_report_context(engagement, artifact_url=_artifact_url_factory(engagement))
+            # ext#106: once delivered, the frozen snapshot wins over every mutable input (install
+            # default / override row / reader preference / ?theme=), so re-opening a delivered report
+            # shows the branding the client's copy has. The live view only READS it -- delivery (the
+            # freeze) happens on export, never on a mere page view.
+            _snap = engagement.report_theme_snapshot
+            _frozen = thaw_resolved_theme(_snap) if _snap else None
             html_doc = render_report_html(
                 ctx,
                 inline_assets=True,
@@ -189,10 +215,11 @@ def register(api_bp, bp) -> None:
                 dashboard_url=url_for("scribble.dashboard"),
                 export_url=url_for("scribble.engagement_report_export", engagement_id=engagement_id),
                 layout=request.args.get("layout"),
-                theme=_selected_theme(_install_default),
+                theme=_selected_theme(_install_default, engagement.report_theme),
                 template=request.args.get("template"),
                 override_lookup=_override_lookup,
                 override_theme_names=_override_names,
+                resolved_theme=_frozen,
             )
         return Response(html_doc, mimetype="text/html")
 
@@ -209,6 +236,21 @@ def register(api_bp, bp) -> None:
                 abort(404)
             authorize_engagement_view(engagement)
             override_lookup, override_names, install_default = _override_theme_sources(db)
+            # ext#106: a delivered engagement renders its FROZEN Theme; an undelivered one resolves live
+            # and, if THIS export is the first themed deliverable, that resolution is frozen now -- the
+            # first export is "delivery". Written once (immutable): an existing snapshot is never
+            # recomputed, so re-exporting after the install default changes still serves the delivered
+            # branding.
+            if engagement.report_theme_snapshot:
+                resolved_theme = thaw_resolved_theme(engagement.report_theme_snapshot)
+            else:
+                resolved_theme = resolve_theme(
+                    _selected_theme(install_default, engagement.report_theme),
+                    override_lookup=override_lookup,
+                )
+                if fmt in _DELIVERY_FORMATS:
+                    engagement.report_theme_snapshot = freeze_resolved_theme(resolved_theme)
+                    db.commit()
             # The inline-image placeholder is renderer-specific, so build the ctx with THIS exporter's
             # factory; structured-data exporters (csv/json) embed no bytes and need none.
             ctx = build_report_context(
@@ -223,10 +265,11 @@ def register(api_bp, bp) -> None:
                 engagement_url=url_for("scribble.engagement_board", engagement_id=engagement_id),
                 dashboard_url=url_for("scribble.dashboard"),
                 layout=request.args.get("layout"),
-                theme=_selected_theme(install_default),
+                theme=_selected_theme(install_default, engagement.report_theme),
                 template=request.args.get("template"),
                 override_lookup=override_lookup,
                 override_theme_names=override_names,
+                resolved_theme=resolved_theme,
                 # The zip bundle includes the whole engagement's raw job loot by default; `?loot=0` opts
                 # out for a lighter report-only archive. Only the zip exporter calls this.
                 loot=None if request.args.get("loot") == "0" else _engagement_loot(engagement),
