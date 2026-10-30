@@ -23,9 +23,9 @@ def test_none_and_empty_resolve_to_the_default_composition():
     for raw in (None, [], {}, "nonsense"):
         specs = resolve_section_order(raw)
         assert [s.key for s in specs] == list(DEFAULT_SECTION_ORDER)
-        # every block present exactly once, all enabled except the opt-in activity_log
+        # every block present exactly once, all enabled except the opt-in appendices
         assert {s.key for s in specs} == set(BLOCK_KEYS)
-        assert [s.key for s in specs if not s.enabled] == ["activity_log"]
+        assert [s.key for s in specs if not s.enabled] == ["host_appendix", "activity_log"]
 
 
 def test_default_specs_match_the_default_resolution():
