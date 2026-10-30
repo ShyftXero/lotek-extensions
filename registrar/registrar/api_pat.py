@@ -26,7 +26,12 @@ from sqlalchemy import select
 
 from registrar import host
 from registrar.api_schemas import ActionRequest, request_body
-from registrar.deps import get_config, host_audit, host_visible_engagement_ids
+from registrar.deps import (
+    get_config,
+    host_audit,
+    host_visible_engagement_ids,
+    resolve_staged_engagement,
+)
 from registrar.enums import Tier
 from registrar.models import AuditRecord
 from registrar.service import (
@@ -95,8 +100,14 @@ def action():
     args = body.get("args") if isinstance(body.get("args"), dict) else {}
     with get_config().session_factory() as db:
         if tier_of(verb) is Tier.confirm:
+            try:
+                engagement_id = resolve_staged_engagement(body.get("engagement_id"))
+            except ValueError as e:
+                return jsonify({"error": "bad_request", "detail": str(e)}), 400
+            except PermissionError as e:
+                return jsonify({"error": "forbidden", "detail": str(e)}), 403
             row = stage(db, verb=verb, provider=provider, args=args,
-                        initiator_id=getattr(actor, "id", None),
+                        initiator_id=getattr(actor, "id", None), engagement_id=engagement_id,
                         actor=getattr(actor, "username", None), host_audit=host_audit())
             return jsonify(
                 status="staged", staged_id=str(row.id),

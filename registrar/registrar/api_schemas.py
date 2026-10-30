@@ -42,3 +42,12 @@ class ActionRequest(BaseModel):
     )
     provider: str | None = Field("null", description="Provider slug; 'null' for the no-op provider.")
     args: dict[str, Any] | None = Field(None, description="Verb arguments.")
+    engagement_id: str | None = Field(
+        None,
+        description=(
+            "UUID of the engagement a CONFIRM-tier action is staged for. The initiator must hold "
+            "operator capability on it, and the (different) confirmer's capability is re-checked at "
+            "approve time (INV-EXT-02). Omit for an org-level action (admin-only to see and approve). "
+            "Ignored for direct-tier verbs."
+        ),
+    )
