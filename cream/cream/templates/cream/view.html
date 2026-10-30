@@ -24,8 +24,16 @@
       {% if meta.editable and cream_can_write %}
       <a class="cr-btn" href="{{ url_for('cream.edit_document', doc_id=doc_id) }}">Edit</a>
       {% endif %}
+      {% if cream_pdf_available %}
+      {# PDF stays the primary CTA only when this install can actually print it. #}
       <a class="cr-btn" href="{{ url_for('cream.export_html', doc_id=doc_id) }}">HTML</a>
       <a class="cr-btn primary" href="{{ url_for('cream.export_pdf', doc_id=doc_id) }}">PDF</a>
+      {% else %}
+      {# No weasyprint: HTML is the working export, and PDF is shown disabled rather than 503ing. #}
+      <a class="cr-btn primary" href="{{ url_for('cream.export_html', doc_id=doc_id) }}">HTML</a>
+      <span class="cr-btn" aria-disabled="true" style="opacity:.45;cursor:not-allowed"
+            title="PDF needs the optional weasyprint dependency (pip install 'cream[pdf]')">PDF n/a</span>
+      {% endif %}
     </div>
   </div>
 

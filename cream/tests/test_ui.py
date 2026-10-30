@@ -155,7 +155,10 @@ def test_a_read_only_actor_gets_no_edit_affordances(client, make_doc, hooks):
     assert "New document" not in body
 
 
-def test_view_page_offers_both_exports(client, make_doc):
+def test_view_page_offers_both_exports(client, make_doc, monkeypatch):
+    # PDF is only offered when this install can print it; pin that branch so the assertion is about the
+    # affordances, not the test environment's weasyprint. The absent branch has its own test below.
+    monkeypatch.setattr("cream.blueprint.pdf_available", lambda: True)
     doc = make_doc()
     body = client.get(f"/cream/documents/{doc['id']}").get_data(as_text=True)
     assert "export.html" in body
@@ -281,6 +284,79 @@ def test_a_document_outside_the_visible_set_is_404_in_the_ui_too(client, make_do
 def test_new_document_form_asks_for_the_engagement(client):
     body = client.get("/cream/documents/new").get_data(as_text=True)
     assert 'id="f-engagement"' in body
+
+
+def test_new_document_form_is_a_free_text_field_standalone(client):
+    """No host scoping (``visible_engagement_ids`` is ``None``) -> nothing to pick from, so the field
+    stays a plain input rather than an empty picker a standalone user could never satisfy."""
+    body = client.get("/cream/documents/new").get_data(as_text=True)
+    assert '<input id="f-engagement"' in body
+    assert "<select id=\"f-engagement\"" not in body
+
+
+def test_new_document_form_offers_a_picker_over_visible_engagements(client, hooks):
+    """ext#146 #1: mounted, the form picks from the actor's visible engagements instead of taking a
+    hand-pasted UUID. The seam is ``visible_engagement_ids``; an engagement not in it is not offered."""
+    import uuid
+
+    mine, other = uuid.uuid7(), uuid.uuid7()
+    hooks["visible_engagement_ids"] = frozenset({mine})
+    body = client.get("/cream/documents/new").get_data(as_text=True)
+    assert '<select id="f-engagement"' in body
+    assert str(mine) in body
+    assert str(other) not in body
+
+
+def test_pdf_cta_is_demoted_when_weasyprint_is_absent(client, make_doc, monkeypatch):
+    """ext#146 #3: the PDF button is the primary CTA, but the export route 503s without weasyprint. When
+    the dep is missing the view page must not lead a *primary* button to that 503 — HTML takes primary
+    and PDF is shown disabled. (The real branch depends on the environment, so it is forced here.)"""
+    monkeypatch.setattr("cream.blueprint.pdf_available", lambda: False)
+    doc = make_doc()
+    body = client.get(f"/cream/documents/{doc['id']}").get_data(as_text=True)
+    # No primary button points at the PDF route.
+    assert not re.search(r'class="cr-btn primary"[^>]*export\.pdf', body)
+    assert 'class="cr-btn primary"' in body  # HTML is promoted to primary instead
+    assert "export.html" in body
+
+
+def test_pdf_cta_stays_primary_when_weasyprint_is_present(client, make_doc, monkeypatch):
+    monkeypatch.setattr("cream.blueprint.pdf_available", lambda: True)
+    doc = make_doc()
+    body = client.get(f"/cream/documents/{doc['id']}").get_data(as_text=True)
+    assert re.search(r'class="cr-btn primary"[^>]*export\.pdf', body)
+
+
+def test_list_issued_row_offers_html_not_pdf_when_weasyprint_is_absent(
+    client, make_doc, monkeypatch,
+):
+    """ext#146 #3: the issued row's export link must not 503 either — it offers the export that works."""
+    monkeypatch.setattr("cream.blueprint.pdf_available", lambda: False)
+    doc = make_doc()
+    client.post(f"/cream/api/documents/{doc['id']}/issue")  # issued rows show an export link, not Edit
+    body = client.get("/cream/").get_data(as_text=True)
+    assert f"/documents/{doc['id']}/export.html" in body
+    assert f"/documents/{doc['id']}/export.pdf" not in body
+
+
+def test_brand_accent_is_a_text_field_so_the_full_accepted_range_round_trips(client):
+    """ext#146 #4: the renderer accepts 3/6/8-hex AND CSS keywords, but a lone <input type=color> is
+    6-hex only and silently reset the rest. The value-bearing field (``data-b=accent_color``) must be a
+    text input so a keyword survives load; the color picker is a separate, non-bound swatch."""
+    body = client.get("/cream/brand").get_data(as_text=True)
+    assert re.search(r'<input[^>]*data-b="accent_color"', body)
+    # The value-carrying field is NOT the color input (which would clamp to 6-hex).
+    assert not re.search(r'<input[^>]*type="color"[^>]*data-b="accent_color"', body)
+    assert 'id="accent-swatch"' in body
+
+
+def test_cream_chrome_follows_host_theme_tokens(client):
+    """ext#146 #2: the injected chrome must track the host theme. It does so by reading the host's CSS
+    custom properties (set per html[data-theme]) with CREAM's dark palette as the fallback."""
+    body = client.get("/cream/").get_data(as_text=True)
+    assert "var(--bg,#0a0f14)" in body or "var(--bg, #0a0f14)" in body
+    assert "var(--ink,#dfe9f0)" in body
+    assert "var(--accent," in body
 
 
 def test_every_page_ships_the_csrf_plumbing(client, make_doc):

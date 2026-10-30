@@ -18,8 +18,18 @@
         <option value="invoice" selected>Invoice</option>
       </select>
     </label>
+    {% if engagement_ids is not none %}
+    <label class="cr-field"><span>Engagement</span>
+      <select id="f-engagement">
+        <option value="" disabled selected>Select an engagement…</option>
+        {% for eid in engagement_ids %}
+        <option value="{{ eid }}">{{ eid }}</option>
+        {% endfor %}
+      </select></label>
+    {% else %}
     <label class="cr-field"><span>Engagement id (UUID)</span>
       <input id="f-engagement" placeholder="0198e2c1-…" autocomplete="off"></label>
+    {% endif %}
     <label class="cr-field"><span>Title</span>
       <input id="f-title" placeholder="External network penetration test"></label>
     <div class="cr-grid">
@@ -39,7 +49,7 @@
   const api = "{{ api_base }}";
   document.getElementById('f-create').addEventListener('click', async function () {
     const engagement = document.getElementById('f-engagement').value.trim();
-    if (!engagement) { crToast('An engagement id is required.', true); return; }
+    if (!engagement) { crToast('Select an engagement first.', true); return; }
     this.disabled = true;
     try {
       const doc = await crApi('POST', api + '/documents', {

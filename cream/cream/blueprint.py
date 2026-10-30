@@ -26,7 +26,7 @@ from cream.enums import COMMON_UNITS, DocKind, DocStatus
 from cream.handles import document_handle, export_stem
 from cream.models import Document
 from cream.money import as_json, money, pct
-from cream.render import render_document_html, render_document_pdf
+from cream.render import pdf_available, render_document_html, render_document_pdf
 from cream.service import get_brand, scoped_documents, totals
 from cream.viewmodel import view_for
 
@@ -43,6 +43,8 @@ def _inject_base():
         # Branding sets the remit-to block on every document, so its form is admin-only — matching the
         # gate on `PUT /api/brand`. The template hiding the button is a courtesy; the API is the control.
         "cream_is_admin": current_actor_is_admin(),
+        # The PDF route 503s when weasyprint is absent; the pages read this to not lead a button there.
+        "cream_pdf_available": pdf_available(),
         "cream_units": COMMON_UNITS,
         "api_base": cfg.url_prefix.rstrip("/") + "/api",
     }
@@ -186,8 +188,11 @@ def dashboard():
 @bp.get("/documents/new")
 def new_document():
     """The create form. A document must name the engagement it bills, so the form asks for it up front
-    rather than letting a document exist unattached."""
-    return render_template("cream/new.html")
+    rather than letting a document exist unattached. Mounted, the form offers a picker over the actor's
+    visible engagements (no hand-pasted UUID); standalone (``None`` — no scoping) it stays a text input."""
+    vis = host_visible_engagement_ids()
+    engagement_ids = None if vis is None else sorted(str(e) for e in vis)
+    return render_template("cream/new.html", engagement_ids=engagement_ids)
 
 
 @bp.get("/documents/<uuid:doc_id>")
