@@ -9,7 +9,7 @@
    same one engagement.html and finding.html use. Rows are server-rendered + static, meeting the widget's
    "no rows appended after init" contract. The only server-side control left is the "show deactivated"
    toggle: it changes which rows the DB query returns (active-only vs all), which DataTables can't do
-   client-side. The route still honors ?q/category/severity/tag for bookmarked deep-links. #}
+   client-side. The python ?q/category/severity/tag search/sort routes were dropped (ext#240). #}
 {% set _sevrank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4} %}
 <div class="card">
   <form class="fr-lib-filters" method="get" action="{{ url_for('scribble.library') }}">
