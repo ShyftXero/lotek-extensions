@@ -6,6 +6,11 @@
  * buttons, panels, toasts) is themed — the diagram PREVIEW keeps its own dark semantic palette
  * (exploit-red / C2-orange / tunnel-cyan / OT-amber), which lives in vector-viewer.css and is meaningful,
  * so the preview pane (.ved-right) stays dark like a map surface regardless of host theme. */
+/* The editor is an app-shell, not a document. base.html's shell is min-height:100vh (grows with
+   content) which leaves the whole page scrolling and .ved-panel's own overflow:auto never engaging —
+   so every tall tab pushed its add-button below the fold. Lock the shell to the viewport (this rule
+   only loads on the editor page) so each tab's panel scrolls internally instead. */
+.vec-shell{height:100vh;overflow:hidden}
 /* 3-track grid: [editor] [draggable divider] [preview]. The editor width is a CSS var the divider
    drag writes (persisted to localStorage); default 34% so the diagram preview gets ~two thirds. */
 .ved{display:grid;grid-template-columns:minmax(300px,var(--ved-split,34%)) 6px minmax(0,1fr);gap:0;flex:1;min-height:0;height:100%}
@@ -22,6 +27,10 @@
 .ved-tab:hover{color:var(--ink,#7f93a3)}
 .ved-tab.active{color:var(--accent,#37c9d6);border-bottom-color:var(--accent,#37c9d6)}
 .ved-panel{flex:1;min-height:0;overflow:auto;padding:14px}
+/* Pin each tab's top-level "add" button to the bottom of the scrolling panel so it's reachable
+   without scrolling to the end of a long list (nested "add state" buttons are .add.sm, not direct
+   children, so they scroll normally). Opaque bg + a same-color fade so cards scroll out under it. */
+.ved-panel>.ved-btn.add{position:sticky;bottom:0;margin-top:10px;background:var(--card,#0c141b);box-shadow:0 -10px 10px -8px var(--card,#0c141b)}
 
 /* preview bar sits atop the dark diagram surface — kept dark to match the viewer, not the host theme */
 .ved-right .ved-preview-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid #1c2a35;background:#0e151c}
