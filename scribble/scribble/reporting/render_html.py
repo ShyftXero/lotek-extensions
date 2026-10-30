@@ -1696,12 +1696,47 @@ def _render_chain_step(s: ChainStepCtx) -> str:
     )
 
 
+# ext#248 chain-quality badge: the one line that records how a chain held up when an operator tried it.
+# Keyed off ``ChainCtx.status`` (``enums.ChainQuality`` value, "untested" for a legacy/NULL chain). The
+# label is human prose; the class drives the colour (worked=good → failed=critical, untested=muted).
+_CHAIN_STATUS_LABELS = {
+    "untested": "Untested",
+    "valid": "Valid",
+    "worked": "Worked",
+    "partially_worked": "Partially worked",
+    "failed": "Failed",
+}
+
+
+def _render_chain_status(status: str) -> str:
+    """The chain-quality badge (ext#248) — a coloured chip naming how the chain held up for THIS instance.
+    An unknown/empty status falls back to ``untested`` so the badge is always present and theme-styled."""
+    key = status if status in _CHAIN_STATUS_LABELS else "untested"
+    return (
+        f'<span class="chip chain-status chain-status-{key}" '
+        f'title="How this chain held up when it was tried">{_esc(_CHAIN_STATUS_LABELS[key])}</span>'
+    )
+
+
+def _render_chain_commands(commands: str) -> str:
+    """The copy-pasteable command appendix (ext#248): exploiteer's numbered reproduction block rendered
+    verbatim in a monospace box, so a reader can copy the exact commands beside the narrative. Returns
+    ``""`` for a prose-only chain (no commands) so it stays byte-identical to a #628 narrative."""
+    if not commands.strip():
+        return ""
+    return (
+        '<div class="chain-commands"><p class="chain-commands-label">Commands</p>'
+        f"<pre>{_esc(commands)}</pre></div>"
+    )
+
+
 def _render_chain_item(c: ChainCtx) -> str:
-    """One attack-chain narrative (#628): title, optional summary, chain-level provenance citations
-    (LOT-48/7), an ordered step list, and — when the chain carries its own ``embed_html`` snapshot — the
-    visual, drawn through the SAME ``_render_diagram_item`` the Attack Paths block uses (a chain embed is
-    un-numbered: ``figure_number`` stays None so it renders caption-only and does not disturb the
-    report-wide figure sequence)."""
+    """One imported/authored attack chain (#628, ext#248): title + a chain-quality badge, optional summary,
+    chain-level provenance citations (LOT-48/7), an ordered step list, the copy-pasteable command appendix
+    (ext#248), and — when the chain carries its own ``embed_html`` snapshot — the visual, drawn through the
+    SAME ``_render_diagram_item`` the Attack Paths block uses (a chain embed is un-numbered:
+    ``figure_number`` stays None so it renders caption-only and does not disturb the report-wide figure
+    sequence)."""
     summary = f'<p class="chain-summary">{_esc(c.summary)}</p>' if c.summary else ""
     cites = _chain_cites(c.source_finding_ids, c.rule_ids)
     provenance = (
@@ -1710,6 +1745,7 @@ def _render_chain_item(c: ChainCtx) -> str:
     )
     steps = "".join(_render_chain_step(s) for s in c.steps)
     steps_html = f'<ol class="chain-steps">{steps}</ol>' if steps else ""
+    commands = _render_chain_commands(c.commands)
     embed = (
         _render_diagram_item(
             DiagramCtx(id=c.id, diagram_ref=c.diagram_ref, caption=c.title, embed_html=c.embed_html)
@@ -1718,8 +1754,9 @@ def _render_chain_item(c: ChainCtx) -> str:
         else ""
     )
     return (
-        f'<article class="attack-chain"><h3 class="chain-h">{_esc(c.title)}</h3>'
-        f"{summary}{provenance}{steps_html}{embed}</article>"
+        f'<article class="attack-chain"><h3 class="chain-h">{_esc(c.title)}'
+        f" {_render_chain_status(c.status)}</h3>"
+        f"{summary}{provenance}{steps_html}{commands}{embed}</article>"
     )
 
 
@@ -2799,6 +2836,25 @@ a.chip.cwe:hover, a.chip.cve:hover { text-decoration: underline; }
 .chain-cite-label { font-size: 12px; color: var(--muted); }
 .chain-step-cite { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-left: 8px; }
 .chip.cite-finding, .chip.cite-rule { font-size: 11px; font-variant-numeric: tabular-nums; }
+/* ext#248 chain-quality badge beside the chain title, and the copy-pasteable command appendix. The badge
+   colours track the severity scale (worked=good → failed=critical); untested stays neutral/muted. */
+.chip.chain-status { font-size: 11px; font-weight: 700; vertical-align: middle; }
+.chip.chain-status-worked { color: #fff; background: var(--sev-low, #2e7d32); border-color: transparent; }
+.chip.chain-status-valid { color: #fff; background: var(--sev-medium, #b58b00); border-color: transparent; }
+.chip.chain-status-partially_worked {
+  color: #fff; background: var(--sev-high, #c15700); border-color: transparent;
+}
+.chip.chain-status-failed {
+  color: #fff; background: var(--sev-critical, #b42318); border-color: transparent;
+}
+.chip.chain-status-untested { color: var(--muted); }
+.chain-commands { margin: 8px 0 2px; }
+.chain-commands-label { font-size: 12px; color: var(--muted); font-weight: 650; margin: 0 0 4px; }
+.chain-commands pre {
+  margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.5;
+}
 .ref-list { margin: 0; padding-left: 18px; }
 .ref-list li { margin: 2px 0; }
 table.index td.ix-cwe, table.index td.ix-cve {

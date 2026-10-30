@@ -510,6 +510,16 @@ class LinkAttackChainRequest(BaseModel):
     include_in_report: bool | None = Field(
         None, description="Whether this chain appears in the rendered report (default true)."
     )
+    status: str | None = Field(
+        None,
+        description="Chain quality for THIS instance (ext#248): one of untested / valid / worked / "
+        "partially_worked / failed. Defaults to untested when omitted.",
+    )
+    commands: str | None = Field(
+        None,
+        description="Copy-pasteable command appendix (ext#248): exploiteer's numbered reproduction block, "
+        "stored verbatim and rendered monospace beside the narrative steps.",
+    )
     source_finding_ids: list[Any] | None = Field(
         None,
         description="Provenance: finding ids this chain was minted from (evidence-first: lets the chain "
@@ -522,4 +532,23 @@ class LinkAttackChainRequest(BaseModel):
     )
     idempotency_key: str | None = Field(
         None, description="Dedup key; a retry with the same key returns the original chain (200)."
+    )
+
+
+class UpdateAttackChainRequest(BaseModel):
+    """JSON body of ``POST /scribble/machine/engagements/{engagement_id}/chains/{chain_id}`` (write scope):
+    update an imported chain's quality verdict and/or report visibility AFTER it was minted (ext#248).
+
+    A chain is minted as a CANDIDATE (``untested``); an operator sets ``status`` once they have actually
+    tried it, and ``include_in_report`` is the non-destructive "keep this one out of the report" veto that
+    lets a caller publish some / none / all chains. Both fields are optional — an empty body is a no-op.
+    """
+
+    status: str | None = Field(
+        None,
+        description="Chain quality for THIS instance: untested / valid / worked / partially_worked / "
+        "failed. Omit to leave unchanged.",
+    )
+    include_in_report: bool | None = Field(
+        None, description="Whether this chain appears in the rendered report. Omit to leave unchanged."
     )

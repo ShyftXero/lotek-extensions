@@ -34,6 +34,7 @@ from scribble.db import Base, ScribbleUuid, SoftHostId, TimestampMixin
 from scribble.enums import (
     ArtifactKind,
     ArtifactPlacement,
+    ChainQuality,
     ChecklistKind,
     Confidence,
     FindingStatus,
@@ -781,6 +782,18 @@ class AttackChain(Base, TimestampMixin):
     embed_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    # CHAIN QUALITY FOR THIS INSTANCE (ext#248): an imported exploiteer chain is a CANDIDATE; this records
+    # what an operator found when they actually tried it (``enums.ChainQuality``: untested / valid / worked
+    # / partially_worked / failed). A ``String(32)`` like ``ReportBoard.status`` — not an ``Enum`` column —
+    # so the additive migration adds a plain nullable VARCHAR with no CHECK on a populated table; validated
+    # at the API boundary. NULL (a legacy chain) is read as ``untested``. ``failed`` is kept, not dropped:
+    # a chain that did not work is still evidence a reviewer wants.
+    status: Mapped[str | None] = mapped_column(String(32), default=ChainQuality.untested, nullable=True)
+    # COPY-PASTEABLE COMMAND APPENDIX (ext#248): exploiteer's numbered, copy-pastable reproduction block
+    # (one block per hop), stored BYTE-FOR-BYTE so the report can render a clean monospace appendix beside
+    # the narrative steps. Distinct from the prose ``steps``: this is the raw commands, not a walk-through.
+    # NULL / empty -> no appendix rendered (a legacy or prose-only chain is byte-identical to before).
+    commands: Mapped[str | None] = mapped_column(Text, nullable=True)
     # PROVENANCE (LOT-69): evidence-first - a chain cites the deterministic sources it was minted from, so a
     # reader can trace the narrative back to the findings/rules that produced it. Soft reference lists (JSON,
     # no FK): the ids are exploiteer/scan output, not necessarily rows in THIS scribble db, so a FK would

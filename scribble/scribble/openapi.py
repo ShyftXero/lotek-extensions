@@ -210,6 +210,12 @@ COMPONENTS["AttackChain"] = _obj(
         },
         "order_index": {"type": "integer"},
         "include_in_report": {"type": "boolean"},
+        "status": {"type": "string",
+                   "description": "Chain quality for THIS instance (ext#248): untested / valid / worked / "
+                   "partially_worked / failed."},
+        "has_commands": {"type": "boolean",
+                         "description": "Whether a copy-pasteable command appendix is stored (ext#248); its "
+                         "body is omitted from this response, like embed_html."},
         "source_finding_ids": {"type": ["array", "null"], "items": {"type": "string"},
                                "description": "Provenance: finding ids this chain was minted from "
                                "(evidence-first). Null when not supplied."},
@@ -404,6 +410,7 @@ _RESPONSES: dict[str, tuple[int, dict[str, Any]]] = {
     "scribble_delete_attack_path": (200, _obj({
         "deleted": _DELETED, "attack_path_id": _UUID, "engagement_id": _UUID})),
     "scribble_link_attack_chain": (201, _ref("AttackChain")),
+    "scribble_update_attack_chain": (200, _ref("AttackChain")),
     "scribble_machine_openapi": (200, _obj({}, description="This document.")),
 }
 
