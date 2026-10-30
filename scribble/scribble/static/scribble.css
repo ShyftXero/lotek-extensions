@@ -117,27 +117,10 @@ h1, h2, h3 { margin: 0 0 .6rem; }
    file through their `head_extra` block instead, which works in both contexts. Do NOT move them back,
    and do NOT link this stylesheet from a host page — it redefines `:root`, `body`, `.card`, `.btn` and
    the shell, so it would restyle lotek itself.
-   The `.cklib-*` library-page rules below are a DIFFERENT case, measured: their only consumer is
-   templates/scribble/checklists_library.html, which hardcodes `{% extends "scribble/base.html" %}`
-   instead of `scribble_base`, so that page renders in scribble's own shell — and therefore links this
-   stylesheet — even when scribble is mounted in lotek. They reach the host today. What they depend on is
-   that hardcode: the day that page is switched to `scribble_base` (a separate, filed defect), it starts
-   rendering inside the host's base, this stylesheet stops arriving, and these rules need the same
-   treatment the `.ckp-*` ones just got. `test_mounted_library_page_still_ships_its_cklib_rules` fails at
-   that moment so it cannot happen silently. */
-
-.cklib-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.cklib-showhidden { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
-.cklib-form { padding: 12px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
-.cklib-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.cklib-form-row input { flex: 1; min-width: 180px; }
-.cklib-form textarea { width: 100%; font-family: monospace; font-size: 12px; }
-.cklib-form-actions { display: flex; gap: 8px; align-items: center; }
-.cklib-err { color: var(--danger); font-size: 12px; }
-.cklib-card { padding: 10px 12px; margin: 8px 0; }
-.cklib-card.is-hidden { opacity: .55; }
-.cklib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.cklib-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
-.cklib-count { margin-left: auto; font-size: 12px; }
-.cklib-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.cklib-act { padding: 2px 10px; font-size: 12px; text-decoration: none; }
+   The `.cklib-*` library-page rules used to live below, and reached a mounted host only because
+   templates/scribble/checklists_library.html hardcoded `{% extends "scribble/base.html" %}` — rendering
+   that page in scribble's OWN shell and dragging this stylesheet along. ext#79 switched that page to
+   `scribble_base` (so it renders in the host's shell like every other scribble page), which drops this
+   stylesheet from it — the same break ext#44 hit on the coverage panel. So the `.cklib-*` rules moved to
+   static/checklists_library.css, which the page now links through its `head_extra`, exactly like the
+   panel's. */
