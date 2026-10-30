@@ -33,6 +33,7 @@ Blocks (keys dispatched in ``render_html._render_block_by_key``):
                      engagement carries at least one, so a report with none is byte-identical to before.
 - ``methodology``  — the standing methodology description + coverage / compliance checklists.
 - ``evidence``     — appendix of ENGAGEMENT-level evidence (artifacts with no ``finding_id``).
+- ``host_appendix`` — optional comprehensive appendix of every host identified in a finding (ext#254).
 - ``activity_log`` — optional activity appendix.
 
 ``cover`` and ``toc`` are ``display: none`` on screen and shown only in ``@media print``: on screen the
@@ -67,6 +68,7 @@ BLOCK_KEYS: tuple[str, ...] = (
     "strategic",
     "methodology",
     "evidence",
+    "host_appendix",
     "activity_log",
 )
 
@@ -85,6 +87,7 @@ BLOCK_LABELS: dict[str, str] = {
     "strategic": "Strategic Recommendations",
     "methodology": "Methodology",
     "evidence": "Evidence Appendix",
+    "host_appendix": "Host Appendix",
     "activity_log": "Activity Log",
 }
 assert set(BLOCK_LABELS) == set(BLOCK_KEYS), "BLOCK_LABELS must label exactly BLOCK_KEYS"
@@ -154,8 +157,12 @@ def list_layouts() -> list[ReportLayout]:
 # the opt-in ``activity_log`` appendix (off by default keeps today's output — no shipped layout referenced
 # it). Ordered = _STANDARD_BLOCKS then activity_log last; asserted to cover the whole vocabulary so adding a
 # BLOCK_KEY forces placing it here.
-DEFAULT_SECTION_ORDER: tuple[str, ...] = (*_STANDARD_BLOCKS, "activity_log")
-_DEFAULT_DISABLED: frozenset[str] = frozenset({"activity_log"})
+# ``host_appendix`` sits with ``activity_log`` at the very end: both are opt-in APPENDICES off by default
+# (ext#254 — the operator was unsure they wanted it, so turning it on is a per-report choice, and a report
+# that leaves it off is byte-identical to before this block existed). ``methodology`` stays where it is,
+# before the appendices — its placement, like every block's, is the operator's to move via section_order.
+DEFAULT_SECTION_ORDER: tuple[str, ...] = (*_STANDARD_BLOCKS, "host_appendix", "activity_log")
+_DEFAULT_DISABLED: frozenset[str] = frozenset({"host_appendix", "activity_log"})
 assert set(DEFAULT_SECTION_ORDER) == set(BLOCK_KEYS), "DEFAULT_SECTION_ORDER must cover BLOCK_KEYS"
 
 

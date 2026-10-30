@@ -1109,6 +1109,38 @@ def _append_rollups(doc, ctx: ReportContext) -> None:
         )
 
 
+def _append_host_appendix(doc, ctx: ReportContext) -> None:
+    """Comprehensive Host Appendix (ext#254) — the docx mirror of render_html._render_host_appendix: one
+    host-sorted row per host identified in a finding. OPT-IN (``host_appendix`` block, off by default);
+    empty (no-op) when the grouping seam returned nothing, so a report with it off is unchanged. Reuses
+    ``ctx.findings_by_host`` (the same core bucketer the rollup/board use) so the surfaces can't drift."""
+    if not ctx.findings_by_host:
+        return
+    from scribble.reporting.render_html import _SEV_LABELS, _natural_key
+
+    hosts = sorted(ctx.findings_by_host, key=lambda b: _natural_key(b.key))
+    doc.add_heading("Host Appendix", level=1)
+    doc.add_paragraph(
+        "Every host identified during this engagement, in host order — with its worst-severity finding, "
+        "how many findings it carries, and the vulnerabilities and CVEs recorded against it. Full details "
+        "are in the findings themselves."
+    )
+    t = doc.add_table(rows=1, cols=5)
+    try:
+        t.style = "Table Grid"
+    except Exception:
+        pass
+    for i, h in enumerate(("Host", "Severity", "Findings", "Vulnerabilities", "CVEs")):
+        t.rows[0].cells[i].paragraphs[0].add_run(h).bold = True
+    for b in hosts:
+        cells = t.add_row().cells
+        cells[0].text = _xml_safe(b.key)
+        cells[1].text = _xml_safe(_SEV_LABELS.get(b.severity, b.severity))
+        cells[2].text = str(b.count)
+        cells[3].text = _xml_safe(", ".join(sorted({it.label for it in b.items})) or "—")
+        cells[4].text = _xml_safe(", ".join(b.cves) or "—")
+
+
 def _append_activity_appendix(doc, ctx: ReportContext) -> None:
     """Optional engagement activity trail (lotek#442) — the docx mirror of render_html._render_activity_
     appendix. OFF by default (the ``activity_log`` block is opt-in); empty (no-op) when there is no
@@ -1411,6 +1443,7 @@ def render_report_docx(
     # the DOCX splits authoring across two appenders, unlike the HTML which folds checklists in).
     _section("methodology", lambda: (_append_methodology(doc, ctx), _append_checklists(doc, ctx)))
     _section("evidence", lambda: _append_evidence_appendix(doc, ctx, artifact_bytes=artifact_bytes))
+    _section("host_appendix", lambda: _append_host_appendix(doc, ctx))  # ext#254, opt-in host inventory
     _section("activity_log", lambda: _append_activity_appendix(doc, ctx))  # opt-in audit trail
 
     _reorder_sections(doc, ctx.section_order)
