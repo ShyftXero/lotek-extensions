@@ -148,7 +148,8 @@ def register(api_bp, bp) -> None:
             template_names = {t.id: t.name for t in templates}
             mappings = [
                 {"id": m.id, "source": m.source, "title_pattern": m.title_pattern,
-                 "dedupe_prefix": m.dedupe_prefix, "template_id": m.template_id,
+                 "dedupe_prefix": m.dedupe_prefix, "tag": m.tag, "cwe_id": m.cwe_id,
+                 "template_id": m.template_id,
                  "template_name": template_names.get(m.template_id, "(missing template)")}
                 for m in db.scalars(select(ScribbleVulnMap).order_by(ScribbleVulnMap.id)).all()
             ]
