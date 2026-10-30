@@ -145,6 +145,19 @@ def test_library_filter_by_tag(client, session_factory):
     assert b"zzTag Other Finding" not in resp.data
 
 
+def test_library_uses_core_datatable_widget(client, session_factory):
+    # The vuln library must render through the core DataTable widget (data-dt) the rest of the app
+    # uses for sort/page/filter, and severity must carry a numeric rank so it sorts crit>…>info,
+    # not alphabetically (issue #252).
+    with session_factory() as db:
+        _make_template(db, name="zzDtWidget", default_severity=Severity.critical)
+    resp = client.get("/scribble/library")
+    assert resp.status_code == 200
+    assert b"data-dt" in resp.data
+    # critical -> rank 0 (see _sevrank in library.html)
+    assert b'data-sort-value="0"' in resp.data
+
+
 def test_library_excludes_inactive_by_default_and_toggle_shows_them(client, session_factory):
     with session_factory() as db:
         _make_template(db, name="zzInactive One", active=False)
