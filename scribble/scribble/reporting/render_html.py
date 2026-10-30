@@ -892,11 +892,17 @@ def _render_header(
     # Server-side download links (gotenberg PDF + DOCX), only when the LIVE preview route supplies the
     # export base url — the exported deliverable itself passes none, so a downloaded file carries no
     # dead app links. `no-print` via the `.topbar` wrapper, so they never reach the PDF/print.
+    #
+    # The controlled render IS the deliverable (ext#253): the server PDF goes through docx -> Gotenberg/
+    # LibreOffice, which gives real paged-media TOC page numbers and embedded report fonts that the
+    # browser's print-to-PDF cannot (Chromium does not implement `target-counter`). So the ⬇ PDF button
+    # is the PRIMARY call to action and the editable ⬇ DOCX its companion; browser ⎙ Print is demoted to
+    # a ghost screen-convenience below, never the deliverable path.
     export_html = ""
     if export_url:
         base = _esc(export_url)
         export_html = (
-            f'<a class="btn" data-export href="{base}?format=pdf">⬇ PDF</a>'
+            f'<a class="btn primary" data-export href="{base}?format=pdf">⬇ PDF</a>'
             f'<a class="btn" data-export href="{base}?format=docx">⬇ DOCX</a>'
         )
 
@@ -906,10 +912,12 @@ def _render_header(
         f"{back_html}"
         f"{section_nav}"
         f'<div class="tb-actions">{switcher}'
+        f"{export_html}"
         '<button class="btn ghost" type="button" data-action="expand-all">Expand all</button>'
         '<button class="btn ghost" type="button" data-action="collapse-all">Collapse all</button>'
-        '<button class="btn primary" type="button" data-action="print">⎙ Print</button>'
-        f"{export_html}"
+        '<button class="btn ghost" type="button" data-action="print" '
+        'title="Quick browser print of this page. The ⬇ PDF above is the controlled deliverable.">'
+        '⎙ Print view</button>'
         "</div></div></div>"
     )
     # The Theme's Mark, if it has one and it survived `marks.resolve_mark`. Placed in the masthead
