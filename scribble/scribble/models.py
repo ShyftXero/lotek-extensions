@@ -88,6 +88,28 @@ class ReportBoard(Base, TimestampMixin):
     """One assessment container. Many per client, concurrent (incl. same client)."""
 
     __tablename__ = "scribble_report_boards"
+    # A report board is 1:1 with a CORE engagement (lotek#914): two "TeamsPlus" boards on one core
+    # engagement is the prod outage this prevents. ``api_pat.scribble_create_engagement``'s
+    # resolve-or-create leans on it, and a machine caller racing the UI's create path is exactly the
+    # defect -- a Python check cannot close that window, only the database can, so the rule lives here.
+    #
+    # PARTIAL, on non-null ``core_engagement_id`` only: a standalone board carries NULL there and many
+    # share a database, so a total unique index would refuse them. (Both backends treat NULL keys as
+    # distinct in a UNIQUE index anyway -- the WHERE is about index size and stating the rule out loud.)
+    #
+    # Declared on the MODEL, not only in the alembic revision that builds it on existing databases
+    # (d1e2f3a4b5c6): ``db.run_migrations`` builds a FRESH database with ``Base.metadata.create_all``
+    # and stamps head WITHOUT replaying the chain, so a migration-only index is missing from every new
+    # deployment and every unit test (ext#259). Same reasoning as ``BoardFinding.__table_args__``.
+    __table_args__ = (
+        Index(
+            "uq_scribble_report_board_core_engagement",
+            "core_engagement_id",
+            unique=True,
+            postgresql_where=text("core_engagement_id IS NOT NULL"),
+            sqlite_where=text("core_engagement_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(ScribbleUuid, primary_key=True, default=uuid.uuid7)
     # Soft reference, NOT a foreign key (docs/LOTEK_ADOPTION.md §3.1): may point at ``scribble_clients``
@@ -123,9 +145,10 @@ class ReportBoard(Base, TimestampMixin):
     # (a UUIDv7 in Lotek v2, a sequential int on older/standalone hosts) -- lets a PAT caller that only
     # holds the core id address this scribble engagement without first discovering its own integer PK.
     # No FK (same soft-ref pattern as ``client_id``/``owner_id`` above): the host may not even be Lotek.
-    # ``index=True``, NOT ``unique=True`` -- ``scribble.db.create_all``'s additive path can retrofit an
-    # index on a pre-existing table but cannot retrofit a UNIQUE constraint; duplicates are prevented
-    # only by the single-writer assumption at create time (see ``_resolve_engagement`` in api_pat.py).
+    # ``index=True`` here is the plain lookup index; the 1:1 UNIQUE rule is the partial
+    # ``uq_scribble_report_board_core_engagement`` in ``__table_args__`` above (ext#259). On a
+    # PRE-existing table, ``scribble.db.create_all``'s additive path can retrofit the plain index but
+    # not the UNIQUE one -- the alembic revision d1e2f3a4b5c6 does that for existing deployments.
     core_engagement_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True, index=True)
     distribution_list: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(128))
@@ -365,7 +388,7 @@ class BoardFinding(Base, TimestampMixin):
     # (a1b7c3e05d94): ``db.run_migrations`` builds a FRESH database with ``Base.metadata.create_all`` and
     # stamps head WITHOUT replaying the chain, so a migration-only index would be missing from every new
     # deployment and every unit test. Its sibling ``uq_scribble_report_board_core_engagement`` is
-    # migration-only for exactly that reason and is absent on fresh databases -- do not copy that.
+    # declared the same way on ``ReportBoard.__table_args__`` for exactly that reason (ext#259).
     __table_args__ = (
         Index(
             PROMOTE_DEDUP_INDEX,
