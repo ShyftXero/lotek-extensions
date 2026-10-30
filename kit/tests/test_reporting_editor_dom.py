@@ -382,3 +382,28 @@ def test_a_data_href_is_refused(page, href):
     got = page.evaluate(_LINKS, _link_doc(_text("shot", [{"type": "link", "attrs": {"href": href}}])))
     assert got["links"] == []
     assert got["text"] == "shot"
+
+
+def test_dochandle_routes_autosave_to_the_seam_else_legacy(page):
+    """Unified seam (ext#321): a doc handle sends autosave/load to /_kit/autosave with a {kind,id,block,doc}
+    body; WITHOUT a handle the finding editor keeps its exact legacy apiBase/findings route + raw-doc body
+    (back-compat, so the live finding editor is unchanged)."""
+    got = page.evaluate(
+        """() => {
+      var ct = LotekReportingEditor._internal.contentTarget;
+      var seam = ct({ docHandle: { kind: 'engagement_prose', id: 'E1', block: 'methodology' } });
+      var legacy = ct({ findingId: 'F9', block: 'description', apiBase: '/scribble/api' });
+      var none = ct({});
+      return {
+        seamUrl: seam.saveUrl, seamBody: seam.saveBody({ x: 1 }), seamLoad: seam.loadUrl,
+        legacyUrl: legacy.saveUrl, legacyBody: legacy.saveBody({ x: 1 }),
+        none: none,
+      };
+    }"""
+    )
+    assert got["seamUrl"] == "/_kit/autosave"
+    assert got["seamBody"] == {"kind": "engagement_prose", "id": "E1", "block": "methodology", "doc": {"x": 1}}
+    assert "/_kit/autosave?kind=engagement_prose&id=E1&block=methodology" in got["seamLoad"]
+    assert got["legacyUrl"] == "/scribble/api/findings/F9/blocks/description"
+    assert got["legacyBody"] == {"x": 1}
+    assert got["none"] is None
