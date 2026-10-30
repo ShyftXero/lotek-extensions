@@ -28,10 +28,11 @@ from typing import Any
 from flask import jsonify, request
 
 from scribble.artifacts_api import _as_uuid  # one shared body-id parser (lotek#335)
+from scribble.authz import can_view_engagement
 from scribble.content import schema
 from scribble.content.render_html import render_block
 from scribble.deps import current_actor, get_config, open_session
-from scribble.models import BoardFinding
+from scribble.models import BoardFinding, ReportBoard
 
 _REGISTERED = False
 
@@ -92,28 +93,38 @@ def load_finding_block(finding_id: Any, block: str) -> tuple[Any, str] | None:
 
 
 def authorize_finding(actor: Any, finding_id: Any) -> bool:
-    """The mandatory tenancy gate for the seam's ``finding`` kind. Fail-closed.
+    """The mandatory CLIENT-TENANCY gate for the seam's ``finding`` kind. Fail-closed.
 
-    Scribble engagements are TEAM-SHARED, not per-user tenant-partitioned — ``deps.current_actor_id``
-    is explicit that ownership is "NEVER an access gate", so there is no per-finding foreign-tenant to
-    refuse WITHIN scribble. The access model the surface already relies on is: a logged-in host actor
-    (the core gate carves ``/_kit/autosave`` out of the public path and enforces the write ROLE before
-    the request reaches the seam), acting on a finding that exists. This owes only that: an actor is
-    present AND the finding resolves. No actor, a non-id, or no such finding -> refuse (the seam answers
-    403 — it does not distinguish "forbidden" from "no such finding", which is the right fail-closed
-    posture for a generic write endpoint).
+    The legacy ``/findings/<id>/blocks`` route is safe only because scribble's blueprint-wide
+    ``before_request`` gate (``scribble.authz._gate``) resolves its ``<uuid:finding_id>`` view-arg to the
+    finding's engagement and runs ``can_view_engagement`` (client tenancy — ``can_view_client``) before it
+    runs. The seam is mounted by CORE on its OWN blueprint, and the finding id rides in the JSON BODY, not
+    the view args, so that gate structurally cannot reach it — exactly the gap
+    ``artifacts_api.create_artifact`` closes by calling ``can_view_engagement`` directly (authz.py).
+    Without this, any logged-in actor could read/overwrite ANOTHER client's finding via
+    ``/_kit/autosave``. So this reuses the SAME predicate (one home), not a copy.
 
-    The ``actor`` the seam hands us IS the host's current user (core mounts it as ``g.current_user``);
-    we fall back to scribble's own ``current_actor()`` — the SAME injected hook — so the gate holds even
-    if a future mounter passes nothing.
+    (Ownership — ``owner_id`` — is attribution only and never a gate; CLIENT tenancy is. The two are
+    distinct axes; this gates the latter. Standalone scribble with no host mounted degrades to allow, like
+    every other ``can_view_*`` caller.)
+
+    The ``actor`` the seam hands us IS the host's current user (core mounts it as ``g.current_user``); we
+    fall back to scribble's own ``current_actor()`` — the SAME injected hook — so the gate holds even if a
+    future mounter passes nothing. No actor, a non-id, no such finding, or a foreign-tenant finding ->
+    refuse (the seam answers 403; it does not distinguish those, the right fail-closed posture).
     """
-    if actor is None and current_actor() is None:
+    resolved = actor if actor is not None else current_actor()
+    if resolved is None:
         return False
     fid = _as_uuid(finding_id)
     if fid is None:
         return False
     with open_session() as db:
-        return db.get(BoardFinding, fid) is not None
+        finding = db.get(BoardFinding, fid)
+        if finding is None:
+            return False
+        engagement = db.get(ReportBoard, finding.engagement_id)
+        return engagement is not None and can_view_engagement(engagement, resolved)
 
 
 def register(api_bp, bp) -> None:

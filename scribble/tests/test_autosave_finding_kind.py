@@ -3,66 +3,44 @@
 ``scribble.autosave_api`` now exposes three one-home functions — ``save_finding_block`` /
 ``load_finding_block`` / ``authorize_finding`` — that BOTH the legacy ``/findings/<id>/blocks`` route AND
 the unified-autosave ``finding`` kind call, so a finding block has a single writer (the drift this seam
-kills). The authz gate is mandatory and fail-closed; this pins it.
+kills).
+
+The legacy route is protected by scribble's blueprint-wide ``before_request`` tenancy gate
+(``authz._gate`` → ``can_view_engagement``). The seam is on CORE's own blueprint with the id in the BODY,
+so that gate can't reach it — the kind's ``authorize`` is the ONLY tenancy gate, so it MUST re-run
+``can_view_engagement`` (mirroring ``artifacts_api.create_artifact``). These tests pin that, including the
+INV-TENANCY make-or-break case: a foreign-client actor is refused.
 
 Two layers:
-  * ``TestOneHome`` — the extracted functions directly, in scribble's own env (no kit needed). This is the
-    INV-TENANCY check for the finding surface: authorize is True only for a logged-in actor on an existing
-    finding, and save/load round-trip + report absence as None.
-  * ``TestSeam`` — the SAME functions driven THROUGH the real ``/_kit/autosave`` endpoint + the register()
-    wiring. Needs ``lotek_kit`` installed alongside scribble (as in core/prod); skipped in a bare scribble
-    checkout.
+  * ``TestOneHome`` — the extracted functions directly (no kit needed): round-trip + the authz gate,
+    foreign-tenant included.
+  * ``TestSeam`` — the SAME functions through the real ``/_kit/autosave`` endpoint + the register() wiring,
+    ``importorskip``'d on ``lotek_kit`` (runs in core/prod, skipped in a bare scribble checkout).
 """
 from __future__ import annotations
 
-import types
 import uuid
 
 import pytest
-from flask import Flask
-from sqlalchemy import create_engine
 
-import scribble
 from scribble import autosave_api
 from scribble.models import BoardFinding, ReportBoard
-from scribble.seed import seed_defaults
+
+# conftest.py provides: app, session_factory, stub_host (+ StubUser/_StubRole for the actor shapes).
+from tests.conftest import StubUser, _StubRole
 
 SAMPLE_DOC = {
     "type": "doc",
     "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Finding body."}]}],
 }
 
-
-class _Actor:
-    """Stand-in for the host's ``g.current_user`` — any non-None object is a logged-in actor."""
-
-    id = "u1"
-    username = "operator"
+OWN_CLIENT = 555
+FOREIGN_CLIENT = 777
 
 
-@pytest.fixture
-def app(tmp_path):
-    flask_app = Flask(__name__)
-    flask_app.config["SECRET_KEY"] = "test"
-    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", future=True)
-    cfg = scribble.register(
-        flask_app, engine, instance_path=str(tmp_path), base_template="scribble/base.html"
-    )
-    with cfg.session_factory() as session:
-        seed_defaults(session)
-        session.commit()
-    return flask_app
-
-
-@pytest.fixture
-def session_factory(app):
-    return app.extensions["scribble"].session_factory
-
-
-@pytest.fixture
-def finding_id(session_factory) -> str:
+def _make_finding(session_factory, client_id: int) -> str:
     with session_factory() as db:
-        engagement = ReportBoard(name="Seam Test", company_name="Acme")
+        engagement = ReportBoard(name="Seam Test", company_name="Acme", client_id=client_id)
         finding = BoardFinding(engagement=engagement, title="XSS", content_json={}, content_html={})
         db.add(engagement)
         db.add(finding)
@@ -70,19 +48,19 @@ def finding_id(session_factory) -> str:
         return str(finding.id)
 
 
-# ── the one-home functions, directly (the new logic; no kit dependency) ────────────────────────────
+# ── the one-home functions, directly ───────────────────────────────────────────────────────────────
 
 
 class TestOneHome:
-    def test_save_then_load_round_trips(self, app, session_factory, finding_id):
+    def test_save_then_load_round_trips(self, app, session_factory):
+        fid = _make_finding(session_factory, OWN_CLIENT)
         with app.app_context():
-            html = autosave_api.save_finding_block(finding_id, "description", SAMPLE_DOC)
+            html = autosave_api.save_finding_block(fid, "description", SAMPLE_DOC)
             assert html and "Finding body" in html
-            doc, cached = autosave_api.load_finding_block(finding_id, "description")
+            doc, cached = autosave_api.load_finding_block(fid, "description")
             assert doc == SAMPLE_DOC and cached == html
-        # Really persisted on the row (not just echoed).
         with session_factory() as db:
-            assert db.get(BoardFinding, uuid.UUID(finding_id)).content_json["description"] == SAMPLE_DOC
+            assert db.get(BoardFinding, uuid.UUID(fid)).content_json["description"] == SAMPLE_DOC
 
     def test_missing_finding_is_none(self, app):
         with app.app_context():
@@ -94,18 +72,32 @@ class TestOneHome:
             assert autosave_api.save_finding_block("not-a-uuid", "description", SAMPLE_DOC) is None
             assert autosave_api.load_finding_block("not-a-uuid", "description") is None
 
-    def test_authorize_allows_logged_in_actor_on_existing_finding(self, app, finding_id):
+    def test_authorize_allows_actor_who_can_view_the_client(self, app, session_factory, stub_host):
+        # Default stub actor is an admin → can_view_client True for any client.
+        fid = _make_finding(session_factory, FOREIGN_CLIENT)
         with app.app_context():
-            assert autosave_api.authorize_finding(_Actor(), finding_id) is True
+            assert autosave_api.authorize_finding(stub_host.current_user, fid) is True
 
-    def test_authorize_refuses_anonymous(self, app, finding_id):
+    def test_authorize_refuses_foreign_tenant(self, app, session_factory, stub_host):
+        # The INV-TENANCY make-or-break: a non-admin actor who can see OWN_CLIENT but not FOREIGN_CLIENT.
+        stub_host.current_user = StubUser(id=2, username="bob", role=_StubRole("operator"))
+        stub_host.viewable_client_ids = {OWN_CLIENT}
+        own = _make_finding(session_factory, OWN_CLIENT)
+        foreign = _make_finding(session_factory, FOREIGN_CLIENT)
         with app.app_context():
-            assert autosave_api.authorize_finding(None, finding_id) is False
+            assert autosave_api.authorize_finding(stub_host.current_user, own) is True
+            assert autosave_api.authorize_finding(stub_host.current_user, foreign) is False
 
-    def test_authorize_refuses_missing_or_bad_id(self, app):
+    def test_authorize_refuses_anonymous(self, app, session_factory, stub_host):
+        stub_host.current_user = None
+        fid = _make_finding(session_factory, OWN_CLIENT)
         with app.app_context():
-            assert autosave_api.authorize_finding(_Actor(), str(uuid.uuid4())) is False
-            assert autosave_api.authorize_finding(_Actor(), "not-a-uuid") is False
+            assert autosave_api.authorize_finding(None, fid) is False
+
+    def test_authorize_refuses_missing_or_bad_id(self, app, stub_host):
+        with app.app_context():
+            assert autosave_api.authorize_finding(stub_host.current_user, str(uuid.uuid4())) is False
+            assert autosave_api.authorize_finding(stub_host.current_user, "not-a-uuid") is False
 
 
 # ── the SAME functions through the real seam endpoint + the register() wiring ──────────────────────
@@ -122,15 +114,9 @@ class TestSeam:
         return pytest.importorskip("lotek_kit.autosave")
 
     @pytest.fixture
-    def actor_holder(self):
-        return types.SimpleNamespace(actor=_Actor())
-
-    @pytest.fixture
-    def seam_app(self, app, autosave, actor_holder):
-        # Mount the seam exactly as core does (actor = the host's current user). scribble.register()
-        # already wired the finding kind; re-assert so a sibling module that cleared the process-global
-        # registry can't make this flaky.
-        autosave.ensure_autosave_registered(app, actor=lambda: actor_holder.actor)
+    def client(self, app, autosave, stub_host):
+        # Mount the seam exactly as core does: the actor is the host's current user (the stub we control).
+        autosave.ensure_autosave_registered(app, actor=lambda: stub_host.current_user)
         if "finding" not in autosave.registered_kinds():
             autosave.register_autosave_kind(
                 "finding",
@@ -138,45 +124,51 @@ class TestSeam:
                 save=autosave_api.save_finding_block,
                 authorize=autosave_api.authorize_finding,
             )
-        return app
-
-    @pytest.fixture
-    def client(self, seam_app):
-        return seam_app.test_client()
+        return app.test_client()
 
     def _save(self, client, kind, cid, block="description", doc=SAMPLE_DOC):
         return client.post(self.SEAM, json={"kind": kind, "id": cid, "block": block, "doc": doc})
 
-    def test_authorized_round_trip_through_the_seam(self, client, finding_id):
-        r = self._save(client, "finding", finding_id)
+    def test_authorized_round_trip_through_the_seam(self, client, session_factory):
+        fid = _make_finding(session_factory, OWN_CLIENT)  # admin actor → authorized
+        r = self._save(client, "finding", fid)
         assert r.status_code == 200 and "Finding body" in r.get_json()["html"]
-        r = client.get(self.SEAM, query_string={"kind": "finding", "id": finding_id, "block": "description"})
+        r = client.get(self.SEAM, query_string={"kind": "finding", "id": fid, "block": "description"})
         assert r.status_code == 200 and r.get_json()["doc"] == SAMPLE_DOC
 
-    def test_anonymous_actor_refused_403_and_never_saves(
-        self, client, session_factory, finding_id, actor_holder
-    ):
-        actor_holder.actor = None
-        assert self._save(client, "finding", finding_id).status_code == 403
+    def test_foreign_tenant_refused_403_own_client_200(self, client, session_factory, stub_host):
+        # INV-TENANCY through the real endpoint: the gap a cross-blueprint seam reopens.
+        stub_host.current_user = StubUser(id=2, username="bob", role=_StubRole("operator"))
+        stub_host.viewable_client_ids = {OWN_CLIENT}
+        own = _make_finding(session_factory, OWN_CLIENT)
+        foreign = _make_finding(session_factory, FOREIGN_CLIENT)
+        assert self._save(client, "finding", own).status_code == 200
+        assert self._save(client, "finding", foreign).status_code == 403
+        # the refused write never reached save
         with session_factory() as db:
-            assert db.get(BoardFinding, uuid.UUID(finding_id)).content_json == {}
+            assert db.get(BoardFinding, uuid.UUID(foreign)).content_json == {}
 
-    def test_unknown_kind_404(self, client, finding_id):
-        assert self._save(client, "nope", finding_id).status_code == 404
+    def test_anonymous_actor_refused_403(self, client, session_factory, stub_host):
+        stub_host.current_user = None
+        fid = _make_finding(session_factory, OWN_CLIENT)
+        assert self._save(client, "finding", fid).status_code == 403
+
+    def test_unknown_kind_404(self, client, session_factory):
+        fid = _make_finding(session_factory, OWN_CLIENT)
+        assert self._save(client, "nope", fid).status_code == 404
 
     def test_missing_finding_refused(self, client):
         assert self._save(client, "finding", str(uuid.uuid4())).status_code == 403
 
-    def test_seam_and_legacy_are_one_writer(self, client, finding_id):
+    def test_seam_and_legacy_are_one_writer(self, client, session_factory):
+        fid = _make_finding(session_factory, OWN_CLIENT)  # admin actor passes both gates
         # Write via the seam, read through the legacy route — and vice-versa: same bytes either way.
-        assert client.post(
-            self.SEAM, json={"kind": "finding", "id": finding_id, "block": "remediation", "doc": SAMPLE_DOC}
-        ).status_code == 200
-        r = client.get(f"{self.LEGACY}/{finding_id}/blocks/remediation")
+        assert self._save(client, "finding", fid, block="remediation").status_code == 200
+        r = client.get(f"{self.LEGACY}/{fid}/blocks/remediation")
         assert r.status_code == 200 and r.get_json()["doc"] == SAMPLE_DOC
 
-        assert client.post(f"{self.LEGACY}/{finding_id}/blocks/details", json=SAMPLE_DOC).status_code == 200
-        r = client.get(self.SEAM, query_string={"kind": "finding", "id": finding_id, "block": "details"})
+        assert client.post(f"{self.LEGACY}/{fid}/blocks/details", json=SAMPLE_DOC).status_code == 200
+        r = client.get(self.SEAM, query_string={"kind": "finding", "id": fid, "block": "details"})
         assert r.status_code == 200 and r.get_json()["doc"] == SAMPLE_DOC
 
     def test_register_wires_exactly_the_finding_kind(self, autosave):
