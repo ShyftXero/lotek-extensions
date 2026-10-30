@@ -35,15 +35,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from scribble.enums import Confidence, Severity
-from scribble.models import BoardFinding
+from sqlalchemy.exc import IntegrityError
 
-# The title of the note an acknowledged promotion writes. Also the dedup key: re-acknowledging the
-# same job into the same engagement refreshes that one row rather than stacking another copy of it
-# (promote itself is idempotent -- a note that was not would make a retried call look like new
-# coverage problems). ``{job_id}`` is interpolated, so one engagement fed by three partially-assessed
-# jobs carries three distinct notes and a reader can tell which scan each one is about.
+from scribble.enums import Confidence, Severity
+from scribble.models import COVERAGE_NOTE_DEDUP_INDEX, BoardFinding
+
+# The title of the note an acknowledged promotion writes. ``{job_id}`` is interpolated, so one engagement
+# fed by three partially-assessed jobs carries three distinct notes and a reader can tell which scan each
+# one is about. It is NOT the dedup key, though it long read like one: the durable key is the
+# ``source_job_id`` column, enforced by ``uq_scribble_findings_engagement_job`` (ext#258) -- a rendered
+# title is not an identity, and an operator may legitimately author two findings sharing a title.
 COVERAGE_NOTE_TITLE = "Scan coverage limitation — job {job_id}"
+
+
+def is_coverage_note_dedup_conflict(exc: BaseException) -> bool:
+    """Is ``exc`` the ``(engagement_id, source_job_id)`` partial-unique index refusing a second note?
+
+    The twin of ``promote.is_promote_dedup_conflict`` for the coverage note (ext#258), and matched the
+    same way because the two backends name the violation differently and neither is structured: Postgres
+    quotes the INDEX, SQLite names the COLUMNS. Match both, and NOTHING else -- re-reading is only the
+    right answer for the one conflict we know how to resolve, and swallowing an unrelated ``IntegrityError``
+    would hide a real defect behind a silent refresh.
+    """
+    text = f"{getattr(exc, 'orig', None) or exc}"
+    return COVERAGE_NOTE_DEDUP_INDEX in text or (
+        "UNIQUE constraint failed" in text and "scribble_findings.source_job_id" in text
+    )
 
 # Wire/`error` code for the refusal. 409 Conflict, not 400: the request is well-formed and the caller
 # is authorized; the JOB is in a state that may not cross into a deliverable. A 400 would read as
@@ -238,30 +255,35 @@ def write_coverage_note(
     ``promote_job`` itself is idempotent and a note that stacked would make one retried call look like
     a worsening coverage picture.
 
-    🔴 That idempotence is SEQUENTIAL-retry idempotence, and still deliberately no stronger. The lookup
-    below reads ``engagement.findings`` and then inserts, so two CONCURRENT acknowledged promotions can
-    both see no matching row and write two notes.
+    Idempotent under CONCURRENCY now, not merely under sequential retry (ext#258). The identity it keys on
+    is ``source_job_id``, a real column, backed by ``uq_scribble_findings_engagement_job`` -- a
+    partial-unique index on ``(engagement_id, source_job_id)`` that the DATABASE enforces. The insert runs
+    inside a SAVEPOINT; if a concurrent acknowledged promotion committed its note first, this one's flush
+    is refused by the index, the savepoint rolls back (touching nothing the caller wrote before calling
+    in), ``engagement`` is re-read, and this refreshes the winner's note in place -- exactly what the
+    sequential path does. So two colliding acknowledgements leave ONE note, not two.
 
-    ext#257 closed the FINDINGS half of that race: ``uq_scribble_findings_engagement_source``, a
-    partial-unique index on ``(engagement_id, source_finding_id)``, now has the database refuse a
-    duplicate promotion, and ``promote.promote_job`` re-reads and reports the loser's rows as skipped.
-    This note is NOT covered by it -- the note descends from no scan finding, so its ``source_finding_id``
-    is NULL, and the index is partial precisely so that authored rows like this one stay legal.
-
-    Narrowed, then, but not gone: the note can still double when two acknowledged promotions collide. In
-    practice the retry usually swallows it, because the losing promotion re-reads ``engagement.findings``
-    before this function runs and then finds the winner's note -- but a job with ZERO promotable findings
-    has nothing to collide ON, so no retry fires and two notes can land. Closing that honestly needs a
-    durable per-(engagement, job) marker to key on: the title is a rendered string, not an identity, and
-    no column here holds the job id. Filed as its own defect (ext#258) rather than papered over with a
-    second title-shaped guess.
+    This replaces the old title-keyed read-then-write, which ext#257 could only narrow, not close: that
+    guard's ``uq_scribble_findings_engagement_source`` is partial on ``source_finding_id``, and the note
+    carries NULL there (it descends from no scan finding), so the database never saw the note's duplicate.
+    The title was never an identity either -- it is a rendered string, and an operator may legitimately
+    author two findings with the same title in one engagement -- which is why the fix is a column, not a
+    tighter title match.
     """
+    job_id = str(job_id)
     title = COVERAGE_NOTE_TITLE.format(job_id=job_id)
     from scribble.content.schema import doc_from_text  # local: avoids a content <-> models import cycle
 
     content = {"description": doc_from_text(coverage_note_body(job, job_id))}
 
-    existing = next((f for f in engagement.findings if f.title == title and f.group_id is None), None)
+    def _existing() -> BoardFinding | None:
+        # Keyed on the durable column, not the title: the title is a rendered string, and after the
+        # migration backfills it even legacy notes carry ``source_job_id``.
+        return next(
+            (f for f in engagement.findings if f.source_job_id == job_id and f.group_id is None), None
+        )
+
+    existing = _existing()
     if existing is not None:
         existing.content_json = content
         return existing
@@ -270,6 +292,7 @@ def write_coverage_note(
         engagement_id=engagement.id,
         group_id=None,
         title=title,
+        source_job_id=job_id,
         category="Scan coverage",
         severity=Severity.info,
         confidence=Confidence.high,  # we are certain about the GAP, whatever we lack about the scan
@@ -277,5 +300,21 @@ def write_coverage_note(
         created_by=actor_username,
         order_index=len([f for f in engagement.findings if f.group_id is None]),
     )
+    savepoint = db.begin_nested()
     db.add(note)
+    try:
+        db.flush()  # surfaces the uq_scribble_findings_engagement_job conflict HERE, inside the savepoint
+    except IntegrityError as exc:
+        savepoint.rollback()
+        if not is_coverage_note_dedup_conflict(exc):
+            raise
+        # A concurrent acknowledged promotion wrote the note first. Re-read and refresh ITS row -- the
+        # same answer the sequential path gives -- rather than letting the conflict 500 the loser.
+        db.expire(engagement)
+        winner = _existing()
+        if winner is None:  # pragma: no cover -- the index fired, so the winning row must be readable
+            raise
+        winner.content_json = content
+        return winner
+    savepoint.commit()
     return note
