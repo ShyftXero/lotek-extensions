@@ -6,11 +6,17 @@
 <meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
 <title>{% block title %}CREAM{% endblock %}</title>
 <style>
+  /* Standalone chrome: the host's theme tokens (--bg/--ink/--accent/--line/--card, set per
+     html[data-theme] in the host CSS) are absent here, so every var() falls back to CREAM's own dark
+     palette. Mounted, CREAM's base is not used (the host's is), so these fallbacks are the only values
+     that ever paint — the themed chrome lives in _ui.html, which IS injected into host pages. */
+  /* color-scheme only matters standalone (mounted, the host's <html> owns it); the fallback palette is
+     dark, so native widgets/scrollbars should match. */
   :root{color-scheme:dark}
-  html,body{margin:0;background:#0a0f14;color:#dfe9f0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
-  a{color:#37c9d6}
-  .cr-appbar{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid #1c2a35;background:#0e151c}
-  .cr-appbar .brand{font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#3ad29a}
+  html,body{margin:0;background:var(--bg,#0a0f14);color:var(--ink,#dfe9f0);font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+  a{color:var(--accent,#37c9d6)}
+  .cr-appbar{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line,#1c2a35);background:var(--card,#0e151c)}
+  .cr-appbar .brand{font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--accent,#3ad29a)}
   .cr-appbar .brand a{color:inherit;text-decoration:none}
   .cr-appbar nav{margin-left:auto;display:flex;gap:16px;font-size:13px}
 </style>

@@ -4,27 +4,31 @@
    when mounted in lotek the host's `base.html` is the parent, and anything CREAM needs on the page has
    to travel with the page itself. #}
 <style>
+  /* Chrome colours follow the HOST theme when mounted: the host CSS sets --bg/--bg2/--card/--ink/--muted/
+     --line/--accent/--accent-strong/--danger per html[data-theme], and each var() here falls back to
+     CREAM's own dark palette when those tokens are absent (standalone). This block IS injected into host
+     pages (see the note above), so these cr-* elements are what has to track light/dark/h4xor. */
   .cr-wrap{max-width:1180px;margin:0 auto;padding:24px 20px;width:100%}
   .cr-wrap.narrow{max-width:760px}
   .cr-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:18px}
   .cr-head h1{font-size:20px;margin:0 0 4px}
-  .cr-head p{color:#7f93a3;margin:0;font-size:13px;max-width:70ch}
+  .cr-head p{color:var(--muted,#7f93a3);margin:0;font-size:13px;max-width:70ch}
   .cr-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-  .cr-filters{display:flex;align-items:flex-end;gap:12px;margin:0 0 14px;font-size:13px;color:#7f93a3}
+  .cr-filters{display:flex;align-items:flex-end;gap:12px;margin:0 0 14px;font-size:13px;color:var(--muted,#7f93a3)}
   .cr-filters label{display:flex;flex-direction:column;gap:3px}
-  .cr-filters select{background:#0d1722;color:#dfe9f0;border:1px solid #24333f;border-radius:6px;
+  .cr-filters select{background:var(--bg2,#0d1722);color:var(--ink,#dfe9f0);border:1px solid var(--line,#24333f);border-radius:6px;
     padding:5px 8px;font:inherit}
-  .cr-trunc{color:#7f93a3;font-size:12px;margin:10px 0 0}
-  .cr-btn{display:inline-block;padding:7px 13px;border-radius:6px;border:1px solid #24333f;
-    background:#16222b;color:#dfe9f0;font-size:13px;cursor:pointer;text-decoration:none;line-height:1.3}
-  .cr-btn:hover{border-color:#37c9d6}
-  .cr-btn.primary{background:#0f766e;border-color:#0f766e;color:#fff}
-  .cr-btn.danger{border-color:#7f1d1d;color:#fca5a5}
+  .cr-trunc{color:var(--muted,#7f93a3);font-size:12px;margin:10px 0 0}
+  .cr-btn{display:inline-block;padding:7px 13px;border-radius:6px;border:1px solid var(--line,#24333f);
+    background:var(--bg2,#16222b);color:var(--ink,#dfe9f0);font-size:13px;cursor:pointer;text-decoration:none;line-height:1.3}
+  .cr-btn:hover{border-color:var(--accent,#37c9d6)}
+  .cr-btn.primary{background:var(--accent-strong,#0f766e);border-color:var(--accent-strong,#0f766e);color:#fff}
+  .cr-btn.danger{border-color:var(--danger,#7f1d1d);color:#fca5a5}
   .cr-btn[disabled]{opacity:.45;cursor:not-allowed}
   .cr-table{width:100%;border-collapse:collapse;font-size:13px}
-  .cr-table thead th{text-align:left;color:#7f93a3;border-bottom:1px solid #24333f;padding:8px 6px;
+  .cr-table thead th{text-align:left;color:var(--muted,#7f93a3);border-bottom:1px solid var(--line,#24333f);padding:8px 6px;
     font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
-  .cr-table td{padding:9px 6px;border-bottom:1px solid #16222b;vertical-align:top}
+  .cr-table td{padding:9px 6px;border-bottom:1px solid var(--line,#16222b);vertical-align:top}
   .cr-pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:10px;
     text-transform:uppercase;letter-spacing:.09em;background:#24333f;color:#b9cbd8}
   .cr-pill.draft{background:#78350f;color:#fde68a}
@@ -34,20 +38,20 @@
   .cr-pill.void{background:#7f1d1d;color:#fecaca}
   .cr-field{display:block;margin-bottom:12px}
   .cr-field > span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
-    color:#7f93a3;margin-bottom:4px}
+    color:var(--muted,#7f93a3);margin-bottom:4px}
   .cr-field input,.cr-field textarea,.cr-field select{width:100%;box-sizing:border-box;padding:7px 9px;
-    border-radius:6px;border:1px solid #24333f;background:#0e151c;color:#dfe9f0;font:inherit;font-size:13px}
+    border-radius:6px;border:1px solid var(--line,#24333f);background:var(--card,#0e151c);color:var(--ink,#dfe9f0);font:inherit;font-size:13px}
   .cr-field textarea{min-height:70px;resize:vertical}
   .cr-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
-  .cr-card{border:1px solid #1c2a35;border-radius:10px;padding:16px;margin-bottom:16px;background:#0e151c}
-  .cr-card > h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#7f93a3;
+  .cr-card{border:1px solid var(--line,#1c2a35);border-radius:10px;padding:16px;margin-bottom:16px;background:var(--card,#0e151c)}
+  .cr-card > h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted,#7f93a3);
     margin:0 0 12px}
-  .cr-note{font-size:12px;color:#7f93a3;margin:6px 0 0}
+  .cr-note{font-size:12px;color:var(--muted,#7f93a3);margin:6px 0 0}
   .cr-toast{position:fixed;right:18px;bottom:18px;padding:10px 15px;border-radius:8px;
-    background:#0f766e;color:#fff;font-size:13px;opacity:0;transform:translateY(8px);
+    background:var(--accent-strong,#0f766e);color:#fff;font-size:13px;opacity:0;transform:translateY(8px);
     transition:.18s;pointer-events:none;z-index:50;max-width:44ch}
   .cr-toast.show{opacity:1;transform:none}
-  .cr-toast.err{background:#7f1d1d}
+  .cr-toast.err{background:var(--danger,#7f1d1d)}
 </style>
 <div class="cr-toast" id="cr-toast"></div>
 <script>

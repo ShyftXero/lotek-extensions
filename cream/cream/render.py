@@ -22,7 +22,9 @@ PDF stays optional: with ``weasyprint`` installed :func:`render_document_pdf` re
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from html import escape
+from importlib.util import find_spec
 
 from cream.markup import plain, render_markup
 from cream.money import fmt
@@ -318,8 +320,15 @@ def render_document_pdf(view: DocumentView, *, name: str = "") -> bytes | None:
     ``<title>`` into the PDF's own metadata title, which is what a PDF reader shows in its window and its
     recent-files list.
     """
-    try:
-        from weasyprint import HTML  # type: ignore  # optional heavy native dep
-    except Exception:  # noqa: BLE001 - optional dependency; absence is expected, not an error
+    if not pdf_available():
         return None
+    from weasyprint import HTML  # type: ignore  # optional heavy native dep
     return HTML(string=render_document_html(view, standalone=True, name=name)).write_pdf()
+
+
+@lru_cache(maxsize=1)
+def pdf_available() -> bool:
+    """True iff the optional ``weasyprint`` dependency is importable — checked with ``find_spec`` so a
+    page can HIDE the PDF affordance instead of leading a button to the 503 the export route returns
+    without it. An install does not grow or lose the dependency at runtime, so the answer is cached."""
+    return find_spec("weasyprint") is not None

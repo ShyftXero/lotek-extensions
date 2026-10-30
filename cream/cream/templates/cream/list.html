@@ -64,8 +64,11 @@
         <td style="text-align:right">
           {% if d.editable and cream_can_write %}
             <a href="{{ url_for('cream.edit_document', doc_id=d.id) }}">Edit</a>
-          {% else %}
+          {% elif cream_pdf_available %}
             <a href="{{ url_for('cream.export_pdf', doc_id=d.id) }}">PDF</a>
+          {% else %}
+            {# No weasyprint — offer the export that works rather than a link that 503s. #}
+            <a href="{{ url_for('cream.export_html', doc_id=d.id) }}">HTML</a>
           {% endif %}
         </td>
       </tr>

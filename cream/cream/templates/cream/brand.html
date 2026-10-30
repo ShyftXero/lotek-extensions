@@ -32,7 +32,14 @@
   <div class="cr-card">
     <h2>House style</h2>
     <div class="cr-grid">
-      <label class="cr-field"><span>Accent colour</span><input type="color" data-b="accent_color"></label>
+      <label class="cr-field"><span>Accent colour</span>
+        <span style="display:flex;gap:8px;align-items:center">
+          {# The text field is the source of truth: the renderer accepts 3/6/8-hex AND CSS keywords
+             (render._COLOR_RE), so a <input type=color> alone (6-hex only) silently reset the rest on
+             load and overwrote them on save. The swatch is a convenience that only syncs for 6-hex. #}
+          <input type="color" id="accent-swatch" aria-label="Accent colour picker" style="width:44px;flex:none;padding:2px">
+          <input data-b="accent_color" id="accent-text" placeholder="#0f766e, teal, #0ff…" style="flex:1">
+        </span></label>
       <label class="cr-field"><span>Font stack</span><input data-b="font_stack"></label>
     </div>
     <label class="cr-field"><span>Logo (PNG / JPEG / GIF / WebP, ≤ 1 MB)</span>
@@ -76,12 +83,27 @@
   fields.forEach((el) => {
     const key = el.dataset.b;
     const value = state[key];
-    if (el.type === 'color') el.value = /^#[0-9a-fA-F]{6}$/.test(value || '') ? value : '#0f766e';
-    else el.value = (value === null || value === undefined) ? '' : value;
+    el.value = (value === null || value === undefined) ? '' : value;
     el.addEventListener('input', () => {
       state[key] = el.type === 'number' ? (el.value === '' ? 0 : Number(el.value)) : el.value;
     });
   });
+
+  // The accent swatch has no data-b (the text field above owns the value); wire it as a one-way
+  // convenience that sets the text field for the common 6-hex case and mirrors it back on load.
+  const accentText = document.getElementById('accent-text');
+  const accentSwatch = document.getElementById('accent-swatch');
+  if (accentText && accentSwatch) {
+    const syncSwatch = () => {
+      accentSwatch.value = /^#[0-9a-fA-F]{6}$/.test(accentText.value) ? accentText.value : '#0f766e';
+    };
+    syncSwatch();
+    accentSwatch.addEventListener('input', () => {
+      accentText.value = accentSwatch.value;
+      accentText.dispatchEvent(new Event('input'));  // run the generic handler so state updates
+    });
+    accentText.addEventListener('input', syncSwatch);
+  }
 
   function paintLogo() {
     const host = document.getElementById('logo-preview');
