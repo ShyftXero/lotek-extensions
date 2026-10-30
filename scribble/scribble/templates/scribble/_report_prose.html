@@ -1,6 +1,8 @@
-{# Editable standing prose (#Q4): per-report Methodology + Scope/limitations overrides. Empty box => the
-   generated standing text (Reset clears it). "Rephrase with AI" (only when the host provides an AI hook)
-   rewrites the draft for review before Save. Expects: engagement, ai_available. #}
+{# Editable standing prose (#Q4): per-report Methodology + Scope/limitations overrides. The editor is
+   PREFILLED with the generated standing text (ext#346 item 3) so an operator overrides from the real
+   baseline; saving it untouched stores NULL (the save path dedups against the default), and Reset clears
+   the box back to that NULL state. "Rephrase with AI" (only when the host provides an AI hook) rewrites
+   the draft for review before Save. Expects: engagement, ai_available, methodology_default, scope_default. #}
 <details class="card scribble-report-prose">
   <summary><strong>Report Prose</strong> <span class="muted">— methodology &amp; scope, editable per report</span></summary>
   <p class="muted">Edit the standing Methodology and Scope/limitations for <em>this</em> report; leave a box
@@ -11,7 +13,7 @@
     <div class="rp-field">
       <label for="rp-methodology"><strong>Methodology</strong></label>
       <textarea id="rp-methodology" name="methodology_text" rows="6" data-field="methodology"
-                placeholder="Leave empty to use the standard methodology text.">{{ engagement.methodology_text or '' }}</textarea>
+                placeholder="Leave empty to use the standard methodology text.">{{ engagement.methodology_text or methodology_default }}</textarea>
       <div class="rp-actions">
         <button type="button" class="btn btn-sm" data-reset="rp-methodology">Reset to standard</button>
         {% if ai_available %}
@@ -22,7 +24,7 @@
     <div class="rp-field">
       <label for="rp-scope"><strong>Scope &amp; limitations</strong></label>
       <textarea id="rp-scope" name="scope_limitations_text" rows="5" data-field="scope"
-                placeholder="Leave empty to use the standard scope/limitations statement.">{{ engagement.scope_limitations_text or '' }}</textarea>
+                placeholder="Leave empty to use the standard scope/limitations statement.">{{ engagement.scope_limitations_text or scope_default }}</textarea>
       <div class="rp-actions">
         <button type="button" class="btn btn-sm" data-reset="rp-scope">Reset to standard</button>
         {% if ai_available %}

@@ -1454,6 +1454,16 @@ def _render_checklist_compliance(cl) -> str:
 # scan job's findings had the document assert hand-validation of all forty of them. Describing the standard
 # method is honest and is what a Methodology section is for; asserting unrecorded work is neither, and no
 # operator control exists to remove it (the report-template registry is frozen data, not an editor).
+
+# The lead paragraph of the standing methodology prose. A module constant (not inline) so ext#346's
+# prose-override default (``scribble.prose.methodology_default_text``) prefills the editor with the SAME
+# lead the report renders, and the two can't drift.
+_METHODOLOGY_LEAD = (
+    "An assessment of this kind is conducted in the phases below, each feeding the next. This is a "
+    "standing description of method, not a log of what was done on this engagement: what a given "
+    "engagement covered is recorded on its coverage record and on the findings themselves."
+)
+
 _METHODOLOGY_PHASES: tuple[tuple[str, str], ...] = (
     (
         "Scoping and rules of engagement",
@@ -1539,10 +1549,7 @@ def _methodology_prose(ctx: ReportContext) -> str:
     # done on their engagement — which for a bulk-promoted report it is not.
     parts = [
         '<article class="mth">'
-        '<p class="mth-lead">An assessment of this kind is conducted in the phases below, each feeding '
-        "the next. This is a standing description of method, not a log of what was done on this "
-        "engagement: what a given engagement covered is recorded on its coverage record and on the "
-        "findings themselves.</p>"
+        f'<p class="mth-lead">{_METHODOLOGY_LEAD}</p>'
         f'<div class="mth-phases">{phases}</div>'
     ]
     seen: set[str] = set()

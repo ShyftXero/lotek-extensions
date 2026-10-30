@@ -205,6 +205,33 @@ def test_create_group_requires_name(client, session_factory):
         assert db.query(FindingGroup).filter_by(engagement_id=eng_id).count() == 0
 
 
+def test_create_group_defaults_to_external_when_type_not_posted(client, session_factory):
+    """ext#346 item 1: with no section-type field posted, a new section defaults to the External type
+    (seeded by seed_defaults), not to no-type."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        eng_id = eng.id
+        external_id = db.query(AssessmentType).filter_by(slug="external").one().id
+
+    client.post(f"{UI}/engagements/{eng_id}/groups", data={"name": "Perimeter"})
+    with session_factory() as db:
+        group = db.query(FindingGroup).filter_by(engagement_id=eng_id).one()
+        assert group.assessment_type_id == external_id
+
+
+def test_create_group_other_maps_to_null_type(client, session_factory):
+    """ext#346 item 1: the explicit "Other" option posts an empty value -> assessment_type_id NULL."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        eng_id = eng.id
+
+    client.post(f"{UI}/engagements/{eng_id}/groups",
+                data={"name": "Appendix", "assessment_type_id": ""})
+    with session_factory() as db:
+        group = db.query(FindingGroup).filter_by(engagement_id=eng_id).one()
+        assert group.assessment_type_id is None
+
+
 def test_delete_group_detaches_findings_instead_of_deleting_them(client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
@@ -1331,11 +1358,12 @@ def test_board_collapses_children_under_their_parent(client, session_factory):
     assert f"{len(hosts)} hosts" in body, "parent card shows the collapsed host count"
 
 
-def test_auto_section_places_children_and_their_parent_shell_by_scope(session_factory):
+def test_auto_section_places_children_and_their_parent_shell_per_finding(session_factory):
     """A just-adopted job's per-host children (which carry source_facts.job_id) AND their aggregation
-    parent shell (which does NOT) land in the report section named for the job's scope. Idempotent +
-    non-clobbering on a second run. This is the auto-map-to-section behavior; the parent must move too
-    or the board (which collapses children under it) would show it still unsectioned."""
+    parent shell (which does NOT) land in the report section EACH FINDING belongs to (ext#346 item 2).
+    Here the children are internal IPs, so they route to Internal even though the JOB was external-scoped.
+    Idempotent + non-clobbering on a second run. The parent must move too or the board (which collapses
+    children under it) would show it still unsectioned."""
     from scribble import findings_service
     with session_factory() as db:
         eng = _make_engagement(db)
@@ -1362,8 +1390,8 @@ def test_auto_section_places_children_and_their_parent_shell_by_scope(session_fa
     with session_factory() as db:
         eng = db.get(ReportBoard, eng_id)
         sections = {g.name: g for g in eng.groups}
-        assert "External" in sections, "a section named for the scope was created"
-        grp_id = sections["External"].id
+        assert "Internal" in sections, "internal IPs route to Internal even on an external-scoped job"
+        grp_id = sections["Internal"].id
         assert db.get(BoardFinding, parent_id).group_id == grp_id, "parent shell moved into the section"
         for kid in kid_ids:
             assert db.get(BoardFinding, kid).group_id == grp_id
@@ -1373,18 +1401,120 @@ def test_auto_section_places_children_and_their_parent_shell_by_scope(session_fa
         assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 0
 
 
-def test_auto_section_unknown_scope_is_a_noop(session_factory):
-    """Only scopes we can name (external/internal) create a section; anything else leaves findings
-    ungrouped rather than inventing a junk section."""
+def test_auto_section_external_ips_go_external(session_factory):
+    """A global/public IP identifier routes to External even when the job is internal-scoped."""
     from scribble import findings_service
     with session_factory() as db:
         eng = _make_engagement(db)
-        eng_id = eng.id
+        tmpl = _make_template(db, "Open port")
+        job_id = str(uuid.uuid7())
+        f = BoardFinding.from_template(tmpl, engagement_id=eng.id,
+                                       target_host="8.8.8.8", source_facts={"job_id": job_id})
+        db.add(f)
+        db.commit()
+        eng_id, fid = eng.id, f.id
     with session_factory() as db:
         eng = db.get(ReportBoard, eng_id)
-        assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type="webapp") == 0
-        assert findings_service.auto_section_job_findings(db, eng, job_id="x", scope_type=None) == 0
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="internal") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        sections = {g.name: g for g in eng.groups}
+        assert "External" in sections
+        assert db.get(BoardFinding, fid).group_id == sections["External"].id
+
+
+def test_auto_section_ad_findings_are_always_internal(session_factory):
+    """An AD-category finding routes to Internal even on an external-scoped job and even with a public IP:
+    'AD findings are never External' (ext#346 item 2)."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Kerberoastable account")
+        job_id = str(uuid.uuid7())
+        f = BoardFinding.from_template(tmpl, engagement_id=eng.id, category="ad-acl",
+                                       target_host="8.8.8.8", source_facts={"job_id": job_id})
+        db.add(f)
+        db.commit()
+        eng_id, fid = eng.id, f.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        sections = {g.name: g for g in eng.groups}
+        assert "Internal" in sections
+        assert db.get(BoardFinding, fid).group_id == sections["Internal"].id
+
+
+def test_auto_section_hostname_falls_back_to_job_scope(session_factory):
+    """A finding whose identifier is a hostname (not an IP literal) can't be classified on its own, so it
+    defers to the job's assessment scope."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Weak TLS")
+        job_id = str(uuid.uuid7())
+        f = BoardFinding.from_template(tmpl, engagement_id=eng.id,
+                                       target_host="dc01.corp.local", source_facts={"job_id": job_id})
+        db.add(f)
+        db.commit()
+        eng_id, fid = eng.id, f.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="internal") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        sections = {g.name: g for g in eng.groups}
+        assert "Internal" in sections
+        assert db.get(BoardFinding, fid).group_id == sections["Internal"].id
+
+
+def test_auto_section_unknown_scope_leaves_undecidable_findings_ungrouped(session_factory):
+    """With no per-finding signal (hostname / no identifier) AND an unknown job scope there is nothing to
+    classify on, so the finding is left ungrouped rather than guessed into a junk section."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Generic")
+        job_id = str(uuid.uuid7())
+        f = BoardFinding.from_template(tmpl, engagement_id=eng.id,
+                                       target_host="host.example", source_facts={"job_id": job_id})
+        db.add(f)
+        db.commit()
+        eng_id, fid = eng.id, f.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="webapp") == 0
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type=None) == 0
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
         assert eng.groups == []
+        assert db.get(BoardFinding, fid).group_id is None
+
+
+def test_section_type_for_finding_rules():
+    """The per-finding classifier (ext#346 item 2) in isolation: AD -> Internal; internal IP -> Internal;
+    global IP -> External; hostname -> scope_default (possibly None)."""
+    from types import SimpleNamespace
+
+    from scribble.findings_service import section_type_for_finding
+
+    def fnd(category=None, target_host=None, facts=None):
+        return SimpleNamespace(category=category, target_host=target_host, source_facts=facts or {})
+
+    assert section_type_for_finding(fnd(category="adcs", target_host="8.8.8.8")) == "Internal"
+    assert section_type_for_finding(fnd(target_host="10.0.0.5")) == "Internal"
+    assert section_type_for_finding(fnd(target_host="192.168.1.0/24")) == "Internal"
+    assert section_type_for_finding(fnd(target_host="8.8.8.8")) == "External"
+    assert section_type_for_finding(fnd(target_host="dc.corp.local"), scope_default="Internal") == "Internal"
+    assert section_type_for_finding(fnd(target_host="dc.corp.local")) is None
+    # identifier read from source_facts when the column is empty
+    assert section_type_for_finding(fnd(facts={"target_host": "10.1.1.1"})) == "Internal"
+    assert section_type_for_finding(fnd(facts={"asset_identifier": "1.1.1.1"})) == "External"
 
 
 def test_affected_hosts_table_uses_the_shared_datatable(client, session_factory):

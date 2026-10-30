@@ -52,18 +52,22 @@
          value (combobox.js createEntry), so a bespoke name still posts as `name`. #}
       {% set default_group_names = ["Internal", "External", "Web Application", "Wireless", "Physical",
                                     "Social Engineering", "Cloud", "Mobile"] %}
-      <select name="name" data-combobox data-allow-create
-              data-placeholder="Section name (e.g. Internal, or type your own)" required>
+      <label class="scribble-field-label" for="sec-name">Report Section name</label>
+      <select id="sec-name" name="name" data-combobox data-allow-create
+              data-placeholder="Report Section name (e.g. External, or type your own)" required>
         <option value="" disabled selected></option>
         {% for g in default_group_names %}
         <option value="{{ g }}">{{ g }}</option>
         {% endfor %}
       </select>
-      <select name="assessment_type_id" aria-label="Assessment type for this section">
-        <option value="">No assessment type</option>
+      {# Report section type: default External; "Other" posts an empty value -> assessment_type_id NULL
+         (a section deliberately outside the Internal/External split). ext#346 item 1. #}
+      <label class="scribble-field-label" for="sec-type">Report section type</label>
+      <select id="sec-type" name="assessment_type_id" aria-label="Report section type">
         {% for at in assessment_types %}
-        <option value="{{ at.id }}">{{ at.name }}</option>
+        <option value="{{ at.id }}"{% if at.slug == 'external' %} selected{% endif %}>{{ at.name }}</option>
         {% endfor %}
+        <option value="">Other</option>
       </select>
       <button class="btn btn-primary" type="submit">Add section</button>
     </form>
@@ -465,6 +469,10 @@
     max-width: 100%; min-width: 0;
   }
   .scribble-inline-form select { flex: 1 1 auto; }
+  /* Each field label (ext#346 item 1) takes a full flex row so it sits ABOVE its control rather than
+     wedging inline between two selects. */
+  .scribble-field-label { flex: 1 1 100%; margin: 4px 0 -2px; font-size: 13px; color: var(--muted); }
+  .scribble-field-label:first-child { margin-top: 0; }
 
   /* Finding-view toggle (Phase 1b) — mirrors core report.html's .view-toggle/.fview. */
   .scribble-view-toggle { display: inline-flex; gap: 2px; margin: 0 0 14px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 3px; background: var(--field-bg); }
