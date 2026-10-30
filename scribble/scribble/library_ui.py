@@ -95,30 +95,13 @@ def register(api_bp, bp) -> None:
             stmt = stmt.order_by(VulnerabilityTemplate.name)
             templates = db.scalars(stmt).unique().all()
 
-            categories = sorted(
-                {
-                    c
-                    for (c,) in db.execute(
-                        select(VulnerabilityTemplate.category).where(
-                            VulnerabilityTemplate.category.isnot(None)
-                        )
-                    ).all()
-                    if c
-                }
-            )
-            all_tags = db.scalars(select(Tag).order_by(Tag.name)).all()
-
+            # Sorting/paging/filtering is the core DataTable widget (client-side); the only context
+            # the template still needs is the rows and the server-side "show deactivated" state. The
+            # q/category/severity/tag args above are still honored so bookmarked deep-links keep working.
             return render_template(
                 "scribble/library.html",
                 templates=templates,
-                q=q,
-                category=category,
-                severity=severity_raw,
-                tag=tag,
                 show_inactive=show_inactive,
-                categories=categories,
-                all_tags=all_tags,
-                severities=list(severity_enum()),
             )
 
     @bp.get("/library/new", endpoint="library_new")

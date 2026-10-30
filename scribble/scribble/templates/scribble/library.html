@@ -5,35 +5,18 @@
 <a class="btn btn-primary" href="{{ url_for('scribble.library_new') }}">+ New template</a>
 {% endblock %}
 {% block content %}
+{# Sort/page/filter is the core DataTable widget (static/data-table.js, loaded by the host base) — the
+   same one engagement.html and finding.html use. Rows are server-rendered + static, meeting the widget's
+   "no rows appended after init" contract. The only server-side control left is the "show deactivated"
+   toggle: it changes which rows the DB query returns (active-only vs all), which DataTables can't do
+   client-side. The route still honors ?q/category/severity/tag for bookmarked deep-links. #}
+{% set _sevrank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4} %}
 <div class="card">
   <form class="fr-lib-filters" method="get" action="{{ url_for('scribble.library') }}">
-    <input type="text" name="q" value="{{ q }}" placeholder="Search name…" aria-label="Search templates by name" />
-    <select name="category" aria-label="Filter by category">
-      <option value="">All categories</option>
-      {% for c in categories %}
-      <option value="{{ c }}" {% if c == category %}selected{% endif %}>{{ c }}</option>
-      {% endfor %}
-    </select>
-    <select name="severity" aria-label="Filter by severity">
-      <option value="">All severities</option>
-      {% for s in severities %}
-      <option value="{{ s.value }}" {% if s.value == severity %}selected{% endif %}>{{ s.value }}</option>
-      {% endfor %}
-    </select>
-    <select name="tag" aria-label="Filter by tag">
-      <option value="">All tags</option>
-      {% for t in all_tags %}
-      <option value="{{ t.name }}" {% if t.name == tag %}selected{% endif %}>{{ t.name }}</option>
-      {% endfor %}
-    </select>
     <label class="fr-lib-inactive-toggle">
-      <input type="checkbox" name="inactive" value="1" {% if show_inactive %}checked{% endif %} />
+      <input type="checkbox" name="inactive" value="1" onchange="this.form.submit()" {% if show_inactive %}checked{% endif %} />
       show deactivated
     </label>
-    <button type="submit" class="btn">Filter</button>
-    {% if q or category or severity or tag or show_inactive %}
-    <a class="btn" href="{{ url_for('scribble.library') }}">Clear</a>
-    {% endif %}
   </form>
 </div>
 
@@ -41,8 +24,15 @@
   <h2>Vulnerability templates <span class="muted">({{ templates|length }})</span></h2>
   {% if templates %}
   <div class="table-scroll">
-  <table class="table">
-    <thead><tr><th>Name</th><th>Category</th><th>Severity</th><th>Tags</th><th></th></tr></thead>
+  <table class="table" id="scribble-library-table"
+         data-dt data-dt-page-size="25" data-dt-colfilter data-dt-empty="No templates.">
+    <thead><tr>
+      <th data-sort>Name</th>
+      <th data-sort>Category</th>
+      <th data-sort data-sort-type="num">Severity</th>
+      <th data-sort>Tags</th>
+      <th></th>
+    </tr></thead>
     <tbody>
       {% for t in templates %}
       <tr{% if not t.active %} class="fr-lib-row-inactive"{% endif %}>
@@ -51,7 +41,7 @@
           {% if not t.active %}<span class="pill">deactivated</span>{% endif %}
         </td>
         <td>{{ t.category or '—' }}</td>
-        <td><span class="sev sev-{{ t.default_severity.value }}">{{ t.default_severity.value }}</span></td>
+        <td data-sort-value="{{ _sevrank.get(t.default_severity.value, 5) }}"><span class="sev sev-{{ t.default_severity.value }}">{{ t.default_severity.value }}</span></td>
         <td>
           {% for tg in t.tags %}<span class="pill">{{ tg.name }}</span>{% endfor %}
         </td>
@@ -62,16 +52,12 @@
   </table>
   </div>
   {% else %}
-  <p class="muted">No templates match. Seed imports FACTION's default vulnerabilities on first boot.</p>
+  <p class="muted">No templates yet. Seed imports FACTION's default vulnerabilities on first boot.</p>
   {% endif %}
 </div>
 
 <style>
   .fr-lib-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .fr-lib-filters input[type="text"], .fr-lib-filters select {
-    background: var(--field-bg); color: var(--ink); border: 1px solid var(--line-strong);
-    border-radius: 8px; padding: 6px 10px; font: inherit;
-  }
   .fr-lib-inactive-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
   .fr-lib-row-inactive { opacity: .55; }
 </style>
