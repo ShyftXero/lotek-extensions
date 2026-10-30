@@ -617,3 +617,50 @@ def test_unreachable_store_upload_artifact_returns_503(broken_blobs_app, hooks):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 503
+
+
+# ----------------------------------------------------------------- storage unavailable: read path (#300)
+#
+# The write path returns 503 when the store is configured-but-unreachable; the read path
+# (send_attachment -> blobs.open) used to let the boto error propagate from inside the streaming
+# generator, after a 200 and the headers were already out, so it surfaced as a 500. send_attachment now
+# opens EAGERLY and the three read routes catch StorageError.
+
+
+def test_unreachable_store_download_returns_503(client, report_id, session_factory, monkeypatch):
+    """Authenticated download: store goes unreachable AFTER the row exists -> 503, not 500."""
+    import bugreport.blueprint as bp
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+
+    monkeypatch.setattr(bp, "host_blobs", lambda: _BrokenBlobs())  # open() now raises
+    assert client.get(f"/bugreport/attachments/{aid}/download").status_code == 503
+
+
+def test_unreachable_store_artifact_raw_returns_503(client, report_id, session_factory, monkeypatch):
+    """Editor inline-image read seam: same 503."""
+    import bugreport.blueprint as bp
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+
+    monkeypatch.setattr(bp, "host_blobs", lambda: _BrokenBlobs())
+    assert client.get(f"/bugreport/{report_id}/api/artifacts/{aid}/raw").status_code == 503
+
+
+def test_unreachable_store_shared_link_returns_503(client, report_id, session_factory, hooks, monkeypatch):
+    """Anonymous share route: a VALID token whose bytes are unreachable is a 503, not a 500. (A wrong
+    token stays a flat 404 — token is checked before the store; see the wrong-token test above.)"""
+    import bugreport.blueprint as bp
+    from bugreport.models import Attachment
+
+    _upload(client, report_id, PNG, "shot.png", "image/png")
+    aid = _only_attachment_id(session_factory, report_id)
+    client.post(f"/bugreport/attachments/{aid}/share")
+    with session_factory() as db:
+        token = db.query(Attachment).one().share_token
+
+    hooks["actor"] = None  # nobody is logged in
+    monkeypatch.setattr(bp, "host_blobs", lambda: _BrokenBlobs())
+    assert client.get(f"/bugreport/s/{token}").status_code == 503
