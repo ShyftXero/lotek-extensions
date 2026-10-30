@@ -48,6 +48,20 @@ class RetestOutcome(enum.StrEnum):
     not_tested = "not_tested"                      # could not retest -> status unchanged
 
 
+class ChainQuality(enum.StrEnum):
+    """How an imported exploit chain held up when an operator actually tried it, for THIS engagement
+    (ext#248). A chain is a CANDIDATE when minted; this records what the rubber-meets-the-road attempt
+    found, so a report distinguishes "we confirmed this works" from "the tool proposed it". Stored on
+    ``AttackChain.status`` as its string value (a ``String(32)`` column, like ``ReportBoard.status`` — a
+    legacy chain reads NULL and is treated as ``untested``)."""
+
+    untested = "untested"                    # minted but not yet attempted (the default)
+    valid = "valid"                          # reviewed as sound, not run end-to-end
+    worked = "worked"                        # executed successfully, full chain
+    partially_worked = "partially_worked"    # some hops landed, the chain did not complete
+    failed = "failed"                        # attempted and did not work (record it, don't drop it)
+
+
 class ChecklistKind(enum.StrEnum):
     """ReportBoard-checklist kind. Fixed set: the report layout and the recommended item-status
     vocabulary are keyed to it. A checklist's kind is reassignable; adding a NEW kind is a code change

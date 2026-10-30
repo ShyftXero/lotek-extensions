@@ -228,3 +228,164 @@ def test_migration_is_additive_reversible_and_backward_safe(tmp_path):
     with engine.connect() as c:
         assert c.execute(text("SELECT count(*) FROM scribble_attack_chains")).scalar_one() == 1
         assert c.execute(text("SELECT count(*) FROM scribble_attack_chain_steps")).scalar_one() == 1
+
+
+# ── 5. ext#248: chain quality (status) + the copy-pasteable command appendix ──────────────────────────
+
+
+def test_post_accepts_status_and_commands_and_round_trips(app, stub_host, session_factory):
+    """``POST /chains`` accepts the ext#248 ``status`` (chain quality for THIS instance) and ``commands``
+    (exploiteer's reproduction block, stored byte-for-byte) and persists both."""
+    eid = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    cmds = "1. GetUserSPNs.py -request\n2. hashcat -m 13100 kerb.hash\n"
+    resp = app.test_client().post(
+        f"{M}/engagements/{eid}/chains",
+        json={"title": "Kerberoast to DA", "status": "worked", "commands": cmds},
+    )
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["status"] == "worked"
+    assert body["has_commands"] is True
+    with session_factory() as db:
+        chain = db.get(fm.ReportBoard, eid).chains[0]
+        assert chain.status == "worked"
+        assert chain.commands == cmds, "commands stored byte-for-byte"
+
+
+def test_post_defaults_status_to_untested(app, stub_host, session_factory):
+    """A chain minted without a ``status`` is the CANDIDATE default: untested."""
+    eid = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    resp = app.test_client().post(f"{M}/engagements/{eid}/chains", json={"title": "Candidate"})
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["status"] == "untested"
+
+
+def test_post_rejects_an_unknown_status(app, stub_host, session_factory):
+    """An out-of-vocabulary ``status`` is a 400 at the boundary (the column is a plain String(32) with no
+    DB CHECK, so the value set is enforced here), and nothing is minted."""
+    eid = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    resp = app.test_client().post(
+        f"{M}/engagements/{eid}/chains", json={"title": "Bad", "status": "totally-pwned"}
+    )
+    assert resp.status_code == 400, resp.get_json()
+    assert _chains(session_factory, eid) == []
+
+
+def test_update_route_sets_status_and_visibility(app, stub_host, session_factory):
+    """``POST /chains/<id>`` marks a chain's quality AFTER it was tried and flips its report visibility —
+    the self-contained surface for "mark worked/failed" and "include some / none / all"."""
+    eid = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    client = app.test_client()
+    created = client.post(f"{M}/engagements/{eid}/chains", json={"title": "Chain"})
+    cid = created.get_json()["id"]
+
+    resp = client.post(
+        f"{M}/engagements/{eid}/chains/{cid}",
+        json={"status": "partially_worked", "include_in_report": False},
+    )
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()
+    assert body["status"] == "partially_worked"
+    assert body["include_in_report"] is False
+    with session_factory() as db:
+        chain = db.get(fm.ReportBoard, eid).chains[0]
+        assert chain.status == "partially_worked"
+        assert chain.include_in_report is False
+
+
+def test_update_route_rejects_an_unknown_status(app, stub_host, session_factory):
+    eid = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    client = app.test_client()
+    cid = client.post(f"{M}/engagements/{eid}/chains", json={"title": "Chain"}).get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/chains/{cid}", json={"status": "nope"})
+    assert resp.status_code == 400, resp.get_json()
+    with session_factory() as db:
+        assert db.get(fm.ReportBoard, eid).chains[0].status == "untested", "a bad update must not persist"
+
+
+def test_update_route_refuses_a_chain_from_another_engagement_404(app, stub_host, session_factory):
+    """A chain addressed through an engagement it does not belong to answers 404 (the engagement-scoped
+    authz posture scribble uses everywhere), so this route cannot edit chains outside the named engagement."""
+    eid = _engagement(session_factory, client_id=ACME)
+    other = _engagement(session_factory, client_id=ACME)
+    _operator(stub_host)
+    client = app.test_client()
+    cid = client.post(f"{M}/engagements/{other}/chains", json={"title": "Elsewhere"}).get_json()["id"]
+    resp = client.post(f"{M}/engagements/{eid}/chains/{cid}", json={"status": "worked"})
+    assert resp.status_code == 404, resp.get_json()
+
+
+def test_update_route_tenancy_is_checked_before_the_body(app, stub_host, session_factory):
+    """INV-TENANCY-05: a caller who may VIEW but not OPERATE on the engagement is refused 403 before the
+    body is parsed — a malformed body still answers 403, never a 400 that would oracle the id space."""
+    eid = _engagement(session_factory, client_id=ACME)
+    # Mint as an operator first, then downgrade the caller to view-only.
+    _operator(stub_host)
+    cid = app.test_client().post(
+        f"{M}/engagements/{eid}/chains", json={"title": "Chain"}
+    ).get_json()["id"]
+    stub_host.can_operate_value = False
+    resp = app.test_client().post(f"{M}/engagements/{eid}/chains/{cid}", json={"status": "not-a-status"})
+    assert resp.status_code == 403, resp.get_json()
+
+
+# ── 6. ext#248 migration: additive, reversible, backward-safe ─────────────────────────────────────────
+
+
+def _load_quality_migration():
+    path = (
+        Path(fm.__file__).parent
+        / "migrations" / "versions" / "c7d9f1b3e5a2_attack_chain_quality_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location("_ext248_quality_migration", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_quality_migration_is_additive_reversible_and_backward_safe(tmp_path):
+    """A PRE-EXISTING deployment (attack-chain table WITHOUT status/commands, a real row in it) is upgraded
+    additively — the two nullable columns appear, the existing row survives and reads NULL — and downgrade
+    removes them cleanly. Drives the revision's own upgrade/downgrade directly on SQLite."""
+    mig = _load_quality_migration()
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+
+    chain_id = str(uuid.uuid7())
+    with engine.begin() as c:
+        # The pre-ext#248 shape (post-provenance): chains table minus status/commands, one real row.
+        c.execute(text(
+            "CREATE TABLE scribble_attack_chains ("
+            " id CHAR(32) PRIMARY KEY, engagement_id CHAR(32), title VARCHAR(255), summary TEXT,"
+            " diagram_ref VARCHAR(64), embed_html TEXT, order_index INTEGER, include_in_report BOOLEAN,"
+            " source_finding_ids JSON, rule_ids JSON, created_at DATETIME, updated_at DATETIME)"
+        ))
+        c.execute(
+            text("INSERT INTO scribble_attack_chains (id, title, order_index, include_in_report) "
+                 "VALUES (:id, 'legacy chain', 0, 1)"),
+            {"id": chain_id},
+        )
+
+    def _cols():
+        return {col["name"] for col in inspect(engine).get_columns("scribble_attack_chains")}
+
+    _run_step(engine, mig.upgrade)
+    assert {"status", "commands"} <= _cols()
+    with engine.connect() as c:
+        row = c.execute(text(
+            "SELECT title, status, commands FROM scribble_attack_chains WHERE id = :id"
+        ), {"id": chain_id}).first()
+    assert row.title == "legacy chain", "the pre-existing row must survive the upgrade"
+    assert row.status is None and row.commands is None, "existing row reads NULL (treated as untested)"
+
+    # Idempotent: a second upgrade (guarded on the reflected columns) must not raise.
+    _run_step(engine, mig.upgrade)
+
+    _run_step(engine, mig.downgrade)
+    assert not ({"status", "commands"} & _cols())
+    with engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM scribble_attack_chains")).scalar_one() == 1

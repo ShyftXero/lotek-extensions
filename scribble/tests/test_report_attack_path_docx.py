@@ -550,7 +550,10 @@ def test_the_status_chip_matches_what_the_viewer_prints(session_factory):
 # ── #628: the attack-chain NARRATIVE mirrors into the .docx ───────────────────────────────────────────
 
 
-def _chain_engagement(session_factory, *, embed: bool = False, provenance: bool = False) -> str:
+def _chain_engagement(
+    session_factory, *, embed: bool = False, provenance: bool = False,
+    status: str | None = None, commands: str | None = None,
+) -> str:
     with session_factory() as db:
         client = Client(name="Acme Co")
         db.add(client)
@@ -570,6 +573,8 @@ def _chain_engagement(session_factory, *, embed: bool = False, provenance: bool 
             # LOT-48/7: chain-level provenance (LOT-69 columns), only when asked.
             source_finding_ids=([101, 102] if provenance else None),
             rule_ids=(["nuclei-CVE-2021-44228"] if provenance else None),
+            status=status,
+            commands=commands,
         )
         db.add(chain)
         db.flush()
@@ -622,3 +627,32 @@ def test_docx_chain_without_provenance_has_no_sources_line(session_factory):
     text = _text(_render(session_factory, _chain_engagement(session_factory)))
     assert "Sources:" not in text
     assert "finding 1" not in text
+
+
+def test_docx_carries_the_chain_quality_status(session_factory):
+    """ext#248: the .docx mirrors the HTML quality badge as a "Status:" line — a chain marked ``worked``
+    reads back "Status: Worked"."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory, status="worked")))
+    assert "Status: Worked" in text
+
+
+def test_docx_chain_status_defaults_to_untested(session_factory):
+    """A legacy (NULL) chain reads "Status: Untested" rather than omitting the line."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory, status=None)))
+    assert "Status: Untested" in text
+
+
+def test_docx_carries_the_command_appendix(session_factory):
+    """ext#248: exploiteer's reproduction block mirrors into the .docx as a "Commands" heading + a
+    monospace paragraph, read back out of the rendered document."""
+    cmds = "1. GetUserSPNs.py -request\n2. hashcat -m 13100 kerb.hash"
+    text = _text(_render(session_factory, _chain_engagement(session_factory, commands=cmds)))
+    assert "Commands" in text
+    assert "GetUserSPNs.py -request" in text
+    assert "hashcat -m 13100 kerb.hash" in text
+
+
+def test_docx_chain_without_commands_has_no_appendix(session_factory):
+    """Backward-compat: a prose-only chain emits no Commands heading."""
+    text = _text(_render(session_factory, _chain_engagement(session_factory, commands=None)))
+    assert "GetUserSPNs.py" not in text

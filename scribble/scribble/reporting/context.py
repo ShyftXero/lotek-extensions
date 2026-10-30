@@ -169,6 +169,13 @@ class ChainCtx:
     steps: list[ChainStepCtx]
     diagram_ref: str = ""
     embed_html: str = ""
+    # CHAIN QUALITY FOR THIS INSTANCE (ext#248), surfaced from ``AttackChain.status``: untested / valid /
+    # worked / partially_worked / failed. A legacy chain (NULL status) reads as ``untested``, so the badge
+    # is always a known value and a renderer never special-cases absence.
+    status: str = "untested"
+    # COPY-PASTEABLE COMMAND APPENDIX (ext#248), from ``AttackChain.commands``: exploiteer's numbered
+    # reproduction block, stored verbatim. Empty for a prose-only / legacy chain, so no appendix renders.
+    commands: str = ""
     # PROVENANCE (LOT-48/7): chain-level citations surfaced from ``AttackChain.source_finding_ids`` /
     # ``rule_ids`` (LOT-69) — the deterministic sources the chain was minted from, stringified. Empty
     # lists for a legacy / hand-authored chain that carries no provenance, so it renders exactly as before.
@@ -444,6 +451,8 @@ def _chain_ctxs(chains) -> list[ChainCtx]:
             ],
             diagram_ref=c.diagram_ref or "",
             embed_html=c.embed_html or "",
+            status=c.status or "untested",
+            commands=c.commands or "",
             source_finding_ids=[str(x) for x in (c.source_finding_ids or [])],
             rule_ids=[str(x) for x in (c.rule_ids or [])],
         )

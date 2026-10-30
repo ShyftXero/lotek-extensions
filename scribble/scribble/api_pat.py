@@ -70,6 +70,7 @@ from scribble.api_schemas import (
     PromoteJobRequest,
     ReorderGroupsRequest,
     UpdateArtifactRequest,
+    UpdateAttackChainRequest,
     UpdateAttackPathRequest,
     UpdateGroupRequest,
     UploadArtifactRequest,
@@ -92,7 +93,14 @@ from scribble.authz import (
 )
 from scribble.content import schema
 from scribble.deps import open_session, severity_enum
-from scribble.enums import ArtifactKind, ArtifactPlacement, Confidence, FindingStatus, OrderMode
+from scribble.enums import (
+    ArtifactKind,
+    ArtifactPlacement,
+    ChainQuality,
+    Confidence,
+    FindingStatus,
+    OrderMode,
+)
 from scribble.models import (
     Artifact,
     AttackChain,
@@ -141,6 +149,15 @@ _DIAGRAM_CAPTION_MAX_LEN = 255  # EngagementDiagram.caption      String(255)
 # A chain's optional ``embed_html`` is the same self-contained snapshot as a diagram's, so it shares the
 # 10 MiB bound (_MAX_DIAGRAM_HTML_BYTES) and the ``diagram_ref`` String(64) cap above.
 _CHAIN_TITLE_MAX_LEN = 255       # AttackChain.title / AttackChainStep.title  String(255)
+_CHAIN_STATUS_MAX_LEN = 32       # AttackChain.status  String(32)
+# ext#248: a chain's copy-pasteable command appendix is a ``Text`` column held whole in memory per render,
+# like ``embed_html`` — so it earns its own explicit bound rather than leaning on MAX_CONTENT_LENGTH. 256
+# KiB is far above any real reproduction block (numbered hops of shell commands) and far below where the
+# per-render cost bites.
+_CHAIN_COMMANDS_MAX_BYTES = 256 * 1024
+#: The valid ``AttackChain.status`` values (ext#248). ``status`` is a plain ``String(32)`` column, so the
+#: value set is enforced HERE at the boundary (the ``ChainQuality`` enum is the source of truth).
+_CHAIN_STATUSES = frozenset(s.value for s in ChainQuality)
 
 # ── pure helpers (moved verbatim from the deleted src/app/api_v1_scribble.py) ────────────────────────
 
@@ -3700,6 +3717,8 @@ def _chain_dict(chain: AttackChain) -> dict:
         "has_embed_html": bool(chain.embed_html),
         "order_index": chain.order_index,
         "include_in_report": chain.include_in_report,
+        "status": chain.status or ChainQuality.untested.value,
+        "has_commands": bool(chain.commands),
         "source_finding_ids": chain.source_finding_ids,
         "rule_ids": chain.rule_ids,
         "steps": [
@@ -3714,6 +3733,21 @@ def _chain_dict(chain: AttackChain) -> dict:
             for s in sorted(chain.steps, key=lambda s: (s.order_index, s.id))
         ],
     }
+
+
+def _chain_status_or_400(raw):
+    """Validate an OPTIONAL chain ``status`` (ext#248) -> ``(status_or_None, refusal_or_None)``.
+
+    ``None`` means "not specified" (the caller left it out). A present value must be a string in
+    ``_CHAIN_STATUSES`` (the ``ChainQuality`` value set) — anything else is a 400 at the boundary, since
+    ``status`` is a plain ``String(32)`` with no DB-level CHECK to catch a bad value."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str) or raw not in _CHAIN_STATUSES:
+        return None, _bad_request(
+            "status must be one of: " + ", ".join(sorted(_CHAIN_STATUSES))
+        )
+    return raw, None
 
 
 def _opt_id_list(data: dict, key: str):
@@ -3836,6 +3870,22 @@ def scribble_link_attack_chain(engagement_id):
     if err:
         return err
 
+    chain_status, err = _chain_status_or_400(data.get("status"))
+    if err:
+        return err
+
+    commands_raw = data.get("commands")
+    if commands_raw is not None and not isinstance(commands_raw, str):
+        return _bad_request("commands must be a string")
+    # BYTE-FOR-BYTE: the copy-pasteable reproduction block, _nul_safe only, no strip (the hop commands'
+    # indentation/newlines are the point — same posture as a step's description).
+    commands = _nul_safe(commands_raw) if commands_raw is not None else None
+    if commands is not None and len(commands.encode("utf-8")) > _CHAIN_COMMANDS_MAX_BYTES:
+        return jsonify({
+            "error": "payload_too_large",
+            "detail": f"commands exceeds the {_CHAIN_COMMANDS_MAX_BYTES // 1024} KiB limit",
+        }), 413
+
     steps, err = _parse_chain_steps(data.get("steps"))
     if err:
         return err
@@ -3862,6 +3912,8 @@ def scribble_link_attack_chain(engagement_id):
                 embed_html=embed_html,
                 order_index=len(siblings),
                 include_in_report=publish if publish is not None else True,
+                status=chain_status if chain_status is not None else ChainQuality.untested.value,
+                commands=commands,
                 source_finding_ids=source_finding_ids,
                 rule_ids=rule_ids,
             )
@@ -3885,6 +3937,61 @@ def scribble_link_attack_chain(engagement_id):
 
     body, status = _with_idempotency(idempotency_key, _produce)
     return jsonify(body), status
+
+
+@machine_bp.post("/engagements/<uuid:engagement_id>/chains/<uuid:chain_id>")
+@host.require_scope("write")
+@request_body(UpdateAttackChainRequest)
+def scribble_update_attack_chain(engagement_id, chain_id):
+    """Update an imported chain's quality verdict and/or report visibility AFTER it was minted (ext#248).
+
+    A chain is minted as a CANDIDATE (``untested``); an operator sets ``status`` once they have actually
+    TRIED it (valid / worked / partially_worked / failed — a failed chain is recorded, not dropped), and
+    ``include_in_report`` is the non-destructive "keep this one out of the report" veto that lets a caller
+    publish some / none / all chains. Modeled line-for-line on ``scribble_update_artifact``: the chain is
+    addressed THROUGH its engagement so authorization is the one ``can_view_engagement`` predicate this
+    module uses everywhere — a chain id belonging to another engagement answers 404 whatever the caller's
+    grants are, so this route cannot probe or edit chains outside the engagement named in the URL. Tenancy
+    is checked BEFORE the body (INV-TENANCY-05); an empty/no-op body writes no audit row.
+    """
+    actor = host.actor()
+    payload = request.get_json(silent=True) or {}
+    with open_session() as db:
+        engagement = db.get(ReportBoard, engagement_id)
+        if engagement is None or not can_view_engagement(engagement, actor):
+            return _engagement_not_found()
+        if (denied := _deny_write(engagement)) is not None:
+            return denied
+        # Parsed AFTER the tenancy gate (authz-before-body, like scribble_update_artifact): a caller with
+        # no grant gets 404, never a 400 about its own body that would read as "the id is fine".
+        new_status, bad_status = _chain_status_or_400(payload.get("status"))
+        if bad_status is not None:
+            return bad_status
+        publish, bad_publish = _include_in_report_or_400(payload.get("include_in_report"))
+        if bad_publish is not None:
+            return bad_publish
+        chain = db.get(AttackChain, chain_id)
+        if chain is None or chain.engagement_id != engagement_id:
+            return jsonify({"error": "not_found", "detail": "chain not found"}), 404
+        before = {
+            "status": chain.status or ChainQuality.untested.value,
+            "include_in_report": chain.include_in_report,
+        }
+        changed = new_status is not None or publish is not None
+        if new_status is not None:
+            chain.status = new_status
+        if publish is not None:
+            chain.include_in_report = publish
+        # Only audit a real change — a no-op body must not write a before==after row (audit noise).
+        if changed:
+            _audit(
+                db, "update_attack_chain", subject_type="attack_chain", subject_id=chain.id,
+                before=before,
+                after={"status": chain.status, "include_in_report": chain.include_in_report},
+            )
+        db.commit()
+        out = _chain_dict(chain)
+    return jsonify(out)
 
 
 # ── the published contract ───────────────────────────────────────────────────────────────────────────

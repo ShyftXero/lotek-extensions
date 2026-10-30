@@ -502,7 +502,7 @@ def test_a_non_object_json_body_is_a_400_on_every_patch_route(client, stub_host)
 
 def _build_chain_engagement(
     session_factory, *, with_chain: bool, embed: bool = False, include: bool = True,
-    provenance: bool = False,
+    provenance: bool = False, status: str | None = None, commands: str | None = None,
 ) -> str:
     with session_factory() as db:
         client = Client(name="Acme Co")
@@ -533,6 +533,8 @@ def _build_chain_engagement(
                 # no-provenance path stays byte-identical for the other cases.
                 source_finding_ids=[101, 102] if provenance else None,
                 rule_ids=["nuclei-CVE-2021-44228", "msf/exploit/multi/http/log4shell"] if provenance else None,
+                status=status,
+                commands=commands,
             )
             db.add(chain)
             db.flush()
@@ -603,8 +605,8 @@ def test_linked_chain_renders_narrative(session_factory):
     second = html.index("Pivot to the DMZ web host")
     third = html.index("Kerberoast to a service account")
     assert first < second < third
-    # Positioned after Findings, before Methodology.
-    assert html.index("sec-findings") < html.index("sec-chains") < html.index("sec-methodology")
+    # ext#248: positioned NEAR the executive summary — after the summary, BEFORE findings (not buried).
+    assert html.index("sec-summary") < html.index("sec-chains") < html.index("sec-findings")
 
 
 def test_context_chains_populated_and_numbered(session_factory):
@@ -701,3 +703,55 @@ def test_chain_provenance_renders_citations(session_factory):
     assert '<span class="chip cite-finding">finding 00000000-0000-0000-0000-0000000000aa</span>' in html
     # Provenance lives inside the chains section (compare against the section markup, not the CSS).
     assert html.index('id="sec-chains"') < html.index('<p class="chain-provenance">')
+
+
+# ── 7. ext#248: chain-quality badge + the copy-pasteable command appendix ─────────────────────────────
+#
+# A chain is now rendered with a quality BADGE (how it held up when tried, for THIS instance) and, when it
+# carries exploiteer's reproduction block, a monospace command APPENDIX. These pin that both surface in the
+# report, that the badge defaults to "Untested" for a legacy chain (NULL status), and that a chain carrying
+# no commands renders no appendix (backward-compat with the #628 narrative).
+
+
+def test_chain_quality_badge_defaults_to_untested(session_factory):
+    """A chain minted before ext#248 reads back NULL status; the renderer shows the neutral "Untested"
+    badge rather than omitting it, so the quality line is always a known value."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, status=None)
+    html = _render(session_factory, eng_id)
+    assert '<span class="chip chain-status chain-status-untested"' in html
+    assert ">Untested</span>" in html
+    with session_factory() as db:
+        assert build_report_context(db.get(ReportBoard, eng_id)).chains[0].status == "untested"
+
+
+def test_chain_quality_badge_reflects_status(session_factory):
+    """A chain an operator marked ``failed`` renders the ``failed`` badge variant (kept, not dropped — a
+    chain that did not work is still evidence), with the human label."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, status="failed")
+    html = _render(session_factory, eng_id)
+    assert '<span class="chip chain-status chain-status-failed"' in html
+    assert ">Failed</span>" in html
+
+
+def test_chain_commands_appendix_renders_verbatim(session_factory):
+    """A chain carrying exploiteer's reproduction block renders a labelled monospace appendix with the
+    commands HTML-escaped and byte-for-byte (newlines preserved via <pre>)."""
+    cmds = "1. curl 'http://t/?q=<svg onload=1>'\n2. GetUserSPNs.py -request\n"
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, commands=cmds)
+    html = _render(session_factory, eng_id)
+    assert '<div class="chain-commands">' in html
+    assert '<p class="chain-commands-label">Commands</p>' in html
+    # Escaped (the <svg> payload does not break markup) and inside the chains section.
+    assert "curl &#x27;http://t/?q=&lt;svg onload=1&gt;&#x27;" in html
+    assert "GetUserSPNs.py -request" in html
+    assert html.index('id="sec-chains"') < html.index('<div class="chain-commands">')
+
+
+def test_chain_without_commands_renders_no_appendix(session_factory):
+    """Backward-compat: a prose-only chain (no commands) emits no appendix markup — byte-identical to a
+    #628 narrative."""
+    eng_id = _build_chain_engagement(session_factory, with_chain=True, commands=None)
+    html = _render(session_factory, eng_id)
+    assert '<div class="chain-commands">' not in html
+    with session_factory() as db:
+        assert build_report_context(db.get(ReportBoard, eng_id)).chains[0].commands == ""

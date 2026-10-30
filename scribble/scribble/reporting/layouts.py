@@ -111,8 +111,11 @@ class ReportLayout:
 # ``findings`` (attack-path diagrams are a visual extension of the findings they connect), and
 # ``evidence`` sits LAST: it is an appendix of engagement-level material, so it belongs after everything
 # else rather than interrupting it.
+# ext#248: ``chains`` sits right after ``severity_ratings`` — "where the rubber meets the road" for a
+# pentest belongs NEAR the executive summary, not buried after findings/diagrams. The operator can still
+# move it anywhere via ``section_order``.
 _STANDARD_BLOCKS = (
-    "cover", "toc", "summary", "severity_ratings", "rollups", "findings", "diagrams", "chains", "retest",
+    "cover", "toc", "summary", "severity_ratings", "chains", "rollups", "findings", "diagrams", "retest",
     "strategic", "methodology", "evidence",
 )
 
@@ -125,8 +128,8 @@ _LAYOUTS: tuple[ReportLayout, ...] = (
     ReportLayout(
         "compliance",
         "Compliance-first",
-        ("cover", "toc", "summary", "severity_ratings", "methodology", "rollups", "findings", "diagrams",
-         "chains", "retest", "strategic", "evidence"),
+        ("cover", "toc", "summary", "severity_ratings", "chains", "methodology", "rollups", "findings",
+         "diagrams", "retest", "strategic", "evidence"),
     ),
 )
 

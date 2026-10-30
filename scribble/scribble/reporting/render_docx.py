@@ -181,7 +181,7 @@ def _metadata_line_html(f: FindingCtx) -> str:
         if ti.get("kev"):
             parts.append(f"KEV{suffix}")
         epss = ti.get("epss")
-        if isinstance(epss, (int, float)):
+        if isinstance(epss, int | float):
             parts.append(f"EPSS {epss:.2f}{suffix}")
     if not parts:
         return ""
@@ -537,7 +537,7 @@ def _xml_safe(text: str) -> str:
 
 def _d_str(value: object, cap: int = _MAX_DIAGRAM_TEXT) -> str:
     """A capped, single-line, XML-safe string from an untrusted model field; non-scalar -> ``""``."""
-    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+    if value is None or isinstance(value, bool) or not isinstance(value, str | int | float):
         return ""
     # Slice BEFORE normalising: whitespace-splitting a 5 MiB field cost 0.11s and 26 MiB of peak RSS to
     # produce 400 characters. ``cap * 8`` leaves room for a run of separators to collapse away without
@@ -954,12 +954,22 @@ def _append_attack_chains(doc, ctx: ReportContext) -> None:
     this section existed (the same backward-compat guarantee ``render_html._render_chains`` makes)."""
     if not ctx.chains:
         return
+    # Shared with the HTML badge so the two deliverables name a chain's quality identically (same idiom as
+    # _SEV_LABELS reuse above).
+    from scribble.reporting.render_html import _CHAIN_STATUS_LABELS
     doc.add_heading("Attack Chains", level=1)
     doc.add_paragraph(
         "Narrative walk-throughs of how the findings above chain together into a broader compromise."
     )
     for index, c in enumerate(ctx.chains, start=1):
         doc.add_heading(_xml_safe(c.title) or f"Attack chain {index}", level=2)
+        # ext#248 chain-quality line: how the chain held up when it was tried, for THIS instance. The HTML
+        # badge is a coloured chip; Word gets the same information as a bold "Status:" line (no colour run
+        # — the .docx theme owns colour, and the text is the substance that must mirror).
+        status_label = _CHAIN_STATUS_LABELS.get(c.status, _CHAIN_STATUS_LABELS["untested"])
+        st = doc.add_paragraph()
+        st.add_run("Status: ").bold = True
+        st.add_run(status_label)
         if c.summary:
             doc.add_paragraph(_xml_safe(c.summary))
         # Chain-level provenance citations (LOT-48/7), mirroring the HTML "Sources:" line: the
@@ -980,6 +990,14 @@ def _append_attack_chains(doc, ctx: ReportContext) -> None:
             )
             if step_cite:
                 para.add_run(f" [{_xml_safe(step_cite)}]").italic = True
+        # ext#248 copy-pasteable command appendix: exploiteer's numbered reproduction block, verbatim. In
+        # Word it is a monospace paragraph (Consolas) rather than an HTML <pre>, preserving the newlines so
+        # a reader can still copy the exact commands from the deliverable.
+        if c.commands and c.commands.strip():
+            doc.add_heading("Commands", level=3)
+            cmd = doc.add_paragraph()
+            run = cmd.add_run(_xml_safe(c.commands))
+            run.font.name = "Consolas"
         if c.embed_html:
             note = doc.add_paragraph()
             note.add_run(

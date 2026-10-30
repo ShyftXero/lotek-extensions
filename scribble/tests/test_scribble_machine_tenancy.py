@@ -116,6 +116,7 @@ def _build_url(
     finding_id: int = 0,
     group_id: int = 0,
     attack_path_id: int = 0,
+    chain_id: int = 0,
     template_id: int = 0,
 ) -> str:
     """Build a real URL for a machine rule via `url_for`.
@@ -152,6 +153,10 @@ def _build_url(
             # endpoint name, so `scribble_delete_attack_path` runs BEFORE `..._get_...`/`..._update_...`
             # and a shared row would be gone by the time they asked for it.
             values[arg] = attack_path_id
+        elif arg == "chain_id":
+            # A REAL chain on that engagement, seeded fresh per request — same reason as `attack_path_id`
+            # above (ext#248 added `POST /chains/<chain_id>`, the chain-quality update route).
+            values[arg] = chain_id
         elif arg == "template_id":
             # Only the TENANT-FREE library routes carry this, so the two tenancy sweeps below never reach
             # it — the write sweep does, because the write axis applies to the shared library too.
@@ -209,6 +214,16 @@ def _diagram_on(session_factory, engagement_id: int):
         db.add(diagram)
         db.commit()
         return diagram.id
+
+
+def _chain_on(session_factory, engagement_id: int):
+    """A real attack chain on ``engagement_id``, for the ext#248 per-chain update route. Fresh per request,
+    same reason as `_diagram_on`."""
+    with session_factory() as db:
+        chain = fm.AttackChain(engagement_id=engagement_id, title="c", order_index=0)
+        db.add(chain)
+        db.commit()
+        return chain.id
 
 
 def _children(session_factory, engagement_id: int) -> tuple[int, int]:
@@ -315,6 +330,7 @@ def test_every_engagement_scoped_machine_route_denies_a_foreign_client(app, stub
                 finding_id=fid,
                 group_id=gid,
                 attack_path_id=_diagram_on(session_factory, eid),
+                chain_id=_chain_on(session_factory, eid),
             )
             resp = client.open(url, method=method, json={"finding_ids": [fid], "group_id": gid})
             if resp.status_code != 404:
@@ -392,6 +408,7 @@ def test_every_engagement_scoped_machine_route_allows_a_granted_token(app, stub_
                 finding_id=fid,
                 group_id=gid,
                 attack_path_id=_diagram_on(session_factory, eid),
+                chain_id=_chain_on(session_factory, eid),
             )
             # An empty body is a business 400 on add-finding; only 404 (the tenancy refusal) is a failure.
             resp = client.open(url, method=method, json={})
@@ -472,6 +489,7 @@ def test_every_mutating_machine_route_refuses_a_read_only_token(app, stub_host, 
                 finding_id=fid,
                 group_id=gid,
                 attack_path_id=_diagram_on(session_factory, eid),
+                chain_id=_chain_on(session_factory, eid),
                 template_id=tid,
             )
             resp = client.open(url, method=method, json={})
