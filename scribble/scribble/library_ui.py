@@ -2,7 +2,8 @@
 
 Full CRUD for the vuln template library, keyed on **edit-in-place**:
 
-- List / search / filter templates by category / severity / tag (`bp`, HTML).
+- List templates (`bp`, HTML; `?inactive=1` to include deactivated). Search/sort/paging is the core
+  DataTable widget (client-side) — the old `?q/category/severity/tag` python filtering was dropped (ext#240).
 - Template detail/edit page (`bp`, HTML) — metadata form (name, category, default_severity,
   cvss_score/vector, references, tags) + one rich-text surface per content block (description/
   remediation/details). **Save writes back to the SAME `VulnerabilityTemplate` row** (edit-in-place):
@@ -31,7 +32,7 @@ documented in that file as a reuse point for exactly this kind of adapter) inste
 
 Routes:
     UI (``bp``):
-        GET  /library                          list + search/filter (?q=&category=&severity=&tag=&inactive=1)
+        GET  /library                          list (?inactive=1 shows deactivated); filter/sort client-side
         GET  /library/new                      create form
         GET  /library/<id>                     detail/edit-in-place page
     JSON (``api_bp``):
