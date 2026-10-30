@@ -23,6 +23,7 @@ from registrar.deps import (
     host_can_write,
     host_is_interactive,
     host_visible_engagement_ids,
+    resolve_staged_engagement,
 )
 from registrar.enums import Tier
 from registrar.models import AuditRecord, StagedAction
@@ -97,8 +98,15 @@ def action():
     cfg = get_config()
     with cfg.session_factory() as db:
         if tier_of(verb) is Tier.confirm:
+            try:
+                engagement_id = resolve_staged_engagement(body.get("engagement_id"))
+            except ValueError as e:
+                abort(400, str(e))
+            except PermissionError as e:
+                abort(403, str(e))
             row = stage(db, verb=verb, provider=provider, args=args, initiator_id=current_actor_id(),
-                        actor=current_actor_username(), host_audit=host_audit())
+                        engagement_id=engagement_id, actor=current_actor_username(),
+                        host_audit=host_audit())
             return jsonify(status="staged", staged_id=str(row.id),
                            note="confirm-tier: approve at /staged/<id>/approve as a different user"), 202
         try:
