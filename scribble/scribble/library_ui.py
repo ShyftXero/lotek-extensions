@@ -2,7 +2,8 @@
 
 Full CRUD for the vuln template library, keyed on **edit-in-place**:
 
-- List / search / filter templates by category / severity / tag (`bp`, HTML).
+- List templates (`bp`, HTML; `?inactive=1` to include deactivated). Search/sort/paging is the core
+  DataTable widget (client-side) — the old `?q/category/severity/tag` python filtering was dropped (ext#240).
 - Template detail/edit page (`bp`, HTML) — metadata form (name, category, default_severity,
   cvss_score/vector, references, tags) + one rich-text surface per content block (description/
   remediation/details). **Save writes back to the SAME `VulnerabilityTemplate` row** (edit-in-place):
@@ -31,7 +32,7 @@ documented in that file as a reuse point for exactly this kind of adapter) inste
 
 Routes:
     UI (``bp``):
-        GET  /library                          list + search/filter (?q=&category=&severity=&tag=&inactive=1)
+        GET  /library                          list (?inactive=1 shows deactivated); filter/sort client-side
         GET  /library/new                      create form
         GET  /library/<id>                     detail/edit-in-place page
     JSON (``api_bp``):
@@ -73,31 +74,20 @@ def register(api_bp, bp) -> None:
 
     @bp.get("/library", endpoint="library")
     def library():
-        q = (request.args.get("q") or "").strip()
-        category = (request.args.get("category") or "").strip()
-        severity_raw = (request.args.get("severity") or "").strip()
-        tag = (request.args.get("tag") or "").strip()
+        # Plain list. Search/sort/paging is the core DataTable widget (data-dt in library.html,
+        # client-side), so the former ?q/category/severity/tag python filtering is gone (ext#240).
+        # `inactive` is the one server-side control left: it changes which ROWS the DB query returns
+        # (active-only vs all) — deactivated rows are normally out of the DOM, so the client filter
+        # can't reach them. That is row inclusion, not search/sort.
         show_inactive = request.args.get("inactive") == "1"
 
         with open_session() as db:
             stmt = select(VulnerabilityTemplate)
             if not show_inactive:
                 stmt = stmt.where(VulnerabilityTemplate.active.is_(True))
-            if q:
-                stmt = stmt.where(VulnerabilityTemplate.name.ilike(f"%{q}%"))
-            if category:
-                stmt = stmt.where(VulnerabilityTemplate.category == category)
-            severity = _parse_severity(severity_raw) if severity_raw else None
-            if severity is not None:
-                stmt = stmt.where(VulnerabilityTemplate.default_severity == severity)
-            if tag:
-                stmt = stmt.join(VulnerabilityTemplate.tags).where(Tag.name == tag)
             stmt = stmt.order_by(VulnerabilityTemplate.name)
             templates = db.scalars(stmt).unique().all()
 
-            # Sorting/paging/filtering is the core DataTable widget (client-side); the only context
-            # the template still needs is the rows and the server-side "show deactivated" state. The
-            # q/category/severity/tag args above are still honored so bookmarked deep-links keep working.
             return render_template(
                 "scribble/library.html",
                 templates=templates,

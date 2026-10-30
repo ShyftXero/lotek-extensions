@@ -9,7 +9,8 @@ standard fixtures the same way `tests/test_smoke.py` exercises `scribble.library
 Covers: edit-in-place (same row id, fields changed, content_html re-cached), duplicate (new row, copied
 content), create, delete/deactivate (soft, reversible), tag assign (existing + create-and-assign), the
 template-scoped block read/write endpoints (mirroring autosave_api's contract but keyed on
-VulnerabilityTemplate instead of BoardFinding), and list search/filter.
+VulnerabilityTemplate instead of BoardFinding), and the list page (now a plain list behind the core
+DataTable widget — ext#240 dropped the python search/sort routes).
 """
 
 from __future__ import annotations
@@ -92,57 +93,22 @@ def test_library_detail_page_404_for_missing_id(client):
     assert resp.status_code == 404
 
 
-# --------------------------------------------------------------------------------------- search/filter
+# --------------------------------------------------------------------------------------- filter/sort
 
 
-def test_library_search_by_name(client, session_factory):
+def test_library_dropped_python_search_sort(client, session_factory):
+    # ext#240: filter/sort/paging moved to the core DataTable widget (client-side). The legacy
+    # ?q/category/severity/tag python search/sort routes are gone, so the server now renders EVERY
+    # (active) template regardless of those params — the client widget narrows the view, not the query.
     with session_factory() as db:
-        _make_template(db, name="Zzyzx Unique Vuln Name")
-    resp = client.get("/scribble/library", query_string={"q": "Zzyzx Unique"})
-    assert resp.status_code == 200
-    assert b"Zzyzx Unique Vuln Name" in resp.data
-
-
-def test_library_search_excludes_non_matching(client, session_factory):
-    with session_factory() as db:
-        _make_template(db, name="zzAlpha One")
-        _make_template(db, name="zzBeta Two")
-    resp = client.get("/scribble/library", query_string={"q": "zzAlpha"})
-    assert b"zzAlpha One" in resp.data
-    assert b"zzBeta Two" not in resp.data
-
-
-def test_library_filter_by_category(client, session_factory):
-    with session_factory() as db:
-        _make_template(db, name="zzCatA Item", category="zzCatA")
-        _make_template(db, name="zzCatB Item", category="zzCatB")
-    resp = client.get("/scribble/library", query_string={"category": "zzCatA"})
-    assert b"zzCatA Item" in resp.data
-    assert b"zzCatB Item" not in resp.data
-
-
-def test_library_filter_by_severity(client, session_factory):
-    with session_factory() as db:
-        _make_template(db, name="zzSevCrit", default_severity=Severity.critical)
-        _make_template(db, name="zzSevLow", default_severity=Severity.low)
-    resp = client.get("/scribble/library", query_string={"severity": "critical"})
-    assert b"zzSevCrit" in resp.data
-    assert b"zzSevLow" not in resp.data
-
-
-def test_library_filter_by_tag(client, session_factory):
-    create_a = client.post(
-        f"{API_PREFIX}/templates", json={"name": "zzTag Web Finding", "tags": ["zzweb", "zzinjection"]}
-    )
-    create_b = client.post(
-        f"{API_PREFIX}/templates", json={"name": "zzTag Other Finding", "tags": ["zzother"]}
-    )
-    assert create_a.status_code == 201
-    assert create_b.status_code == 201
-
-    resp = client.get("/scribble/library", query_string={"tag": "zzweb"})
-    assert b"zzTag Web Finding" in resp.data
-    assert b"zzTag Other Finding" not in resp.data
+        _make_template(db, name="zzAlpha One", category="zzCatA", default_severity=Severity.critical)
+        _make_template(db, name="zzBeta Two", category="zzCatB", default_severity=Severity.low)
+    # Every legacy filter param is now a no-op: both rows come back whatever we pass.
+    for qs in ({"q": "zzAlpha"}, {"category": "zzCatA"}, {"severity": "critical"}, {"tag": "zzweb"}):
+        resp = client.get("/scribble/library", query_string=qs)
+        assert resp.status_code == 200, qs
+        assert b"zzAlpha One" in resp.data, qs
+        assert b"zzBeta Two" in resp.data, qs
 
 
 def test_library_uses_core_datatable_widget(client, session_factory):
