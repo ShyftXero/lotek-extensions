@@ -1,8 +1,13 @@
-{# Editable standing prose (#Q4): per-report Methodology + Scope/limitations overrides. The editor is
-   PREFILLED with the generated standing text (ext#346 item 3) so an operator overrides from the real
-   baseline; saving it untouched stores NULL (the save path dedups against the default), and Reset clears
-   the box back to that NULL state. "Rephrase with AI" (only when the host provides an AI hook) rewrites
-   the draft for review before Save. Expects: engagement, ai_available, methodology_default, scope_default. #}
+{# Editable standing prose (#Q4): per-report Methodology + Scope/limitations overrides. Each field is the
+   SHARED kit reporting editor (lotek_kit/static/reporting-editor.js) mounted in FORM-SUBMIT mode — WITHOUT
+   a finding-id, so the per-finding autosave loop stays off; the <textarea> below it is the real posted
+   field, hidden once the editor mounts and filled with the serialized doc (as plain text) on submit. With
+   JS off the textarea stays a working plain-text box (ext#346 item 4). The editor is PREFILLED with the
+   generated standing text (ext#346 item 3) so an operator overrides from the real baseline; saving it
+   untouched stores NULL (the save path dedups against the default — scribble.prose.override_for_storage),
+   and Reset clears the box back to that NULL state. "Rephrase with AI" (only when the host provides an AI
+   hook) rewrites the draft for review before Save. Expects: engagement, ai_available, methodology_default,
+   scope_default, scribble_api_prefix. #}
 <details class="card scribble-report-prose">
   <summary><strong>Report Prose</strong> <span class="muted">— methodology &amp; scope, editable per report</span></summary>
   <p class="muted">Edit the standing Methodology and Scope/limitations for <em>this</em> report; leave a box
@@ -12,7 +17,12 @@
         data-prose-form data-rephrase-url="{{ url_for('scribble_api.rephrase_report_prose') }}">
     <div class="rp-field">
       <label for="rp-methodology"><strong>Methodology</strong></label>
-      <textarea id="rp-methodology" name="methodology_text" rows="6" data-field="methodology"
+      {#- Editor mounts here; report_prose.js seeds it from the fallback textarea's value (no server-side
+          doc needed — the text<->doc round-trip lives in one place, the JS). data-api-base is load-bearing:
+          the kit editor has no default, so image paste would POST to a garbage relative path without it. #}
+      <div class="lotek-reporting-editor-wrap rp-editor" data-rp-editor
+           data-api-base="{{ scribble_api_prefix | default('/scribble/api') }}"></div>
+      <textarea id="rp-methodology" name="methodology_text" rows="6" data-field="methodology" data-rp-body
                 placeholder="Leave empty to use the standard methodology text.">{{ engagement.methodology_text or methodology_default }}</textarea>
       <div class="rp-actions">
         <button type="button" class="btn btn-sm" data-reset="rp-methodology">Reset to standard</button>
@@ -23,7 +33,9 @@
     </div>
     <div class="rp-field">
       <label for="rp-scope"><strong>Scope &amp; limitations</strong></label>
-      <textarea id="rp-scope" name="scope_limitations_text" rows="5" data-field="scope"
+      <div class="lotek-reporting-editor-wrap rp-editor" data-rp-editor
+           data-api-base="{{ scribble_api_prefix | default('/scribble/api') }}"></div>
+      <textarea id="rp-scope" name="scope_limitations_text" rows="5" data-field="scope" data-rp-body
                 placeholder="Leave empty to use the standard scope/limitations statement.">{{ engagement.scope_limitations_text or scope_default }}</textarea>
       <div class="rp-actions">
         <button type="button" class="btn btn-sm" data-reset="rp-scope">Reset to standard</button>
@@ -36,5 +48,9 @@
     <span class="rp-status muted" data-prose-status></span>
   </form>
 </details>
+{#- Outbox BEFORE editor: reporting-editor.js reads window.LotekReportingOutbox at script-load time. #}
+<link rel="stylesheet" href="{{ url_for('lotek_kit.static', filename='reporting-editor.css') }}" />
 <link rel="stylesheet" href="{{ url_for('scribble.static', filename='report_prose.css') }}" />
+<script src="{{ url_for('lotek_kit.static', filename='reporting-outbox.js') }}"></script>
+<script src="{{ url_for('lotek_kit.static', filename='reporting-editor.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='report_prose.js') }}"></script>

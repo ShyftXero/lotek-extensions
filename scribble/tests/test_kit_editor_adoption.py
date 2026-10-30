@@ -37,6 +37,10 @@ EXPECTED_CONSUMERS = {
     # image paste -- so it deliberately carries no outbox: an unused one would open an IndexedDB
     # connection on a page that never uploads. If that page grows paste-upload, add it here.
     "library_detail.html": {"reporting-editor.js"},
+    # Standing-prose editor (ext#346 item 4): the Methodology / Scope fields on the engagement board are
+    # the kit editor mounted in form-submit mode (no finding-id). report_prose.js owns the mount, so this
+    # partial just loads the kit assets (outbox before editor) + the kit CSS.
+    "_report_prose.html": {"reporting-outbox.js", "reporting-editor.js", "reporting-editor.css"},
     # The Report Layout composer (feat/scribble-report-asset-polish): a REUSABLE kit drag-reorder widget
     # (section-composer, built on the kit's reorder.js), NOT the CodeMirror editor — so it carries no
     # editor/outbox, and `test_the_outbox_loads_before_the_editor` skips it. Pinned here so the composer's
@@ -48,7 +52,7 @@ EXPECTED_CONSUMERS = {
 #: The opening tag of an editor mount element. Scoped to the TAG rather than the file because
 #: `_editor.html` also carries `data-api-base` on the Rephrase block, which would satisfy a
 #: file-level check after the editor's own attribute was deleted.
-_MOUNT_TAG_RE = re.compile(r"<[a-zA-Z][^>]*\bdata-scribble-editor\b[^>]*>")
+_MOUNT_TAG_RE = re.compile(r"<[a-zA-Z][^>]*\b(?:data-scribble-editor|data-rp-editor)\b[^>]*>")
 
 
 def _kit_assets(template: pathlib.Path) -> list[str]:
@@ -171,3 +175,27 @@ def test_editor_partial_uses_the_kit_css_and_data_classes():
     # data-scribble-editor stays: it is scribble's MOUNT SELECTOR, not part of the kit's contract.
     assert "data-scribble-editor" in body
     assert "window.LotekReportingEditor.mount(el)" in body
+
+
+#: The standing-prose fields that must be the rich editor, not a bare textarea (ext#346 item 4). Keyed by
+#: the posted field name so a renamed field is caught too.
+_PROSE_FIELDS = ("methodology_text", "scope_limitations_text")
+#: A real <textarea> ELEMENT (has at least one attribute) — not the word in a comment, not the close tag.
+_TEXTAREA_RE = re.compile(r"<textarea\s[^>]*>", re.S)
+
+
+def test_no_prose_surface_is_a_bare_textarea():
+    """ext#346 item 4: the Methodology / Scope standing-prose surfaces are the kit reporting editor, not
+    bare ``<textarea>`` boxes. The textarea survives ONLY as the no-JS fallback / posted field, so it must
+    carry ``data-rp-body`` and sit beside a ``data-rp-editor`` mount; and the partial must load the kit
+    editor. A future edit that drops the editor and leaves a plain textarea (the exact regression this
+    guards) goes red here.
+    """
+    body = (TEMPLATES / "_report_prose.html").read_text(encoding="utf-8")
+    for tag in _TEXTAREA_RE.findall(body):
+        assert "data-rp-body" in tag, f"bare prose textarea (no data-rp-body fallback marker): {tag}"
+    # one mount + one tagged fallback per prose field
+    assert body.count("data-rp-editor") == len(_PROSE_FIELDS)
+    for field in _PROSE_FIELDS:
+        assert f'name="{field}"' in body, f"prose field {field} is gone from _report_prose.html"
+    assert "reporting-editor.js" in body, "_report_prose.html must load the kit editor"
