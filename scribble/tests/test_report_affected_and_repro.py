@@ -177,6 +177,13 @@ def test_toolbar_server_export_links_only_with_export_url(session_factory):
         live = render_report_html(ctx, export_url=base)
         assert f"{base}?format=pdf" in live, "live preview offers the server PDF download"
         assert f"{base}?format=docx" in live
+        # ext#253: the controlled render is the deliverable — the server ⬇ PDF is the PRIMARY CTA and
+        # browser print-to-PDF is demoted to a ghost. Guards against a regression back to Print-primary.
+        assert f'class="btn primary" data-export href="{base}?format=pdf"' in live, \
+            "controlled PDF download must be the primary call to action"
+        assert 'data-action="print">⎙ Print</button>' not in live, "browser print must not be primary"
+        assert 'class="btn ghost" type="button" data-action="print"' in live, \
+            "browser print is a ghost screen-convenience, not the deliverable"
         exported = render_report_html(ctx)  # the deliverable passes no export_url
         assert "?format=pdf" not in exported and "?format=docx" not in exported
 
