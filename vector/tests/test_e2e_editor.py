@@ -110,6 +110,31 @@ def test_author_new_diagram_and_export(server, browser, tmp_path):
     assert "<link" not in html
 
 
+def test_nodes_panel_scrolls_and_add_button_stays_pinned(server, browser):
+    """issue #251: a tall nodes tab must scroll inside the panel (not grow the page) and keep the
+    "add node" button visible. Force a long list, then check the panel scrolls and the button sits
+    inside the panel's visible box even scrolled to the top (where, unpinned, it would be far below)."""
+    page = browser.new_page()
+    page.set_viewport_size({"width": 1200, "height": 700})
+    page.goto(f"{server}/vector/new")
+    page.wait_for_selector(".ved")
+    page.click('.ved-tab[data-tab="nodes"]')
+    for _ in range(12):
+        page.click('[data-action="add-node"]')
+
+    panel = page.locator(".ved-panel")
+    # the page itself must not grow past the viewport — the panel absorbs the overflow
+    assert page.evaluate("() => document.documentElement.scrollHeight <= window.innerHeight + 1")
+    assert panel.evaluate("el => el.scrollHeight > el.clientHeight + 1")  # actually scrollable
+
+    panel.evaluate("el => el.scrollTop = 0")
+    add = page.locator('.ved-panel > [data-action="add-node"]')
+    pbox, bbox = panel.bounding_box(), add.bounding_box()
+    # scrolled to the top of a long list, the pinned button is still within the panel's visible box
+    assert bbox["y"] + bbox["height"] <= pbox["y"] + pbox["height"] + 1
+    assert bbox["y"] >= pbox["y"] - 1
+
+
 def test_malicious_style_cannot_inject(browser, tmp_path):
     """A crafted model.style accent must not break out of the inline style attribute (XSS guard)."""
     from vector.render import render_deliverable
