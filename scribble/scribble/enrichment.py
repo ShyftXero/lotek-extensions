@@ -13,10 +13,9 @@ time (INV-TENANCY-06) so a pending-proposal query can never disclose findings ac
 from __future__ import annotations
 
 import uuid
-from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Enum, String, Text, Uuid
+from sqlalchemy import DateTime, Enum, String, Text, Uuid, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from scribble.db import Base
@@ -53,26 +52,36 @@ class EnrichmentProposal(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-# ── the driver: a pluggable, read-only vuln lookup (minimal, like scribble/vector) ──────────────────
+# ── CVE -> severity derivation (replaces the product/version ABC) ──────────────────────────
+#
+# The original ``EnrichmentDriver`` ABC mapped ``(product, version) -> severity`` — a shape that never
+# fit the CVE model (the operator: "don't shoehorn what doesn't fit"). A CVE already carries a CVSS
+# base score, so the suggested severity is a PURE derivation from that score, not a second lookup. This
+# is the reusable primitive the proposal path (and, later, the CVE-detail source) derive ``suggested``
+# from; the live CVSS value arrives with the swappable CVE-detail source (#674 follow-on).
 
-class EnrichmentDriver(ABC):
-    """Maps a product+version to a severity + reference, or None. Real impl: vulnx (projectdiscovery),
-    swappable. Failure yields None -> NO proposal (never a wrong one)."""
-
-    name = "null"
-
-    @abstractmethod
-    def lookup(self, product: str, version: str) -> tuple[Severity, str] | None: ...
-
-
-class NullEnrichment(EnrichmentDriver):
-    """MVP backend: no external lookup, no egress. Returns None (no proposal). Keeps the whole seam
-    exercisable with no network dependency; a real driver replaces this."""
-
-    name = "null"
-
-    def lookup(self, product: str, version: str) -> tuple[Severity, str] | None:
+def severity_from_cvss(score: float | int | None) -> Severity | None:
+    """The CVSS v3 qualitative band for a base ``score``, or ``None`` when there is no usable score
+    (``None``, a bool, out of the 0–10 range). The bands are the FIRST.org standard
+    (0.0 none, 0.1–3.9 low, 4.0–6.9 medium, 7.0–8.9 high, 9.0–10.0 critical); 0.0 maps to ``info``
+    (scribble has no ``none`` band). A bad score yields ``None`` -> NO proposal (never a wrong one)."""
+    if score is None or isinstance(score, bool):
         return None
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    if value < 0 or value > 10:
+        return None
+    if value == 0:
+        return Severity.info
+    if value < 4.0:
+        return Severity.low
+    if value < 7.0:
+        return Severity.medium
+    if value < 9.0:
+        return Severity.high
+    return Severity.critical
 
 
 def is_promotion(current: Severity, suggested: Severity) -> bool:
@@ -82,9 +91,34 @@ def is_promotion(current: Severity, suggested: Severity) -> bool:
 
 def propose(db, *, finding_id: uuid.UUID, engagement_id: uuid.UUID, current: Severity,
             suggested: Severity, reason: str, source: str) -> EnrichmentProposal | None:
-    """Record a promotion proposal, or None if it is not a promotion (promote-only guard)."""
+    """Record a promotion proposal, or None if it is not a promotion (promote-only guard).
+
+    IDEMPOTENT: at most ONE pending proposal per ``(finding_id, source)``. Re-running promotion over a
+    finding a source already flagged returns the EXISTING pending row instead of stacking a duplicate
+    the operator would have to dismiss N times — first-wins, so a decided (accepted/rejected) proposal
+    does not block a fresh one, only an undecided one does. The uniqueness is scoped to ``source`` so
+    two different sources can each stand a proposal for the same finding.
+
+    The guard is a SELECT, not a DB unique constraint: proposals are generated at promotion (serialized
+    per engagement in one txn) so two racers for the same ``(finding_id, source)`` is not a path the
+    product produces today. Add a partial-unique index if a concurrent generator ever lands (the
+    CVE-detail source / proposal UI, #674 follow-on).
+    """
     if not is_promotion(current, suggested):
         return None
+    existing = (
+        db.execute(
+            select(EnrichmentProposal).where(
+                EnrichmentProposal.finding_id == finding_id,
+                EnrichmentProposal.source == source[:120],
+                EnrichmentProposal.status == EnrichmentStatus.pending,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        return existing
     row = EnrichmentProposal(
         finding_id=finding_id, engagement_id=engagement_id, current_severity=current,
         suggested_severity=suggested, reason=reason[:280], source=source[:120],
@@ -96,12 +130,58 @@ def propose(db, *, finding_id: uuid.UUID, engagement_id: uuid.UUID, current: Sev
 
 def decide(db, proposal: EnrichmentProposal, *, accept: bool, decided_by: uuid.UUID | None,
            note: str | None = None) -> EnrichmentProposal:
-    """Human decision — accept or reject. Records who + when (defensibility). The report-side apply on
-    accept (rendering the promoted severity) and the core AuditEvent are the owed follow-on (INV-AUDIT-04)."""
+    """Human decision — accept or reject. Records who + when (defensibility).
+
+    On ACCEPT the promotion is APPLIED to the Scribble report side: the matching ``BoardFinding`` (the
+    one promoted from this core finding — ``source_finding_id == proposal.finding_id``, scoped to the
+    proposal's own ``engagement_id`` so the apply can never cross a tenant) has its rendered ``severity``
+    raised to the proposal's ``suggested_severity``, and the decision is AUDITED (INV-AUDIT-04). This is
+    what the review flagged as owed: before this, ``decide`` set a status and nothing a report reader
+    could see changed. Core scan data is never touched — only the report row moves. Full provenance
+    survives: the proposal row keeps ``current_severity`` -> ``suggested_severity`` with the
+    ``reason``/``source``/``decided_by``, and the audit records the ``before`` severity, so the promotion
+    is reconstructable and the original computed band is never lost. A reject applies nothing. Idempotent
+    apply: a re-accept just re-asserts the same severity. If the finding is no longer on the board, the
+    decision is still recorded and the audit notes ``applied: false``.
+    """
+    from scribble.api_pat import _audit  # lazy: avoids an import cycle (api_pat imports enrichment-side)
+    from scribble.models import BoardFinding
+
     proposal.status = EnrichmentStatus.accepted if accept else EnrichmentStatus.rejected
     proposal.decided_by = decided_by
     proposal.decided_at = datetime.now(UTC)
     proposal.note = note
+
+    if accept:
+        finding = (
+            db.execute(
+                select(BoardFinding).where(
+                    BoardFinding.engagement_id == proposal.engagement_id,
+                    BoardFinding.source_finding_id == proposal.finding_id,
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if finding is not None:
+            # severity round-trips as a Severity enum from the DB but may be a bare str on a row built
+            # in-session before a reload; read it defensively (the codebase's own from_lotek_finding
+            # pattern) so the audit's ``before`` is the value either way.
+            before = getattr(finding.severity, "value", finding.severity) if finding.severity else None
+            finding.severity = proposal.suggested_severity
+            _audit(
+                db, "enrichment_accepted", subject_type="finding", subject_id=finding.id,
+                before={"severity": before},
+                after={"severity": proposal.suggested_severity.value, "reason": proposal.reason,
+                       "source": proposal.source, "proposal_id": str(proposal.id)},
+            )
+        else:
+            _audit(
+                db, "enrichment_accepted", subject_type="finding", subject_id=proposal.finding_id,
+                after={"severity": proposal.suggested_severity.value, "source": proposal.source,
+                       "proposal_id": str(proposal.id), "applied": False},
+            )
+
     db.flush()
     return proposal
 
