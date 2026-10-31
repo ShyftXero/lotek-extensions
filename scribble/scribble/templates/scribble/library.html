@@ -20,6 +20,15 @@
   </form>
 </div>
 
+<div class="card fr-vuln-map-promo">
+  <div class="fr-vuln-map-promo-text">
+    <h3>⇆ Vuln-map <span class="pill">automation</span></h3>
+    <p class="muted">The finding→vuln automation brain: the rules <code>promote_job</code> matches a
+      scan finding against to pick which library template auto-attaches when it lands on a report board.</p>
+  </div>
+  <a class="btn btn-primary" href="{{ url_for('scribble.vuln_map') }}">Open vuln-map →</a>
+</div>
+
 <div class="card">
   <h2>Vulnerability templates <span class="muted">({{ templates|length }})</span></h2>
   {% if templates %}
@@ -60,5 +69,9 @@
   .fr-lib-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .fr-lib-inactive-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
   .fr-lib-row-inactive { opacity: .55; }
+  .fr-vuln-map-promo { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .fr-vuln-map-promo-text { min-width: 0; }
+  .fr-vuln-map-promo h3 { margin: 0 0 4px; }
+  .fr-vuln-map-promo p { margin: 0; }
 </style>
 {% endblock %}
