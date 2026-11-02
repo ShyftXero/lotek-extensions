@@ -1,0 +1,20 @@
+name     = "SMB Signing Not Required"
+category = "Network - SMB"
+severity = "medium"
+
+description = """
+<p>The host(s) at {{AFFECTED}} do not require SMB message signing. An attacker with a network position (via LLMNR/NBT-NS poisoning, a rogue DHCP or DNS answer, or a coercion primitive in the PetitPotam/PrinterBug family) can relay a captured or coerced authentication to these hosts and act as the coerced user, without ever recovering a password.</p>
+"""
+
+impact = """
+<p>A successful relay gives authenticated file-share access, remote command execution over SMB (PsExec-style), or local administrator on the relay target. If the relayed identity is privileged, or the target is a Domain Controller, the same weakness becomes a path to domain compromise. In practice this is usually the last link in a poisoning-to-domain-admin chain rather than a standalone problem, which is why it matters more in an AD environment than on an isolated host.</p>
+"""
+
+replication = """
+<ul><li>Confirm signing is not required: <code>nxc smb {{TARGET_HOST}}</code> and look for <code>signing:False</code></li><li>Relay a captured or coerced authentication: <code>ntlmrelayx.py -tf targets.txt -smb2support</code></li></ul>
+"""
+
+remediation = """
+<p>Enforce SMB signing everywhere through Group Policy (<em>Microsoft network server/client: Digitally sign communications (always)</em>), and confirm it on Domain Controllers, where current baselines enable it by default but it is still worth checking. Disable LLMNR and NBT-NS (see the companion poisoning finding) to remove the most common way an attacker feeds this relay path. Signing stops the relay leg, not the credential capture, so both changes matter.</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1557.001: LLMNR/NBT-NS Poisoning and SMB Relay</li><li>CWE-300: Channel Accessible by Non-Endpoint (Man-in-the-Middle)</li><li>Microsoft: Overview of Server Message Block signing</li></ul>
+"""

@@ -1,0 +1,20 @@
+name     = "Weak TLS/SSL Configuration"
+category = "Network - Cryptography"
+severity = "medium"
+
+description = """
+<p>The service at {{AFFECTED}} negotiates weak TLS versions or cipher suites (SSLv3, TLS 1.0/1.1, RC4, export- or NULL-strength ciphers), presents an expired, self-signed, or hostname-mismatched certificate, or is otherwise open to a known TLS downgrade or attack class.</p>
+"""
+
+impact = """
+<p>This weakens the confidentiality and integrity of data in transit and gives a network-positioned attacker a chance at downgrade or man-in-the-middle interception. The severity scales with what actually crosses the connection: session tokens, credentials, or PII make it matter, a low-value public endpoint much less so. A real attack here also needs that network position, which is not always in reach.</p>
+"""
+
+replication = """
+<ul><li>Enumerate supported protocols, ciphers, and the certificate chain: <code>sslscan {{TARGET_HOST}}</code> or <code>testssl.sh {{TARGET_HOST}}</code></li></ul>
+"""
+
+remediation = """
+<p>Disable SSLv3 and TLS 1.0/1.1 entirely, enable only TLS 1.2 and above with modern AEAD cipher suites (no RC4, no export or NULL ciphers), deploy a valid certificate from a trusted CA with the correct hostname(s), and enable HSTS once TLS is consistently correct. Use the Mozilla TLS "Intermediate" profile as a baseline, and re-scan afterward to confirm the weak options are actually gone rather than just deprioritized.</p>
+<p><strong>References</strong></p><ul><li>Mozilla Server Side TLS Guidelines</li><li>CWE-326: Inadequate Encryption Strength</li><li>NIST SP 800-52r2: TLS Guidelines</li></ul>
+"""

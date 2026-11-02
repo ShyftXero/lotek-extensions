@@ -1,0 +1,19 @@
+name     = "Server-Side Template Injection (SSTI)"
+category = "Web Application"
+severity = "high"
+
+description = """
+<p>One or more application inputs are concatenated directly into a server-side template (e.g. Jinja2, Twig, Freemarker, Velocity, ERB) before the template is rendered. Because the untrusted value becomes part of the template <em>program</em> rather than its data, an attacker can inject template syntax that the engine evaluates on the server. A probe such as <code>${7*7}</code>, <code>#{7*7}</code>, or <code>7*7</code> wrapped in the engine's expression delimiters returning <code>49</code> confirms the input is evaluated rather than echoed.</p>
+"""
+
+impact = """
+<p>SSTI ranges from information disclosure to full remote code execution depending on the template engine and the objects it exposes. Many engines reach Python/Java/Ruby internals from within a template, so a confirmed injection frequently escalates to reading arbitrary files, exfiltrating secrets and environment variables, or executing operating-system commands in the application's security context — a complete compromise of the host and the data it holds.</p>
+"""
+
+replication = """
+<p>1. Submit an arithmetic template-expression probe for the target engine (for example <code>${7*7}</code> or <code>#{7*7}</code>, or <code>7*7</code> enclosed in the engine's expression delimiters) in each reflected parameter.<br>2. Observe whether the response contains the <em>evaluated</em> result (<code>49</code>) rather than the literal string.<br>3. Fingerprint the engine with distinguishing payloads, then escalate through the engine's object graph toward file read / command execution to demonstrate impact.</p>
+"""
+
+remediation = """
+<p>Do not build templates from untrusted input. Treat user data strictly as <em>data</em> passed to a pre-compiled template via its context/variable API — never concatenate it into the template source. Where user-supplied formatting is a genuine requirement, render it in a sandboxed engine configuration with a minimal, explicitly allow-listed object/attribute set and no access to the runtime, and validate/escape input against a strict schema. Keep the template engine patched, and add detection for template-syntax metacharacters in inputs that must never contain them.</p>
+"""

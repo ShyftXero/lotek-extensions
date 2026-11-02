@@ -1,0 +1,21 @@
+name     = "Cross-Site Scripting (XSS)"
+category = "Web Application"
+severity = "high"
+
+description = """
+<p>The application at {{TARGET_URL}} puts attacker-controlled input into a page without encoding it correctly for where it lands (HTML body, attribute, or script), so an attacker can run arbitrary JavaScript in a victim's browser under the site's own origin.</p>
+"""
+
+impact = """
+<p>In the browser, that means session hijacking, credential theft through a fake login overlay, forced actions as the victim, and phishing or defacement. The severity turns on the type: a reflected instance needs the victim to follow a crafted link and sits at the lower end, while a stored instance fires for every user who views the injected content, with no link to click, and belongs at the higher end.</p>
+"""
+
+replication = """
+<ul><li>Inject a probe such as <code>&lt;script&gt;alert(document.domain)&lt;/script&gt;</code> (or a context-appropriate payload, e.g. an attribute breakout or event-handler payload where angle brackets are filtered) into the identified parameter and confirm it executes.</li></ul>
+<p>Location(s): {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Apply context-aware output encoding to all untrusted data (HTML-entity encode in body context, JS-string encode inside <code>&lt;script&gt;</code>, attribute encode inside a tag attribute), and prefer a framework's auto-escaping templates over raw HTML sinks (<code>innerHTML</code>, <code>dangerouslySetInnerHTML</code>, <code>v-html</code>). Add a strict <code>Content-Security-Policy</code> as a backstop, and set <code>HttpOnly</code>, <code>Secure</code>, and <code>SameSite</code> on session cookies so a successful injection still cannot read the session token directly.</p>
+<p><strong>References</strong></p><ul><li>OWASP Top 10 A03:2021: Injection</li><li>OWASP XSS Prevention Cheat Sheet</li><li>CWE-79: Improper Neutralization of Input During Web Page Generation</li></ul>
+"""
