@@ -202,6 +202,20 @@ def test_parent_no_child_has_the_fact_yields_empty_not_omitted():
     assert out == {"K": ""}
 
 
+def test_parent_list_distinct_urls_aggregate_not_empty():
+    """AFFECTED's url/control_id rules use list shape so distinct child values join instead of
+    collapsing to the scalar '' sentinel (ext#311)."""
+    children = [
+        _Dto(facts={"url": "https://a.example/login"}),
+        _Dto(facts={"url": "https://b.example/admin"}),
+    ]
+    rules = [{"fact": "url", "shape": "list"}, {"field": "target_host", "shape": "host"}]
+    out = synthesize_parent_variables(children, _decl("AFFECTED", rules))
+    assert "https://a.example/login" in out["AFFECTED"]
+    assert "https://b.example/admin" in out["AFFECTED"]
+    assert out["AFFECTED"] != ""
+
+
 # ── reproduction_from_facts: PoC -> copy-pastable text, keyed on fact SHAPE (no tool name) ──────────
 
 

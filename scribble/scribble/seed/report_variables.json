@@ -23,16 +23,16 @@
       },
       {
         "fact": "param",
-        "shape": "scalar",
+        "shape": "list",
         "template": "parameter '{value}'"
       },
       {
         "fact": "control_id",
-        "shape": "scalar"
+        "shape": "list"
       },
       {
         "fact": "url",
-        "shape": "scalar"
+        "shape": "list"
       },
       {
         "field": "target_host",
@@ -67,7 +67,7 @@
     "from_facts": [
       {
         "fact": "url",
-        "shape": "scalar"
+        "shape": "list"
       }
     ]
   },
