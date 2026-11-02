@@ -1601,7 +1601,7 @@ def scribble_promote_job(engagement_id: str, job_id: str):
         try:
             result = promote_job(
                 db, engagement=engagement, findings=dtos, actor_username=actor_username,
-                job_engagement_id=getattr(job, "engagement_id", None),
+                job_engagement_id=getattr(job, "engagement_id", None), actor=actor,
             )
         except CrossEngagementPromote as exc:
             # 409, not the 404 the tenancy refusals above use: the caller is authorised on BOTH the job
@@ -1720,7 +1720,7 @@ def scribble_promote_findings(engagement_id: str, job_id: str):
         try:
             result = promote_job(
                 db, engagement=engagement, findings=selected, actor_username=actor_username,
-                job_engagement_id=getattr(job, "engagement_id", None),
+                job_engagement_id=getattr(job, "engagement_id", None), actor=actor,
             )
         except CrossEngagementPromote as exc:
             return jsonify({
