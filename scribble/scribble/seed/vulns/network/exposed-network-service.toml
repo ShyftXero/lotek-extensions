@@ -1,0 +1,20 @@
+name     = "Exposed Network Service"
+category = "Network - Exposure"
+severity = "low"
+
+description = """
+<p>Service fingerprinting found network service(s) on {{AFFECTED}} that may be unnecessary, unauthenticated, or reachable from a wider network segment than the service was meant to serve: commonly databases, management protocols, or legacy services that should be internal only.</p>
+"""
+
+impact = """
+<p>This widens the attack surface reachable from the tested position. An exposed service is not a vulnerability by itself, but an unauthenticated or weakly-authenticated one is among the fastest ways in, because it needs no phishing, no stolen credential, and no prior foothold, only network reach. Whether it matters here depends on what the service is and what it will accept from an unauthenticated caller.</p>
+"""
+
+replication = """
+<ul><li>Service(s) and banner(s) captured during fingerprinting: {{AFFECTED}}</li></ul>
+"""
+
+remediation = """
+<p>Restrict each exposed service above to the smallest network segment that needs it (firewalling and segmentation), require authentication on anything that has none, disable or remove services with no active business use, and put management protocols behind a bastion host or VPN instead of exposing them directly.</p>
+<p><strong>References</strong></p><ul><li>CIS Controls: Network Infrastructure Management</li><li>OWASP Top 10 A05:2021: Security Misconfiguration</li></ul>
+"""

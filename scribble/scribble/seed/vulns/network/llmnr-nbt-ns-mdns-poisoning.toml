@@ -1,0 +1,21 @@
+name     = "LLMNR / NBT-NS / mDNS Poisoning"
+category = "Network - Active Directory"
+severity = "high"
+
+description = """
+<p>Link-Local Multicast Name Resolution (LLMNR), NBT-NS, and/or mDNS are enabled on the local broadcast segment. When a host fails a normal DNS lookup (a mistyped share name, a stale mapped drive, a bad print or proxy lookup) it falls back to a broadcast query. An attacker on the same broadcast domain answers first, coerces the victim into authenticating to them, and captures its NetNTLMv2 challenge/response.</p>
+"""
+
+impact = """
+<p>The captured NetNTLMv2 hash can be cracked offline, or relayed straight to a host that does not require SMB signing (see the companion "SMB Signing Not Required" finding) for interactive access with no cracking at all. It is a low-effort move from a passive foothold on the wire to credentials or code execution, which is why it turns up so often in internal engagements. How far it goes depends on which accounts get captured and whether their hashes crack.</p>
+"""
+
+replication = """
+<ul><li>Capture passively: <code>responder -I eth0 -wf</code>, hashes arrive as victims resolve names that do not exist</li><li>Relay instead of cracking: <code>ntlmrelayx.py -tf targets.txt -smb2support</code></li></ul>
+<p>Credentials captured: {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Disable LLMNR through Group Policy (<em>Turn off multicast name resolution</em>), disable NBT-NS per adapter or through the DHCP option pushed fleet-wide, and disable mDNS where nothing needs it. Enforce SMB and LDAP signing so a captured hash cannot simply be relayed even if some poisoning remains. Make sure DNS is configured correctly and completely so resolution never needs the broadcast fallback in the first place.</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1557.001: LLMNR/NBT-NS Poisoning and Relay</li><li>CWE-300: Channel Accessible by Non-Endpoint (Man-in-the-Middle)</li></ul>
+"""

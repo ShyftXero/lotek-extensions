@@ -11,24 +11,29 @@ hand.
 
 from __future__ import annotations
 
-import json
+import re
+import tomllib
 from pathlib import Path
 
 from scribble.models import VulnerabilityTemplate
 from scribble.templating import known_variable_keys, lint_doc
 
-_LOTEK_SEED = Path(__file__).parent.parent / "scribble" / "seed" / "lotek_vulnerabilities.json"
+_VULNS_DIR = Path(__file__).parent.parent / "scribble" / "seed" / "vulns"
 
 
 def _lotek_template_names() -> set[str]:
-    records = json.loads(_LOTEK_SEED.read_text())
-    return {r["Name"] for r in records if r.get("Name")}
+    names: set[str] = set()
+    for p in _VULNS_DIR.rglob("*.toml"):
+        rec = tomllib.loads(p.read_text())
+        name = (rec.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
 
 
-def test_lotek_seed_file_has_19_records():
-    # Pins the count independently of test_seed_content.py's DB-level 63 = 44 + 19 assertion, so a
-    # record silently added/removed from the JSON is caught here too, with the file as the direct cause.
-    assert len(_lotek_template_names()) == 19
+def test_lotek_seed_has_20_templates():
+    # Pins the count so a record silently added/removed from seed/vulns/ is caught at the file level.
+    assert len(_lotek_template_names()) == 20
 
 
 def test_every_lotek_template_token_is_known_to_the_pipeline(session_factory):
@@ -57,19 +62,20 @@ def test_every_lotek_template_token_is_known_to_the_pipeline(session_factory):
 
 
 def test_only_the_expected_token_vocabulary_is_used():
-    """A tighter pin than the lint-based test above: the specific set of tokens the 19 shipped templates
+    """A tighter pin than the lint-based test above: the specific set of tokens the shipped templates
     actually use today. Guards against silent scope creep (e.g. someone reintroducing a raw ACCOUNTS/
     OBJECTS/AFFECTED_COUNT/MAX_SEVERITY reference in body prose, which -- per the notes for this task --
     is deliberately NOT done in the seed content because those variables have no non-empty fallback and
     would dangle when the underlying fact is absent, unlike AFFECTED's cascade). Update this set
     deliberately if a future edit intentionally adds a new token AND has verified it degrades safely.
     """
-    import re
-
-    records = json.loads(_LOTEK_SEED.read_text())
     tokens: set[str] = set()
-    for rec in records:
-        blob = (rec.get("Description") or "") + (rec.get("Recommendation") or "")
+    for p in _VULNS_DIR.rglob("*.toml"):
+        rec = tomllib.loads(p.read_text())
+        blob = " ".join(
+            rec.get(f) or ""
+            for f in ("description", "impact", "replication", "remediation")
+        )
         tokens.update(re.findall(r"\{\{(\w+)\}\}", blob))
 
     assert tokens == {"AFFECTED", "DOMAIN", "TARGET_HOST", "TARGET_URL"}

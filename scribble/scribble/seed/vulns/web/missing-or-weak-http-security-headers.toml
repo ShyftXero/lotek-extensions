@@ -1,0 +1,20 @@
+name     = "Missing or Weak HTTP Security Headers"
+category = "Web Application"
+severity = "low"
+
+description = """
+<p>Responses from {{TARGET_URL}} omit or weakly configure defense-in-depth headers such as <code>Content-Security-Policy</code>, <code>Strict-Transport-Security</code>, <code>X-Content-Type-Options</code>, and a frame-ancestors policy (or <code>X-Frame-Options</code>).</p>
+"""
+
+impact = """
+<p>On its own this is low risk. What it does is make other issues on the same origin easier to exploit and worse when they land: no CSP removes a backstop against XSS, no HSTS leaves a downgrade window on the first visit, no frame-ancestors policy allows clickjacking. Treat it as defense-in-depth to fix alongside the findings it would otherwise amplify, not as a standalone emergency.</p>
+"""
+
+replication = """
+<ul><li>Inspect response headers: <code>curl -I {{TARGET_URL}}</code></li></ul>
+"""
+
+remediation = """
+<p>Add a <code>Content-Security-Policy</code> tailored to the application's real script and style sources (not a blanket <code>unsafe-inline</code>), <code>Strict-Transport-Security</code> with a long <code>max-age</code> and <code>preload</code>, <code>X-Content-Type-Options: nosniff</code>, and a frame-ancestors CSP directive (or <code>X-Frame-Options: DENY</code>/<code>SAMEORIGIN</code> for older browsers). Confirm the final header set with a headers scanner after deploying.</p>
+<p><strong>References</strong></p><ul><li>OWASP Secure Headers Project</li><li>CWE-693: Protection Mechanism Failure</li><li>MDN Web Docs: HTTP security headers</li></ul>
+"""

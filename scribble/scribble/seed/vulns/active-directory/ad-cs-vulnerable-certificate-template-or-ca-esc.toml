@@ -1,0 +1,21 @@
+name     = "AD CS - Vulnerable Certificate Template or CA (ESC)"
+category = "Active Directory - Certificate Services"
+severity = "high"
+
+description = """
+<p>Active Directory Certificate Services has one or more misconfigurations in the ESC1 to ESC17 classes that allow certificate-based privilege escalation. Depending on the class, a low-privileged user can enroll for a certificate that authenticates as a higher-privileged principal, up to and including a Domain Controller (ESC8 via HTTP web enrollment and NTLM relay, or ESC1's enrollee-supplied SAN), without ever touching that principal's password.</p>
+"""
+
+impact = """
+<p>A successful abuse authenticates as a higher-privileged principal, and in the worst common cases that is a straight line to Domain Admin or Domain Controller. What makes it worse than a stolen password is persistence: a certificate stays valid until it expires and survives a password reset on the impersonated account, so it is a durable way back in. The real severity depends on which class is present and how privileged the reachable templates are.</p>
+"""
+
+replication = """
+<ul><li>Enumerate vulnerable templates and CAs: <code>certipy find -u user@{{DOMAIN}} -p pass -dc-ip {{TARGET_HOST}} -vulnerable -stdout</code></li><li>Abuse per class, e.g. ESC1: <code>certipy req -u user@{{DOMAIN}} -template &lt;tmpl&gt; -upn administrator@{{DOMAIN}}</code></li></ul>
+<p>Vulnerable template(s) or CA(s) identified: {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Fix per class: remove enrollee-supplied-SAN (<code>CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT</code>) from the templates above, require manager approval on sensitive templates, and cut enrollment and write rights down to the principals that actually need them. Disable HTTP Web Enrollment, or enforce Extended Protection for Authentication plus channel binding on it. Turn on strong certificate mapping (KB5014754) so an issued certificate cannot quietly impersonate an account through a weak UPN or SAN match.</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1649: Steal or Forge Authentication Certificates</li><li>SpecterOps: Certified Pre-Owned (ESC1 to ESC8)</li><li>Microsoft KB5014754: Certificate-based authentication changes</li></ul>
+"""

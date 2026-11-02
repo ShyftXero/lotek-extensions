@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tomllib
 from pathlib import Path
 
 from sqlalchemy import select
@@ -141,7 +142,7 @@ def import_vuln_templates(session, json_path: str | Path | None = None) -> int:
     return added
 
 
-_LOTEK_JSON = Path(__file__).parent / "lotek_vulnerabilities.json"
+_VULNS_DIR = Path(__file__).parent / "vulns"
 _DEFAULT_VULN_MAP_JSON = Path(__file__).parent / "lotek_vuln_map.json"
 _CURATED_JSON = Path(__file__).parent / "curated_vulnerabilities.json"
 
@@ -161,6 +162,51 @@ def _get_or_create_tags(session, names) -> list[Tag]:
             session.add(tag)
         tags.append(tag)
     return tags
+
+
+def _toml_content_json(rec: dict) -> dict:
+    """Assemble content_json from a TOML record's HTML fields (description/impact/replication/remediation)."""
+    desc_doc = faction_parse.html_to_doc(rec.get("description") or "")
+    impact_html = (rec.get("impact") or "").strip()
+    if impact_html:
+        impact_doc = faction_parse.html_to_doc(impact_html)
+        if impact_doc.get("content"):
+            desc_doc = {
+                "type": "doc",
+                "content": [
+                    *desc_doc["content"],
+                    faction_parse.bold_lead_paragraph("Impact"),
+                    *impact_doc["content"],
+                ],
+            }
+    return {
+        "description": desc_doc,
+        "details": faction_parse.html_to_doc(rec.get("replication") or ""),
+        "remediation": faction_parse.html_to_doc(rec.get("remediation") or ""),
+    }
+
+
+def import_vulns_from_toml_dir(session, root: str | Path | None = None) -> int:
+    """Import hand-authored TOML vuln templates from ``vulns/**/*.toml``. Idempotent by name.
+
+    Each TOML file carries clean ``description``/``impact``/``replication``/``remediation`` HTML fields
+    (no FACTION section-marker encoding). ``impact`` is folded under the ``description`` block via a
+    bold lead paragraph, matching ``build_template_blocks``'s behaviour for the curated path.
+    """
+    directory = Path(root) if root else _VULNS_DIR
+    if not directory.exists():
+        return 0
+    added = 0
+    for path in sorted(directory.rglob("*.toml")):
+        try:
+            rec = tomllib.loads(path.read_text())
+        except Exception:
+            logger.warning("vuln TOML seed: %s failed to parse, skipping", path)
+            continue
+        rec["content_json"] = _toml_content_json(rec)
+        if build_template_from_record(session, rec, machine_authored=False) is not None:
+            added += 1
+    return added
 
 
 def import_curated_templates(session, json_path: str | Path | None = None) -> int:
@@ -468,10 +514,10 @@ def seed_defaults(session, *, import_library: bool = True) -> dict[str, int]:
     templates = 0
     vuln_map = 0
     if import_library:
-        templates = import_vuln_templates(session)                 # FACTION default library
-        templates += import_vuln_templates(session, _LOTEK_JSON)   # lotek AD/network vuln-DB entries
-        templates += import_curated_templates(session)                  # curated library (263 entries)
-        vuln_map = seed_vuln_map(session)                           # lotek finding -> template mapping
+        templates = import_vuln_templates(session)           # FACTION default library
+        templates += import_vulns_from_toml_dir(session)     # hand-authored TOML entries
+        templates += import_curated_templates(session)        # curated library (263 entries)
+        vuln_map = seed_vuln_map(session)                    # lotek finding -> template mapping
     result = {
         "assessment_types": seed_assessment_types(session),
         "builtin_variables": seed_builtin_variables(session),

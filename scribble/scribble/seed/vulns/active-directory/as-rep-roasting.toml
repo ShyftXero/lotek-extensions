@@ -1,0 +1,21 @@
+name     = "AS-REP Roasting"
+category = "Active Directory - Kerberos"
+severity = "high"
+
+description = """
+<p>One or more Active Directory accounts are set to <em>Do not require Kerberos pre-authentication</em> (<code>UF_DONT_REQUIRE_PREAUTH</code>). With pre-authentication off, any unauthenticated attacker on the network can ask a domain controller for an AS-REP for the account and get back material encrypted with the account's password-derived key. That material cracks offline at GPU speed (hashcat mode 18200). There is no interaction with the account, and nothing the attacker does risks a lockout.</p>
+"""
+
+impact = """
+<p>An attacker who cracks the AS-REP recovers the account's cleartext password and can then authenticate as that principal. How far that goes depends on the account: a strong, unique password may never crack, while a weak one on a service or legacy admin account (the usual holders of this flag) can hand over privileged access. The request looks like a single Kerberos AS-REQ, not a failed logon, so the capture is quiet on the target.</p>
+"""
+
+replication = """
+<ul><li>List accounts with the flag and request their AS-REPs unauthenticated: <code>GetNPUsers.py {{DOMAIN}}/ -no-pass -usersfile users.txt -dc-ip {{TARGET_HOST}} -format hashcat</code></li><li>Crack offline: <code>hashcat -m 18200 asrep.hashes wordlist.txt</code></li></ul>
+<p>Accounts confirmed roastable: {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Clear the flag on every affected account: <code>Get-ADUser -Filter 'DoesNotRequirePreAuth -eq $true' | Set-ADAccountControl -DoesNotRequirePreAuth $false</code>. Put a strong, unique password on the accounts above, and move service identities to (group) Managed Service Accounts, which rotate a 120-character password on their own and are not roastable the same way. For detection, alert on Kerberos AS-REQ traffic with pre-authentication type 0 (Event ID 4768 with <code>PreAuthType</code> absent).</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1558.004: Steal or Forge Kerberos Tickets, AS-REP Roasting</li><li>CWE-522: Insufficiently Protected Credentials</li><li>Microsoft: Kerberos pre-authentication</li></ul>
+"""

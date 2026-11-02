@@ -1,0 +1,20 @@
+name     = "SMBv1 Enabled"
+category = "Network - SMB"
+severity = "high"
+
+description = """
+<p>The legacy SMBv1 dialect is enabled and negotiable on {{AFFECTED}}. SMBv1 is deprecated and has a history of serious remote-code-execution flaws, the best known being the MS17-010 (EternalBlue) class, CVE-2017-0144. Whether that specific risk applies here depends on patch level: the finding is that the old dialect is still offered, which is worth removing on its own.</p>
+"""
+
+impact = """
+<p>SMBv1 is the protocol WannaCry and NotPetya rode: both worms spread through the MS17-010 (EternalBlue) flaw in it. That history, and the fact that the dialect is deprecated and should not be on the wire at all, is why offering it is a high finding and not a note. On a host still unpatched for MS17-010 it is unauthenticated remote code execution as SYSTEM, and because the exploit needs no credentials and travels over SMB, it can move host to host on its own. A patched host is not instantly compromised, but it is still speaking a broken protocol that lacks modern SMB's protections and keeps a dangerous path open. Confirm patch level to know whether the RCE is live here. Either way, the dialect should be off.</p>
+"""
+
+replication = """
+<ul><li>Confirm the dialect is offered: <code>nxc smb {{TARGET_HOST}}</code> and look for SMB1 in the supported dialects, or <code>nmap --script smb-protocols -p445 {{TARGET_HOST}}</code></li></ul>
+"""
+
+remediation = """
+<p>Disable SMBv1 wherever legacy hardware or software does not explicitly require it (<code>Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol</code>, or the equivalent GPO), and confirm the host is patched for MS17-010 and later SMB CVEs regardless. Where a legacy dependency genuinely needs SMBv1, isolate that host on its own segment with no route to the rest of the environment.</p>
+<p><strong>References</strong></p><ul><li>Microsoft MS17-010 / CVE-2017-0144: SMBv1 remote code execution</li><li>CWE-327: Use of a Broken or Risky Cryptographic Algorithm</li><li>Microsoft: Stop using SMB1</li></ul>
+"""
