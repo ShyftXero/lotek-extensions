@@ -47,6 +47,7 @@ class StoredBlob:
     filename: str
     engagement_id: Any
     created_by: Any
+    job_id: Any = None
     deleted: bool = False
 
 
@@ -70,7 +71,7 @@ class InMemoryObjects:
             raise ValueError(f"invalid kind {kind!r}")
         data = stream.read()
         object_id = uuid.uuid7()
-        blob = StoredBlob(kind, data, content_type, filename, engagement_id, actor)
+        blob = StoredBlob(kind, data, content_type, filename, engagement_id, actor, job_id=job_id)
         self.blobs[object_id] = blob
         self.puts.append(blob)
         # No ``s3_key`` on the ref: the store stays dashboard-only.
@@ -98,10 +99,30 @@ class InMemoryObjects:
         blob.deleted = True  # a tombstone, as in core — a GC reclaims the bytes later
         return True
 
-    def list(self, actor, **_kw):
+    def list(self, actor, *, job_id=None, engagement_id=None, kind=None):
+        """Blobs the actor may view, filtered by ``job_id``/``engagement_id``/``kind`` and returned as
+        ObjectRef-shaped namespaces (``id``/``kind``/``job_id``/``filename``/``sha256``/
+        ``content_type``/``size``) — the SHAPE the real ``HostObjects.list`` returns, so a consumer that
+        matches on ``filename`` (ext#309 screenshot promote) exercises the real code path, not a stub
+        that only hands back ids."""
         if actor is None:
             return []
-        return [SimpleNamespace(id=k) for k, v in self.blobs.items() if not v.deleted]
+        out = []
+        for k, v in self.blobs.items():
+            if v.deleted:
+                continue
+            if job_id is not None and v.job_id != job_id:
+                continue
+            if engagement_id is not None and v.engagement_id != engagement_id:
+                continue
+            if kind is not None and v.kind != (kind.value if hasattr(kind, "value") else str(kind)):
+                continue
+            out.append(SimpleNamespace(
+                id=k, kind=v.kind, job_id=v.job_id, filename=v.filename,
+                sha256=hashlib.sha256(v.data).hexdigest(), content_type=v.content_type,
+                size=len(v.data),
+            ))
+        return out
 
 
 @dataclass

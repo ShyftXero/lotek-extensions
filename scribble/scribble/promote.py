@@ -20,14 +20,18 @@ operator curates, not a Python branch.
 from __future__ import annotations
 
 import fnmatch
+import re
 import uuid
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from scribble.artifacts_storage import MAX_OBJECT_BYTES, persist_bytes
 from scribble.dispositions import confidence_from_dto, snapshot_source_facts, status_from_dto
+from scribble.enums import ArtifactKind, ArtifactPlacement
 from scribble.facts import resolve_variables, synthesize_parent_variables
 from scribble.metadata import (
     REF_SOURCE_SCAN,
@@ -41,6 +45,7 @@ from scribble.models import (
     PROMOTE_DEDUP_INDEX as _UQ_PROMOTE_DEDUP,
 )
 from scribble.models import (
+    Artifact,
     BoardFinding,
     ScribbleVulnMap,
     TemplateVariable,
@@ -431,8 +436,149 @@ def select_job_findings(dtos: list, finding_ids: Any) -> list:
     return [d for d in dtos if str(d.id) in want]
 
 
+# ── scan-screenshot evidence (ext#309): auto-attach the host-page shot to a promoted web finding ────
+#
+# httpx `-ss` writes a PNG per live page to `.../screenshot/<host[_port]>/<name>.png`; the leader
+# ingests the whole job tree into the host object store verbatim as `kind=artifact` blobs keyed by the
+# job (object_store.ingest_job_artifacts). So the evidence an operator used to upload by hand already
+# exists — this matches it to the finding by WEB HOST and bolts it on as a `screenshot` Artifact, at the
+# ONE shared promotion point so whole-job and selected promotes (and their per-host children) all get it.
+
+# `.../screenshot/<seg>/<file>.png` — <seg> is httpx's sanitized host dir (e.g. `shyft.us`,
+# `127.0.0.1_8080`). Anchored to the `screenshot/` path segment so an unrelated PNG (a logo) is ignored.
+_SCREENSHOT_PATH_RE = re.compile(r"(?:^|/)screenshot/([^/]+)/[^/]+\.png$", re.IGNORECASE)
+# idempotency_key prefix for an auto-attached scan screenshot — keyed by (finding, source sha256) so a
+# re-promote of the same shot refreshes (skips) rather than duplicating.
+_SCAN_SS_KEY_PREFIX = "scan-ss:"
+
+
+def _screenshot_host_segment(filename: str | None) -> str | None:
+    """The `<host>` dir of a `.../screenshot/<host>/<name>.png` object path, lowercased, or None."""
+    m = _SCREENSHOT_PATH_RE.search(filename or "")
+    return m.group(1).lower() if m else None
+
+
+def _web_host_tokens(url: str | None) -> set[str]:
+    """The screenshot-dir tokens httpx may have written for a web URL: ``{host, host_port}`` lowercased
+    (httpx omits the port for default ports, includes `_<port>` otherwise — see the samples in
+    ``lotek/tests/test_screenshots.py``). Empty set when there is no parseable host — which is also the
+    WEB gate: a finding with no URL (a port-scan/host finding) yields no tokens and gets no screenshot,
+    so a web host-page shot never lands as misleading evidence on a non-web finding sharing the host."""
+    if not url:
+        return set()
+    parts = urlsplit(url if "://" in url else "//" + url)
+    host = (parts.hostname or "").lower()
+    if not host:
+        return set()
+    tokens = {host}
+    if parts.port:
+        tokens.add(f"{host}_{parts.port}")
+    return tokens
+
+
+def _dto_web_url(dto: Any, target_url: str | None) -> str | None:
+    """The web URL a promoted finding is about: its resolved ``target_url`` column, else the DTO's own
+    ``facts['url']`` (the aliased `matched_at` a web tool emits). None ⇒ not a web finding."""
+    return target_url or (getattr(dto, "facts", None) or {}).get("url")
+
+
+def _scan_screenshots_for_job(objects: Any, actor: Any, job_id: Any) -> list[tuple[str, Any]]:
+    """``(host_segment, object_ref)`` for every host-page screenshot the job produced, or [] on any
+    refusal. Best-effort — a screenshot is evidence to enrich with, never a reason to fail a promote."""
+    if job_id is None:
+        return []
+    try:
+        refs = objects.list(actor, job_id=job_id, kind="artifact")
+    except (PermissionError, RuntimeError, OSError, TypeError):
+        return []
+    out: list[tuple[str, Any]] = []
+    for ref in refs:
+        # ponytail: O(n) over a job's artifact list (dozens of files); a job never has enough objects
+        # to want an index. Add server-side path filtering to HostObjects.list if that stops holding.
+        seg = _screenshot_host_segment(getattr(ref, "filename", "") or "")
+        if seg is not None:
+            out.append((seg, ref))
+    return out
+
+
+def _read_object_bytes(objects: Any, actor: Any, object_id: Any) -> bytes | None:
+    """Bounded read of one object's bytes, or None (absent / too large / refused)."""
+    if object_id is None:
+        return None
+    try:
+        with objects.open(actor, object_id) as body:
+            data = body.read(MAX_OBJECT_BYTES + 1)
+    except (KeyError, PermissionError, RuntimeError, OSError):
+        return None
+    return None if not data or len(data) > MAX_OBJECT_BYTES else data
+
+
+def _attach_scan_screenshots(db: Any, *, engagement: Any, targets: list, actor: Any) -> None:
+    """Attach each promoted web finding's host-page httpx screenshot as a ``screenshot`` Artifact
+    (ext#309). ``targets`` is ``[(finding, job_id, url), ...]`` — the rows this promote created OR
+    refreshed, both the new per-host children and the deduped ones, so a re-promote keeps the evidence.
+
+    The bytes are COPIED out of the job's ``kind=artifact`` object into scribble's OWN ``kind=evidence``
+    object (``persist_bytes``), never referenced in place: a scribble Artifact deleted later tombstones
+    its backing blob, and that must not reach into the shared job artifact. Idempotent per
+    ``(finding, source sha256)`` via ``idempotency_key`` — a re-promote of the same shot is a no-op.
+    Best-effort and tool-agnostic throughout: no object surface, no core anchor, a refused read, or no
+    matching shot just means no evidence is added."""
+    from . import host as _host
+
+    objects = _host.objects()
+    core_eng_id = getattr(engagement, "core_engagement_id", None)
+    if objects is None or not core_eng_id or not targets:
+        return
+    created_by = getattr(actor, "username", None)
+    existing_keys = {a.idempotency_key for a in engagement.artifacts if a.idempotency_key}
+    shots_by_job: dict[Any, list[tuple[str, Any]]] = {}
+    for finding, job_id, url in targets:
+        tokens = _web_host_tokens(url)
+        if not tokens or getattr(finding, "id", None) is None:
+            continue
+        if job_id not in shots_by_job:
+            shots_by_job[job_id] = _scan_screenshots_for_job(objects, actor, job_id)
+        for seg, ref in shots_by_job[job_id]:
+            if seg not in tokens:
+                continue
+            source_sha = getattr(ref, "sha256", None) or str(getattr(ref, "id", ""))
+            key = f"{_SCAN_SS_KEY_PREFIX}{finding.id}:{source_sha}"
+            if key in existing_keys:
+                continue
+            data = _read_object_bytes(objects, actor, getattr(ref, "id", None))
+            if not data:
+                continue
+            filename = (getattr(ref, "filename", "") or "screenshot.png").rsplit("/", 1)[-1]
+            content_type = getattr(ref, "content_type", None) or "image/png"
+            try:
+                storage_path, digest, size = persist_bytes(
+                    core_engagement_id=core_eng_id, filename=filename, data=data,
+                    content_type=content_type,
+                )
+            except (PermissionError, RuntimeError):
+                continue
+            db.add(Artifact(
+                engagement_id=engagement.id,
+                finding_id=finding.id,
+                kind=ArtifactKind.screenshot,
+                placement=ArtifactPlacement.attached,
+                filename=filename,
+                content_type=content_type,
+                storage_path=storage_path,
+                byte_size=size,
+                sha256=digest,
+                caption=f"Scan screenshot — {url}" if url else "Scan screenshot",
+                include_in_report=True,
+                created_by=created_by,
+                idempotency_key=key,
+            ))
+            existing_keys.add(key)
+
+
 def promote_job(
-    db: Any, *, engagement: Any, findings: list, actor_username: str | None, job_engagement_id: Any
+    db: Any, *, engagement: Any, findings: list, actor_username: str | None, job_engagement_id: Any,
+    actor: Any = None,
 ) -> dict:
     """Bulk-promote a lotek scan job's findings (host ``FindingDTO``s) into ``engagement``.
 
@@ -493,6 +639,13 @@ def promote_job(
             db.expire(engagement)
             continue
         savepoint.commit()
+        # Evidence attach runs AFTER the savepoint commits — once, on the attempt that stuck — so a
+        # dedup-conflict rollback/retry can never orphan a `persist_bytes` blob in the object store
+        # (the rolled-back attempt's findings are gone and its would-be screenshots were never written).
+        # The Artifact rows join the caller's open transaction, committed with the findings they evidence.
+        ss_targets = result.pop("_ss_targets", [])
+        if actor is not None:
+            _attach_scan_screenshots(db, engagement=engagement, targets=ss_targets, actor=actor)
         return result
     raise AssertionError("unreachable: the loop returns or raises on both attempts")  # pragma: no cover
 
@@ -561,6 +714,10 @@ def _promote_findings(
     # flush below (`new_by_source`).
     refs: dict[Any, Any] = {}
     new_by_source: dict[Any, BoardFinding] = {}
+    # (finding, job_id, url) for every row this promote created OR refreshed, fed to the ext#309
+    # scan-screenshot attach AFTER the final flush (so new rows' PKs exist). Deduped/refreshed rows are
+    # included too, so a re-promote keeps the evidence (the attach is idempotent per source sha256).
+    screenshot_targets: list[tuple[Any, Any, str | None]] = []
     promoted = 0
     skipped = 0
     parents_created = 0
@@ -583,6 +740,10 @@ def _promote_findings(
                 existing.source_facts = snapshot_source_facts(dto)
                 if dto_id is not None:
                     refs[dto_id] = existing.id
+                screenshot_targets.append(
+                    (existing, getattr(dto, "job_id", None),
+                     _dto_web_url(dto, getattr(existing, "target_url", None)))
+                )
             skipped += 1
             continue
 
@@ -600,6 +761,8 @@ def _promote_findings(
         t_host = overrides.get("target_host")
         t_port = overrides.get("target_port")
         t_url = overrides.get("target_url")
+        job_id = getattr(dto, "job_id", None)
+        web_url = _dto_web_url(dto, t_url)
 
         template = _matched_template(db, dto)
         overrides["references"] = _reference_override(dto, template)
@@ -627,6 +790,7 @@ def _promote_findings(
                 if dto_id is not None:
                     refs[dto_id] = existing_child.id
                     promoted_source_ids.add(dto_id)
+                screenshot_targets.append((existing_child, job_id, web_url))
                 skipped += 1
                 continue
             overrides["parent_id"] = parent.id
@@ -645,6 +809,7 @@ def _promote_findings(
                 if dto_id is not None:
                     refs[dto_id] = existing_flat.id
                     promoted_source_ids.add(dto_id)
+                screenshot_targets.append((existing_flat, job_id, web_url))
                 skipped += 1
                 continue
             finding = BoardFinding.from_lotek_finding(dto, **overrides)
@@ -655,6 +820,7 @@ def _promote_findings(
         if dto_id is not None:
             promoted_source_ids.add(dto_id)
             new_by_source[dto_id] = finding
+        screenshot_targets.append((finding, job_id, web_url))
         promoted += 1
 
     # One deterministic synthesis pass per parent, once every one of its children is known.
@@ -691,31 +857,10 @@ def _promote_findings(
     for dto_id, finding in new_by_source.items():
         refs[dto_id] = finding.id
 
-    # threat_intel (KEV/EPSS) enrichment (#642 / ext#247): promotion is the dashboard seam the
-    # enrichment driver hangs off. The driver gates on per-engagement egress CONSENT itself (default
-    # OFF, forced OFF internal), so this is a no-op — no hook call, no egress, no audit — unless an
-    # operator turned consent on for this engagement; and the live feed is core-side stubbed until
-    # lotek#674, so with consent on it still degrades honestly to no snapshot. Runs on the freshly
-    # promoted rows only (a re-promote keeps its existing dated snapshot). Inside the same SAVEPOINT as
-    # the inserts, so the lookup audit commits atomically with the enrichment (and re-runs on a retry).
-    enrich_threat_intel(db, new_by_source.values())
-
-    return {"promoted": promoted, "skipped": skipped, "parents": parents_created, "refs": refs}
-
-
-def enrich_threat_intel(db: Any, findings) -> None:
-    """Populate each finding's ``threat_intel`` KEV/EPSS snapshot via the consent-gated
-    :class:`scribble.enrichment.ThreatIntelDriver`. A finding with no CVEs is skipped (nothing to look
-    up); the driver returns ``None`` — leaving ``threat_intel`` untouched — when consent is off, the
-    feed is unmounted, or the feed is degraded. ONE home for "enrich on promote", so the call site stays
-    a single line and the consent/audit policy stays entirely inside the driver."""
-    from scribble.enrichment import ThreatIntelDriver  # lazy: keep promote import-light
-
-    driver = ThreatIntelDriver()
-    for finding in findings:
-        if not getattr(finding, "cve_ids", None):
-            continue
-        driver.apply(db, finding, driver.propose(db, finding))
+    return {
+        "promoted": promoted, "skipped": skipped, "parents": parents_created, "refs": refs,
+        "_ss_targets": screenshot_targets,
+    }
 
 
 def remap_job_findings(db: Any, *, engagement: Any, job_finding_ids) -> dict:
