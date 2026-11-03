@@ -20,6 +20,7 @@ operator curates, not a Python branch.
 from __future__ import annotations
 
 import fnmatch
+import logging
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -52,6 +53,8 @@ from scribble.models import (
 # not-a-finding; promote (whole-job or selected) skips them. String values, not an enum import — this
 # module duck-types the DTO and never imports lotek.
 _SKIP_STATUSES = frozenset({"false_positive", "accepted_risk"})
+
+_LOG = logging.getLogger("scribble.promote")
 
 
 class CrossEngagementPromote(Exception):
@@ -493,8 +496,102 @@ def promote_job(
             db.expire(engagement)
             continue
         savepoint.commit()
+        _attach_poc_screenshots(
+            db, engagement=engagement, findings=findings,
+            refs=result["refs"], actor_username=actor_username,
+        )
         return result
     raise AssertionError("unreachable: the loop returns or raises on both attempts")  # pragma: no cover
+
+
+def _attach_poc_screenshots(
+    db: Any, *, engagement: Any, findings: list, refs: dict, actor_username: str | None
+) -> None:
+    """#1343 final hop: link each promoted dalfox finding's PoC screenshot to its ``BoardFinding`` so the
+    deliverable shows the proof the XSS fired with ZERO manual re-screenshot/correlate.
+
+    ``FindingDTO.facts['poc_screenshot']`` is the job-output-relative path the dalfox XSS follow-on
+    captured (normalizer ``parse_dalfox_jsonl``); the bytes already live in the core object store as the
+    runner-uploaded screenshot blob. This creates a scribble ``Artifact`` that REFERENCES that blob
+    (``obj:<uuid>``) — never a byte copy, and it REUSES the existing attach path (the same
+    ``Artifact(finding_id=…, storage_path=obj:…)`` shape the evidence-upload route writes), so nothing
+    about correlation or storage is rebuilt here.
+
+    Best-effort by design: no object store, the blob not found yet, or an insert failure degrades to "no
+    screenshot linked" — it must NEVER fail the promote (which would lose the findings). Runs in its own
+    SAVEPOINT so a failed link rolls back only the artifacts, not the promoted rows. Idempotent: a
+    re-promote finds the same ``(finding_id, obj:<uuid>)`` already linked and skips it.
+    """
+    from scribble import host
+    from scribble.artifacts_storage import OBJECT_REF_PREFIX, _acting_principal
+    from scribble.enums import ArtifactKind, ArtifactPlacement
+    from scribble.models import Artifact
+
+    surface = host.objects()
+    if surface is None:
+        return  # no object store — evidence linkage degrades, exactly as before the store existed
+
+    # Only findings that actually carry a shot, so no principal/list work on a screenshot-less promote.
+    wanted = [
+        dto for dto in findings
+        if isinstance((getattr(dto, "facts", None) or {}).get("poc_screenshot"), str)
+        and (getattr(dto, "facts", None) or {}).get("poc_screenshot")
+        and getattr(dto, "id", None) is not None
+        and refs.get(getattr(dto, "id", None)) is not None
+        and getattr(dto, "job_id", None) is not None
+    ]
+    if not wanted:
+        return
+
+    principal = _acting_principal()
+    by_job: dict[str, dict[str, Any]] = {}  # job_id -> {object filename: ObjectRef}
+
+    savepoint = db.begin_nested()
+    try:
+        for dto in wanted:
+            rel = dto.facts["poc_screenshot"]
+            bf_id = refs[dto.id]
+            job_key = str(dto.job_id)
+            index = by_job.get(job_key)
+            if index is None:
+                try:
+                    index = {
+                        r.filename: r for r in surface.list(principal, job_id=dto.job_id)
+                        if getattr(r, "filename", None)
+                    }
+                except (PermissionError, RuntimeError, OSError, ValueError, KeyError):
+                    index = {}
+                by_job[job_key] = index
+            ref = index.get(rel)
+            if ref is None:
+                continue  # not uploaded yet / swept — nothing to reference
+            storage_path = f"{OBJECT_REF_PREFIX}{ref.id}"
+            already = db.execute(
+                select(Artifact.id)
+                .where(Artifact.finding_id == bf_id, Artifact.storage_path == storage_path)
+                .limit(1)
+            ).first()
+            if already:
+                continue  # re-promote: this shot is already linked to this finding
+            db.add(Artifact(
+                engagement_id=engagement.id,
+                finding_id=bf_id,
+                kind=ArtifactKind.screenshot,
+                placement=ArtifactPlacement.attached,
+                filename=rel.rsplit("/", 1)[-1],
+                content_type=getattr(ref, "content_type", None) or "image/png",
+                storage_path=storage_path,
+                byte_size=getattr(ref, "size", None),
+                sha256=getattr(ref, "sha256", None),
+                caption="XSS payload fired (dalfox PoC)",
+                include_in_report=True,
+                created_by=actor_username,
+            ))
+        db.flush()
+        savepoint.commit()
+    except Exception:  # noqa: BLE001 — a screenshot link must never take down a promote
+        savepoint.rollback()
+        _LOG.warning("scribble: PoC screenshot linkage failed (non-fatal); promote stands", exc_info=True)
 
 
 def _promote_findings(
