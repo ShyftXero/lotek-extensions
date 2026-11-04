@@ -32,7 +32,7 @@ from scribble.models import ReportBoard
 from scribble.report_html_api import _override_theme_sources, _selected_theme
 from scribble.reporting.context import build_report_context
 from scribble.reporting.render_docx import make_inline_artifact_url, render_report_docx
-from scribble.reporting.theme_registry import resolve_theme
+from scribble.reporting.theme_registry import resolve_theme, thaw_resolved_theme
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -88,8 +88,15 @@ def register(api_bp, bp) -> None:
             from scribble.reporting.fonts import fonts_from_settings
             settings = db.scalar(select(ScribbleSettings).where(ScribbleSettings.slot == "default"))
             body_font, code_font = fonts_from_settings(settings)
+            # ext#106: once delivered, the frozen snapshot wins (matches /report and /report/export behavior)
             override_lookup, _override_names, install_default = _override_theme_sources(db)
-            resolved_theme = resolve_theme(_selected_theme(install_default), override_lookup=override_lookup)
+            if engagement.report_theme_snapshot:
+                resolved_theme = thaw_resolved_theme(engagement.report_theme_snapshot)
+            else:
+                resolved_theme = resolve_theme(
+                    _selected_theme(install_default, engagement.report_theme),
+                    override_lookup=override_lookup,
+                )
             payload = render_report_docx(ctx, artifact_bytes=artifact_bytes,
                                          body_font=body_font, code_font=code_font,
                                          theme=resolved_theme)
