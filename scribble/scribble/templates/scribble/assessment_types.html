@@ -40,20 +40,20 @@
     <tbody>
       {% for t, count in rows %}
       <tr class="fr-at-row{% if not t.active %} fr-at-row-inactive{% endif %}" data-at-id="{{ t.id }}">
-        <td><input type="color" data-field="color" value="{{ t.color or '#888888' }}" /></td>
+        <td><input type="color" data-field="color" value="{{ t.color or '#888888' }}" aria-label="Color for {{ t.name }}" /></td>
         <td>
-          <input type="text" data-field="name" value="{{ t.name }}" />
+          <input type="text" data-field="name" value="{{ t.name }}" aria-label="Assessment type name" />
           {% if not t.active %}<span class="pill">inactive</span>{% endif %}
         </td>
-        <td><input type="text" data-field="slug" value="{{ t.slug }}" /></td>
-        <td><input type="number" data-field="default_order" value="{{ t.default_order }}" style="width:70px" /></td>
+        <td><input type="text" data-field="slug" value="{{ t.slug }}" aria-label="Slug for {{ t.name }}" /></td>
+        <td><input type="number" data-field="default_order" value="{{ t.default_order }}" style="width:70px" aria-label="Display order for {{ t.name }}" /></td>
         <td>
           {{ count }}
           {% if count %}<span class="pill" title="Referenced by {{ count }} finding group(s) — delete disabled">in use</span>{% endif %}
         </td>
         <td>
           <label class="fr-at-active-toggle">
-            <input type="checkbox" data-field="active" {% if t.active %}checked{% endif %} />
+            <input type="checkbox" data-field="active" {% if t.active %}checked{% endif %} aria-label="Active: {{ t.name }}" />
           </label>
         </td>
         <td class="fr-at-row-actions">
