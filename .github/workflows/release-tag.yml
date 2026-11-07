@@ -1,3 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MIGRATING OFF GITHUB ACTIONS — this workflow is STILL LIVE for now.
+#
+# On merge to `main` this still auto-cuts the dated tag `v<build-id>` + a GitHub
+# Release, and it remains the release mechanism until the planned non-GitHub CI/CD
+# lands. So DO NOT also cut the tag by hand — you'd race this job (the "skip if the
+# tag already exists" guard below mostly absorbs a collision, but don't rely on it).
+#
+# Once GitHub Actions is retired here, cut the tag manually instead:
+#     tag="$(python3 scripts/build_id.py)"
+#     git tag -a "$tag" -m "Release $tag"
+#     git push origin "$tag"
+#     # optional GitHub Release: gh release create "$tag" --title "$tag" --generate-notes
+#
+# The merge gate is the reviewer / Plague verdict, not this file.
+# See AGENTS.md § "Shipping a change back to lotek".
+# ─────────────────────────────────────────────────────────────────────────────
+#
 # Auto-tag a dated release on every push to main, matching lotek core's version scheme.
 #
 # On merge to main we compute v<build-id> (YYYY.M.D.HHMMSS+g<shorthash>, from HEAD's committer date +
