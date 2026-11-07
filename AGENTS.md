@@ -315,10 +315,16 @@ and reads its metadata from the wheel-shipped `lotek-extension.toml`. There is n
 `stage-extension.sh`. To ship a change:
 
 1. **Land it here.** PR the extension's subdir into `main` and merge it (see the merge-method note above
-   — **not** `--squash`). On merge, CI (`.github/workflows/release-tag.yml`) cuts a dated release tag
-   `v<YYYY.M.D.HHMMSS+g<sha>>` automatically, with no human step. **A tag here is not a deploy** — it
-   only gives lotek something to pin. Nothing reaches an environment until lotek is re-pinned (step 2)
-   and lotek cuts its own release.
+   — **not** `--squash`). On merge, `.github/workflows/release-tag.yml` **currently still auto-cuts** the
+   dated release tag `v<YYYY.M.D.HHMMSS+g<sha>>` (committer date + short hash, via `scripts/build_id.py`) —
+   the same shape core's deploy loop selects — **so do NOT also cut it by hand**: you'd race the workflow
+   (its "skip if the tag exists" guard mostly absorbs a collision, but don't rely on that). **This repo is
+   migrating off GitHub Actions** onto a non-GitHub CI/CD (planned, not yet active); once Actions is retired
+   here, cut the tag manually instead —
+   `tag="$(python3 scripts/build_id.py)"; git tag -a "$tag" -m "Release $tag"; git push origin "$tag"`
+   (optionally `gh release create "$tag" --title "$tag" --generate-notes`). Either way the merge gate is the
+   reviewer / Plague verdict, not the tag. **A tag here is not a deploy** — it only gives lotek something to
+   pin. Nothing reaches an environment until lotek is re-pinned (step 2) and lotek cuts its own release.
 2. **Re-pin in lotek.** Bump that extension's `tag = "…"` under `[tool.uv.sources]` in lotek's
    `pyproject.toml`, then `uv lock --upgrade-package <ext>` + `uv sync --extra extensions`, run the mounted
    tests (`tests/test_<ext>_*`, `test_extension_nav`), and PR into lotek `main`.
