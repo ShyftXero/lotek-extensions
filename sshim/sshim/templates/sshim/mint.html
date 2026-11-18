@@ -1,0 +1,69 @@
+{% extends sshim_base %}
+{% block title %}sshim — mint a pivot{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>Mint a pivot</h1>
+  <p class="sub mono">two ssh clients, one rendezvous, no binary on disk · dies on TTL or disconnect</p>
+
+  <form method="post" action="{{ url_for('sshim.mint') }}">
+    <div class="row">
+      <label>Profile
+        <select name="profile_id" id="profile_id">
+          <option value="">— ad-hoc (fill below) —</option>
+          {% for p in profiles %}
+          <option value="{{ p.id }}"
+            data-topology="{{ p.topology }}" data-rhost="{{ p.rendezvous_host or '' }}"
+            data-rport="{{ p.rendezvous_port }}" data-ruser="{{ p.rendezvous_user }}"
+            data-ahost="{{ p.anchor_host or '' }}" data-aport="{{ p.anchor_port }}"
+            data-auser="{{ p.anchor_user }}" data-cidr="{{ p.cidr }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Topology
+        <select name="topology" id="topology">
+          {% for t in sshim_topologies %}<option value="{{ t }}" {{ 'selected' if t == defaults.topology }}>{{ t }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>TTL (min)
+        <input type="number" name="ttl_minutes" value="{{ defaults.ttl_minutes }}" min="1" max="{{ max_ttl }}">
+      </label>
+    </div>
+
+    <h2>Rendezvous <span class="sub mono">(topology A / C — the always-on box both legs dial)</span></h2>
+    <div class="row">
+      <label>Host <input type="text" name="rendezvous_host" value="{{ defaults.rendezvous_host }}" placeholder="vps.example"></label>
+      <label>Port <input type="number" name="rendezvous_port" value="{{ defaults.rendezvous_port }}" min="1" max="65535"></label>
+      <label>User <input type="text" name="rendezvous_user" value="sshim"></label>
+    </div>
+
+    <details>
+      <summary class="btn btn-ghost" style="display:inline-block">Advanced — anchor (topology B / C) + name + CIDR</summary>
+      <div class="row">
+        <label>Name <input type="text" name="name" placeholder="hotel-printer"></label>
+        <label>Anchor host <input type="text" name="anchor_host" placeholder="home.tail.net"></label>
+        <label>Anchor port <input type="number" name="anchor_port" value="22" min="1" max="65535"></label>
+        <label>Anchor user <input type="text" name="anchor_user" value="sshim"></label>
+        <label>CIDR (topology C) <input type="text" name="cidr" placeholder="192.168.1.0/24"></label>
+      </div>
+    </details>
+
+    <div class="toolbar" style="margin-top:16px">
+      <button class="btn btn-lime" type="submit">Mint →</button>
+      <a class="btn btn-ghost" href="{{ url_for('sshim.index') }}">Cancel</a>
+    </div>
+    <p class="note">Defaults: topology A, {{ defaults.rendezvous_host }}:{{ defaults.rendezvous_port }},
+      Windows target (ssh.exe), Linux operator (ssh), random port, {{ defaults.ttl_minutes }}min TTL.
+      The relay secret is generated and shown once on the next page — it is never stored.</p>
+  </form>
+</div>
+<script>
+// Pre-fill the form when a saved profile is picked (ad-hoc stays editable).
+document.getElementById('profile_id').addEventListener('change', function(e){
+  var o = e.target.selectedOptions[0]; if(!o || !o.value) return;
+  var f = e.target.form, d = o.dataset;
+  f.topology.value = d.topology; f.rendezvous_host.value = d.rhost; f.rendezvous_port.value = d.rport;
+  f.rendezvous_user.value = d.ruser; f.anchor_host.value = d.ahost; f.anchor_port.value = d.aport;
+  f.anchor_user.value = d.auser; f.cidr.value = d.cidr; f.name.value = o.textContent;
+});
+</script>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends sshim_base %}
+{% block title %}sshim — running pivots{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>sshim</h1>
+  <p class="sub mono">disposable SSH-only pivots · running list · Phase 1 (3rd-party rendezvous)</p>
+
+  <div class="toolbar">
+    <a class="btn btn-lime" href="{{ url_for('sshim.mint_form') }}">+ Mint pivot</a>
+    <a class="btn btn-ghost" href="{{ url_for('sshim.profiles') }}">Profiles</a>
+  </div>
+
+  {% if not sessions %}
+    <p class="note">No running pivots. Mint one — it points two ssh clients at a rendezvous box and
+      dies on TTL or disconnect. Nothing persists but shell history.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Profile</th><th>Topology</th><th>Rendezvous</th><th>SOCKS</th><th>Status</th><th>Expires</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      {% set r = s.row %}
+      <tr>
+        <td>{{ r.profile_name or '—' }}</td>
+        <td>{{ r.topology }}</td>
+        <td>{{ r.rendezvous_host or '—' }}</td>
+        <td>{{ r.socks_port }}</td>
+        <td class="status-{{ s.status }}">
+          <span class="dot {{ 'dot-active' if s.status == 'active' else 'dot-dead' }}"></span>{{ s.status }}
+        </td>
+        <td class="mono" data-expires="{{ r.expires_at.isoformat() }}">{{ r.expires_at.strftime('%H:%M:%S') }}</td>
+        <td><a href="{{ url_for('sshim.session_detail', session_id=r.id) }}">open →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="sub mono" style="margin-top:12px">Active + recently-died pivots (a TTL death stays visible, not a 404).</p>
+  {% endif %}
+</div>
+{% endblock %}
