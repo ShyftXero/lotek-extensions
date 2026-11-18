@@ -101,7 +101,15 @@ class InMemoryObjects:
     def list(self, actor, **_kw):
         if actor is None:
             return []
-        return [SimpleNamespace(id=k) for k, v in self.blobs.items() if not v.deleted]
+        # Carries the same fields the real ``ObjectRef`` does (filename/size/sha256/content_type) — a
+        # caller resolving a blob by its job-output-relative filename (#1343 promote) needs them. The
+        # mock does not index by ``job_id``/``kind`` (StoredBlob tracks neither), so it ignores those
+        # filters and returns every live blob — fine for a test asserting on filename.
+        return [
+            SimpleNamespace(id=k, filename=v.filename, size=len(v.data), kind=v.kind,
+                            content_type=v.content_type, sha256=hashlib.sha256(v.data).hexdigest())
+            for k, v in self.blobs.items() if not v.deleted
+        ]
 
 
 @dataclass
