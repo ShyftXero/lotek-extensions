@@ -17,6 +17,7 @@ raises for "not found" — callers get ``None`` and decide the status.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -85,10 +86,38 @@ def _clean_port(value, *, field: str, default: int = 22) -> int:
     return port
 
 
+# A rendezvous/anchor host, an ssh username and a CIDR all end up inside a shell command the operator
+# (or a human copying an agent-minted command) pastes into a terminal. So they are a shell-injection
+# trust boundary even though sshim never executes them itself: a value like `evil.com; rm -rf /` would
+# run on paste. Reject anything outside a conservative charset for each — real hostnames, usernames and
+# CIDRs never contain shell metacharacters, so this costs nothing legitimate and closes the chain.
+_HOST_RE = re.compile(r"^[A-Za-z0-9._:-]+$")      # DNS name or IP literal (colon for IPv6)
+_USER_RE = re.compile(r"^[A-Za-z0-9._-]+$")       # POSIX-ish ssh username
+_CIDR_RE = re.compile(r"^[0-9A-Fa-f.:/]+$")       # IPv4/IPv6 CIDR
+
+
 def _clean_host(value: str | None, *, field: str) -> str | None:
     value = (value or "").strip() or None
-    if value is not None and len(value) > models.MAX_HOST:
+    if value is None:
+        return None
+    if len(value) > models.MAX_HOST:
         raise Invalid(f"{field} is too long (max {models.MAX_HOST})")
+    if not _HOST_RE.match(value):
+        raise Invalid(f"{field} may only contain letters, digits, '.', '-', ':'")
+    return value
+
+
+def _clean_user(value: str | None) -> str:
+    value = (value or "sshim").strip()[: models.MAX_USER] or "sshim"
+    if not _USER_RE.match(value):
+        raise Invalid("user may only contain letters, digits, '.', '-', '_'")
+    return value
+
+
+def _clean_cidr(value: str | None) -> str:
+    value = (value or "").strip()[: models.MAX_CIDR]
+    if value and not _CIDR_RE.match(value):
+        raise Invalid("cidr may only contain hex digits, '.', ':', '/'")
     return value
 
 
@@ -113,11 +142,11 @@ def profile_from_fields(
         topology=topology,
         rendezvous_host=_clean_host(rendezvous_host, field="rendezvous_host"),
         rendezvous_port=_clean_port(rendezvous_port, field="rendezvous_port"),
-        rendezvous_user=(rendezvous_user or "sshim").strip()[: models.MAX_USER] or "sshim",
+        rendezvous_user=_clean_user(rendezvous_user),
         anchor_host=_clean_host(anchor_host, field="anchor_host"),
         anchor_port=_clean_port(anchor_port, field="anchor_port"),
-        anchor_user=(anchor_user or "sshim").strip()[: models.MAX_USER] or "sshim",
-        cidr=(cidr or "").strip()[: models.MAX_CIDR],
+        anchor_user=_clean_user(anchor_user),
+        cidr=_clean_cidr(cidr),
     )
     # Topology-specific requirements (rendezvous for A/C, anchor for B/C) — plan owns that rule.
     try:

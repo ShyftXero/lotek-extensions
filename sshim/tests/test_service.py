@@ -137,3 +137,26 @@ def test_bad_topology_is_invalid():
 def test_relay_without_rendezvous_is_invalid():
     with pytest.raises(Invalid, match="rendezvous_host"):
         profile_from_fields(name="t", topology="relay_reverse_socks")
+
+
+# ── shell-injection guard: host/user/cidr reach a command the operator pastes ──
+
+@pytest.mark.parametrize("evil", ["evil.com; rm -rf /", "a$(id)", "a b", "x|nc", "`whoami`", "a&b"])
+def test_malicious_rendezvous_host_rejected(evil):
+    with pytest.raises(Invalid):
+        profile_from_fields(name="t", topology="relay_reverse_socks", rendezvous_host=evil)
+
+
+def test_malicious_user_and_cidr_rejected():
+    with pytest.raises(Invalid):
+        profile_from_fields(name="t", topology="relay_reverse_socks",
+                            rendezvous_host="vps.example", rendezvous_user="root;id")
+    with pytest.raises(Invalid):
+        profile_from_fields(name="t", topology="relay_sshuttle", rendezvous_host="v",
+                            anchor_host="a", cidr="10.0.0.0/8;reboot")
+
+
+def test_legitimate_host_user_cidr_accepted():
+    p = profile_from_fields(name="t", topology="relay_sshuttle", rendezvous_host="vps.example-1.net",
+                            rendezvous_user="sshim_bot", anchor_host="10.0.0.5", cidr="192.168.1.0/24")
+    assert p.rendezvous_host == "vps.example-1.net" and p.cidr == "192.168.1.0/24"
