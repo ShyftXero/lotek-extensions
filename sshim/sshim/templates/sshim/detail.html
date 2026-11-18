@@ -22,6 +22,11 @@
     <div class="node">traveler<br><span class="sub">operator / Linux</span></div>
   </div>
 
+  {# Deviation-risk banner — the SAME predicate (`plan.deviation_risks`) the mint page renders, judged
+     against this session's stored profile snapshot. Silent for the secure default; amber otherwise. It
+     sits above the secret note so a pinned port / static credential reads before the handling advice. #}
+  {% include "sshim/_risk.html" %}
+
   {% if one_time_secret %}
   <div class="warn">⚡ Relay secret (shown ONCE, not stored — paste at the ssh prompt, never on argv):
     <div class="secret" id="secret">{{ one_time_secret }}</div>

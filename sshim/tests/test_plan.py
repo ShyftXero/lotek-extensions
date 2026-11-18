@@ -13,14 +13,21 @@ from datetime import datetime, timedelta
 import pytest
 
 from sshim.plan import (
+    CREDENTIAL_EPHEMERAL,
+    CREDENTIAL_KEY,
+    CREDENTIAL_PASSWORD,
     LISTABLE_GRACE,
+    MIN_PASSWORD_LENGTH,
     STATUS_ACTIVE,
     STATUS_EXPIRED,
     STATUS_KILLED,
     Profile,
     _traveler_cmd_c,
+    deviation_risks,
     effective_status,
     encode_command,
+    gen_password,
+    has_deviation_risk,
     is_active,
     is_listable,
     mint,
@@ -117,7 +124,8 @@ def test_topology_c_sshuttle_auto_detects_when_no_cidr():
 # ── validation ──────────────────────────────────────────────────────────────
 
 def test_relay_topology_without_rendezvous_rejected():
-    with pytest.raises(ValueError, match="rendezvous_host"):
+    # No rendezvous default ships, so a blank one must SAY what to do — not just name a field.
+    with pytest.raises(ValueError, match="configure a rendezvous host"):
         render_plan(mint(_profile("relay_reverse_socks")))
 
 
@@ -144,6 +152,19 @@ def test_password_never_on_any_command_line():
     plan = render_plan(sess)
     for cmd in [*plan.anchor.values(), *plan.traveler.values()]:
         assert sess.rendezvous_password not in cmd
+
+
+def test_password_is_at_least_18_visible_characters():
+    """The credential model is ONE ephemeral random password shown once, so its length is the whole
+    security budget. Pinned here: every draw is >= 18 visible (printable, ASCII, no whitespace)
+    characters. There is deliberately no key generation — `ssh -i` needs a key file on the borrowed
+    box, which is the residue a throwaway pivot must not leave."""
+    assert MIN_PASSWORD_LENGTH >= 18
+    for _ in range(200):
+        pw = gen_password()
+        assert len(pw) >= MIN_PASSWORD_LENGTH, pw
+        assert pw.isprintable() and pw.isascii(), pw
+        assert " " not in pw and "\n" not in pw, pw
 
 
 # ── encoding post-transform ──────────────────────────────────────────────────
@@ -181,6 +202,65 @@ def test_rebuild_session_reproduces_commands_without_secret():
     regenerated = render_plan(rebuilt)
     assert regenerated.anchor == original.anchor
     assert regenerated.traveler == original.traveler
+
+
+# ── deviation-risk predicate: the ONE home behind the banner on both pages ──
+
+# The secure default: a random high port on the operator's own box + a one-use ephemeral password.
+_SECURE = dict(name="t", topology="relay_reverse_socks", rendezvous_host="vps.example",
+               rendezvous_port=random_port())
+
+
+def test_risk_banner_is_silent_on_the_secure_default():
+    assert deviation_risks(Profile(**_SECURE)) == ()
+    assert has_deviation_risk(Profile(**_SECURE)) is False
+
+
+def test_risk_banner_is_silent_until_a_rendezvous_is_named():
+    # What the mint page renders before the operator types a host: nothing is pinned anywhere -> silent.
+    assert deviation_risks(Profile(name="", topology="relay_reverse_socks", rendezvous_host=None)) == ()
+
+
+@pytest.mark.parametrize("port", [22, 443, 80, 2222])
+def test_risk_banner_fires_on_a_pinned_well_known_port(port):
+    risks = deviation_risks(Profile(**{**_SECURE, "rendezvous_port": port}))
+    assert len(risks) == 1, risks
+    assert str(port) in risks[0] and "vps.example" in risks[0]
+
+
+def test_risk_banner_fires_on_a_non_random_privileged_port():
+    # Anything < 1024 cannot have come from sshim's random 1024..65535 model.
+    assert deviation_risks(Profile(**{**_SECURE, "rendezvous_port": 22}))
+    assert deviation_risks(Profile(**{**_SECURE, "rendezvous_port": 1023}))
+
+
+def test_risk_banner_fires_on_a_static_credential():
+    # Phase 1 only ever mints the ephemeral secret; the static arms exist so the predicate is total and
+    # a later slice introducing a reusable password / saved key MUST come through here.
+    for kind, needle in ((CREDENTIAL_PASSWORD, "reusable password"), (CREDENTIAL_KEY, "non-ephemeral key")):
+        risks = deviation_risks(Profile(**_SECURE), credential=kind)
+        assert len(risks) == 1, risks
+        assert needle in risks[0]
+        assert has_deviation_risk(Profile(**_SECURE), credential=kind) is True
+    # …and the one-use ephemeral password stays quiet, which is the shipped model.
+    assert deviation_risks(Profile(**_SECURE), credential=CREDENTIAL_EPHEMERAL) == ()
+
+
+def test_risk_banner_reports_the_port_and_the_credential_together():
+    risks = deviation_risks(Profile(**{**_SECURE, "rendezvous_port": 443}), credential=CREDENTIAL_PASSWORD)
+    assert len(risks) == 2
+
+
+def test_risk_banner_judges_the_anchor_port_in_direct_mode():
+    # Topology B has no rendezvous: the inbound surface IS the anchor's sshd.
+    direct = dict(name="t", topology="direct_socks", anchor_host="home.tail.net", anchor_port=22)
+    assert any("home.tail.net" in r for r in deviation_risks(Profile(**direct)))
+    assert deviation_risks(Profile(**{**direct, "anchor_port": random_port()})) == ()
+
+
+def test_an_unknown_credential_kind_raises_instead_of_passing_silently():
+    with pytest.raises(ValueError, match="credential must be one of"):
+        deviation_risks(Profile(**_SECURE), credential="kerberos-magic")
 
 
 # ── liveness predicate: ONE home ─────────────────────────────────────────────

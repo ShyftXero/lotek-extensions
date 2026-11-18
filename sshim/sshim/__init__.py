@@ -2,13 +2,15 @@
 
 "Poor man's VPN to a target network over SSH, for a quick task." Two machines on hostile networks
 rendezvous through an SSH relay using only the resident ``ssh`` client; when both sides hang up, it's
-gone. This is **Phase 1**: the rendezvous is a 3rd-party box the operator configures (a VPS / tailnet
-node / ``shyft.us``), so sshim needs **zero lotek-core changes** and imports **nothing** from ``app.*``.
+gone. This is **Phase 1**: the rendezvous is a 3rd-party box the operator names (a VPS / tailnet node —
+sshim ships **no** rendezvous default), so sshim needs **zero lotek-core changes** and imports
+**nothing** from ``app.*``.
 
 Everything host-specific is injected through :func:`register` (identity / audit / settings / the PAT
 trio), never imported, so the package builds and tests standalone and slots into lotek unchanged. Phase 2
-(lotek#1747) will later let a profile request a lotek-hosted ephemeral relay through ``extras`` when that
-seam lands; ``deps.host_hook`` is the single place that will read it.
+(lotek#1747) will later let a profile request a lotek-hosted single-use relay through ``extras`` when
+that seam lands; ``deps.exclusive_container_acquire`` / ``exclusive_container_release`` are documented
+and deliberately unused today.
 """
 
 from __future__ import annotations

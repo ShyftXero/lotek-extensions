@@ -20,10 +20,17 @@ from flask import current_app
 
 from sshim.config import SshimConfig
 
-#: Admin-scope `[[settings]]` defaults + bounds. The default relay host the mint page opens to, and the
-#: hard ceiling on a session TTL (minutes). Both are re-clamped here (see `max_ttl_minutes`) so a value
-#: the host hands back cannot widen the cap past what the manifest declares.
-DEFAULT_RELAY_HOST = "shyft.us:443"
+#: Admin-scope `[[settings]]` defaults + bounds.
+#:
+#: `DEFAULT_RELAY_HOST` is deliberately EMPTY. sshim ships no rendezvous default: a fixed host on a
+#: well-known inbound port is the one thing this design must not hand an operator, and Phase 1's
+#: rendezvous is the operator's OWN box, so any shipped default would point at a resource that only
+#: exists in Phase 2. The mint page opens with a blank rendezvous field the operator fills in; a blank
+#: one fails validation with "configure a rendezvous host".
+#:
+#: `MAX_TTL_MINUTES` is the hard ceiling on a session TTL, re-clamped here (see `max_ttl_minutes`) so a
+#: value the host hands back cannot widen the cap past what the manifest declares.
+DEFAULT_RELAY_HOST = ""
 MAX_TTL_MINUTES = 240
 MAX_TTL_MINUTES_BOUNDS = (1, 1440)
 
@@ -45,11 +52,39 @@ def _extras() -> dict:
 def host_hook(name: str):
     """Single accessor for ANY host-injected capability, resolved late per request.
 
-    This is also the Phase-2 seam: when lotek#1747 lands ``ephemeral_relay_acquire`` /
-    ``ephemeral_relay_release`` in ``extras``, they are read through here — no other wiring changes.
-    Phase 1 reads only the identity/audit/settings/PAT hooks below.
+    This is also the Phase-2 seam: when lotek#1747 lands ``exclusive_container_acquire`` /
+    ``exclusive_container_release`` in ``extras``, they are read through here (see the two documented,
+    UNUSED accessors below) — no other wiring changes. Phase 1 reads only the identity/audit/settings/PAT
+    hooks that follow.
     """
     return _extras().get(name)
+
+
+# ── Phase-2 container seam (lotek#1747) — documented, NOT called by Phase 1 ───
+#
+# Phase 1 emits commands for an operator's OWN box and calls neither hook. These accessors exist so the
+# next slice has exactly one obvious place to land and nothing has to be re-wired then: the host injects
+# the capability into `extras`, `host_hook` resolves it late, and no core import is added.
+
+PHASE2_EXCLUSIVE_ACQUIRE = "exclusive_container_acquire"
+PHASE2_EXCLUSIVE_RELEASE = "exclusive_container_release"
+
+
+def exclusive_container_acquire():
+    """Phase-2 ONLY — never called in Phase 1. The host's ``exclusive_container_acquire`` hook
+    (lotek#1747), or ``None`` when the host does not provide it.
+
+    When present, a mint asks the host for a core-hosted single-use relay instead of rendering a command
+    for the operator's own box; the matching teardown goes through
+    :func:`exclusive_container_release`. Documented and wired here, deliberately unexercised.
+    """
+    return host_hook(PHASE2_EXCLUSIVE_ACQUIRE)
+
+
+def exclusive_container_release():
+    """Phase-2 ONLY — never called in Phase 1. Pairs with :func:`exclusive_container_acquire`: the host
+    hook that hands back (or tears down) the core-hosted single-use relay a minted pivot would run on."""
+    return host_hook(PHASE2_EXCLUSIVE_RELEASE)
 
 
 _warned_standalone = False
@@ -148,9 +183,11 @@ def host_setting(key: str, default=None):
 
 
 def default_relay_host() -> str:
-    """The rendezvous host the mint page opens to (``default_relay_host`` setting, else shipped default)."""
+    """The rendezvous host the mint page opens to (``default_relay_host`` setting, else the shipped
+    default). Empty by default — ``""`` means "no rendezvous configured yet", which the mint page renders
+    as a blank field the operator fills, and the plan validator rejects until they name their own box."""
     raw = host_setting("default_relay_host", DEFAULT_RELAY_HOST)
-    return raw if isinstance(raw, str) and raw.strip() else DEFAULT_RELAY_HOST
+    return raw.strip() if isinstance(raw, str) and raw.strip() else DEFAULT_RELAY_HOST
 
 
 def max_ttl_minutes() -> int:

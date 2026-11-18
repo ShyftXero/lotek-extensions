@@ -106,12 +106,20 @@ def mint(profile: Profile, *, ttl_minutes: int = 30) -> Session:
     )
 
 
+#: The credential model Phase 1 ships: ONE random password, shown once, pasted at the ssh prompt, valid
+#: for a single session only. There is deliberately no key generation — `ssh -i` needs a key FILE on the
+#: borrowed box, which is exactly the residue a throwaway pivot must not leave.
+MIN_PASSWORD_LENGTH = 18
+_PASSWORD_ENTROPY_BYTES = 18
+
+
 def gen_password() -> str:
-    """A URL-safe throwaway secret, ~26 chars of entropy. Pasted at the prompt, never on argv.
+    """The one-use rendezvous secret: URL-safe, at least :data:`MIN_PASSWORD_LENGTH` visible characters
+    (``token_urlsafe(18)`` is always exactly 24). Pasted at the prompt, never on argv.
 
     Public (not `_`-prefixed) because the mint surface shows it ONCE and then forgets it —
     sshim never persists the cleartext (see :func:`rebuild_session`)."""
-    return secrets.token_urlsafe(18)
+    return secrets.token_urlsafe(_PASSWORD_ENTROPY_BYTES)
 
 
 # ── shared ssh option strings ────────────────────────────────────────────────
@@ -134,7 +142,11 @@ def _validate(profile: Profile) -> None:
     if profile.topology not in TOPOLOGIES:
         raise ValueError(f"topology must be one of {TOPOLOGIES}, got {profile.topology!r}")
     if profile.topology in ("relay_reverse_socks", "relay_sshuttle") and not profile.rendezvous_host:
-        raise ValueError(f"{profile.topology} requires rendezvous_host")
+        # sshim ships NO rendezvous default: a fixed, well-known inbound port is the one thing this
+        # design must not hand an operator, so an empty rendezvous is a configure-me error, not a default.
+        raise ValueError(
+            f"configure a rendezvous host (the always-on box both legs dial) for {profile.topology}"
+        )
     if profile.topology == "direct_socks" and not profile.anchor_host:
         raise ValueError("direct_socks requires anchor_host")
     if profile.topology == "relay_sshuttle" and not profile.anchor_host:
@@ -344,6 +356,73 @@ def profile_params(profile: Profile) -> dict:
         "anchor_user": profile.anchor_user,
         "cidr": profile.cidr,
     }
+
+
+# ── deviation-risk predicate — ONE home, every banner surface calls it ──────
+
+#: How a session's rendezvous credential is obtained. Phase 1 mints exactly one kind
+#: (:data:`CREDENTIAL_EPHEMERAL`); the other two are named so this predicate is TOTAL today and a later
+#: slice that introduces a saved password or key has one place it MUST declare itself (an unknown value
+#: raises — never a silent pass).
+CREDENTIAL_EPHEMERAL = "ephemeral"  # one-use random password, shown once — the secure default
+CREDENTIAL_PASSWORD = "password"    # a reusable password, still valid after this pivot dies
+CREDENTIAL_KEY = "key"              # a saved, non-ephemeral key (needs a file on the borrowed box)
+CREDENTIAL_KINDS = (CREDENTIAL_EPHEMERAL, CREDENTIAL_PASSWORD, CREDENTIAL_KEY)
+
+#: Inbound ports a scanner reaches for first. sshim's own ports are random in ``1024..65535`` and so can
+#: never be one of these — a rendezvous/anchor port here is an operator PINNING a well-known service port
+#: on a public host, which is the exposure the risk banner is about.
+WELL_KNOWN_SSH_PORTS = frozenset({21, 22, 23, 80, 443, 2222, 3389, 8080, 8443})
+
+
+def inbound_surface(profile: Profile) -> tuple[str | None, int]:
+    """``(host, port)`` of the ONE port this profile exposes to a public/third-party network.
+
+    Topologies A/C expose the rendezvous's sshd; topology B dials the anchor's sshd directly, so the
+    anchor port is the inbound one. Deciding that here keeps :func:`deviation_risks` topology-blind.
+    """
+    if profile.topology == "direct_socks":
+        return profile.anchor_host, profile.anchor_port
+    return profile.rendezvous_host, profile.rendezvous_port
+
+
+def deviation_risks(profile: Profile, *, credential: str = CREDENTIAL_EPHEMERAL) -> tuple[str, ...]:
+    """Every way this configuration deviates from sshim's secure default — the ONE predicate behind the
+    deviation-risk banner, called by the mint page and the session detail alike.
+
+    The secure default is *a random port on a box you control + a one-use 18-character password*; that
+    configuration returns an empty tuple and every surface stays silent. Each returned item is a plain
+    sentence stating one risk, in a stable order (inbound port, then credential). This predicate NEVER
+    blocks a mint or a kill — it names the risk and lets the operator accept it.
+
+    ``credential`` is the session's credential model (:data:`CREDENTIAL_KINDS`); an unknown value raises
+    instead of passing quietly, so a future static-credential model cannot slip in un-warned.
+    """
+    if credential not in CREDENTIAL_KINDS:
+        raise ValueError(f"credential must be one of {CREDENTIAL_KINDS}, got {credential!r}")
+    risks: list[str] = []
+    host, port = inbound_surface(profile)
+    if host and (port < 1024 or port in WELL_KNOWN_SSH_PORTS):
+        risks.append(
+            f"Inbound port {port} on {host} is a fixed, well-known service port. sshim's default is a "
+            "random high port; scanners and brute-force sweeps try 22 and 443 first."
+        )
+    if credential == CREDENTIAL_PASSWORD:
+        risks.append(
+            "This pivot uses a reusable password instead of a one-use ephemeral one — it stays valid "
+            "after this session ends, on a box whose history may outlive the engagement."
+        )
+    elif credential == CREDENTIAL_KEY:
+        risks.append(
+            "This pivot uses a saved, non-ephemeral key instead of a one-use password — a key file has "
+            "to be written to the borrowed box, so it can be read and reused after the pivot dies."
+        )
+    return tuple(risks)
+
+
+def has_deviation_risk(profile: Profile, *, credential: str = CREDENTIAL_EPHEMERAL) -> bool:
+    """True iff :func:`deviation_risks` has anything to say (the banner's visibility switch)."""
+    return bool(deviation_risks(profile, credential=credential))
 
 
 # ── liveness predicate — ONE home, every surface calls it ────────────────────

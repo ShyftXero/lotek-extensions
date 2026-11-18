@@ -8,11 +8,18 @@ Origin use case: view a 3D printer's web UI from a hotel.
 
 ## Phase 1 (this) — zero core changes
 
-The rendezvous is a **3rd-party box the operator controls** (a VPS, a tailnet node, or the `shyft.us`
-CNAME) — exactly the revshells model. sshim needs **no lotek-core modification** and imports **nothing**
-from `app.*`: the generator just emits commands pointing at a `rendezvous_host` the operator configured
-in a profile. Phase 2 (lotek#1747) will later let a profile request a lotek-hosted ephemeral relay
-through the host `extras` seam when it lands; `deps.host_hook` is the single future wiring point.
+The rendezvous is a **3rd-party box the operator controls** (a VPS, a tailnet node) — exactly the
+revshells model. sshim needs **no lotek-core modification** and imports **nothing** from `app.*`: the
+generator just emits commands pointing at a `rendezvous_host` the operator names. **There is no shipped
+rendezvous default** — no host, no fixed port — because a well-known inbound port is precisely the
+exposure this tool warns about; the mint page opens with a blank field.
+
+**One credential model: an 18+ character random password, shown once, single-use.** No key generation —
+`ssh -i` needs a key *file* on the borrowed box, which is the residue a throwaway pivot must not leave.
+
+Phase 2 (lotek#1747) will later let a profile request a lotek-hosted single-use relay through the host
+`extras` seam (`exclusive_container_acquire` / `exclusive_container_release`); `deps.host_hook` is the
+single future wiring point and Phase 1 never calls it.
 
 ## What it does
 

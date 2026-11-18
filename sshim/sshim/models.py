@@ -43,9 +43,10 @@ MAX_CIDR = 64
 class Profile(Base, UuidPk, TimestampMixin):
     """A saved target — the rendezvous/anchor coordinates an operator mints against repeatedly.
 
-    In Phase 1 every host here is operator-typed text (a VPS / tailnet node / ``shyft.us``). Phase 2
-    (lotek#1747) will let a profile instead REQUEST a lotek-hosted ephemeral relay through the host
-    seam; that is a future column + an ``extras`` hook, deliberately not built here.
+    In Phase 1 every host here is operator-typed text (a VPS / tailnet node). Phase 2 (lotek#1747) will
+    let a profile instead REQUEST a lotek-hosted single-use relay through the host seam
+    (``exclusive_container_acquire``); that is a future column + an ``extras`` hook, deliberately not
+    built here.
     """
 
     __tablename__ = "sshim_profiles"

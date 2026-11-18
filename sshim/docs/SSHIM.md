@@ -6,8 +6,10 @@ no binary on disk, runs on a borrowed box. When both sides hang up, it's gone. *
 
 ## How to use it
 
-1. **Pick a rendezvous.** Phase 1: a 3rd-party box *you* control — a VPS, a tailnet node, or the
-   `shyft.us` CNAME. The mint page opens to `shyft.us:443` by default (admin-settable).
+1. **Pick a rendezvous.** Phase 1: a 3rd-party box *you* control — a VPS or a tailnet node. **sshim
+   ships no rendezvous default**: the mint page opens with a blank host field and no fixed port, and
+   minting without one fails with "configure a rendezvous host". (An admin can pre-fill a default via
+   the `default_relay_host` setting; it is blank out of the box.)
 2. **Mint a pivot** (`/sshim/mint`). Choose a topology, confirm the rendezvous, set a TTL. You get two
    command legs and a one-time relay secret. **The secret is shown once and never stored** — paste it at
    the `ssh` prompt (it is never put on the command line, where `ps` could read it).
@@ -38,5 +40,26 @@ says so and offers the `powershell -EncodedCommand` renderer to keep the clearte
 
 ## Phase 2 (not built)
 
-A profile will later be able to request a **lotek-hosted ephemeral relay** instead of an operator box,
-through the `ephemeral_relay_acquire`/`release` host seam (lotek#1747). Phase 1 works entirely without it.
+A profile will later be able to request a **lotek-hosted single-use relay** instead of an operator box,
+through the `exclusive_container_acquire`/`exclusive_container_release` host seam (lotek#1747). Phase 1
+works entirely without it and never calls either hook (`deps.exclusive_container_acquire` is documented
+and unused, so the next slice has one obvious place to land).
+
+## The deviation-risk banner
+
+A pivot is safest when its inbound port is random and its credential is a one-use secret. sshim states
+plainly when a configuration departs from that, on **both** the mint page and the session detail:
+
+- the inbound (rendezvous, or anchor for direct mode) port is a fixed, well-known service port — 22, 443
+  and friends — on a public host; and/or
+- the credentials are static: a reusable password, a saved profile carrying one, or a non-ephemeral key.
+
+It is silent for the secure default (random port, one-use 18-character ephemeral password) and it never
+blocks the action — it names the risk and lets the operator accept it. One predicate decides it
+(`sshim/plan.py:deviation_risks`), so the two pages cannot disagree.
+
+## Credential model
+
+One random, URL-safe password of **at least 18 visible characters** (`plan.gen_password`, 24 in
+practice), shown once, pasted at the `ssh` prompt, valid for one session. No key generation: `ssh -i`
+needs a key file on the borrowed box, which defeats the point of a throwaway pivot.

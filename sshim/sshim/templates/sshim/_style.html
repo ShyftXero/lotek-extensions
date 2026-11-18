@@ -50,6 +50,16 @@
   .sshim .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
   .sshim .note{color:var(--dim);font-size:13px;border-left:2px solid var(--lime-dark);padding:6px 10px;margin:6px 0}
   .sshim .warn{color:var(--lime-soft);font-size:13px;border-left:2px solid var(--lime);padding:6px 10px;margin:10px 0;background:rgba(201,231,53,.05)}
+  /* A CONFIGURATION-RISK banner is not the lime secret-handling note: amber, so the eye never lumps
+     "paste this secret once" together with "you pinned a well-known port on a public box". */
+  .sshim .risk{--amber:#f5b23d;--amber-soft:#ffd894;color:var(--amber-soft);font-size:13px;
+    border:1px solid var(--amber);border-left-width:3px;border-radius:4px;padding:10px 12px;margin:12px 0;
+    background:rgba(245,178,61,.07)}
+  .sshim .risk strong{color:var(--amber);font-weight:600;display:block;margin-bottom:4px}
+  .sshim .risk ul{margin:4px 0 6px;padding-left:20px}
+  .sshim .risk li{margin:2px 0}
+  .sshim .risk .risk-continue{color:var(--dim)}
+  .sshim .err{color:#ffb4b4;font-size:13px;border-left:2px solid #b45454;padding:6px 10px;margin:10px 0;background:rgba(180,84,84,.08)}
   .sshim .secret{font-family:var(--mono);background:#000;border:1px solid var(--lime-dark);border-radius:4px;padding:10px;color:var(--lime-soft);word-break:break-all}
   .sshim .ttlbar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin:4px 0 16px}
   .sshim .ttlbar>span{display:block;height:100%;background:var(--lime)}

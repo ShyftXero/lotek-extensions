@@ -70,6 +70,20 @@ def test_the_settings_keys_are_what_deps_reads():
     assert keys == {"default_relay_host", "max_ttl_minutes"}
 
 
+def test_the_rendezvous_default_is_blank_everywhere():
+    """No rendezvous default ships. A fixed host on a well-known inbound port is the exposure this tool
+    exists to warn about, and Phase 1's rendezvous is the operator's OWN box — so the shipped default is
+    empty in BOTH places it could hide: the manifest setting and the code constant it degrades to."""
+    from sshim import deps
+
+    setting = next(s for s in DATA["settings"] if s["key"] == "default_relay_host")
+    assert setting["default"] == ""
+    assert deps.DEFAULT_RELAY_HOST == ""
+    # No port literal survives as a pre-filled rendezvous default either (the mint page opens blank).
+    assert not re.search(r"\d{2,5}", setting["default"])
+    assert "shyft.us" not in setting["default"]
+
+
 def test_the_core_ref_columns_are_uuid_typed():
     """INV-INTEGRITY-03. ``owner_id`` holds a CORE (host) id, and ``profile_id`` an sshim id — core v2
     keys every surrogate PK on UUIDv7, so an ``Integer``/``String`` here is the `cannot cast type uuid to

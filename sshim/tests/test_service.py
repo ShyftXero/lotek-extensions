@@ -117,6 +117,7 @@ def test_kill_sets_status_and_is_reflected_in_effective_status(db, owner):
     row, _ = _mint(db, owner)
     kill_session(db, row, owner_id=owner, is_admin=False)
     reloaded = load_visible(db, row.id, owner_id=owner, is_admin=False)
+    assert reloaded is not None
     assert reloaded.status == plan.STATUS_KILLED
     assert plan.effective_status(reloaded.status, reloaded.expires_at, now=now_utc()) == plan.STATUS_KILLED
 
@@ -135,7 +136,8 @@ def test_bad_topology_is_invalid():
 
 
 def test_relay_without_rendezvous_is_invalid():
-    with pytest.raises(Invalid, match="rendezvous_host"):
+    # No rendezvous default ships, so the message must tell the operator what to DO.
+    with pytest.raises(Invalid, match="configure a rendezvous host"):
         profile_from_fields(name="t", topology="relay_reverse_socks")
 
 

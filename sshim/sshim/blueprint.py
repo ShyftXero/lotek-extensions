@@ -26,7 +26,14 @@ from sshim.deps import (
     is_standalone,
     max_ttl_minutes,
 )
-from sshim.plan import ENCODINGS, RENDERERS, TOPOLOGIES, effective_status
+from sshim.plan import (
+    ENCODINGS,
+    RENDERERS,
+    TOPOLOGIES,
+    Profile,
+    deviation_risks,
+    effective_status,
+)
 from sshim.service import (
     Denied,
     Invalid,
@@ -47,11 +54,16 @@ _log = logging.getLogger(__name__)
 
 bp = Blueprint("sshim", __name__, template_folder="templates")
 
-# Mint-page defaults (the spec: topology A, shyft.us:443, Windows target ssh.exe, Linux operator ssh,
-# 30min TTL). The rendezvous host default comes from the admin setting via `default_relay_host()`.
+# Mint-page defaults (topology A, Windows target ssh.exe, Linux operator ssh, 22, 30min TTL). There is
+# NO rendezvous default: the host comes from the admin setting via `default_relay_host()`, which ships
+# empty, so the page opens with a blank field the operator must fill with their own box.
 DEFAULT_TTL_MINUTES = 30
 DEFAULT_ANCHOR_RENDERER = "ssh_exe"   # TARGET/anchor leg = Windows
 DEFAULT_TRAVELER_RENDERER = "posix"   # OPERATOR/traveler leg = Linux
+#: sshd's own port — what the rendezvous/anchor form fields fall back to when the operator leaves them
+#: blank. Not a rendezvous *default*: it is the standard sshd port, and :func:`plan.deviation_risks`
+#: flags it as a pinned well-known port when it lands on a public host.
+DEFAULT_SSH_PORT = 22
 
 
 @bp.context_processor
@@ -68,14 +80,16 @@ def _inject_base():
 
 
 def _split_host_port(value: str) -> tuple[str, int]:
-    """`host:port` -> (host, port); bare host -> (host, 22). Best-effort for the default relay setting."""
+    """`host:port` -> (host, port); bare host -> (host, 22); blank -> ("", 22).
+
+    Best-effort for the admin `default_relay_host` setting, which ships blank."""
     if value and value.count(":") == 1:
         host, _, port = value.partition(":")
         try:
             return host, int(port)
         except ValueError:
-            return value, 22
-    return value, 22
+            return value, DEFAULT_SSH_PORT
+    return value, DEFAULT_SSH_PORT
 
 
 def _actor_kw() -> dict:
@@ -106,25 +120,77 @@ def index():
 
 # ── mint ───────────────────────────────────────────────────────────────────────
 
+def _mint_defaults(form=None) -> dict:
+    """The mint form's field values: the shipped defaults on a GET, the operator's OWN submitted values on
+    a rejected POST (a validation error must never clear what they typed — and the risk banner has to see
+    the same values the operator is looking at).
+
+    No rendezvous host here by design: `default_relay_host()` ships empty, so the field starts blank."""
+    if form is None:
+        host, port = _split_host_port(default_relay_host())
+        return {
+            "topology": "relay_reverse_socks",
+            "rendezvous_host": host,
+            "rendezvous_port": port,
+            "rendezvous_user": "sshim",
+            "name": "",
+            "anchor_host": "",
+            "anchor_port": DEFAULT_SSH_PORT,
+            "anchor_user": "sshim",
+            "cidr": "",
+            "ttl_minutes": DEFAULT_TTL_MINUTES,
+            "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
+            "traveler_renderer": DEFAULT_TRAVELER_RENDERER,
+        }
+    return {
+        "topology": (form.get("topology") or "").strip() or "relay_reverse_socks",
+        "rendezvous_host": (form.get("rendezvous_host") or "").strip(),
+        "rendezvous_port": _int(form.get("rendezvous_port"), DEFAULT_SSH_PORT),
+        "rendezvous_user": (form.get("rendezvous_user") or "").strip(),
+        "name": (form.get("name") or "").strip(),
+        "anchor_host": (form.get("anchor_host") or "").strip(),
+        "anchor_port": _int(form.get("anchor_port"), DEFAULT_SSH_PORT),
+        "anchor_user": (form.get("anchor_user") or "").strip(),
+        "cidr": (form.get("cidr") or "").strip(),
+        "ttl_minutes": _int(form.get("ttl_minutes"), DEFAULT_TTL_MINUTES),
+        "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
+        "traveler_renderer": DEFAULT_TRAVELER_RENDERER,
+    }
+
+
+def _candidate_profile(defaults: dict) -> Profile:
+    """An UNVALIDATED ``plan.Profile`` for the mint page's risk banner — only the fields the predicate
+    reads are meaningful, and a half-filled or wrong form must still render instead of raising."""
+    return Profile(
+        name=defaults.get("name") or "",
+        topology=defaults.get("topology") or "relay_reverse_socks",
+        rendezvous_host=defaults.get("rendezvous_host") or None,
+        rendezvous_port=_int(defaults.get("rendezvous_port"), DEFAULT_SSH_PORT),
+        anchor_host=defaults.get("anchor_host") or None,
+        anchor_port=_int(defaults.get("anchor_port"), DEFAULT_SSH_PORT),
+    )
+
+
+def _render_mint(db, error: str | None = None, *, defaults: dict | None = None):
+    """Render the mint form. The risk banner comes from the SAME predicate the detail page uses
+    (:func:`plan.deviation_risks`), evaluated against the values currently in the form — silent for the
+    shipped blank rendezvous, and loud the moment a pinned well-known port is on screen."""
+    defaults = defaults or _mint_defaults()
+    return render_template(
+        "sshim/mint.html",
+        profiles=visible_profiles(db, **_actor_kw()),
+        defaults=defaults,
+        error=error,
+        risk_notes=deviation_risks(_candidate_profile(defaults)),
+        max_ttl=max_ttl_minutes(),
+    )
+
+
 @bp.get("/mint")
 def mint_form():
-    """The command generator's entry form, opened to sensible defaults with the saved profiles listed."""
-    host, port = _split_host_port(default_relay_host())
+    """The command generator's entry form — blank rendezvous, saved profiles listed."""
     with get_config().session_factory() as db:
-        profiles = visible_profiles(db, **_actor_kw())
-        return render_template(
-            "sshim/mint.html",
-            profiles=profiles,
-            defaults={
-                "topology": "relay_reverse_socks",
-                "rendezvous_host": host,
-                "rendezvous_port": port,
-                "ttl_minutes": DEFAULT_TTL_MINUTES,
-                "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
-                "traveler_renderer": DEFAULT_TRAVELER_RENDERER,
-            },
-            max_ttl=max_ttl_minutes(),
-        )
+        return _render_mint(db)
 
 
 @bp.post("/mint")
@@ -150,13 +216,16 @@ def mint():
                 name=form.get("name") or form.get("rendezvous_host") or "pivot",
                 topology=form.get("topology"),
                 rendezvous_host=form.get("rendezvous_host"),
-                rendezvous_port=form.get("rendezvous_port") or 22,
+                rendezvous_port=form.get("rendezvous_port") or DEFAULT_SSH_PORT,
                 rendezvous_user=form.get("rendezvous_user") or "sshim",
                 anchor_host=form.get("anchor_host"),
-                anchor_port=form.get("anchor_port") or 22,
+                anchor_port=form.get("anchor_port") or DEFAULT_SSH_PORT,
                 anchor_user=form.get("anchor_user") or "sshim",
                 cidr=form.get("cidr") or "",
             )
+            # Phase 2: when the host provides exclusive_container_acquire, request a core-hosted single-use
+            # relay here instead of emitting a command to an operator's own box (lotek#1747; the accessor
+            # is deps.exclusive_container_acquire, and Phase 1 deliberately never calls it).
             row, secret = mint_session(
                 db, prof,
                 owner_id=current_actor_id(), standalone=is_standalone(),
@@ -166,7 +235,9 @@ def mint():
                 host_audit=host_audit(),
             )
         except Invalid as exc:
-            abort(400, str(exc))
+            # Re-render the form with the operator's own values and the reason, instead of a bare 400
+            # page: a blank rendezvous must read as "configure a rendezvous host", not as a stack trace.
+            return _render_mint(db, str(exc), defaults=_mint_defaults(form)), 400
         except Denied as exc:
             abort(403, str(exc))
         return _render_detail(db, row, one_time_secret=secret), 201
@@ -190,6 +261,9 @@ def _render_detail(db, row, *, one_time_secret):
         status=effective_status(row.status, row.expires_at, now=now),
         now=now,
         one_time_secret=one_time_secret,
+        # Same predicate as the mint page, judged against the session's STORED profile snapshot. Phase 1
+        # mints only the ephemeral one-use password, so the credential arm is silent by construction.
+        risk_notes=deviation_risks(rendered.session.profile),
         anchor_renderer=DEFAULT_ANCHOR_RENDERER,
         traveler_renderer=DEFAULT_TRAVELER_RENDERER,
     )
@@ -225,10 +299,10 @@ def create_profile_route():
                 name=form.get("name"),
                 topology=form.get("topology"),
                 rendezvous_host=form.get("rendezvous_host"),
-                rendezvous_port=form.get("rendezvous_port") or 22,
+                rendezvous_port=form.get("rendezvous_port") or DEFAULT_SSH_PORT,
                 rendezvous_user=form.get("rendezvous_user") or "sshim",
                 anchor_host=form.get("anchor_host"),
-                anchor_port=form.get("anchor_port") or 22,
+                anchor_port=form.get("anchor_port") or DEFAULT_SSH_PORT,
                 anchor_user=form.get("anchor_user") or "sshim",
                 cidr=form.get("cidr") or "",
             )

@@ -32,16 +32,21 @@ verbs = ["mint_session", "kill_session"]
 # (`settings` row `ext:sshim:<key>`) and the audit row — this extension only READS them, through
 # `deps.host_setting`, and re-clamps `max_ttl_minutes` to the same bounds declared here so a setting
 # that sizes an outward capability's lifetime cannot widen past this range.
+# EMPTY by design. sshim ships no rendezvous default: a fixed host on a well-known inbound port is the
+# one thing this tool must not hand an operator, and Phase 1's rendezvous is the operator's OWN box, so a
+# shipped default would only ever point at a resource that exists in Phase 2. Blank = the Mint page opens
+# with an empty rendezvous field, and minting fails with "configure a rendezvous host" until one is named.
 [[settings]]
 key = "default_relay_host"
-label = "Default rendezvous host"
+label = "Default rendezvous host (blank — set only if you want one pre-filled)"
 type = "str"
-default = "shyft.us:443"
+default = ""
 group = "Rendezvous"
-help = """The `host:port` the Mint page opens to (Phase 1: a 3rd-party box the operator controls — a \
-VPS, a tailnet node, or the `shyft.us` CNAME). This is only a default; an operator can type any \
+help = """A `host:port` to PRE-FILL the Mint page's rendezvous field with. Ships blank on purpose: \
+the rendezvous is a 3rd-party box the operator controls (a VPS, a tailnet node), and pinning a \
+well-known inbound port by default is exactly the exposure sshim warns about. An operator can type any \
 rendezvous per session or save named profiles. Phase 2 (lotek#1747) will let a profile instead request \
-a lotek-hosted ephemeral relay."""
+a lotek-hosted single-use relay through `exclusive_container_acquire`."""
 
 [[settings]]
 key = "max_ttl_minutes"
