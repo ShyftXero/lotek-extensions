@@ -1,7 +1,7 @@
 # Plan: feat/sshim
 
 - **Branch:** `feat/sshim`  (worktree: `.dsa/01M7PJ1G4C27HDM651CP6WPRJX/build-sshim`, off `main`)
-- **PR:** <opening>
+- **PR:** https://github.com/ShyftXero/lotek-extensions/pull/371
 - **Status:** 🟢 ready for review (needs The Plague)
 
 ## Purpose
