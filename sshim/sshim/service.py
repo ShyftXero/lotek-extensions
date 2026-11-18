@@ -272,6 +272,10 @@ def delete_profile(db, row: models.Profile, *, owner_id, is_admin) -> None:
 #: the operator talks to the anchor itself, so there is nothing to host.
 RELAY_TOPOLOGIES = frozenset({"relay_reverse_socks", "relay_sshuttle"})
 
+#: The name this extension declared in its manifest with sharing = "exclusive". Core validates
+#: the name against that declaration, so it is a constant, not a call-site choice.
+RELAY_CONTAINER_NAME = "sshim-relay"
+
 RELAY_CONTAINER = "container"   # a core-hosted single-use relay provisions this session's identity
 RELAY_EXTERNAL = "external"     # somebody else's sshd: the account must already exist there
 
@@ -348,20 +352,41 @@ def mint_session(
     relay_state = RELAY_EXTERNAL
     handle: str | None = None
     if acquire is not None and prof.topology in RELAY_TOPOLOGIES:
+        # Core owns the relay credential: it creates the container, so it must set USER_NAME/
+        # USER_PASSWORD on it. We ADOPT what it returns — a second identity minted here would be
+        # provisioned nowhere, which is exactly how this shipped broken the first time.
         try:
-            got = acquire(sess)
-        except Exception:  # noqa: BLE001 — an acquire failure degrades to Phase 1, never aborts a mint
-            got = None
-        host, port = relay_dial(got)
-        if host and port:
-            # Dial the container, not whatever the operator typed into the rendezvous fields.
-            prof = dataclasses.replace(prof, rendezvous_host=host, rendezvous_port=port)
-            sess = dataclasses.replace(sess, profile=prof)
+            got = acquire(name=RELAY_CONTAINER_NAME, ttl_minutes=ttl)
+        except Exception as exc:  # noqa: BLE001 — a refusal must NOT become a silent fallback
+            raise Invalid(f"the relay container could not be started: {exc}") from None
+        if got is None:
+            relay_state = RELAY_EXTERNAL          # no docker on this host: Phase 1 behaviour
+        else:
+            host, port = relay_dial(got)
+            if not host or not port:
+                raise Invalid("the relay container returned no usable address")
+            core_user = str(got.get("ssh_user") or "").strip()
+            core_password = str(got.get("ssh_password") or "")
+            # The profile may pin a rendezvous_user (the external-rendezvous case). On the container
+            # path CORE's user is authoritative — it is the account that exists inside the container —
+            # so it must override the pinned one, not merely sit behind it.
+            prof = dataclasses.replace(
+                prof,
+                rendezvous_host=host,
+                rendezvous_port=port,
+                rendezvous_user=core_user or prof.rendezvous_user,
+            )
+            sess = dataclasses.replace(
+                sess,
+                profile=prof,
+                ssh_user=core_user or sess.ssh_user,
+                ssh_password=core_password or sess.ssh_password,
+            )
             relay_state = RELAY_CONTAINER
-            if isinstance(got, dict):
-                raw = got.get("handle_id") or got.get("session_id") or got.get("container")
-                if isinstance(raw, str) and raw.strip():
-                    handle = raw.strip()
+            raw = got.get("handle_id") or got.get("session_id") or got.get("container")
+            if isinstance(raw, str) and raw.strip():
+                handle = raw.strip()
+
     try:
         plan.render_plan(sess)
     except ValueError as exc:
