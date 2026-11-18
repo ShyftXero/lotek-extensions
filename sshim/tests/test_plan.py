@@ -22,7 +22,7 @@ from sshim.plan import (
     STATUS_EXPIRED,
     STATUS_KILLED,
     Profile,
-    _traveler_cmd_c,
+    _operator_cmd_c,
     deviation_risks,
     effective_status,
     encode_command,
@@ -51,16 +51,16 @@ def test_topology_a_posix_round_trip():
     sess = mint(p, ttl_minutes=15)
     plan = render_plan(sess)
 
-    assert "posix" in plan.anchor and "posix" in plan.traveler
-    anchor, traveler = plan.anchor["posix"], plan.traveler["posix"]
+    assert "posix" in plan.anchor and "posix" in plan.operator
+    anchor, operator = plan.anchor["posix"], plan.operator["posix"]
     assert f"-R 127.0.0.1:{sess.socks_port}" in anchor
     assert "-N" in anchor
     assert "ExitOnForwardFailure=yes" in anchor
     assert "UserKnownHostsFile=/dev/null" in anchor
     assert "sshim@vps.example" in anchor
-    assert f"-L {sess.socks_port}:127.0.0.1:{sess.socks_port}" in traveler
+    assert f"-L {sess.socks_port}:127.0.0.1:{sess.socks_port}" in operator
     assert sess.rendezvous_password not in anchor
-    assert sess.rendezvous_password not in traveler
+    assert sess.rendezvous_password not in operator
     assert any("Remote DNS is free" in n for n in plan.notes)
 
 
@@ -90,11 +90,11 @@ def test_topology_b_direct_socks_no_anchor_leg():
     sess = mint(p)
     plan = render_plan(sess)
     assert plan.anchor == {}
-    traveler = plan.traveler["posix"]
-    assert f"-D {sess.socks_port}" in traveler
-    assert "sshim@home.tail.net" in traveler
+    operator = plan.operator["posix"]
+    assert f"-D {sess.socks_port}" in operator
+    assert "sshim@home.tail.net" in operator
     assert any("not remote DNS" in n for n in plan.notes)
-    assert "NOT remote DNS" in traveler
+    assert "NOT remote DNS" in operator
 
 
 # ── topology C: relay + sshuttle, full-subnet L3 ─────────────────────────────
@@ -107,7 +107,7 @@ def test_topology_c_sshuttle_uses_proxyjump():
     sess = mint(p)
     plan = render_plan(sess)
     assert f"-R 127.0.0.1:{sess.jump_port}:127.0.0.1:22" in plan.anchor["posix"]
-    travel = plan.traveler["sshuttle"]
+    travel = plan.operator["sshuttle"]
     assert "sshuttle --dns" in travel
     assert "-e 'ssh -J sshim@vps.example:443'" in travel
     assert f"-r pi@127.0.0.1:{sess.jump_port}" in travel
@@ -118,26 +118,26 @@ def test_topology_c_sshuttle_uses_proxyjump():
 def test_topology_c_sshuttle_auto_detects_when_no_cidr():
     p = _profile("relay_sshuttle", rendezvous_host="vps.example", anchor_host="home-pi.local", cidr="")
     plan = render_plan(mint(p))
-    assert " -N" in plan.traveler["sshuttle"]
+    assert " -N" in plan.operator["sshuttle"]
 
 
 # ── validation ──────────────────────────────────────────────────────────────
 
 def test_relay_topology_without_rendezvous_rejected():
     # No rendezvous default ships, so a blank one must SAY what to do — not just name a field.
-    with pytest.raises(ValueError, match="configure a rendezvous host"):
+    with pytest.raises(ValueError, match="Rendezvous host is required"):
         render_plan(mint(_profile("relay_reverse_socks")))
 
 
 def test_direct_topology_without_anchor_rejected():
-    with pytest.raises(ValueError, match="anchor_host"):
+    with pytest.raises(ValueError, match="[Aa]nchor host"):
         render_plan(mint(_profile("direct_socks")))
 
 
-def test_topology_c_traveler_rejects_non_sshuttle_renderer():
+def test_topology_c_operator_rejects_non_sshuttle_renderer():
     sess = mint(_profile("relay_sshuttle", rendezvous_host="v", anchor_host="a"))
     with pytest.raises(ValueError, match="sshuttle-only"):
-        _traveler_cmd_c(sess, "posix")
+        _operator_cmd_c(sess, "posix")
 
 
 # ── residue + port model ────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ def test_random_port_in_ephemeral_range():
 def test_password_never_on_any_command_line():
     sess = mint(_profile("relay_reverse_socks", rendezvous_host="vps.example"))
     plan = render_plan(sess)
-    for cmd in [*plan.anchor.values(), *plan.traveler.values()]:
+    for cmd in [*plan.anchor.values(), *plan.operator.values()]:
         assert sess.rendezvous_password not in cmd
 
 
@@ -201,7 +201,7 @@ def test_rebuild_session_reproduces_commands_without_secret():
     assert rebuilt.rendezvous_password == ""  # never stored
     regenerated = render_plan(rebuilt)
     assert regenerated.anchor == original.anchor
-    assert regenerated.traveler == original.traveler
+    assert regenerated.operator == original.operator
 
 
 # ── deviation-risk predicate: the ONE home behind the banner on both pages ──
@@ -300,13 +300,22 @@ def test_the_ssh_port_is_an_option_before_the_host_everywhere():
     import re
 
     cases = [
-        (Profile(name="a", topology="relay_reverse_socks", rendezvous_host="rdv.example", rendezvous_port=22022), 22022),
-        (Profile(name="b", topology="direct_socks", anchor_host="anchor.example", anchor_port=2222), 2222),
-        (Profile(name="c", topology="relay_sshuttle", rendezvous_host="rdv.example", rendezvous_port=22022, anchor_host="a.example"), 22022),
+        (
+            Profile(name="a", topology="relay_reverse_socks",
+                    rendezvous_host="rdv.example", rendezvous_port=22022),
+            22022,
+        ),
+        (Profile(name="b", topology="direct_socks",
+                 anchor_host="anchor.example", anchor_port=2222), 2222),
+        (
+            Profile(name="c", topology="relay_sshuttle", rendezvous_host="rdv.example",
+                    rendezvous_port=22022, anchor_host="a.example"),
+            22022,
+        ),
     ]
     for prof, port in cases:
         pl = render_plan(mint(prof))
-        for leg_name in ("anchor", "traveler"):
+        for leg_name in ("anchor", "operator"):
             for renderer, cmd in getattr(pl, leg_name).items():
                 if renderer == "sshuttle":
                     continue  # sshuttle wraps ssh via -J host:port, not a bare -p

@@ -81,7 +81,7 @@ def test_plan_regenerates_without_the_secret(db, owner):
     # nothing on the row carries the cleartext secret
     assert secret not in str(row.params)
     regenerated = plan_for(row)
-    for cmd in [*regenerated.anchor.values(), *regenerated.traveler.values()]:
+    for cmd in [*regenerated.anchor.values(), *regenerated.operator.values()]:
         assert secret not in cmd
     # and the regenerated commands point at the stored rendezvous
     assert any("vps.example" in c for c in regenerated.anchor.values())
@@ -137,7 +137,7 @@ def test_bad_topology_is_invalid():
 
 def test_relay_without_rendezvous_is_invalid():
     # No rendezvous default ships, so the message must tell the operator what to DO.
-    with pytest.raises(Invalid, match="configure a rendezvous host"):
+    with pytest.raises(Invalid, match="Rendezvous host is required"):
         profile_from_fields(name="t", topology="relay_reverse_socks")
 
 

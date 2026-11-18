@@ -14,19 +14,19 @@ Topologies
 ----------
 A. relay_reverse_socks  — both sides behind NAT, rendezvous is a 3rd-party box.
    anchor:  ssh -N -R 127.0.0.1:<socks> <ru>@<rh> -p <rport>
-   traveler: ssh -N -L <lsocks>:127.0.0.1:<socks> <ru>@<rh> -p <rport>
+   operator: ssh -N -L <lsocks>:127.0.0.1:<socks> <ru>@<rh> -p <rport>
    Remote DNS is FREE: the anchor's ssh client resolves names inside the target
    network (bare -R = remote dynamic forward; OpenSSH >= 7.6).
 
 B. direct_socks          — anchor has a routable address (public IP / tailnet).
-   traveler: ssh -N -D <lsocks> <au>@<anchor> -p <aport>
+   operator: ssh -N -D <lsocks> <au>@<anchor> -p <aport>
    OpenSSH resolves LOCALLY here, so this is NOT socks5h remote DNS. Stated, not
    hidden.
 
-C. relay_sshuttle        — Linux traveler wants full-subnet L3, not per-app SOCKS.
+C. relay_sshuttle        — Linux operator wants full-subnet L3, not per-app SOCKS.
    anchor:  ssh -N -R 127.0.0.1:<jump>:127.0.0.1:22 <ru>@<rh> -p <rport>
-   traveler: sshuttle --dns -e 'ssh -J <ru>@<rh>:<rport>' -r <au>@127.0.0.1:<jump> <cidr>
-   Anchor needs Python 3; traveler needs sudo. Documented.
+   operator: sshuttle --dns -e 'ssh -J <ru>@<rh>:<rport>' -r <au>@127.0.0.1:<jump> <cidr>
+   Anchor needs Python 3; operator needs sudo. Documented.
 
 Port model
 ----------
@@ -84,7 +84,7 @@ class Profile:
 class Session:
     """One minted shim: the random ports + creds for a single use."""
     profile: Profile
-    socks_port: int            # loopback on rendezvous (A) / traveler (B)
+    socks_port: int            # loopback on rendezvous (A) / operator (B)
     jump_port: int             # loopback on rendezvous exposing anchor sshd (C)
     rendezvous_password: str   # pasted at prompt, never on argv
     ttl_minutes: int = 30
@@ -145,12 +145,21 @@ def _validate(profile: Profile) -> None:
         # sshim ships NO rendezvous default: a fixed, well-known inbound port is the one thing this
         # design must not hand an operator, so an empty rendezvous is a configure-me error, not a default.
         raise ValueError(
-            f"configure a rendezvous host (the always-on box both legs dial) for {profile.topology}"
+            "Rendezvous host is required for this topology — give the address of the always-on box "
+            "both legs dial (a VPS or tailnet host you control)."
         )
     if profile.topology == "direct_socks" and not profile.anchor_host:
-        raise ValueError("direct_socks requires anchor_host")
+        # name the field the operator must fill (anchor_host) AND what it is, so the message stands on
+        # its own wherever it surfaces — the mint form, the machine api, or a test.
+        raise ValueError(
+            "Anchor host is required for the Direct topology — give the address of your foothold "
+            "inside the target network (anchor_host)."
+        )
     if profile.topology == "relay_sshuttle" and not profile.anchor_host:
-        raise ValueError("relay_sshuttle requires anchor_host (the sshd box sshuttle reaches)")
+        raise ValueError(
+            "Anchor host is required for the sshuttle topology — give the sshd box inside the target "
+            "network that sshuttle connects through (anchor_host)."
+        )
 
 
 # ── topology A: relay + reverse SOCKS5 (remote DNS free) ─────────────────────
@@ -169,9 +178,9 @@ def _anchor_cmd_a(sess: Session, renderer: str) -> str:
     raise ValueError(f"topology A anchor has no {renderer!r} rendering; use posix/ssh_exe/powershell_encoded")
 
 
-def _traveler_cmd_a(sess: Session, renderer: str) -> str:
+def _operator_cmd_a(sess: Session, renderer: str) -> str:
     p = sess.profile
-    local = sess.socks_port  # traveler reuses the same loopback number for clarity
+    local = sess.socks_port  # operator reuses the same loopback number for clarity
     target = f"{p.rendezvous_user}@{p.rendezvous_host}"
     port = f"-p {p.rendezvous_port}"
     fwd = f"-L {local}:127.0.0.1:{sess.socks_port}"
@@ -185,20 +194,20 @@ def _traveler_cmd_a(sess: Session, renderer: str) -> str:
         return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}{hint}"
     if renderer == "powershell_encoded":
         return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}") + hint
-    raise ValueError(f"topology A traveler has no {renderer!r} rendering")
+    raise ValueError(f"topology A operator has no {renderer!r} rendering")
 
 
 # ── topology B: direct SOCKS (anchor routable) ──────────────────────────────
 
-def _traveler_cmd_b(sess: Session, renderer: str) -> str:
+def _operator_cmd_b(sess: Session, renderer: str) -> str:
     p = sess.profile
     target = f"{p.anchor_user}@{p.anchor_host}"
     port = f"-p {p.anchor_port}"
     fwd = f"-D {sess.socks_port}"
-    # NOTE: -D resolves on the TRAVELER, not the anchor. Not socks5h. Stated.
+    # NOTE: -D resolves on the OPERATOR, not the anchor. Not socks5h. Stated.
     hint = (
         f"  # socks5://127.0.0.1:{sess.socks_port} — NOTE: OpenSSH -D resolves DNS "
-        f"locally (traveler), so this is NOT remote DNS. Use topology A for that."
+        f"locally (operator), so this is NOT remote DNS. Use topology A for that."
     )
     if renderer == "posix":
         return f"ssh {fwd} {_POSIX_OPTS} {port} -- {target}{hint}"
@@ -206,10 +215,10 @@ def _traveler_cmd_b(sess: Session, renderer: str) -> str:
         return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}{hint}"
     if renderer == "powershell_encoded":
         return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}") + hint
-    raise ValueError(f"traveler has no {renderer!r} rendering; use posix/ssh_exe/powershell_encoded")
+    raise ValueError(f"operator has no {renderer!r} rendering; use posix/ssh_exe/powershell_encoded")
 
 
-# ── topology C: relay + sshuttle (full-subnet L3, Linux traveler) ────────────
+# ── topology C: relay + sshuttle (full-subnet L3, Linux operator) ────────────
 
 def _anchor_cmd_c(sess: Session, renderer: str) -> str:
     p = sess.profile
@@ -226,17 +235,18 @@ def _anchor_cmd_c(sess: Session, renderer: str) -> str:
     raise ValueError(f"topology C anchor has no {renderer!r} rendering")
 
 
-def _traveler_cmd_c(sess: Session, renderer: str) -> str:
+def _operator_cmd_c(sess: Session, renderer: str) -> str:
     p = sess.profile
     if renderer != "sshuttle":
-        raise ValueError("topology C traveler is sshuttle-only (needs sudo + Python on anchor)")
+        raise ValueError("topology C operator is sshuttle-only (needs sudo + Python on anchor)")
     cidr = p.cidr or "-N"  # -N = auto-detect all private subnets on the anchor
     jump = f"{p.rendezvous_user}@{p.rendezvous_host}:{p.rendezvous_port}"
     remote = f"{p.anchor_user}@127.0.0.1:{sess.jump_port}"
-    # -x the hotel gateway if the hotel LAN overlaps the home subnet (operator fills it).
+    # -x the operator-side gateway when the operator's LAN overlaps the target subnet (the
+    # operator fills it in) — otherwise sshuttle would route the network you are sitting on.
     hint = (
-        f"  # add -x <hotel_gateway>/32 if the hotel LAN overlaps {p.cidr or 'your home subnet'}; "
-        f"needs sudo on the traveler + Python on the anchor"
+        f"  # add -x <local_gateway>/32 if your own LAN overlaps {p.cidr or 'the target subnet'}; "
+        f"needs sudo on the operator + Python on the anchor"
     )
     return f"sshuttle --dns -e 'ssh -J {jump}' -r {remote} {cidr}{hint}"
 
@@ -278,17 +288,17 @@ def encode_command(cmd: str, encoding: str) -> str:
 @dataclass(frozen=True)
 class Plan:
     """A rendered session. Each leg carries its own map of renderer -> command,
-    because topology C's anchor (ssh) and traveler (sshuttle) use different
+    because topology C's anchor (ssh) and operator (sshuttle) use different
     renderer families.
     """
     session: Session
     anchor: dict[str, str] = field(default_factory=dict)     # renderer -> command
-    traveler: dict[str, str] = field(default_factory=dict)   # renderer -> command
+    operator: dict[str, str] = field(default_factory=dict)   # renderer -> command
     notes: tuple[str, ...] = ()
 
 
 # The renderers that apply to a normal ssh leg (every topology's anchor, and
-# the traveler legs of topologies A and B). Topology C's traveler is sshuttle-only.
+# the operator legs of topologies A and B). Topology C's operator is sshuttle-only.
 _SSH_RENDERERS = ("posix", "ssh_exe", "powershell_encoded")
 
 
@@ -303,27 +313,27 @@ def render_plan(sess: Session) -> Plan:
     _validate(sess.profile)
     t = sess.profile.topology
     anchor: dict[str, str] = {}
-    traveler: dict[str, str] = {}
+    operator: dict[str, str] = {}
     notes: list[str] = []
 
     if t == "relay_reverse_socks":
         for r in _SSH_RENDERERS:
             anchor[r] = _anchor_cmd_a(sess, r)
-            traveler[r] = _traveler_cmd_a(sess, r)
+            operator[r] = _operator_cmd_a(sess, r)
         notes.append("Remote DNS is free: the anchor resolves names inside the target network.")
     elif t == "direct_socks":
         for r in _SSH_RENDERERS:
-            traveler[r] = _traveler_cmd_b(sess, r)
-        notes.append("Direct -D resolves DNS on the TRAVELER — not remote DNS. Use relay mode for that.")
+            operator[r] = _operator_cmd_b(sess, r)
+        notes.append("Direct -D resolves DNS on the OPERATOR — not remote DNS. Use relay mode for that.")
     elif t == "relay_sshuttle":
         for r in _SSH_RENDERERS:
             anchor[r] = _anchor_cmd_c(sess, r)
-        traveler["sshuttle"] = _traveler_cmd_c(sess, "sshuttle")
-        notes.append("sshuttle needs sudo on the traveler and Python 3 on the anchor.")
+        operator["sshuttle"] = _operator_cmd_c(sess, "sshuttle")
+        notes.append("sshuttle needs sudo on the operator and Python 3 on the anchor.")
 
     notes.append("Password is pasted at the ssh prompt, never on the command line.")
     notes.append("Both legs die on TTL or disconnect; nothing persists but shell history.")
-    return Plan(session=sess, anchor=anchor, traveler=traveler, notes=tuple(notes))
+    return Plan(session=sess, anchor=anchor, operator=operator, notes=tuple(notes))
 
 
 # ── stored-session reconstruction (Phase 1 re-fetch) ─────────────────────────

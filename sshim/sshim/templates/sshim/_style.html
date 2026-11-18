@@ -59,11 +59,22 @@
   .sshim .risk ul{margin:4px 0 6px;padding-left:20px}
   .sshim .risk li{margin:2px 0}
   .sshim .risk .risk-continue{color:var(--dim)}
+  /* Topology picker: three radio "cards". Choosing the topology is the first decision, so it reads
+     as a choice, not a dropdown buried under a form. */
+  .sshim .topo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 4px}
+  @media(max-width:860px){.sshim .topo-grid{grid-template-columns:1fr}}
+  .sshim .topo{border:1px solid var(--border-2);border-radius:6px;padding:10px 12px;cursor:pointer;
+    display:flex;flex-direction:column;gap:3px;background:var(--panel);transition:border-color .12s}
+  .sshim .topo:hover{border-color:var(--lime-dark)}
+  .sshim .topo:has(input:checked){border-color:var(--lime);box-shadow:0 0 0 1px var(--lime) inset}
+  .sshim .topo input{margin:0 0 4px}
+  .sshim .topo b{font-family:var(--mono);font-size:14px;color:var(--text)}
+  .sshim .topo span{font-size:12px;color:var(--dim);line-height:1.35}
   .sshim .err{color:#ffb4b4;font-size:13px;border-left:2px solid #b45454;padding:6px 10px;margin:10px 0;background:rgba(180,84,84,.08)}
   .sshim .secret{font-family:var(--mono);background:#000;border:1px solid var(--lime-dark);border-radius:4px;padding:10px;color:var(--lime-soft);word-break:break-all}
   .sshim .ttlbar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin:4px 0 16px}
   .sshim .ttlbar>span{display:block;height:100%;background:var(--lime)}
-  /* the one place we spend the visual budget: the anchor -> relay <- traveler diagram */
+  /* the one place we spend the visual budget: the anchor -> relay <- operator diagram */
   .sshim .diagram{display:flex;align-items:center;gap:0;font-family:var(--mono);font-size:13px;margin:14px 0}
   .sshim .node{border:1px solid var(--border-2);border-radius:4px;padding:8px 12px;color:var(--text);white-space:nowrap}
   .sshim .node-relay{border-color:var(--lime);color:var(--lime);box-shadow:0 0 8px rgba(201,231,53,.35)}

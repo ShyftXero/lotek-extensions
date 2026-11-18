@@ -14,7 +14,7 @@ no binary on disk, runs on a borrowed box. When both sides hang up, it's gone. *
    command legs and a one-time relay secret. **The secret is shown once and never stored** — paste it at
    the `ssh` prompt (it is never put on the command line, where `ps` could read it).
 3. **Run the two legs** — the *anchor* (inside the target network, default Windows `ssh.exe`) and the
-   *traveler* (you, default Linux `ssh`). Copy each with its Copy button.
+   *operator* (you, default Linux `ssh`). Copy each with its Copy button.
 4. **Re-fetch anytime** from the running-pivots list (`/sshim/`). The commands are regenerated from the
    stored session, so you can pull them back on a different borrowed box. The secret can't be re-shown
    (it was never stored) — re-mint if you need a fresh one.
@@ -24,8 +24,8 @@ no binary on disk, runs on a borrowed box. When both sides hang up, it's gone. *
 | | mode | when | DNS |
 |-|------|------|-----|
 | **A** | relay + reverse SOCKS5 | both sides behind NAT | **remote** (anchor resolves) — free |
-| **B** | direct SOCKS | anchor is routable (public IP / tailnet) | local (traveler) — *not* remote |
-| **C** | relay + sshuttle | Linux traveler wants full-subnet L3 | remote; needs sudo + Python on anchor |
+| **B** | direct SOCKS | anchor is routable (public IP / tailnet) | local (operator) — *not* remote |
+| **C** | relay + sshuttle | Linux operator wants full-subnet L3 | remote; needs sudo + Python on anchor |
 
 ## What it is NOT
 

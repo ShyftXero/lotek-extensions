@@ -346,7 +346,7 @@ def plan_to_dict(p: plan.Plan) -> dict:
     password is never in a command, and the UI/caller re-prompts for it."""
     return {
         "anchor": dict(p.anchor),
-        "traveler": dict(p.traveler),
+        "operator": dict(p.operator),
         "notes": list(p.notes),
         "secret_available": False,
         "secret_note": (

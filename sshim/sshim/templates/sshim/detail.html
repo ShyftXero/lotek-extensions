@@ -13,13 +13,14 @@
 
   <div class="ttlbar"><span id="ttlfill"></span></div>
 
-  {# ── the one signature: anchor → relay ← traveler diagram, lime on the relay/wires ── #}
+  {# ── the one signature, in reading order: operator | relay | anchor.
+     Left is where YOU are; right is the target network. Lime on the relay and the wires. ── #}
   <div class="diagram">
-    <div class="node">anchor<br><span class="sub">target / Windows</span></div>
-    <div class="wire"><span>-R {{ row.socks_port }}</span></div>
-    <div class="node node-relay">relay<br><span class="sub">{{ row.rendezvous_host or 'rendezvous' }}</span></div>
+    <div class="node">operator<br><span class="sub">you / Linux</span></div>
     <div class="wire"><span>-L {{ row.socks_port }}</span></div>
-    <div class="node">traveler<br><span class="sub">operator / Linux</span></div>
+    <div class="node node-relay">relay<br><span class="sub">{{ row.rendezvous_host or 'rendezvous' }}</span></div>
+    <div class="wire"><span>-R {{ row.socks_port }}</span></div>
+    <div class="node">anchor<br><span class="sub">foothold / Windows</span></div>
   </div>
 
   {# Deviation-risk banner — the SAME predicate (`plan.deviation_risks`) the mint page renders, judged
@@ -40,9 +41,9 @@
 
   <div class="panes">
     {% for leg, legname, legos, legdefault in [
-        ('anchor','Anchor leg','target · default Windows ssh.exe', anchor_renderer),
-        ('traveler','Traveler leg','operator · default Linux ssh', traveler_renderer)] %}
-    {% set cmds = plan.anchor if leg == 'anchor' else plan.traveler %}
+        ('operator','Operator leg','your side · default Linux ssh', operator_renderer),
+        ('anchor','Anchor leg','foothold · default Windows ssh.exe', anchor_renderer)] %}
+    {% set cmds = plan.anchor if leg == 'anchor' else plan.operator %}
     <div class="pane" data-leg="{{ leg }}">
       <h3>{{ legname }} <span class="leg-os">{{ legos }}</span></h3>
       {% if cmds %}
@@ -79,7 +80,7 @@
 </div>
 
 <script>
-var LEGS = {anchor: {{ plan.anchor | tojson }}, traveler: {{ plan.traveler | tojson }}};
+var LEGS = {anchor: {{ plan.anchor | tojson }}, operator: {{ plan.operator | tojson }}};
 var root = document.getElementById('sshim-detail');
 var ORIG_SOCKS = parseInt(root.dataset.socks, 10), ORIG_JUMP = parseInt(root.dataset.jump, 10);
 var portDelta = 0;

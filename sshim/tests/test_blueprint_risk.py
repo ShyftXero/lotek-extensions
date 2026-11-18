@@ -67,7 +67,7 @@ def test_a_blank_rendezvous_is_a_clear_400_not_a_bare_error_page(client):
     resp = _mint_form(client, host="", port=22)
     html = resp.get_data(as_text=True)
     assert resp.status_code == 400
-    assert "configure a rendezvous host" in html
+    assert "Rendezvous host is required" in html
     # the operator's own values survive the rejection (the form re-renders, it does not wipe input)
     assert 'class="err"' in html
 
@@ -105,3 +105,58 @@ def test_the_banner_survives_a_re_fetch_of_the_stored_session(client):
     html = client.get(f"/sshim/sessions/{session_id}").get_data(as_text=True)
     assert BANNER in html
     assert "Inbound port 443" in html
+
+
+# ── the mint form's reachability + primary profile ──────────────────────────
+#
+# Two reported defects, both page shape rather than logic:
+#   * picking `direct_socks` reported "requires anchor_host" while the anchor inputs lived inside a
+#     collapsed <details> — an error naming a field the form never showed;
+#   * the primary rendezvous had to be hand-typed even though the lotek host IS an sshd.
+
+
+def test_anchor_fields_are_reachable_without_opening_advanced(client):
+    """The anchor inputs must exist OUTSIDE the Advanced disclosure, in a group the JS can show."""
+    html = client.get("/sshim/mint").get_data(as_text=True)
+    anchor_at = html.find('name="anchor_host"')
+    details_at = html.find("<details>")
+    assert anchor_at != -1, "the anchor host field must be on the page"
+    assert -1 < anchor_at < details_at, (
+        "anchor_host must render BEFORE <details> — inside Advanced it is a field the Direct topology "
+        "needs but cannot show"
+    )
+    # the topology-to-fields wiring the JS drives
+    assert 'data-topo="direct_socks relay_sshuttle"' in html
+
+
+def test_topology_is_a_visible_choice_not_a_hidden_select(client):
+    html = client.get("/sshim/mint").get_data(as_text=True)
+    assert 'name="topology" value="direct_socks"' in html, "topology must be a radio card"
+    assert "topo-grid" in html
+
+
+def test_the_lotek_host_is_the_primary_profile(client):
+    """The primary profile resolves to THIS dashboard's host — no hardcoded name, no saved row."""
+    html = client.get("/sshim/mint").get_data(as_text=True)
+    assert "lotek host (this dashboard)" in html
+    assert 'value="__lotek_host__"' in html
+    assert " selected" in html.split('value="__lotek_host__"')[1][:200], (
+        "the primary profile must be preselected — that is what makes Mint a single click"
+    )
+
+
+def test_the_primary_profile_mints_against_this_host(client):
+    """Submitting the sentinel profile uses the request host, even with JS off (blank rendezvous field)."""
+    from sshim import blueprint as BP
+
+    resp = client.post("/sshim/mint", data={
+        "profile_id": BP.PRIMARY_PROFILE_ID,
+        "topology": "relay_reverse_socks",
+        "rendezvous_host": "",          # deliberately blank: the sentinel supplies it
+        "rendezvous_port": "22",
+        "rendezvous_user": "sshim",
+        "ttl_minutes": "5",
+    })
+    assert resp.status_code in (200, 201), resp.get_data(as_text=True)[:400]
+    html = resp.get_data(as_text=True)
+    assert "localhost" in html, "the plan should dial the request host"

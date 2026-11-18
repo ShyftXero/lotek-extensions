@@ -4,7 +4,8 @@ A disposable **SSH-only pivot generator** for lotek — *revshells.com for `ssh`
 hostile networks rendezvous through an SSH relay using only the resident `ssh` client (no binary on
 disk, runs on a borrowed box). When both sides hang up, it's gone. **Not persistent access.**
 
-Origin use case: view a 3D printer's web UI from a hotel.
+Origin use case: reach a target network from off-site — a consultant on a client LAN they do
+not control, an operator at a coffee shop needing one host inside the engagement scope.
 
 ## Phase 1 (this) — zero core changes
 
@@ -25,8 +26,8 @@ single future wiring point and Phase 1 never calls it.
 
 - **Three topologies × four renderers** (`sshim/plan.py`, the folded + pinned generator):
   - A `relay_reverse_socks` — both sides behind NAT; remote DNS is free (the anchor resolves names).
-  - B `direct_socks` — anchor is routable; `-D` resolves on the traveler (stated, not hidden).
-  - C `relay_sshuttle` — Linux traveler wants full-subnet L3 (needs sudo + Python on the anchor).
+  - B `direct_socks` — anchor is routable; `-D` resolves on the operator (stated, not hidden).
+  - C `relay_sshuttle` — Linux operator wants full-subnet L3 (needs sudo + Python on the anchor).
   - Renderers: `posix` ssh, `ssh_exe`, `powershell_encoded`, `sshuttle`; plus a transport **encoding**
     post-transform (None / URL / URL-double / Base64).
 - **Running-pivots list + re-fetch.** A minted session lives server-side (`sshim_sessions`); its full

@@ -40,7 +40,7 @@
   <h2>New profile</h2>
   <form method="post" action="{{ url_for('sshim.create_profile_route') }}">
     <div class="row">
-      <label>Name <input type="text" name="name" required placeholder="hotel-printer"></label>
+      <label>Name <input type="text" name="name" required placeholder="acme-dmz"></label>
       <label>Topology
         <select name="topology">{% for t in sshim_topologies %}<option value="{{ t }}">{{ t }}</option>{% endfor %}</select>
       </label>

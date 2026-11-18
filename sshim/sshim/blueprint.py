@@ -59,7 +59,7 @@ bp = Blueprint("sshim", __name__, template_folder="templates")
 # empty, so the page opens with a blank field the operator must fill with their own box.
 DEFAULT_TTL_MINUTES = 30
 DEFAULT_ANCHOR_RENDERER = "ssh_exe"   # TARGET/anchor leg = Windows
-DEFAULT_TRAVELER_RENDERER = "posix"   # OPERATOR/traveler leg = Linux
+DEFAULT_OPERATOR_RENDERER = "posix"   # OPERATOR/operator leg = Linux
 #: sshd's own port — what the rendezvous/anchor form fields fall back to when the operator leaves them
 #: blank. Not a rendezvous *default*: it is the standard sshd port, and :func:`plan.deviation_risks`
 #: flags it as a pinned well-known port when it lands on a public host.
@@ -120,6 +120,27 @@ def index():
 
 # ── mint ───────────────────────────────────────────────────────────────────────
 
+#: The built-in PRIMARY profile. Not a saved row: it resolves to THIS dashboard's own host, so it is
+#: correct on every deployment without a hardcoded name. The lotek box already runs sshd, which makes it
+#: the zero-setup rendezvous for an operator who has an account there.
+PRIMARY_PROFILE_ID = "__lotek_host__"
+PRIMARY_PROFILE_LABEL = "lotek host (this dashboard)"
+PRIMARY_RELAY_PORT = 22
+
+
+def primary_relay() -> tuple[str, int]:
+    """``(host, port)`` of the lotek host acting as the rendezvous.
+
+    The admin ``default_relay_host`` setting wins when an operator pinned one (a smaller public face, a
+    different sshd); otherwise the host the request arrived on IS the rendezvous. Port 22 is the
+    dashboard host's own sshd, and `deviation_risks` flags it as a well-known port on every surface —
+    the convenience is loud, never silent.
+    """
+    configured, cport = _split_host_port(default_relay_host())
+    host = configured or (request.host or "").split(":")[0]
+    return host, (cport or PRIMARY_RELAY_PORT)
+
+
 def _mint_defaults(form=None) -> dict:
     """The mint form's field values: the shipped defaults on a GET, the operator's OWN submitted values on
     a rejected POST (a validation error must never clear what they typed — and the risk banner has to see
@@ -140,7 +161,7 @@ def _mint_defaults(form=None) -> dict:
             "cidr": "",
             "ttl_minutes": DEFAULT_TTL_MINUTES,
             "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
-            "traveler_renderer": DEFAULT_TRAVELER_RENDERER,
+            "operator_renderer": DEFAULT_OPERATOR_RENDERER,
         }
     return {
         "topology": (form.get("topology") or "").strip() or "relay_reverse_socks",
@@ -154,7 +175,7 @@ def _mint_defaults(form=None) -> dict:
         "cidr": (form.get("cidr") or "").strip(),
         "ttl_minutes": _int(form.get("ttl_minutes"), DEFAULT_TTL_MINUTES),
         "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
-        "traveler_renderer": DEFAULT_TRAVELER_RENDERER,
+        "operator_renderer": DEFAULT_OPERATOR_RENDERER,
     }
 
 
@@ -176,6 +197,7 @@ def _render_mint(db, error: str | None = None, *, defaults: dict | None = None):
     (:func:`plan.deviation_risks`), evaluated against the values currently in the form — silent for the
     shipped blank rendezvous, and loud the moment a pinned well-known port is on screen."""
     defaults = defaults or _mint_defaults()
+    _primary_host, _primary_port = primary_relay()
     return render_template(
         "sshim/mint.html",
         profiles=visible_profiles(db, **_actor_kw()),
@@ -183,6 +205,10 @@ def _render_mint(db, error: str | None = None, *, defaults: dict | None = None):
         error=error,
         risk_notes=deviation_risks(_candidate_profile(defaults)),
         max_ttl=max_ttl_minutes(),
+        primary_host=_primary_host,
+        primary_port=_primary_port,
+        primary_label=PRIMARY_PROFILE_LABEL,
+        primary_id=PRIMARY_PROFILE_ID,
     )
 
 
@@ -202,7 +228,13 @@ def mint():
     with get_config().session_factory() as db:
         # A saved profile pre-fills the generator; its fields are the source unless the operator
         # overrode them on the form (an ad-hoc mint). Either way we build + validate a plan.Profile.
-        if saved_id:
+        if saved_id == PRIMARY_PROFILE_ID:
+            # The PRIMARY profile is not a row: it means "rendezvous on this lotek host". Resolve it
+            # server-side so a submit works even with JS off, and so the host is whatever this
+            # deployment actually answers on rather than a name shipped in the package.
+            _ph, _pp = primary_relay()
+            form = {**form, "rendezvous_host": _ph, "rendezvous_port": str(_pp)}
+        elif saved_id:
             try:
                 pid = uuid.UUID(saved_id)
             except ValueError:
@@ -265,7 +297,7 @@ def _render_detail(db, row, *, one_time_secret):
         # mints only the ephemeral one-use password, so the credential arm is silent by construction.
         risk_notes=deviation_risks(rendered.session.profile),
         anchor_renderer=DEFAULT_ANCHOR_RENDERER,
-        traveler_renderer=DEFAULT_TRAVELER_RENDERER,
+        operator_renderer=DEFAULT_OPERATOR_RENDERER,
     )
 
 
