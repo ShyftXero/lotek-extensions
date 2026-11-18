@@ -227,3 +227,25 @@ def test_the_detail_page_names_the_relay_mode(client_with_hooks):
     }).get_data(as_text=True)
     assert "core-hosted single-use container" in html
     assert "must already exist there" not in html
+
+
+def test_every_mint_call_site_passes_the_acquire_hook():
+    """Structural guard for the gap the integration run found.
+
+    The dashboard form was wired to the seam and the MACHINE api was not, so an agent-minted pivot
+    silently took the Phase-1 fallback while a UI-minted one got a container. Both callers must pass
+    `acquire`; this asserts it at the source so a new call site cannot forget.
+    """
+    import ast
+    from pathlib import Path
+
+    missing = []
+    for name in ("blueprint.py", "api_pat.py"):
+        src = (Path(__file__).resolve().parents[1] / "sshim" / name).read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "mint_session"):
+                keywords = {k.arg for k in node.keywords}
+                if "acquire" not in keywords:
+                    missing.append(f"{name}:{node.lineno}")
+    assert not missing, f"mint_session call sites without acquire=<hook>: {missing}"

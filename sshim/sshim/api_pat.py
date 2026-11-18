@@ -25,7 +25,14 @@ import uuid
 from flask import Blueprint, jsonify, request
 
 from sshim import host
-from sshim.deps import get_config, host_audit, is_standalone, max_ttl_minutes, secret_key_path
+from sshim.deps import (
+    exclusive_container_acquire,
+    get_config,
+    host_audit,
+    is_standalone,
+    max_ttl_minutes,
+    secret_key_path,
+)
 from sshim.service import (
     Denied,
     Invalid,
@@ -124,6 +131,10 @@ def create_session():
                 secret_key_path=secret_key_path(),
                 kill_at=parse_kill_at(body.get("kill_at")),
                 host_audit=host_audit(),
+                # The MACHINE api mints through the SAME seam as the dashboard form: an agent-minted
+                # pivot must ride the container exactly like a UI-minted one. Omitting this is how the
+                # integration run silently took the Phase-1 fallback while the UI path worked.
+                acquire=exclusive_container_acquire(),
             )
         except Invalid as exc:
             return jsonify({"error": "bad_request", "detail": str(exc)}), 400
