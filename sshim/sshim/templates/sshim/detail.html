@@ -9,9 +9,19 @@
     <h1 style="margin:0">{{ row.profile_name or row.topology }}</h1>
     <span class="status-{{ status }} mono"><span class="dot {{ 'dot-active' if status == 'active' else 'dot-dead' }}"></span>{{ status }}</span>
   </div>
-  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }} · SOCKS {{ row.socks_port }} · TTL {{ row.ttl_minutes }}min{% if row.kill_at %} · kill at {{ row.kill_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</p>
+  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }}:{{ (row.params or {}).get('rendezvous_port', 22) }} · SOCKS {{ row.socks_port }} · TTL {{ row.ttl_minutes }}min{% if row.kill_at %} · kill at {{ row.kill_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</p>
 
   <div class="ttlbar"><span id="ttlfill"></span></div>
+
+  {% set _mode = (row.params or {}).get('relay_mode') %}
+  <p class="mono" style="font-size:12px;margin:2px 0 8px;color:var(--dim)">
+    relay:
+    {% if _mode == 'container' %}<strong style="color:var(--lime-soft)">core-hosted single-use container</strong>
+      <span class="sub">— this pivot's random user &amp; password are installed by that container</span>
+    {% else %}<strong>{{ row.rendezvous_host or '—' }}:{{ (row.params or {}).get('rendezvous_port', 22) }}</strong>
+      <span class="sub">— external; this session's account must already exist there</span>
+    {% endif %}
+  </p>
 
   {# ── the one signature, in reading order: operator | relay | anchor.
      Left is where YOU are; right is the target network. Lime on the relay and the wires. ── #}
