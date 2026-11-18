@@ -1,0 +1,57 @@
+[project]
+name = "pastel"
+version = "0.1.0.dev0"
+description = "PASTEL — paste store for lotek: unguessable-slug text/markdown pastes with per-paste expiry, read-count limits, and HTTP Basic password protection."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.0.0",
+    "sqlalchemy>=2.0.0",
+    "jinja2>=3.1.0",
+    "markupsafe>=2.1.0",
+    # werkzeug is bundled with flask; we use werkzeug.security for constant-time password hashing.
+    "werkzeug>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+    "pyrefly>=0.16.0",
+]
+
+# Discovery signal: lotek enumerates installed extensions via this entry-point group.
+[project.entry-points."lotek.extensions"]
+pastel = "pastel"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pastel"]
+
+# Ship lotek-extension.toml and docs INSIDE the wheel so the host can read the manifest via
+# importlib.resources. 🔴 An `editable = true` path install skips this; discovery then silently skips
+# the extension. Use a non-editable path source for local dev.
+[tool.hatch.build.targets.wheel.force-include]
+"lotek-extension.toml" = "pastel/lotek-extension.toml"
+"docs/PASTEL.md" = "pastel/docs/PASTEL.md"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.pyrefly]
+search-path = [".", "tests"]

@@ -1,0 +1,72 @@
+{% extends pastel_base %}
+{% block title %}Pastes{% endblock %}
+{% block pastel_content %}
+<h1>Pastes</h1>
+
+{% if notice == "deleted" %}<p class="flash-notice">Paste deleted.</p>{% endif %}
+{% if notice == "filed" %}<p class="flash-notice">Paste created.</p>{% endif %}
+{% if error == "invalid" %}<p class="flash-error">Invalid request — please check your input.</p>{% endif %}
+
+{% if pastel_can_write %}
+<form method="post" action="{{ url_for('pastel.create') }}">
+  <fieldset>
+    <legend>New paste</legend>
+    <div style="margin-bottom:.75rem">
+      <label>Title (optional)<br>
+        <input type="text" name="title" maxlength="200" style="width:100%">
+      </label>
+    </div>
+    <div style="margin-bottom:.75rem">
+      <label>Body<br>
+        <textarea name="body" required placeholder="Paste your text or markdown here…"></textarea>
+      </label>
+    </div>
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-bottom:.75rem">
+      <label>Expires:
+        <select name="ttl">
+          <option value="never">Never</option>
+          <option value="1h">1 hour</option>
+          <option value="1d">1 day</option>
+          <option value="7d">7 days</option>
+          <option value="30d">30 days</option>
+        </select>
+      </label>
+      <label>Max reads:
+        <input type="number" name="read_limit" min="1" placeholder="unlimited" style="width:7em">
+      </label>
+      <label>Password:
+        <input type="password" name="password" placeholder="leave blank for public" style="width:14em">
+      </label>
+    </div>
+    <button type="submit">Create paste</button>
+  </fieldset>
+</form>
+{% endif %}
+
+{% if pastes %}
+<h2 style="margin-top:2rem">Your pastes</h2>
+<ul style="list-style:none;padding:0">
+{% for p in pastes %}
+<li style="padding:.6rem 0;border-bottom:1px solid #d0d7de">
+  <a href="{{ url_for('pastel.view_paste', slug=p.slug) }}" style="font-weight:600">
+    {{ p.title or (p.body[:70] ~ ('…' if p.body|length > 70 else '')) }}
+  </a>
+  <span class="meta" style="margin-left:.5rem">
+    {% if p.password_hash %}<span class="icon-lock" title="Password protected">🔒</span> {% endif %}
+    {% if p.expires_at %} · expires {{ p.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+    {% if p.read_limit %} · {{ p.read_count }}/{{ p.read_limit }} reads{% endif %}
+  </span>
+  <span class="meta" style="margin-left:.5rem">
+    · <a href="{{ url_for('pastel.raw_paste', slug=p.slug) }}">raw</a>
+    · <form method="post" action="{{ url_for('pastel.delete_paste', slug=p.slug) }}" style="display:inline"
+         onsubmit="return confirm('Delete this paste?')">
+        <button type="submit" style="background:none;color:#d1242f;padding:0;font-size:inherit;text-decoration:underline;cursor:pointer;border:none">delete</button>
+      </form>
+  </span>
+</li>
+{% endfor %}
+</ul>
+{% else %}
+<p class="meta" style="margin-top:2rem">No pastes yet.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,27 @@
+# How this extension MOUNTS into a host (lotek).
+[mount]
+name = "pastel"
+entrypoint = "pastel"
+url_prefix = "/pastel"
+
+[[nav]]
+label = "Pastes"
+path = "/"
+icon = "📋"
+
+[host]
+# PAT/Bearer machine API — CSRF-exempt, session-gate-exempt.
+machine_prefix = "/machine"
+# Public paste-view surface — session-gate-exempt (the slug IS the credential).
+# Only covers GET /pastel/p/<slug> and /pastel/p/<slug>/raw (read-only).
+# Mutable routes (delete) live outside this prefix and stay session-gated.
+public_prefix = "/p"
+docs = "docs/PASTEL.md"
+docs_title = "Pastel (paste store)"
+
+[audit]
+verbs = ["create", "delete", "retire"]
+
+[db]
+base = "pastel.models:Base"
+table_prefix = "pastel_"
