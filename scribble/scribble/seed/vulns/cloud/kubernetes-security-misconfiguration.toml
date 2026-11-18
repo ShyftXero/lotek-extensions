@@ -1,0 +1,21 @@
+name     = "Kubernetes Security Misconfiguration"
+category = "Cloud - Kubernetes"
+severity = "medium"
+
+description = """
+<p>Posture scanning of the Kubernetes cluster found control failures against recognized frameworks (NSA/CISA Kubernetes Hardening Guidance, MITRE ATT&amp;CK for Containers): for example privileged or host-namespace workloads, missing default-deny NetworkPolicies, over-permissive RBAC bindings, or pods running without a restricted security context (root user, writable root filesystem, unneeded Linux capabilities kept).</p>
+"""
+
+impact = """
+<p>These weaken workload isolation and blast-radius control. Most are not exploited alone. The risk shows up in combination: a privileged pod plus over-permissive RBAC is a container-escape-to-cluster-admin chain, and a missing NetworkPolicy turns one compromised pod into free lateral movement across the namespace or cluster. Rate the set by the worst reachable combination, not by the raw count of failed controls.</p>
+"""
+
+replication = """
+<ul><li>Scan against the target kubeconfig: <code>kubescape scan framework nsa,mitre --format json</code></li></ul>
+<p>Failing control(s): {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Fix the failing controls above: enforce Pod Security Standards at <em>restricted</em>, apply least-privilege RBAC (no wildcard verbs or resources, no cluster-admin bindings beyond genuine operators), default-deny NetworkPolicies with explicit per-workload allow rules, and non-root, read-only-root security contexts with capabilities dropped to what a workload actually needs. Re-run the same scan after remediation to confirm each control passes rather than assuming the change took.</p>
+<p><strong>References</strong></p><ul><li>NSA/CISA Kubernetes Hardening Guidance</li><li>MITRE ATT&amp;CK for Containers</li><li>CIS Kubernetes Benchmark</li></ul>
+"""

@@ -1,0 +1,21 @@
+name     = "Exposed Version Control Directory (.git)"
+category = "Web Application"
+severity = "high"
+
+description = """
+<p>A version-control directory (<code>.git/</code>) is served at {{TARGET_URL}}, which exposes the repository's object database and commit history to anyone who asks. In practice that is read access to the application's source.</p>
+"""
+
+impact = """
+<p>An attacker can reconstruct the full source and its history and read it offline at their own pace, looking for more flaws. The history is the part people forget: credentials and API keys that were committed and later removed are still readable in earlier commits. How serious this is depends on what the repo holds. Live secrets in the history push it to the top of the range. An already-public codebase pulls it down.</p>
+"""
+
+replication = """
+<ul><li>Confirm exposure: request <code>{{TARGET_URL}}/.git/HEAD</code> and check for a valid ref response.</li><li>Reconstruct the repository: <code>git-dumper {{TARGET_URL}}/.git/ ./dump</code></li></ul>
+<p>Location(s): {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Block access to VCS metadata directories at the web server or reverse proxy (a deny rule for <code>/.git/</code> and other dotfile directories), and better still, deploy from a build artifact that never includes <code>.git</code> so there is nothing to serve. Rotate any secret that appears anywhere in the exposed history, not just at the current tip: a credential removed in a later commit is still readable in an earlier one.</p>
+<p><strong>References</strong></p><ul><li>CWE-527: Exposure of Version-Control Repository to an Unauthorized Control Sphere</li><li>OWASP Top 10 A05:2021: Security Misconfiguration</li></ul>
+"""

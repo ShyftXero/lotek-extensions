@@ -1,0 +1,20 @@
+name     = "Sensitive Information Disclosure"
+category = "Web Application"
+severity = "medium"
+
+description = """
+<p>The application at {{TARGET_URL}} discloses sensitive information to unauthenticated users: verbose stack traces, internal file paths, software version banners, or a status/metrics endpoint (such as Apache <code>server-status</code> or an unauthenticated <code>/metrics</code>) that should not be reachable without authentication.</p>
+"""
+
+impact = """
+<p>Most of this is reconnaissance that speeds up a targeted attack: exact versions narrow the CVE search right away, internal paths and hostnames map the environment. Now and then the disclosed content is directly useful rather than just informative (a credential, a session token), which is what moves a given instance from low to something higher. Rate it on what is actually exposed.</p>
+"""
+
+replication = """
+<ul><li>Retrieve the disclosing endpoint(s) directly and review the response body for internals: {{AFFECTED}}</li></ul>
+"""
+
+remediation = """
+<p>Turn off verbose and debug error output in production so a failure returns a generic message instead of a stack trace. Restrict or remove status, metrics, and diagnostic endpoints, or bind them to localhost and require authentication if they have to stay reachable. Suppress version banners on public-facing services, and review response bodies during code review for unintended exposure rather than leaning on a scanner to catch it.</p>
+<p><strong>References</strong></p><ul><li>OWASP Top 10 A05:2021: Security Misconfiguration</li><li>CWE-200: Exposure of Sensitive Information to an Unauthorized Actor</li></ul>
+"""

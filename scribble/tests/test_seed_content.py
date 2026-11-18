@@ -12,14 +12,16 @@ text) -- not just "some text is present somewhere".
 
 from __future__ import annotations
 
-import json
 import re
+import tomllib
+from pathlib import Path
 
 from scribble.content import render_html, schema
 from scribble.enums import Severity
 from scribble.models import VulnerabilityTemplate
 from scribble.seed import faction_parse
-from scribble.seed.loader import _LOTEK_JSON
+
+_VULNS_DIR = Path(__file__).parent.parent / "scribble" / "seed" / "vulns"
 
 _KERBEROAST = "At Least One Member of an Admin Group Is Vulnerable to the Kerberoast Attack"
 _NO_EDR_RECOMMENDATION = "Using EDR - Microsoft Defender for Endpoint"  # empty Recommendation in source
@@ -168,17 +170,28 @@ _EXPECTED_LOTEK_SEVERITY: dict[str, Severity] = {
     "Weak TLS/SSL Configuration": Severity.medium,                    # SeverityId 3
     "Kubernetes Security Misconfiguration": Severity.medium,          # SeverityId 3
     "Exposed Network Service": Severity.low,                          # SeverityId 2
+    "Server-Side Template Injection (SSTI)": Severity.high,            # severity = "high"
 }
 
 
+def _shipped_lotek_names() -> set[str]:
+    names: set[str] = set()
+    for p in _VULNS_DIR.rglob("*.toml"):
+        rec = tomllib.loads(p.read_text())
+        name = (rec.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
 def test_default_template_name_set_is_pinned():
-    """The pinned severity map must cover exactly the names shipped in lotek_vulnerabilities.json. If a
+    """The pinned severity map must cover exactly the names shipped under seed/vulns/. If a
     default is added, removed, or renamed, this trips first -- forcing a matching (de)escalation-proof
     severity pin below rather than letting a new default ship with no severity guard at all."""
-    shipped = {rec["Name"] for rec in json.loads(_LOTEK_JSON.read_text())}
+    shipped = _shipped_lotek_names()
     assert shipped == set(_EXPECTED_LOTEK_SEVERITY), (
-        "lotek_vulnerabilities.json default names drifted from the pinned severity map; add/remove the "
-        "corresponding entry in _EXPECTED_LOTEK_SEVERITY (with its SeverityId comment)"
+        "seed/vulns/ default names drifted from the pinned severity map; add/remove the "
+        "corresponding entry in _EXPECTED_LOTEK_SEVERITY (with its severity comment)"
     )
 
 

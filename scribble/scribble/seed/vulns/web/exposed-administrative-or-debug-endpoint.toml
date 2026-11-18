@@ -1,0 +1,20 @@
+name     = "Exposed Administrative or Debug Endpoint"
+category = "Web Application"
+severity = "high"
+
+description = """
+<p>An administrative, management, or debug interface is reachable at {{TARGET_URL}} without adequate authentication or network restriction. It should require a login, or not be internet-reachable at all, and it does neither.</p>
+"""
+
+impact = """
+<p>What an attacker gets depends on the interface. Some only leak configuration. Many admin and debug consoles ship an eval-style console or a file upload by design, which turns unauthenticated reach into configuration changes, credential access, or remote code execution, and from there full control of the application or its host. Rate it on what the specific interface exposes, and confirm whether authentication is truly absent or just weak.</p>
+"""
+
+replication = """
+<ul><li>Access the identified endpoint(s) directly and confirm no authentication is enforced: {{AFFECTED}}</li></ul>
+"""
+
+remediation = """
+<p>Require strong authentication plus MFA on every management interface, and limit network reach to a trusted range or VPN rather than relying on the login alone. Strip debug endpoints and consoles out of production builds entirely, gated behind a build flag that cannot be flipped by an environment variable an attacker could influence.</p>
+<p><strong>References</strong></p><ul><li>OWASP Top 10 A05:2021: Security Misconfiguration</li><li>CWE-749: Exposed Dangerous Method or Function</li></ul>
+"""
