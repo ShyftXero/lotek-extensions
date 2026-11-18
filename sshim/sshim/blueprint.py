@@ -28,6 +28,7 @@ from sshim.deps import (
     host_audit,
     is_standalone,
     max_ttl_minutes,
+    relay_connected,
     secret_key_path,
 )
 from sshim.plan import (
@@ -354,6 +355,18 @@ def _render_detail(db, row):
 def kill(session_id: uuid.UUID):
     with get_config().session_factory() as db:
         row = _load_session_or_404(db, session_id)
+        # A kill is one-way: the operator must re-stage the anchor side and re-dial. When a leg is
+        # still connected that is a surprising thing to do by a single click, so ask first. The
+        # confirmation swears to nothing it cannot see (Phase 1 cannot observe the rendezvous).
+        if (request.form.get("confirm") or "") != "1":
+            return render_template(
+                "sshim/confirm_kill.html",
+                row=row,
+                connected=relay_connected(row),
+                status=effective_status(
+                    row.status, row.expires_at, now=now_utc(), kill_at=row.kill_at
+                ),
+            )
         try:
             kill_session(db, row, **_actor_kw(), host_audit=host_audit())
         except Denied as exc:

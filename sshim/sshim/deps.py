@@ -218,3 +218,36 @@ def max_ttl_minutes() -> int:
         return MAX_TTL_MINUTES
     lo, hi = MAX_TTL_MINUTES_BOUNDS
     return min(max(value, lo), hi)
+
+
+def relay_connected(session) -> bool | None:
+    """Is a leg currently dialled into this session's relay: ``True`` / ``False`` / ``None`` (unknown).
+
+    Used ONLY to strengthen the kill confirmation — "a leg is connected right now, killing this drops
+    it". It must never gate the kill: an operator who cannot reach their own relay must still be able to
+    tear a session down.
+
+    Phase 1 has no relay to ask. The rendezvous is somebody else's sshd, so sshim cannot see who is
+    dialled in, and answering ``False`` would be a lie of the worst kind — it would tell an operator
+    "nothing is connected" while their foothold sits attached. So Phase 1 answers ``None`` (unknown) and
+    the confirmation swears to nothing it cannot see.
+
+    Phase 2 asks the host: ``host_hook('exclusive_container_state')`` returns the container's view of its
+    own connections (core owns the container, so core answers).
+    """
+    probe = _extras().get("exclusive_container_state")
+    if probe is None:
+        return None
+    try:
+        state = probe(str(session.id))
+    except Exception:  # noqa: BLE001 — a probe failure must not block a kill
+        return None
+    if isinstance(state, bool):
+        return state
+    if isinstance(state, dict):
+        legs = state.get("connected_legs")
+        if isinstance(legs, int):
+            return legs > 0
+        if isinstance(legs, bool):
+            return legs
+    return None

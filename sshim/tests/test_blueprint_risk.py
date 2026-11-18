@@ -160,3 +160,50 @@ def test_the_primary_profile_mints_against_this_host(client):
     assert resp.status_code in (200, 201), resp.get_data(as_text=True)[:400]
     html = resp.get_data(as_text=True)
     assert "localhost" in html, "the plan should dial the request host"
+
+
+# ── kill needs a confirmation ───────────────────────────────────────────────
+#
+# A kill is one-way: the operator re-stages the anchor and dials again. One click from the detail page
+# was too cheap for that, so the POST renders a confirmation unless it carries confirm=1.
+
+
+def _mint_one(client):
+    resp = client.post("/sshim/mint", data={
+        "profile_id": "", "topology": "relay_reverse_socks",
+        "rendezvous_host": "vps.example", "rendezvous_port": "22",
+        "rendezvous_user": "sshim", "ttl_minutes": "30",
+    })
+    assert resp.status_code in (200, 201)
+    html = resp.get_data(as_text=True)
+    import re as _re
+    m = _re.search(r"/sshim/sessions/([0-9a-f-]{36})", html)
+    assert m, "could not find the session id on the detail page"
+    return m.group(1)
+
+
+def test_kill_without_confirm_asks_first_and_does_not_kill(client):
+    sid = _mint_one(client)
+    resp = client.post(f"/sshim/sessions/{sid}/kill", data={})
+    assert resp.status_code == 200, "an unconfirmed kill must not perform the kill"
+    html = resp.get_data(as_text=True)
+    assert "Kill this pivot?" in html
+    assert 'name="confirm" value="1"' in html
+    # still alive
+    detail = client.get(f"/sshim/sessions/{sid}").get_data(as_text=True)
+    assert "Kill this pivot" in detail
+
+
+def test_kill_with_confirm_performs_it(client):
+    sid = _mint_one(client)
+    resp = client.post(f"/sshim/sessions/{sid}/kill", data={"confirm": "1"})
+    assert resp.status_code in (302, 303)
+    detail = client.get(f"/sshim/sessions/{sid}").get_data(as_text=True)
+    assert "Kill this pivot" not in detail, "a confirmed kill must take effect"
+
+
+def test_the_confirmation_never_claims_nothing_is_connected(client):
+    """Phase 1 cannot see the rendezvous, so it must say it does not know — not 'nothing attached'."""
+    sid = _mint_one(client)
+    html = client.post(f"/sshim/sessions/{sid}/kill", data={}).get_data(as_text=True)
+    assert "cannot see this rendezvous" in html

@@ -391,19 +391,19 @@ def render_plan(sess: Session) -> Plan:
         for r in _SSH_RENDERERS:
             anchor[r] = _anchor_cmd_a(sess, r)
             operator[r] = _operator_cmd_a(sess, r)
-        notes.append("Remote DNS is free: the anchor resolves names inside the target network.")
+        notes.append("Remote DNS: the anchor resolves names.")
     elif t == "direct_socks":
         for r in _SSH_RENDERERS:
             operator[r] = _operator_cmd_b(sess, r)
-        notes.append("Direct -D resolves DNS on the OPERATOR — not remote DNS. Use relay mode for that.")
+        notes.append("Direct -D resolves DNS locally — not remote DNS. Use Relay for that.")
     elif t == "relay_sshuttle":
         for r in _SSH_RENDERERS:
             anchor[r] = _anchor_cmd_c(sess, r)
         operator["sshuttle"] = _operator_cmd_c(sess, "sshuttle")
-        notes.append("sshuttle needs sudo on the operator and Python 3 on the anchor.")
+        notes.append("sshuttle: sudo here, Python 3 on the anchor.")
 
-    notes.append("Password is pasted at the ssh prompt, never on the command line.")
-    notes.append("Both legs die on TTL or disconnect; nothing persists but shell history.")
+
+
     notes.append(
         f"This pivot dials as {rendezvous_identity(sess.profile, sess)} — that account must exist on "
         "the rendezvous (an sshim relay container provisions it, an external box needs a pinned user)."

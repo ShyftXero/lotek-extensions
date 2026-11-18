@@ -62,7 +62,7 @@ def test_topology_a_posix_round_trip():
     assert f"-L {sess.socks_port}:127.0.0.1:{sess.socks_port}" in operator
     assert sess.ssh_password not in anchor
     assert sess.ssh_password not in operator
-    assert any("Remote DNS is free" in n for n in plan.notes)
+    assert any("Remote DNS" in n for n in plan.notes)
 
 
 def test_topology_a_ssh_exe_uses_NUL_known_hosts():
