@@ -76,6 +76,7 @@ account on the rendezvous host. sshim does not create accounts:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import secrets
 import urllib.parse
 from dataclasses import dataclass, field
@@ -413,6 +414,22 @@ def render_plan(sess: Session) -> Plan:
 
 # ── stored-session reconstruction (Phase 1 re-fetch) ─────────────────────────
 
+#: Profile's own field names. ``params`` is a SUPERSET of these — sshim also stores session metadata
+#: there (``relay_mode``, ``relay_handle``), which is about HOW the relay is provided, not a coordinate.
+_PROFILE_FIELDS = frozenset(f.name for f in dataclasses.fields(Profile))
+
+
+def profile_from_params(params: dict) -> Profile:
+    """Rebuild a Profile from a stored snapshot, IGNORING keys that are not Profile fields.
+
+    Handing the whole dict to ``Profile(**params)`` broke the moment ``params`` gained a key Profile
+    does not have (relay_mode/relay_handle) — every re-fetch raised TypeError. Filtering makes the
+    snapshot additive-safe: session metadata can grow without touching the profile contract.
+    """
+    known = {k: v for k, v in (params or {}).items() if k in _PROFILE_FIELDS}
+    return Profile(**known)
+
+
 def rebuild_session(
     params: dict,
     *,
@@ -430,7 +447,7 @@ def rebuild_session(
     surface must then say so instead of presenting an empty secret as a real one. The rendered commands
     never contain the password either way, so the regenerated plan stays byte-identical to the mint one.
     """
-    profile = Profile(**params)
+    profile = profile_from_params(params)
     return Session(
         profile=profile,
         socks_port=socks_port,

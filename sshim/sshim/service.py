@@ -22,6 +22,7 @@ callers get ``None`` and decide the status.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import threading
 import time
@@ -267,6 +268,50 @@ def delete_profile(db, row: models.Profile, *, owner_id, is_admin) -> None:
 
 # ── sessions — mint, list, load, kill, regenerate ─────────────────────────────
 
+#: Topologies that dial a rendezvous — the only ones a container can stand in for. In ``direct_socks``
+#: the operator talks to the anchor itself, so there is nothing to host.
+RELAY_TOPOLOGIES = frozenset({"relay_reverse_socks", "relay_sshuttle"})
+
+RELAY_CONTAINER = "container"   # a core-hosted single-use relay provisions this session's identity
+RELAY_EXTERNAL = "external"     # somebody else's sshd: the account must already exist there
+
+
+def relay_dial(result) -> tuple[str | None, int | None]:
+    """``(host, port)`` from a host ``exclusive_container_acquire`` result, or ``(None, None)``.
+
+    Tolerates both naming conventions the seam may use (``host``/``port`` or ``relay_host``/
+    ``public_port``) and any junk: an unusable answer must fall back to Phase-1 behaviour rather than
+    mint a pivot pointed at nothing.
+    """
+    if not isinstance(result, dict):
+        return None, None
+    host = result.get("host") or result.get("relay_host")
+    raw_port = result.get("port") or result.get("public_port")
+    try:
+        port = int(raw_port) if raw_port is not None else None
+    except (TypeError, ValueError):
+        port = None
+    if not isinstance(host, str) or not host.strip() or not port:
+        return None, None
+    return host.strip(), port
+
+
+def relay_mode(params: dict | None) -> str:
+    """Which kind of relay a stored session actually rides on (``container`` or ``external``)."""
+    if isinstance(params, dict) and params.get("relay_mode") == RELAY_CONTAINER:
+        return RELAY_CONTAINER
+    return RELAY_EXTERNAL
+
+
+def relay_handle(params: dict | None) -> str | None:
+    """The id the host handed back for this session's exclusive container, if any."""
+    if isinstance(params, dict):
+        handle = params.get("relay_handle")
+        if isinstance(handle, str) and handle.strip():
+            return handle.strip()
+    return None
+
+
 def mint_session(
     db,
     prof: plan.Profile,
@@ -279,6 +324,7 @@ def mint_session(
     profile_id: uuid.UUID | None = None,
     kill_at: datetime | None = None,
     host_audit=None,
+    acquire=None,
 ) -> tuple[models.Session, str]:
     """Mint a pivot: validate, generate this session's OWN identity + random ports, store both.
 
@@ -294,6 +340,28 @@ def mint_session(
     ttl = min(max(1, int(ttl_minutes)), max_ttl)
     # mint + render validates the topology/field combo (raises ValueError -> Invalid).
     sess = plan.mint(prof, ttl_minutes=ttl)
+
+    # ── Phase 2: ask the host for a core-hosted single-use relay ────────────────────────────────────
+    # The container is what makes this session's random ssh_user/ssh_password REAL: the relay image
+    # provisions the account from USER_NAME/USER_PASSWORD. An external rendezvous cannot — the account
+    # must already exist there — so the mode is recorded and surfaced rather than implied away.
+    relay_state = RELAY_EXTERNAL
+    handle: str | None = None
+    if acquire is not None and prof.topology in RELAY_TOPOLOGIES:
+        try:
+            got = acquire(sess)
+        except Exception:  # noqa: BLE001 — an acquire failure degrades to Phase 1, never aborts a mint
+            got = None
+        host, port = relay_dial(got)
+        if host and port:
+            # Dial the container, not whatever the operator typed into the rendezvous fields.
+            prof = dataclasses.replace(prof, rendezvous_host=host, rendezvous_port=port)
+            sess = dataclasses.replace(sess, profile=prof)
+            relay_state = RELAY_CONTAINER
+            if isinstance(got, dict):
+                raw = got.get("handle_id") or got.get("session_id") or got.get("container")
+                if isinstance(raw, str) and raw.strip():
+                    handle = raw.strip()
     try:
         plan.render_plan(sess)
     except ValueError as exc:
@@ -314,7 +382,7 @@ def mint_session(
         ssh_password=secretbox.seal(sess.ssh_password, key_path=secret_key_path),
         kill_at=kill_at,
         status=plan.STATUS_ACTIVE,
-        params=plan.profile_params(prof),
+        params=_params_with_relay(plan.profile_params(prof), relay_state, handle),
     )
     db.add(row)
     db.flush()  # assign row.id before auditing
@@ -328,6 +396,18 @@ def mint_session(
         )
     db.commit()
     return row, sess.ssh_password
+
+
+def _params_with_relay(base: dict, mode: str, handle: str | None) -> dict:
+    """The stored profile snapshot plus HOW this session's relay is provided.
+
+    Kept in ``params`` so no schema migration is owed, and so a re-fetch can state the mode honestly.
+    """
+    out = dict(base)
+    out["relay_mode"] = mode
+    if handle:
+        out["relay_handle"] = handle
+    return out
 
 
 def visible_sessions(db, *, owner_id, is_admin, now: datetime | None = None) -> list[models.Session]:

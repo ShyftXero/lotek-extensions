@@ -17,13 +17,15 @@ from __future__ import annotations
 import logging
 import uuid
 
-from flask import Blueprint, abort, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, redirect, render_template, request, url_for
 
 from sshim._version import __version__
 from sshim.deps import (
     current_actor_id,
     current_actor_is_admin,
     default_relay_host,
+    exclusive_container_acquire,
+    exclusive_container_release,
     get_config,
     host_audit,
     is_standalone,
@@ -54,6 +56,7 @@ from sshim.service import (
     parse_kill_at,
     plan_for,
     profile_from_fields,
+    relay_handle,
     visible_profiles,
     visible_sessions,
 )
@@ -297,6 +300,10 @@ def mint():
                 profile_id=profile_id,
                 kill_at=parse_kill_at(form.get("kill_at")),
                 host_audit=host_audit(),
+                # Phase 2: when the host exposes exclusive_container_acquire, the session rides a
+                # core-hosted single-use relay that PROVISIONS this pivot's random identity. Absent
+                # (standalone, or the seam not yet deployed) it is None and behaviour is Phase 1's.
+                acquire=exclusive_container_acquire(),
             )
         except Invalid as exc:
             # Re-render the form with the operator's own values and the reason, instead of a bare 400
@@ -371,6 +378,15 @@ def kill(session_id: uuid.UUID):
             kill_session(db, row, **_actor_kw(), host_audit=host_audit())
         except Denied as exc:
             abort(403, str(exc))
+        # Give the container back. A host that already reaped it (TTL, or an admin reap) must not make
+        # the kill fail — the operator asked to tear this pivot down, and it IS down either way.
+        handle = relay_handle(row.params)
+        release = exclusive_container_release()
+        if handle and release is not None:
+            try:
+                release(handle)
+            except Exception as exc:  # noqa: BLE001 — teardown is best-effort, never blocks a kill
+                current_app.logger.warning("sshim: relay release failed for %s: %s", handle, exc)
     return redirect(url_for("sshim.index"))
 
 
