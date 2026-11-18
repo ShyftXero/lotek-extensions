@@ -1,8 +1,8 @@
 # Plan: feat/sshim
 
 - **Branch:** `feat/sshim`  (worktree: `.dsa/01M7PJ1G4C27HDM651CP6WPRJX/build-sshim`, off `main`)
-- **PR:** not opened yet
-- **Status:** 🟡 in progress
+- **PR:** <opening>
+- **Status:** 🟢 ready for review (needs The Plague)
 
 ## Purpose
 `sshim` — a disposable SSH-only pivot generator (revshells.com for `ssh`). Two machines on hostile
@@ -48,15 +48,19 @@ Folds the proven pure-Python command generator (`/tmp/sshim/sshim_gen.py`, 11/11
 
 ## Done
 - [x] Branch + worktree identity + plan file
+- [x] `plan.py` (folded generator + encoding + liveness predicates)
+- [x] `models.py`, `db.py`, `config.py`, `deps.py`, `host.py`
+- [x] `service.py` (tenancy + mint + regen + kill + profiles)
+- [x] `blueprint.py`, `api_pat.py`, `__init__.py`, manifest, pyproject
+- [x] templates (base tokens, sessions, mint, detail, profiles) — Unkey dark/mono/lime
+- [x] tests (plan, manifest, no-app-import, service) — 41 green
+- [x] GATE: ruff clean, pyrefly clean, pytest 41 green; standalone mount smoke (routes render,
+      mint works, re-fetch secret-free, machine API fail-closed 503)
 
 ## Remaining
-- [ ] `plan.py` (folded generator + encoding + liveness predicates)
-- [ ] `models.py`, `db.py`, `config.py`, `deps.py`, `host.py`
-- [ ] `service.py` (tenancy + mint + regen + kill + profiles)
-- [ ] `blueprint.py`, `api_pat.py`, `__init__.py`, manifest, pyproject
-- [ ] templates (base tokens, sessions, detail/mint)
-- [ ] tests (plan, manifest, no-app-import, service)
-- [ ] GATE: ruff + pytest green; PR
+- [ ] The Plague review (Blade UX pass on the UI diff first), then self-merge `--merge`
+- [ ] Phase 2 (separate branch, lotek#1747): ephemeral_relay seam, mounted lotek-side
+      `test_sshim_extension.py`
 
 ## Notes / gotchas
 - `render_plan` does NOT use the password — reconstructing a `Session` with `rendezvous_password=""`
