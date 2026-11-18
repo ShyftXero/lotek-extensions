@@ -9,7 +9,7 @@
     <h1 style="margin:0">{{ row.profile_name or row.topology }}</h1>
     <span class="status-{{ status }} mono"><span class="dot {{ 'dot-active' if status == 'active' else 'dot-dead' }}"></span>{{ status }}</span>
   </div>
-  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }} · SOCKS {{ row.socks_port }} · TTL {{ row.ttl_minutes }}min</p>
+  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }} · SOCKS {{ row.socks_port }} · TTL {{ row.ttl_minutes }}min{% if row.kill_at %} · kill at {{ row.kill_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</p>
 
   <div class="ttlbar"><span id="ttlfill"></span></div>
 
@@ -28,22 +28,34 @@
      sits above the secret note so a pinned port / static credential reads before the handling advice. #}
   {% include "sshim/_risk.html" %}
 
-  {% if one_time_secret %}
-  <div class="warn">⚡ Relay secret (shown ONCE, not stored — paste at the ssh prompt, never on argv):
-    <div class="secret" id="secret">{{ one_time_secret }}</div>
-    <button class="btn" type="button" onclick="copyText('secret',this)">Copy secret</button>
+  {% if dead_reason %}
+  <div class="note">{{ dead_reason }} No commands and no credential are served for this session.
+    <a href="{{ url_for('sshim.mint_form') }}">Mint a new pivot</a>.</div>
+  {% elif plan and plan.session.ssh_password %}
+  {# The pivot's OWN generated identity. The password is stored SEALED on this instance (never
+     cleartext), so its owner can re-fetch it here from a different borrowed box. #}
+  <div class="warn">⚡ SSH identity for this pivot — paste the password at the ssh prompt, never on argv:
+    <div class="row" style="align-items:center;gap:12px">
+      <span class="mono">user</span><code class="mono" id="ssh-user">{{ plan.session.ssh_user }}</code>
+      <span class="mono">password</span><div class="secret" id="secret">{{ plan.session.ssh_password }}</div>
+      <button class="btn" type="button" onclick="copyText('ssh-user',this)">Copy user</button>
+      <button class="btn" type="button" onclick="copyText('secret',this)">Copy password</button>
+    </div>
+    <span class="sub">A generated identity only exists if something <em>provisioned</em> it on the
+      rendezvous: an sshim relay container does (from <code>USER_NAME</code>/<code>USER_PASSWORD</code>); an
+      external box does not — pin a real user in the profile for those.</span>
   </div>
-  {% else %}
-  <div class="note">The relay secret is shown only at mint and is never stored. Paste your rendezvous
-    credential at the ssh prompt, or <a href="{{ url_for('sshim.mint_form') }}">re-mint</a> for a fresh
-    session. The commands below are regenerated from the stored session — they never contained the secret.</div>
+  {% elif plan %}
+  <div class="note">⚠ This session's stored password could not be unsealed on this instance (its sealing
+    key is missing or corrupt). The commands below are still correct — paste a credential you know, or
+    <a href="{{ url_for('sshim.mint_form') }}">re-mint</a> for a fresh identity.</div>
   {% endif %}
 
   <div class="panes">
     {% for leg, legname, legos, legdefault in [
         ('operator','Operator leg','your side · default Linux ssh', operator_renderer),
         ('anchor','Anchor leg','foothold · default Windows ssh.exe', anchor_renderer)] %}
-    {% set cmds = plan.anchor if leg == 'anchor' else plan.operator %}
+    {% set cmds = (plan.anchor if leg == 'anchor' else plan.operator) if plan else {} %}
     <div class="pane" data-leg="{{ leg }}">
       <h3>{{ legname }} <span class="leg-os">{{ legos }}</span></h3>
       {% if cmds %}
@@ -70,7 +82,7 @@
     {% endfor %}
   </div>
 
-  {% if plan.notes %}<ul class="sub mono">{% for n in plan.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+  {% if plan and plan.notes %}<ul class="sub mono">{% for n in plan.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
 
   {% if status == 'active' %}
   <form method="post" action="{{ url_for('sshim.kill', session_id=row.id) }}" style="margin-top:16px">
@@ -80,7 +92,7 @@
 </div>
 
 <script>
-var LEGS = {anchor: {{ plan.anchor | tojson }}, operator: {{ plan.operator | tojson }}};
+var LEGS = {anchor: {{ (plan.anchor if plan else {}) | tojson }}, operator: {{ (plan.operator if plan else {}) | tojson }}};
 var root = document.getElementById('sshim-detail');
 var ORIG_SOCKS = parseInt(root.dataset.socks, 10), ORIG_JUMP = parseInt(root.dataset.jump, 10);
 var portDelta = 0;

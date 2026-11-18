@@ -11,16 +11,25 @@ engagement data. INV-TENANCY-06 allows that only under an *explicit declared pla
 exactly one place (``sshim/service.py``): **a profile/session is visible to its owner, and to an admin,
 and to nobody else, on any surface.**
 
-**The session row stores enough to REGENERATE the plan, and nothing secret.** ``params`` is the JSON
-snapshot of the minting ``plan.Profile`` (so a later profile edit/delete cannot change a minted
-session's commands), plus the two random ports and the TTL. The relay password is NEVER persisted:
-``plan.render_plan`` keeps it off every command by design, so the stored session re-renders to
-byte-identical commands without it (``plan.rebuild_session``). The one-time secret is shown at mint and
-then forgotten; the re-fetch surface says so and offers a re-mint rather than show a stale/empty one.
+**The session row stores enough to REGENERATE the plan, plus this pivot's own SSH identity.**
+
+* ``params`` — the JSON snapshot of the minting ``plan.Profile`` (so a later profile edit/delete cannot
+  change a minted session's commands), plus the two random ports and the TTL.
+* ``ssh_user`` — the per-pivot low-privilege username, generated at mint (``plan.gen_user``) unless the
+  profile pinned one. The username is on the command line (it has to be), so it is not a secret.
+* ``ssh_password`` — ⚠️ **CIPHERTEXT**, produced by ``sshim.secretbox`` from a 0600 key in the instance
+  dir. This column deliberately REVERSES the old "the password is shown once and never stored" rule:
+  the borrowed-box re-fetch case needs the credential back, so an owner/admin re-opening the session
+  sees it again. It is **never plaintext in the row** — if the key is missing/corrupt the surfaces
+  refuse the secret (``service.reveal_password`` returns ``None``) and say so; they never print garbage.
+  The password is still never on any command, so commands regenerate byte-identically.
 
 ``status`` records only the explicit operator action — ``active`` or ``killed``. **``expired`` is
 DERIVED** from ``expires_at`` by ``plan.effective_status`` and is never stored: a stored expiry flag
-would be a second copy of the liveness fact that needs a sweeper and can drift.
+would be a second copy of the liveness fact and could drift. ``kill_at`` is the OPT-IN kill date, an
+additional bound on top of the TTL — the predicate treats a reached ``kill_at`` as the terminal
+``killed``, and the sweep only PERSISTS a ``killed`` status (never ``expired``), which is why it is
+idempotent.
 """
 
 from __future__ import annotations
@@ -57,10 +66,11 @@ class Profile(Base, UuidPk, TimestampMixin):
     topology: Mapped[str] = mapped_column(String(40), default="relay_reverse_socks")
     rendezvous_host: Mapped[str | None] = mapped_column(String(MAX_HOST), nullable=True)
     rendezvous_port: Mapped[int] = mapped_column(Integer, default=22)
-    rendezvous_user: Mapped[str] = mapped_column(String(MAX_USER), default="sshim")
+    # "" = generate a fresh per-pivot identity at mint (a non-empty value is an operator's explicit pin).
+    rendezvous_user: Mapped[str] = mapped_column(String(MAX_USER), default="")
     anchor_host: Mapped[str | None] = mapped_column(String(MAX_HOST), nullable=True)
     anchor_port: Mapped[int] = mapped_column(Integer, default=22)
-    anchor_user: Mapped[str] = mapped_column(String(MAX_USER), default="sshim")
+    anchor_user: Mapped[str] = mapped_column(String(MAX_USER), default="")
     cidr: Mapped[str] = mapped_column(String(MAX_CIDR), default="")
 
     sessions: Mapped[list[Session]] = relationship(back_populates="profile")
@@ -68,7 +78,8 @@ class Profile(Base, UuidPk, TimestampMixin):
 
 class Session(Base, UuidPk, TimestampMixin):
     """One minted pivot — the re-fetchable unit. Carries everything needed to REGENERATE both legs'
-    commands from ``plan.render_plan`` (a profile snapshot + the random ports + ttl) and nothing secret.
+    commands from ``plan.render_plan`` (a profile snapshot + the random ports + ttl), this pivot's own
+    SSH identity, and an opt-in ``kill_at``. The password is stored SEALED — see the module docstring.
     """
 
     __tablename__ = "sshim_sessions"
@@ -88,6 +99,14 @@ class Session(Base, UuidPk, TimestampMixin):
     jump_port: Mapped[int] = mapped_column(Integer, default=0)
     ttl_minutes: Mapped[int] = mapped_column(Integer, default=30)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # This pivot's OWN identity. `ssh_user` is generated per session (plan.gen_user) unless the profile
+    # pinned a real account. `ssh_password` holds CIPHERTEXT (sshim.secretbox) — never cleartext; the
+    # column is nullable because `db.create_all` adds columns additively to a pre-identity table.
+    ssh_user: Mapped[str | None] = mapped_column(String(MAX_USER), nullable=True)
+    ssh_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # OPT-IN kill date, an ADDITIONAL bound on top of the TTL (never a replacement). NULL = none.
+    # A reached kill_at is the terminal `killed` status in plan.effective_status.
+    kill_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Explicit operator action ONLY: "active" | "killed". `expired` is DERIVED (plan.effective_status),
     # never stored — see the module docstring.
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)

@@ -45,6 +45,7 @@ def register(
     # "no routes after first request" rule for every app this process builds.
     from sshim.api_pat import machine_bp
     from sshim.blueprint import bp
+    from sshim.cli import reap_command
 
     inst = Path(instance_path) if instance_path else Path(app.instance_path)
     inst.mkdir(parents=True, exist_ok=True)
@@ -67,4 +68,8 @@ def register(
     # a partial mount can then only leave a 503, never an open page.
     app.register_blueprint(machine_bp, url_prefix=f"{url_prefix}/machine")
     app.register_blueprint(bp, url_prefix=url_prefix)
+
+    # `flask sshim-reap` — the FORCED reap, for cron or an operator. The blueprint's before_request
+    # sweep is throttled per process; this one always runs. Idempotent, so both are safe together.
+    app.cli.add_command(reap_command)
     return cfg

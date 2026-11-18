@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
 from flask import current_app
 
+from sshim import secretbox
 from sshim.config import SshimConfig
 
 #: Admin-scope `[[settings]]` defaults + bounds.
@@ -158,6 +160,16 @@ def current_actor_is_admin() -> bool:
         return getattr(actor, "is_admin", False) is True
     except Exception:  # noqa: BLE001
         return False
+
+
+def secret_key_path() -> Path:
+    """Path of the instance-dir key that SEALS each session's stored password (``sshim.secretbox``).
+
+    One home for "where the key lives": it sits beside the instance (0700 dir, 0600 file created on the
+    first seal), never in the DB and never in a log. Callers that seal or unseal a secret take this as an
+    explicit argument rather than reaching for the app themselves, which is what keeps
+    ``sshim.service`` Flask-free."""
+    return secretbox.key_path(get_config().instance_path)
 
 
 def host_audit():

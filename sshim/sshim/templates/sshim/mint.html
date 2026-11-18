@@ -20,10 +20,10 @@
         <select name="profile_id" id="profile_id" style="width:100%">
           <option value="{{ primary_id }}" selected
             data-topology="relay_reverse_socks"
-            data-rhost="{{ primary_host }}" data-rport="{{ primary_port }}" data-ruser="sshim"
-            data-ahost="" data-aport="22" data-auser="sshim" data-cidr="">★ {{ primary_label }} — {{ primary_host }}:{{ primary_port }}</option>
-          <option value="" data-topology="" data-rhost="" data-rport="22" data-ruser="sshim"
-            data-ahost="" data-aport="22" data-auser="sshim" data-cidr="">— ad-hoc (fill below) —</option>
+            data-rhost="{{ primary_host }}" data-rport="{{ primary_port }}" data-ruser=""
+            data-ahost="" data-aport="22" data-auser="" data-cidr="">★ {{ primary_label }} — {{ primary_host }}:{{ primary_port }}</option>
+          <option value="" data-topology="" data-rhost="" data-rport="22" data-ruser=""
+            data-ahost="" data-aport="22" data-auser="" data-cidr="">— ad-hoc (fill below) —</option>
           {% for p in profiles %}
           <option value="{{ p.id }}"
             data-topology="{{ p.topology }}" data-rhost="{{ p.rendezvous_host or '' }}"
@@ -62,9 +62,13 @@
         <label>Host <input type="text" name="rendezvous_host" value="{{ defaults.rendezvous_host }}"
                            placeholder="your vps / tailnet sshd" id="rv-host"></label>
         <label>Port <input type="number" name="rendezvous_port" value="{{ defaults.rendezvous_port }}" min="1" max="65535"></label>
-        <label>User <input type="text" name="rendezvous_user" value="{{ defaults.rendezvous_user }}"></label>
+        <label>User <input type="text" name="rendezvous_user" value="{{ defaults.rendezvous_user }}"
+                       placeholder="blank = random per pivot"></label>
       </div>
-      <p class="note">No default host ships — name your own. The loopback port each session forwards to is random.</p>
+      <p class="note">No default host ships — name your own. The loopback port each session forwards to is random.
+        Leave <b>User</b> blank and every pivot gets its <b>own</b> random low-privilege identity (and password):
+        an account must already exist on the box (a relay container provisions one from
+        <code>USER_NAME</code>/<code>USER_PASSWORD</code>; an external sshd only if you pin a real user here).</p>
     </div>
 
     <div data-topo="direct_socks relay_sshuttle">
@@ -73,7 +77,8 @@
         <label>Host <input type="text" name="anchor_host" value="{{ defaults.anchor_host }}"
                            placeholder="10.10.5.20 / jumpbox.corp.local" id="anc-host"></label>
         <label>Port <input type="number" name="anchor_port" value="{{ defaults.anchor_port }}" min="1" max="65535"></label>
-        <label>User <input type="text" name="anchor_user" value="{{ defaults.anchor_user }}"></label>
+        <label>User <input type="text" name="anchor_user" value="{{ defaults.anchor_user }}"
+                       placeholder="blank = random per pivot"></label>
       </div>
     </div>
 
@@ -85,19 +90,23 @@
     </div>
 
     <details>
-      <summary class="btn btn-ghost" style="display:inline-block">Advanced — TTL, name, profile</summary>
+      <summary class="btn btn-ghost" style="display:inline-block">Advanced — TTL, kill date, name, profile</summary>
       <div class="row">
         <label>TTL (min) <input type="number" name="ttl_minutes" value="{{ defaults.ttl_minutes }}" min="1" max="{{ max_ttl }}"></label>
+        {# OPT-IN, off by default. An ADDITIONAL bound on top of the TTL — never a replacement. #}
+        <label>Kill at (UTC) <input type="datetime-local" name="kill_at" value="{{ defaults.kill_at }}"></label>
         <label>Name <input type="text" name="name" value="{{ defaults.name }}" placeholder="acme-dmz"></label>
       </div>
+      <p class="note">Kill at is optional and blank by default. It is treated as <b>UTC</b> and only ever
+        shortens the TTL: once it passes, the session is <code>killed</code> and its commands stop being served.</p>
     </details>
 
     <div class="toolbar" style="margin-top:16px">
       <button class="btn btn-lime" type="submit">Mint →</button>
       <a class="btn btn-ghost" href="{{ url_for('sshim.index') }}">Cancel</a>
     </div>
-    <p class="note">A pivot dies on TTL or disconnect. The relay secret is generated and shown once on
-      the next page — it is never stored.</p>
+    <p class="note">A pivot dies on TTL, its kill date, or disconnect. Each session gets its own random
+      user + password, shown on the next page and stored <b>sealed</b> so you can re-fetch them from another box.</p>
   </form>
 </div>
 <script>

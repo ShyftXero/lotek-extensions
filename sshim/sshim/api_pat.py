@@ -8,8 +8,13 @@ TENANCY: a machine request has no session, so identity comes from the PAT princi
 and is fed into the SAME ``sshim.service`` functions the browser surface uses — the visibility rule has
 exactly one implementation. A session a token may not see is **404, never 403** (INV-TENANCY-01).
 
-The relay secret is never returned here — it is never stored, and the plan commands never carry it
-(``service.plan_to_dict`` sets ``secret_available: false`` and explains the re-paste/re-mint rule).
+The pivot's password is returned in exactly two places and never in a list:
+
+* ``POST /sessions`` (the mint response) — the identity was just generated for this caller;
+* ``GET /sessions/<id>`` (the owner's/admin's re-fetch) — where ``service.plan_for`` unseals it.
+
+``service.session_to_dict`` (what ``GET /sessions`` serialises) has no ``ssh_password`` key at all, so
+the wide list surface cannot leak a credential it was never handed.
 """
 
 from __future__ import annotations
@@ -20,14 +25,16 @@ import uuid
 from flask import Blueprint, jsonify, request
 
 from sshim import host
-from sshim.deps import get_config, host_audit, is_standalone, max_ttl_minutes
+from sshim.deps import get_config, host_audit, is_standalone, max_ttl_minutes, secret_key_path
 from sshim.service import (
     Denied,
     Invalid,
+    SessionDead,
     kill_session,
     load_visible,
     mint_session,
     now_utc,
+    parse_kill_at,
     plan_for,
     plan_to_dict,
     profile_from_fields,
@@ -81,13 +88,19 @@ def get_session(session_id: uuid.UUID):
         row = load_visible(db, session_id, owner_id=actor_id, is_admin=is_admin)
         if row is None:
             return _not_found()
-        return jsonify(session=session_to_dict(row), plan=plan_to_dict(plan_for(row)))
+        try:
+            plan = plan_for(row, secret_key_path=secret_key_path())
+        except SessionDead as exc:
+            # Killed (including a reached kill_at): the commands are no longer served. 409, not 404 —
+            # the caller may see the row, it is the PLAN that is refused.
+            return jsonify({"error": "session_dead", "detail": str(exc)}), 409
+        return jsonify(session=session_to_dict(row), plan=plan_to_dict(plan))
 
 
 @machine_bp.post("/sessions")
 @host.require_scope("write")
 def create_session():
-    """Mint a pivot. The one-time secret is returned here ONCE and never again (it is not stored)."""
+    """Mint a pivot. Returns this session's OWN generated identity + the sealed-at-rest password."""
     actor_id, _is_admin = _principal()
     body = _body()
     with get_config().session_factory() as db:
@@ -97,10 +110,10 @@ def create_session():
                 topology=body.get("topology"),
                 rendezvous_host=body.get("rendezvous_host"),
                 rendezvous_port=body.get("rendezvous_port", 22),
-                rendezvous_user=body.get("rendezvous_user", "sshim"),
+                rendezvous_user=body.get("rendezvous_user"),
                 anchor_host=body.get("anchor_host"),
                 anchor_port=body.get("anchor_port", 22),
-                anchor_user=body.get("anchor_user", "sshim"),
+                anchor_user=body.get("anchor_user"),
                 cidr=body.get("cidr", ""),
             )
             row, secret = mint_session(
@@ -108,6 +121,8 @@ def create_session():
                 owner_id=actor_id, standalone=is_standalone(),
                 ttl_minutes=int(body.get("ttl_minutes", 30) or 30),
                 max_ttl=max_ttl_minutes(),
+                secret_key_path=secret_key_path(),
+                kill_at=parse_kill_at(body.get("kill_at")),
                 host_audit=host_audit(),
             )
         except Invalid as exc:
@@ -118,9 +133,13 @@ def create_session():
             return jsonify({"error": "bad_request", "detail": "invalid request"}), 400
         return jsonify(
             session=session_to_dict(row),
-            plan=plan_to_dict(plan_for(row)),
-            one_time_secret=secret,
-            secret_note="Shown once, not stored. Re-mint for a fresh secret.",
+            plan=plan_to_dict(plan_for(row, secret_key_path=secret_key_path())),
+            ssh_user=row.ssh_user,
+            ssh_password=secret,
+            secret_note=(
+                "Stored sealed on this instance so its owner can re-fetch it from another box. It is "
+                "never on the command line; paste it at the ssh prompt."
+            ),
         ), 201
 
 

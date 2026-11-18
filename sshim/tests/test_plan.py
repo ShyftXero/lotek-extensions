@@ -57,10 +57,11 @@ def test_topology_a_posix_round_trip():
     assert "-N" in anchor
     assert "ExitOnForwardFailure=yes" in anchor
     assert "UserKnownHostsFile=/dev/null" in anchor
-    assert "sshim@vps.example" in anchor
+    # the GENERATED per-pivot identity is what both legs dial (no shared literal user any more)
+    assert f"{sess.ssh_user}@vps.example" in anchor
     assert f"-L {sess.socks_port}:127.0.0.1:{sess.socks_port}" in operator
-    assert sess.rendezvous_password not in anchor
-    assert sess.rendezvous_password not in operator
+    assert sess.ssh_password not in anchor
+    assert sess.ssh_password not in operator
     assert any("Remote DNS is free" in n for n in plan.notes)
 
 
@@ -92,7 +93,7 @@ def test_topology_b_direct_socks_no_anchor_leg():
     assert plan.anchor == {}
     operator = plan.operator["posix"]
     assert f"-D {sess.socks_port}" in operator
-    assert "sshim@home.tail.net" in operator
+    assert f"{sess.ssh_user}@home.tail.net" in operator
     assert any("not remote DNS" in n for n in plan.notes)
     assert "NOT remote DNS" in operator
 
@@ -109,7 +110,7 @@ def test_topology_c_sshuttle_uses_proxyjump():
     assert f"-R 127.0.0.1:{sess.jump_port}:127.0.0.1:22" in plan.anchor["posix"]
     travel = plan.operator["sshuttle"]
     assert "sshuttle --dns" in travel
-    assert "-e 'ssh -J sshim@vps.example:443'" in travel
+    assert f"-e 'ssh -J {sess.ssh_user}@vps.example:443'" in travel
     assert f"-r pi@127.0.0.1:{sess.jump_port}" in travel
     assert "192.168.1.0/24" in travel
     assert any("sudo" in n for n in plan.notes)
@@ -151,7 +152,7 @@ def test_password_never_on_any_command_line():
     sess = mint(_profile("relay_reverse_socks", rendezvous_host="vps.example"))
     plan = render_plan(sess)
     for cmd in [*plan.anchor.values(), *plan.operator.values()]:
-        assert sess.rendezvous_password not in cmd
+        assert sess.ssh_password not in cmd
 
 
 def test_password_is_at_least_18_visible_characters():
@@ -189,19 +190,29 @@ def test_encode_unknown_rejected():
         encode_command("x", "rot13")
 
 
-# ── re-fetch: rebuild a stored session WITHOUT the secret ────────────────────
+# ── re-fetch: rebuild a stored session from its snapshot + stored identity ───
 
-def test_rebuild_session_reproduces_commands_without_secret():
+def test_rebuild_session_reproduces_commands_without_the_password():
     p = _profile("relay_reverse_socks", rendezvous_host="vps.example", rendezvous_port=443)
     sess = mint(p, ttl_minutes=30)
     original = render_plan(sess)
-    # Simulate storage: snapshot the profile + ports, drop the secret entirely.
+    # Simulate storage: the profile snapshot + the ports + the identity, and NO password (the command
+    # set must not depend on it — it is pasted at the prompt, so it is never on argv).
     params = profile_params(p)
-    rebuilt = rebuild_session(params, socks_port=sess.socks_port, jump_port=sess.jump_port, ttl_minutes=30)
-    assert rebuilt.rendezvous_password == ""  # never stored
+    rebuilt = rebuild_session(
+        params, socks_port=sess.socks_port, jump_port=sess.jump_port, ttl_minutes=30,
+        ssh_user=sess.ssh_user, ssh_password="",
+    )
+    assert rebuilt.ssh_password == ""
     regenerated = render_plan(rebuilt)
     assert regenerated.anchor == original.anchor
     assert regenerated.operator == original.operator
+    # …and WITH the stored password the commands are still byte-identical (it never reaches argv).
+    with_secret = render_plan(rebuild_session(
+        params, socks_port=sess.socks_port, jump_port=sess.jump_port, ttl_minutes=30,
+        ssh_user=sess.ssh_user, ssh_password=sess.ssh_password,
+    ))
+    assert with_secret.anchor == original.anchor and with_secret.operator == original.operator
 
 
 # ── deviation-risk predicate: the ONE home behind the banner on both pages ──

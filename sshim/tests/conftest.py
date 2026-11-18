@@ -11,6 +11,7 @@ import uuid
 import pytest
 from sqlalchemy import create_engine
 
+from sshim import secretbox
 from sshim.db import Base, make_session_factory
 
 
@@ -30,6 +31,13 @@ def session_factory(engine):
 def db(session_factory):
     with session_factory() as s:
         yield s
+
+
+@pytest.fixture
+def key_path(tmp_path):
+    """The instance-dir key that seals a session's password (`sshim.secretbox`). A tmp dir keeps every
+    test's ciphertext unreadable to every other test's key — the same fail-closed shape as production."""
+    return secretbox.key_path(tmp_path)
 
 
 @pytest.fixture

@@ -6,24 +6,32 @@ one implementation and cannot drift between them:
 * **Tenancy** (:func:`_can_see` / the owner filter): a profile/session is visible to its owner and to an
   admin, nobody else (INV-TENANCY-06 explicit declared rule — no engagement_id). A row the caller may
   not see is returned as ``None`` and rendered 404, never 403 (INV-TENANCY-01, no existence oracle).
-* **Liveness** lives in :mod:`sshim.plan` (``effective_status`` / ``is_listable``) — the single place
-  that decides whether a pivot is live; ``expired`` is derived, never stored.
+* **Liveness** lives in :mod:`sshim.plan` (``effective_status`` / ``is_listable`` / ``dies_at``) — the
+  single place that decides whether a pivot is live; ``expired`` is derived, never stored.
+* **The stored credential** (:func:`reveal_password`): the one place that opens a session's sealed
+  ``ssh_password``, and the one place that decides "no key -> no secret" (fail closed, never garbage).
 * **Regeneration** (:func:`plan_for`): a stored session re-renders to byte-identical commands via
-  ``plan.rebuild_session`` — no secret needed, because the password was never on any command.
+  ``plan.rebuild_session``; a session whose status is terminal ``killed`` refuses the plan outright.
+* **Reaping** (:func:`sweep_expired` / :func:`maybe_sweep`): there is no core reaper in Phase 1, so
+  sshim notices its OWN expiries — one idempotent UPDATE, throttled by one constant.
 
-This module raises :class:`Denied` (authz -> 403) and :class:`Invalid` (validation -> 400); it never
-raises for "not found" — callers get ``None`` and decide the status.
+This module raises :class:`Denied` (authz -> 403), :class:`Invalid` (validation -> 400) and
+:class:`SessionDead` (a terminal session -> the plan is refused); it never raises for "not found" —
+callers get ``None`` and decide the status.
 """
 
 from __future__ import annotations
 
 import re
+import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 
-from sshim import models, plan
+from sshim import models, plan, secretbox
 
 #: How many sessions a single list query returns. A pivot is disposable and TTL-bounded, so this is a
 #: generous ceiling, not pagination.
@@ -36,6 +44,19 @@ class Denied(Exception):
 
 class Invalid(Exception):
     """Validation failure -> 400. Message is sshim's own text, safe to show the caller."""
+
+
+class SessionDead(Exception):
+    """This session is terminally killed, so its plan is refused. Message is sshim's own text."""
+
+
+#: There is no core reaper in Phase 1, so sshim sweeps its OWN expiries from a blueprint
+#: ``before_request``. An in-process throttle, not a background thread: the sweep is at most once per
+#: this many seconds per worker, so a burst of page loads costs one UPDATE, not one per request. A cron
+#: job (``flask sshim-reap``) can force it whenever it likes.
+SWEEP_INTERVAL_SECONDS = 30.0
+_last_sweep_at = 0.0
+_sweep_lock = threading.Lock()
 
 
 def now_utc() -> datetime:
@@ -108,10 +129,34 @@ def _clean_host(value: str | None, *, field: str) -> str | None:
 
 
 def _clean_user(value: str | None) -> str:
-    value = (value or "sshim").strip()[: models.MAX_USER] or "sshim"
-    if not _USER_RE.match(value):
+    """A pinned ssh username, or ``""`` for "generate a fresh per-pivot identity".
+
+    Empty is a MEANING here, not a missing value: :func:`plan.rendezvous_identity` reads ``""`` as "no
+    pin, use this session's generated user". sshim ships no shared literal user any more."""
+    value = (value or "").strip()[: models.MAX_USER]
+    if value and not _USER_RE.match(value):
         raise Invalid("user may only contain letters, digits, '.', '-', '_'")
     return value
+
+
+def parse_kill_at(value) -> datetime | None:
+    """An OPT-IN kill date: blank -> ``None``, else a naive-UTC datetime (``datetime-local`` or ISO 8601).
+
+    Same clock as every other liveness comparison (:func:`now_utc`), so ``kill_at`` and ``expires_at``
+    can never disagree about timezone. A value in the past is ACCEPTED: it mints an already-killed
+    session, which is what an operator pasting a stale date should see, not a silent no-op."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).strip())
+        except (TypeError, ValueError):
+            raise Invalid("kill at must be a date/time (YYYY-MM-DDTHH:MM)") from None
+    if dt.tzinfo is not None:  # normalise to naive UTC, the columns' convention
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt
 
 
 def _clean_cidr(value: str | None) -> str:
@@ -127,10 +172,10 @@ def profile_from_fields(
     topology: str | None,
     rendezvous_host: str | None = None,
     rendezvous_port=22,
-    rendezvous_user: str | None = "sshim",
+    rendezvous_user: str | None = "",
     anchor_host: str | None = None,
     anchor_port=22,
-    anchor_user: str | None = "sshim",
+    anchor_user: str | None = "",
     cidr: str | None = "",
 ) -> plan.Profile:
     """Validate raw form/JSON fields into a ``plan.Profile`` dataclass. Raises :class:`Invalid`."""
@@ -230,14 +275,20 @@ def mint_session(
     standalone: bool,
     ttl_minutes: int,
     max_ttl: int,
+    secret_key_path: Path,
     profile_id: uuid.UUID | None = None,
+    kill_at: datetime | None = None,
     host_audit=None,
 ) -> tuple[models.Session, str]:
-    """Mint a pivot: validate, pick random ports + a one-time secret, store the REGENERABLE fields.
+    """Mint a pivot: validate, generate this session's OWN identity + random ports, store both.
 
-    Returns ``(session_row, one_time_password)``. The password is **shown once and not stored** — the
-    row carries no secret, and :func:`plan_for` re-renders the commands without it. Clamps ttl to
-    ``max_ttl`` (an outward capability's lifetime is a security bound)."""
+    Returns ``(session_row, ssh_password)``. The password IS persisted now — sealed with
+    ``secretbox`` under ``secret_key_path`` — because the owner needs to re-fetch it from a different
+    borrowed box (:func:`reveal_password`). Nothing cleartext ever reaches the row.
+
+    ``kill_at`` is the OPT-IN extra bound; the TTL is still applied underneath it and is never removed.
+    Both are clamped/reduced by :func:`plan.dies_at` at read time, so this function stores what it was
+    given and lets the ONE liveness predicate decide."""
     if not standalone and owner_id is None:
         raise Denied("no resolvable identity to own this session")
     ttl = min(max(1, int(ttl_minutes)), max_ttl)
@@ -259,19 +310,24 @@ def mint_session(
         jump_port=sess.jump_port,
         ttl_minutes=ttl,
         expires_at=now + timedelta(minutes=ttl),
+        ssh_user=sess.ssh_user,
+        ssh_password=secretbox.seal(sess.ssh_password, key_path=secret_key_path),
+        kill_at=kill_at,
         status=plan.STATUS_ACTIVE,
         params=plan.profile_params(prof),
     )
     db.add(row)
     db.flush()  # assign row.id before auditing
     if host_audit is not None:
+        # `ssh_user` is audited (it is on argv, it is not a secret); the PASSWORD never is.
         host_audit(
             db, "ext:sshim:mint_session",
             subject_type="sshim_session", subject_id=str(row.id),
-            before=None, after={"topology": row.topology, "ttl_minutes": ttl},
+            before=None,
+            after={"topology": row.topology, "ttl_minutes": ttl, "ssh_user": row.ssh_user},
         )
     db.commit()
-    return row, sess.rendezvous_password
+    return row, sess.ssh_password
 
 
 def visible_sessions(db, *, owner_id, is_admin, now: datetime | None = None) -> list[models.Session]:
@@ -282,12 +338,16 @@ def visible_sessions(db, *, owner_id, is_admin, now: datetime | None = None) -> 
     clause = _owner_clause(models.Session, owner_id=owner_id, is_admin=is_admin)
     if clause is not None:
         stmt = stmt.where(clause)
-    # The listable window is a single predicate in plan; mirror its lower bound in SQL, then filter
-    # exactly through plan.is_listable so the two never disagree.
-    stmt = stmt.where(models.Session.expires_at > now - plan.LISTABLE_GRACE)
+    # The listable window is a single predicate in plan; mirror its lower bound in SQL (either bound can
+    # be the one that dies — plan.dies_at is the min), then filter exactly through plan.is_listable so
+    # the SQL prefilter and the predicate can never disagree about a row.
+    horizon = now - plan.LISTABLE_GRACE
+    stmt = stmt.where(
+        or_(models.Session.expires_at > horizon, models.Session.kill_at > horizon)
+    )
     stmt = stmt.order_by(models.Session.expires_at.desc()).limit(LIST_LIMIT)
     rows = list(db.execute(stmt).scalars())
-    return [r for r in rows if plan.is_listable(r.expires_at, now=now)]
+    return [r for r in rows if plan.is_listable(r.expires_at, now=now, kill_at=r.kill_at)]
 
 
 def load_visible(db, session_id, *, owner_id, is_admin) -> models.Session | None:
@@ -311,20 +371,106 @@ def kill_session(db, row: models.Session, *, owner_id, is_admin, host_audit=None
     db.commit()
 
 
-def plan_for(row: models.Session) -> plan.Plan:
+def reveal_password(row: models.Session, *, secret_key_path: Path) -> str | None:
+    """The session's password, unsealed — or ``None`` when the key can't open it (FAIL CLOSED).
+
+    The one home for "may this secret be shown": a missing/corrupt instance key or a tampered token is
+    reported as "no secret", never as an empty or garbled string, so a surface can offer a re-mint
+    instead of pasting nonsense at a password prompt. Callers are already past the tenancy check
+    (``load_visible``), i.e. the owner or an admin.
+    """
+    if not row.ssh_password:
+        return None
+    try:
+        return secretbox.unseal(row.ssh_password, key_path=secret_key_path)
+    except secretbox.SecretUnavailable:
+        return None
+
+
+def plan_for(row: models.Session, *, secret_key_path: Path, now: datetime | None = None) -> plan.Plan:
     """Regenerate the full plan (both legs, every applicable renderer) from the stored session.
 
-    Secret-free: ``plan.rebuild_session`` rebuilds with an empty password and ``render_plan`` never puts
-    it on a command, so the output is byte-identical to what was shown at mint."""
+    The identity flows back from the row: ``ssh_user`` as stored, and the password UNSEALED into the
+    returned plan's session (``""`` if the key can't read it) so the owner's re-fetch can show it again.
+    ``render_plan`` never puts the password on a command, so the commands stay byte-identical to mint.
+
+    A TERMINALLY KILLED session (stored ``killed`` or a reached ``kill_at``) raises
+    :class:`SessionDead` — its commands stop being served as live. A merely TTL-EXPIRED session still
+    re-renders (today's behaviour: the page shows what was minted, marked expired)."""
+    now = now or now_utc()
+    if plan.effective_status(row.status, row.expires_at, now=now, kill_at=row.kill_at) == plan.STATUS_KILLED:
+        raise SessionDead("this pivot is killed — its commands are no longer served. Mint a new session.")
     sess = plan.rebuild_session(
-        row.params, socks_port=row.socks_port, jump_port=row.jump_port, ttl_minutes=row.ttl_minutes
+        row.params,
+        socks_port=row.socks_port,
+        jump_port=row.jump_port,
+        ttl_minutes=row.ttl_minutes,
+        ssh_user=row.ssh_user or "",
+        ssh_password=reveal_password(row, secret_key_path=secret_key_path) or "",
     )
     return plan.render_plan(sess)
+
+
+# ── reaping — no core reaper in Phase 1, so sshim notices its own expiries ───────────────────────
+
+def sweep_expired(db, *, now: datetime | None = None) -> dict:
+    """Mark every session past its kill date as terminal, and REPORT the TTL-expired ones.
+
+    Idempotent and safe under concurrent requests by construction: the kill-date arm is ONE
+    ``UPDATE ... WHERE kill_at <= now AND status <> 'killed'`` (atomic — two racing requests update the
+    same rows, the second matching none), and the TTL arm needs no write at all because ``expired`` is
+    DERIVED by :func:`plan.effective_status` and is never stored. So a second sweep is a no-op that
+    returns zeroes, and nothing can be "re-killed" or have its expiry rewritten.
+
+    Returns ``{"killed": n, "expired": m}`` — rows this call transitioned, and rows already past their
+    TTL (counted, not written)."""
+    now = now or now_utc()
+    killed = db.execute(
+        update(models.Session)
+        .where(
+            models.Session.kill_at.is_not(None),
+            models.Session.kill_at <= now,
+            models.Session.status != plan.STATUS_KILLED,
+        )
+        .values(status=plan.STATUS_KILLED)
+    ).rowcount
+    expired = len(
+        [
+            r
+            for r in db.execute(
+                select(models.Session).where(models.Session.expires_at <= now)
+            ).scalars()
+            if plan.effective_status(r.status, r.expires_at, now=now, kill_at=r.kill_at)
+            == plan.STATUS_EXPIRED
+        ]
+    )
+    db.commit()
+    return {"killed": killed or 0, "expired": expired}
+
+
+def maybe_sweep(db, *, now: datetime | None = None, interval: float = SWEEP_INTERVAL_SECONDS) -> dict | None:
+    """Throttled :func:`sweep_expired` for the blueprint's ``before_request`` — ``None`` when skipped.
+
+    One process-local timestamp + lock, no thread and no scheduler: at most one sweep per
+    ``interval`` seconds per worker process. The timestamp is taken BEFORE the sweep runs, so a
+    failing sweep cannot turn every request into a retry loop."""
+    global _last_sweep_at
+    tick = time.monotonic()
+    with _sweep_lock:
+        if tick - _last_sweep_at < interval:
+            return None
+        _last_sweep_at = tick
+    return sweep_expired(db, now=now)
 
 
 # ── serialisation for the machine API ─────────────────────────────────────────
 
 def session_to_dict(row: models.Session, *, now: datetime | None = None) -> dict:
+    """One session, for LIST responses. ⚠️ Never carries ``ssh_password``.
+
+    The list is the wide surface (every running pivot); the credential belongs only to the
+    single-session detail its owner opens, so it is deliberately absent here — a caller cannot leak
+    what it was never handed."""
     now = now or now_utc()
     return {
         "id": str(row.id),
@@ -334,23 +480,35 @@ def session_to_dict(row: models.Session, *, now: datetime | None = None) -> dict
         "rendezvous_host": row.rendezvous_host,
         "socks_port": row.socks_port,
         "jump_port": row.jump_port,
+        "ssh_user": row.ssh_user,
         "ttl_minutes": row.ttl_minutes,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "expires_at": row.expires_at.isoformat(),
-        "status": plan.effective_status(row.status, row.expires_at, now=now),
+        "kill_at": row.kill_at.isoformat() if row.kill_at else None,
+        "status": plan.effective_status(row.status, row.expires_at, now=now, kill_at=row.kill_at),
     }
 
 
 def plan_to_dict(p: plan.Plan) -> dict:
-    """The full re-fetchable plan payload: both legs, every renderer, the notes. No secret — the
-    password is never in a command, and the UI/caller re-prompts for it."""
+    """The full re-fetchable plan payload: both legs, every renderer, the notes, the pivot's identity.
+
+    The password is included ONLY when the plan carries a successfully unsealed one (owner/admin detail
+    and the mint response); ``secret_available`` is false when the instance key could not read it, and
+    then no value at all is sent — never an empty or stale string dressed up as a real secret."""
+    sess = p.session
+    password = sess.ssh_password or None
     return {
         "anchor": dict(p.anchor),
         "operator": dict(p.operator),
         "notes": list(p.notes),
-        "secret_available": False,
+        "ssh_user": sess.ssh_user,
+        "secret_available": password is not None,
+        "ssh_password": password,
         "secret_note": (
-            "The relay secret is shown only once at mint and is never stored. Paste your rendezvous "
-            "credential at the ssh prompt, or re-mint for a fresh session."
+            "The pivot password is stored sealed for this instance and re-shown to its owner here. If "
+            "it reads as unavailable the instance key is missing/corrupt: re-mint for a fresh identity."
+            if password is not None
+            else "The pivot's stored password could not be unsealed on this instance (its key is "
+            "missing or corrupt). Re-mint for a fresh identity — do not paste an empty secret."
         ),
     }

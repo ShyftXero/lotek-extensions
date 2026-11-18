@@ -4,9 +4,12 @@ Every route resolves authorization + liveness through ``sshim.service`` / ``sshi
 functions the PAT machine API uses, so the rules cannot drift between the two surfaces. A session/profile
 the caller may not see is **404, never 403** (INV-TENANCY-01, no existence oracle).
 
-The one-time relay secret is shown ONLY on the mint RESPONSE page (rendered directly from POST, never
-redirected, never stored, never put in a cookie). The re-fetch surface (GET detail) regenerates the
-commands without it and says so.
+The pivot's SSH identity (user + password) is shown on the mint RESPONSE page, and again on the session
+DETAIL page for its owner/admin — the password is stored sealed (``sshim.secretbox``) precisely so the
+borrowed-box re-fetch works. Neither page puts it in a cookie, and a killed session refuses it.
+
+There is no core reaper in Phase 1, so :func:`_sweep_hook` runs a throttled ``before_request`` sweep
+(``service.SWEEP_INTERVAL_SECONDS``) that notices sshim's own expiries on any page load.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from sshim.deps import (
     host_audit,
     is_standalone,
     max_ttl_minutes,
+    secret_key_path,
 )
 from sshim.plan import (
     ENCODINGS,
@@ -37,13 +41,16 @@ from sshim.plan import (
 from sshim.service import (
     Denied,
     Invalid,
+    SessionDead,
     create_profile,
     delete_profile,
     kill_session,
     load_profile_visible,
     load_visible,
+    maybe_sweep,
     mint_session,
     now_utc,
+    parse_kill_at,
     plan_for,
     profile_from_fields,
     visible_profiles,
@@ -77,6 +84,22 @@ def _inject_base():
         "sshim_renderers": list(RENDERERS),
         "sshim_encodings": list(ENCODINGS),
     }
+
+
+@bp.before_request
+def _sweep_hook():
+    """Notice sshim's OWN expiries on any page load: there is no core reaper in Phase 1.
+
+    Throttled to once per ``service.SWEEP_INTERVAL_SECONDS`` per process (see ``service.maybe_sweep``),
+    so a burst of requests costs one UPDATE rather than one per request. A failure here must never break
+    the page it decorates — the sweep is housekeeping, and the liveness predicate does not depend on it
+    (``kill_at``/TTL are still derived correctly without a single sweep; the sweep only persists the
+    terminal status)."""
+    try:
+        with get_config().session_factory() as db:
+            maybe_sweep(db)
+    except Exception:  # noqa: BLE001 - housekeeping must not 500 a page
+        _log.warning("sshim expiry sweep failed", exc_info=True)
 
 
 def _split_host_port(value: str) -> tuple[str, int]:
@@ -113,7 +136,11 @@ def index():
     with get_config().session_factory() as db:
         rows = visible_sessions(db, **_actor_kw(), now=now)
         sessions = [
-            {"row": r, "status": effective_status(r.status, r.expires_at, now=now)} for r in rows
+            {
+                "row": r,
+                "status": effective_status(r.status, r.expires_at, now=now, kill_at=r.kill_at),
+            }
+            for r in rows
         ]
         return render_template("sshim/sessions.html", sessions=sessions, now=now)
 
@@ -153,13 +180,14 @@ def _mint_defaults(form=None) -> dict:
             "topology": "relay_reverse_socks",
             "rendezvous_host": host,
             "rendezvous_port": port,
-            "rendezvous_user": "sshim",
+            "rendezvous_user": "",   # "" = generate a fresh identity per pivot
             "name": "",
             "anchor_host": "",
             "anchor_port": DEFAULT_SSH_PORT,
-            "anchor_user": "sshim",
+            "anchor_user": "",
             "cidr": "",
             "ttl_minutes": DEFAULT_TTL_MINUTES,
+            "kill_at": "",
             "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
             "operator_renderer": DEFAULT_OPERATOR_RENDERER,
         }
@@ -174,6 +202,7 @@ def _mint_defaults(form=None) -> dict:
         "anchor_user": (form.get("anchor_user") or "").strip(),
         "cidr": (form.get("cidr") or "").strip(),
         "ttl_minutes": _int(form.get("ttl_minutes"), DEFAULT_TTL_MINUTES),
+        "kill_at": (form.get("kill_at") or "").strip(),
         "anchor_renderer": DEFAULT_ANCHOR_RENDERER,
         "operator_renderer": DEFAULT_OPERATOR_RENDERER,
     }
@@ -221,7 +250,7 @@ def mint_form():
 
 @bp.post("/mint")
 def mint():
-    """Mint a pivot and render its detail page WITH the one-time secret (shown once, never stored)."""
+    """Mint a pivot and render its detail page with the identity that was just generated for it."""
     form = request.form
     profile_id = None
     saved_id = (form.get("profile_id") or "").strip()
@@ -249,21 +278,23 @@ def mint():
                 topology=form.get("topology"),
                 rendezvous_host=form.get("rendezvous_host"),
                 rendezvous_port=form.get("rendezvous_port") or DEFAULT_SSH_PORT,
-                rendezvous_user=form.get("rendezvous_user") or "sshim",
+                rendezvous_user=form.get("rendezvous_user"),
                 anchor_host=form.get("anchor_host"),
                 anchor_port=form.get("anchor_port") or DEFAULT_SSH_PORT,
-                anchor_user=form.get("anchor_user") or "sshim",
+                anchor_user=form.get("anchor_user"),
                 cidr=form.get("cidr") or "",
             )
             # Phase 2: when the host provides exclusive_container_acquire, request a core-hosted single-use
             # relay here instead of emitting a command to an operator's own box (lotek#1747; the accessor
             # is deps.exclusive_container_acquire, and Phase 1 deliberately never calls it).
-            row, secret = mint_session(
+            row, _ssh_password = mint_session(
                 db, prof,
                 owner_id=current_actor_id(), standalone=is_standalone(),
                 ttl_minutes=_int(form.get("ttl_minutes"), DEFAULT_TTL_MINUTES),
                 max_ttl=max_ttl_minutes(),
+                secret_key_path=secret_key_path(),
                 profile_id=profile_id,
+                kill_at=parse_kill_at(form.get("kill_at")),
                 host_audit=host_audit(),
             )
         except Invalid as exc:
@@ -272,29 +303,47 @@ def mint():
             return _render_mint(db, str(exc), defaults=_mint_defaults(form)), 400
         except Denied as exc:
             abort(403, str(exc))
-        return _render_detail(db, row, one_time_secret=secret), 201
+        return _render_detail(db, row), 201
 
 
 @bp.get("/sessions/<uuid:session_id>")
 def session_detail(session_id: uuid.UUID):
-    """Re-fetch surface: regenerate BOTH legs' full plan from the stored session. No secret (not stored)."""
+    """Re-fetch surface: regenerate BOTH legs' full plan, plus this pivot's own identity.
+
+    The password is unsealed for the owner/admin here (``service.plan_for`` -> ``reveal_password``), which
+    is the whole reason the row stores it sealed; a killed session renders its death instead."""
     with get_config().session_factory() as db:
         row = _load_session_or_404(db, session_id)
-        return _render_detail(db, row, one_time_secret=None)
+        return _render_detail(db, row)
 
 
-def _render_detail(db, row, *, one_time_secret):
+def _render_detail(db, row):
     now = now_utc()
-    rendered = plan_for(row)
+    status = effective_status(row.status, row.expires_at, now=now, kill_at=row.kill_at)
+    try:
+        rendered = plan_for(row, secret_key_path=secret_key_path(), now=now)
+    except SessionDead as exc:
+        # A killed pivot (stored `killed`, or a reached `kill_at`) is torn down: no commands, no secret.
+        # The row stays viewable so the death is VISIBLE rather than a mystery 404.
+        return render_template(
+            "sshim/detail.html",
+            row=row,
+            plan=None,
+            status=status,
+            now=now,
+            dead_reason=str(exc),
+            risk_notes=(),
+            anchor_renderer=DEFAULT_ANCHOR_RENDERER,
+            operator_renderer=DEFAULT_OPERATOR_RENDERER,
+        )
     return render_template(
         "sshim/detail.html",
         row=row,
         plan=rendered,
-        status=effective_status(row.status, row.expires_at, now=now),
+        status=status,
         now=now,
-        one_time_secret=one_time_secret,
-        # Same predicate as the mint page, judged against the session's STORED profile snapshot. Phase 1
-        # mints only the ephemeral one-use password, so the credential arm is silent by construction.
+        dead_reason=None,
+        # Same predicate as the mint page, judged against the session's STORED profile snapshot.
         risk_notes=deviation_risks(rendered.session.profile),
         anchor_renderer=DEFAULT_ANCHOR_RENDERER,
         operator_renderer=DEFAULT_OPERATOR_RENDERER,
@@ -332,10 +381,10 @@ def create_profile_route():
                 topology=form.get("topology"),
                 rendezvous_host=form.get("rendezvous_host"),
                 rendezvous_port=form.get("rendezvous_port") or DEFAULT_SSH_PORT,
-                rendezvous_user=form.get("rendezvous_user") or "sshim",
+                rendezvous_user=form.get("rendezvous_user"),
                 anchor_host=form.get("anchor_host"),
                 anchor_port=form.get("anchor_port") or DEFAULT_SSH_PORT,
-                anchor_user=form.get("anchor_user") or "sshim",
+                anchor_user=form.get("anchor_user"),
                 cidr=form.get("cidr") or "",
             )
             create_profile(db, prof, owner_id=current_actor_id(), standalone=is_standalone())

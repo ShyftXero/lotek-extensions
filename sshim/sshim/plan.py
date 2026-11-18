@@ -41,10 +41,36 @@ Residue honesty
 `-o UserKnownHostsFile=/dev/null` (POSIX) or the NUL equivalent (Windows) and
 `-o StrictHostKeyChecking=accept-new -o LogLevel=ERROR`. Shell history on a
 borrowed box is the one residue left; the UI says so, does not pretend otherwise.
-The rendezvous password is NEVER placed on argv (visible in `ps`); the operator
-pastes it at the prompt. Because it is never on argv, a stored session can be
-RE-RENDERED to byte-identical commands without the secret — which is exactly what
-makes Phase-1 re-fetch (the running-pivots list) correct and secret-free.
+The credential is NEVER placed on argv (visible in `ps`); the operator pastes it
+at the prompt.
+
+Credential model (this reverses the old "shown once, never stored" rule)
+-----------------------------------------------------------------------
+Every session gets its OWN randomly generated low-privilege identity —
+:func:`gen_user` (``p`` + 8 hex: starts with a letter, 9 chars, legal on a Linux
+``useradd`` and on a Windows OpenSSH server) and :func:`gen_password` (18+
+visible chars). Both live on the :class:`Session` and are threaded into EVERY
+command in place of an old shared literal user, for both legs. A profile may pin
+an explicit user (:attr:`Profile.rendezvous_user` / :attr:`Profile.anchor_user`,
+non-empty wins — an operator who owns the account) and the explicit value wins
+over the generated one; one predicate, :func:`rendezvous_identity` /
+:func:`anchor_identity`, decides that for every leg.
+
+The password IS persisted now (sealed, see :mod:`sshim.secretbox`) because the
+borrowed-box re-fetch case needs it back: an owner/admin opening the session
+detail sees the identity again. It is still never on argv, so a stored session
+re-renders to byte-identical commands.
+
+What this does NOT do — read this before promising anyone a login
+---------------------------------------------------------------
+A generated ``ssh_user``/``ssh_password`` only works if something PROVISIONS that
+account on the rendezvous host. sshim does not create accounts:
+
+* an sshim-managed relay **container** provisions it from the ``USER_NAME`` /
+  ``USER_PASSWORD`` env vars (the ``lotek-pivot-sshd`` image already supports it);
+* an **externally-owned** rendezvous (a VPS, the lotek host's own sshd) gets
+  nothing — sshim cannot mint an account there, so the operator must pin a real
+  user in the profile (or accept that the pasted credential must already exist).
 """
 
 from __future__ import annotations
@@ -65,28 +91,35 @@ _PORT_MIN, _PORT_MAX = 1024, 65535
 
 @dataclass(frozen=True)
 class Profile:
-    """A named target. Switching targets is a dropdown, not a re-typed command."""
+    """A named target. Switching targets is a dropdown, not a re-typed command.
+
+    An EMPTY ``rendezvous_user``/``anchor_user`` means "generate a fresh per-pivot identity" (the
+    default, and the secure one). A non-empty value is an explicit pin — an operator who really owns
+    that account on the box — and wins over the generated identity (see :func:`rendezvous_identity`).
+    Same convention as ``cidr``: empty means "decide it per session", never "the literal empty user".
+    """
     name: str
     topology: str
     # rendezvous (topology A/C) — the always-on box both legs dial.
     rendezvous_host: str | None = None
     rendezvous_port: int = 22
-    rendezvous_user: str = "sshim"
+    rendezvous_user: str = ""          # "" = random per-pivot identity
     # anchor (topology B; also the sshd box for topology C).
     anchor_host: str | None = None
     anchor_port: int = 22
-    anchor_user: str = "sshim"
+    anchor_user: str = ""              # "" = random per-pivot identity
     # subnet to route (topology C only). "" = let sshuttle -N auto-detect.
     cidr: str = ""
 
 
 @dataclass(frozen=True)
 class Session:
-    """One minted shim: the random ports + creds for a single use."""
+    """One minted shim: this pivot's OWN identity + the random ports, for a single use."""
     profile: Profile
     socks_port: int            # loopback on rendezvous (A) / operator (B)
     jump_port: int             # loopback on rendezvous exposing anchor sshd (C)
-    rendezvous_password: str   # pasted at prompt, never on argv
+    ssh_user: str              # this pivot's low-privilege username (see gen_user)
+    ssh_password: str          # pasted at the prompt, never on argv; sealed at rest by service
     ttl_minutes: int = 30
 
 
@@ -96,30 +129,68 @@ def random_port() -> int:
 
 
 def mint(profile: Profile, *, ttl_minutes: int = 30) -> Session:
-    """Pick the session's random ports + a throwaway password. No side effects."""
+    """Pick the session's random ports + a fresh throwaway identity. No side effects."""
     return Session(
         profile=profile,
         socks_port=random_port(),
         jump_port=random_port(),
-        rendezvous_password=gen_password(),
+        ssh_user=gen_user(),
+        ssh_password=gen_password(),
         ttl_minutes=ttl_minutes,
     )
 
 
-#: The credential model Phase 1 ships: ONE random password, shown once, pasted at the ssh prompt, valid
-#: for a single session only. There is deliberately no key generation — `ssh -i` needs a key FILE on the
-#: borrowed box, which is exactly the residue a throwaway pivot must not leave.
+#: The credential model: ONE random password per pivot, pasted at the ssh prompt, valid for a single
+#: session. There is deliberately no key generation — `ssh -i` needs a key FILE on the borrowed box,
+#: which is exactly the residue a throwaway pivot must not leave.
 MIN_PASSWORD_LENGTH = 18
 _PASSWORD_ENTROPY_BYTES = 18
 
+#: A per-pivot username is ``p`` + 8 hex. The leading LETTER is not cosmetic: Linux `useradd` refuses a
+#: name that starts with a digit, and Windows OpenSSH accounts follow the same shape. 9 characters keeps
+#: it inside the 16-char ceiling both accept (and `MAX_USER`).
+_USER_PREFIX = "p"
+_USER_HEX_BYTES = 4
+MAX_GENERATED_USER_LENGTH = 16
+
+
+def gen_user() -> str:
+    """A fresh per-pivot low-privilege username: :data:`_USER_PREFIX` + 8 hex (9 chars, always).
+
+    Legal on both a Linux ``useradd`` (no leading digit, ``[a-z0-9]`` only) and a Windows OpenSSH
+    server, and short enough to stay inside the 16-character ceiling. Generated for every session, so
+    two pivots never share a login; a profile may still PIN a real user (see
+    :func:`rendezvous_identity`)."""
+    return _USER_PREFIX + secrets.token_hex(_USER_HEX_BYTES)
+
 
 def gen_password() -> str:
-    """The one-use rendezvous secret: URL-safe, at least :data:`MIN_PASSWORD_LENGTH` visible characters
+    """The per-pivot rendezvous secret: URL-safe, at least :data:`MIN_PASSWORD_LENGTH` visible characters
     (``token_urlsafe(18)`` is always exactly 24). Pasted at the prompt, never on argv.
 
-    Public (not `_`-prefixed) because the mint surface shows it ONCE and then forgets it —
-    sshim never persists the cleartext (see :func:`rebuild_session`)."""
+    Public (not `_`-prefixed) because the mint surface shows it and the owner can re-fetch it — the row
+    holds it SEALED (:mod:`sshim.secretbox`), never as cleartext."""
     return secrets.token_urlsafe(_PASSWORD_ENTROPY_BYTES)
+
+
+# ── per-session identity — ONE predicate every command builder calls ──────────
+
+def rendezvous_identity(profile: Profile, session: Session) -> str:
+    """The username BOTH legs dial at the rendezvous: the profile's explicit pin, else this pivot's own
+    generated user.
+
+    This is the ONE home for that decision. Topology A's two legs must agree (they are the same
+    account on the same box), and topology C's ``-J`` jump uses it too — so a call site that wrote
+    ``profile.rendezvous_user or ...`` itself would be a second copy of a rule that can drift."""
+    return profile.rendezvous_user or session.ssh_user
+
+
+def anchor_identity(profile: Profile, session: Session) -> str:
+    """The username a leg dials on the ANCHOR box (topology B's ``-D``, topology C's sshuttle ``-r``).
+
+    Same rule as :func:`rendezvous_identity`; it is a separate function only because the two boxes are
+    different hosts with different pins."""
+    return profile.anchor_user or session.ssh_user
 
 
 # ── shared ssh option strings ────────────────────────────────────────────────
@@ -166,7 +237,7 @@ def _validate(profile: Profile) -> None:
 
 def _anchor_cmd_a(sess: Session, renderer: str) -> str:
     p = sess.profile
-    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    target = f"{rendezvous_identity(p, sess)}@{p.rendezvous_host}"
     port = f"-p {p.rendezvous_port}"
     fwd = f"-R 127.0.0.1:{sess.socks_port}"
     if renderer == "posix":
@@ -181,7 +252,7 @@ def _anchor_cmd_a(sess: Session, renderer: str) -> str:
 def _operator_cmd_a(sess: Session, renderer: str) -> str:
     p = sess.profile
     local = sess.socks_port  # operator reuses the same loopback number for clarity
-    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    target = f"{rendezvous_identity(p, sess)}@{p.rendezvous_host}"
     port = f"-p {p.rendezvous_port}"
     fwd = f"-L {local}:127.0.0.1:{sess.socks_port}"
     hint = (
@@ -201,7 +272,7 @@ def _operator_cmd_a(sess: Session, renderer: str) -> str:
 
 def _operator_cmd_b(sess: Session, renderer: str) -> str:
     p = sess.profile
-    target = f"{p.anchor_user}@{p.anchor_host}"
+    target = f"{anchor_identity(p, sess)}@{p.anchor_host}"
     port = f"-p {p.anchor_port}"
     fwd = f"-D {sess.socks_port}"
     # NOTE: -D resolves on the OPERATOR, not the anchor. Not socks5h. Stated.
@@ -223,7 +294,7 @@ def _operator_cmd_b(sess: Session, renderer: str) -> str:
 def _anchor_cmd_c(sess: Session, renderer: str) -> str:
     p = sess.profile
     # expose the anchor's OWN sshd on the rendezvous loopback at jump_port
-    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    target = f"{rendezvous_identity(p, sess)}@{p.rendezvous_host}"
     port = f"-p {p.rendezvous_port}"
     fwd = f"-R 127.0.0.1:{sess.jump_port}:127.0.0.1:22"
     if renderer == "posix":
@@ -240,8 +311,8 @@ def _operator_cmd_c(sess: Session, renderer: str) -> str:
     if renderer != "sshuttle":
         raise ValueError("topology C operator is sshuttle-only (needs sudo + Python on anchor)")
     cidr = p.cidr or "-N"  # -N = auto-detect all private subnets on the anchor
-    jump = f"{p.rendezvous_user}@{p.rendezvous_host}:{p.rendezvous_port}"
-    remote = f"{p.anchor_user}@127.0.0.1:{sess.jump_port}"
+    jump = f"{rendezvous_identity(p, sess)}@{p.rendezvous_host}:{p.rendezvous_port}"
+    remote = f"{anchor_identity(p, sess)}@127.0.0.1:{sess.jump_port}"
     # -x the operator-side gateway when the operator's LAN overlaps the target subnet (the
     # operator fills it in) — otherwise sshuttle would route the network you are sitting on.
     hint = (
@@ -307,8 +378,8 @@ def render_plan(sess: Session) -> Plan:
 
     The password is deliberately NOT in any command — the operator pastes it at
     the ssh prompt. A command with the password on argv would leak it to every
-    `ps` viewer on the borrowed box. (This is also why a stored session re-renders
-    without the secret: see :func:`rebuild_session`.)
+    `ps` viewer on the borrowed box. The USERNAME is on argv (it has to be), which
+    is why a per-pivot one is generated: the login is worthless without the secret.
     """
     _validate(sess.profile)
     t = sess.profile.topology
@@ -333,26 +404,39 @@ def render_plan(sess: Session) -> Plan:
 
     notes.append("Password is pasted at the ssh prompt, never on the command line.")
     notes.append("Both legs die on TTL or disconnect; nothing persists but shell history.")
+    notes.append(
+        f"This pivot dials as {rendezvous_identity(sess.profile, sess)} — that account must exist on "
+        "the rendezvous (an sshim relay container provisions it, an external box needs a pinned user)."
+    )
     return Plan(session=sess, anchor=anchor, operator=operator, notes=tuple(notes))
 
 
 # ── stored-session reconstruction (Phase 1 re-fetch) ─────────────────────────
 
-def rebuild_session(params: dict, *, socks_port: int, jump_port: int, ttl_minutes: int) -> Session:
-    """Rebuild a :class:`Session` from a stored profile-snapshot + the stored ports.
+def rebuild_session(
+    params: dict,
+    *,
+    socks_port: int,
+    jump_port: int,
+    ttl_minutes: int,
+    ssh_user: str = "",
+    ssh_password: str = "",
+) -> Session:
+    """Rebuild a :class:`Session` from a stored profile-snapshot + the stored identity and ports.
 
-    `params` is the JSON snapshot of the minting :class:`Profile` (``Profile`` field names).
-    The password is intentionally ``""``: sshim never persists the cleartext, and
-    :func:`render_plan` never puts it on a command, so the regenerated plan is byte-identical
-    to the one shown at mint. The caller (the UI/machine surface) states that the secret can't
-    be re-shown and offers a re-mint — it never shows a stale or empty secret as if it were real.
+    `params` is the JSON snapshot of the minting :class:`Profile` (``Profile`` field names). The
+    identity comes off the session row: ``ssh_user`` as stored, and ``ssh_password`` already UNSEALED by
+    the caller (:func:`sshim.service.plan_for`) — ``""`` means "the key could not read it", and every
+    surface must then say so instead of presenting an empty secret as a real one. The rendered commands
+    never contain the password either way, so the regenerated plan stays byte-identical to the mint one.
     """
     profile = Profile(**params)
     return Session(
         profile=profile,
         socks_port=socks_port,
         jump_port=jump_port,
-        rendezvous_password="",
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
         ttl_minutes=ttl_minutes,
     )
 
@@ -452,24 +536,52 @@ STATUS_KILLED = "killed"
 STATUS_EXPIRED = "expired"  # derived only, returned by effective_status
 
 
-def effective_status(stored_status: str, expires_at: datetime, *, now: datetime) -> str:
+def dies_at(expires_at: datetime, *, kill_at: datetime | None = None) -> datetime:
+    """When this session stops being live: the EARLIEST of its TTL and its opt-in kill date.
+
+    One home for that arithmetic — the liveness predicate and the list window both need it, and two
+    copies of a `min()` are exactly how a session stays "live" on one surface and dead on another.
+    """
+    return min(expires_at, kill_at) if kill_at is not None else expires_at
+
+
+def effective_status(
+    stored_status: str, expires_at: datetime, *, now: datetime, kill_at: datetime | None = None
+) -> str:
     """The single liveness predicate: killed > expired > active.
 
-    `stored_status` is the explicit operator action (`active`/`killed`). Expiry is computed here
-    from `expires_at` vs `now` so there is exactly one place that decides whether a pivot is live.
+    `stored_status` is the explicit operator action (`active`/`killed`). Expiry is computed here from
+    the TWO bounds against `now` so there is exactly one place that decides whether a pivot is live:
+    the TTL (`expires_at`, always present) and the opt-in `kill_at` (nullable). A reached `kill_at`
+    reports the TERMINAL status `killed` — it is an explicit, operator-chosen bound, not a TTL that
+    merely ran out — which is what makes the plan surface refuse it (see `service.plan_for`).
     """
     if stored_status == STATUS_KILLED:
+        return STATUS_KILLED
+    if kill_at is not None and now >= kill_at:
         return STATUS_KILLED
     if now >= expires_at:
         return STATUS_EXPIRED
     return STATUS_ACTIVE
 
 
-def is_active(stored_status: str, expires_at: datetime, *, now: datetime) -> bool:
+def is_active(
+    stored_status: str, expires_at: datetime, *, now: datetime, kill_at: datetime | None = None
+) -> bool:
     """True iff the pivot is live right now (commands are expected to work)."""
-    return effective_status(stored_status, expires_at, now=now) == STATUS_ACTIVE
+    return effective_status(stored_status, expires_at, now=now, kill_at=kill_at) == STATUS_ACTIVE
 
 
-def is_listable(expires_at: datetime, *, now: datetime, grace: timedelta = LISTABLE_GRACE) -> bool:
-    """Single list-visibility predicate: show active + recently-died sessions (within `grace`)."""
-    return now < expires_at + grace
+def is_listable(
+    expires_at: datetime,
+    *,
+    now: datetime,
+    grace: timedelta = LISTABLE_GRACE,
+    kill_at: datetime | None = None,
+) -> bool:
+    """Single list-visibility predicate: show active + recently-died sessions (within `grace`).
+
+    "Died" is :func:`dies_at` — a kill date that lands before the TTL ages the row off on the same
+    schedule an expired one would, so a killed pivot is visible for `grace` and then disappears.
+    """
+    return now < dies_at(expires_at, kill_at=kill_at) + grace
