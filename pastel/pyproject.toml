@@ -1,0 +1,63 @@
+[project]
+name = "pastel"
+version = "0.1.0.dev0"
+description = "Pastel — markdown pastes for lotek behind unguessable GUID URLs, with optional expiry, read-count limits and passwords."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.0.0",
+    "sqlalchemy>=2.0.0",
+    "jinja2>=3.1.0",
+    "markupsafe>=2.1.0",
+    # Markdown source -> HTML, then nh3 (ammonia) sanitises attacker-controlled paste bodies. A paste
+    # body is fully attacker-authored (anyone with write, or the machine API), so the sanitiser is a
+    # security boundary, not a nicety.
+    "markdown>=3.5",
+    "nh3>=0.2.0",
+    # api_schemas declares the machine API's request bodies as pydantic models for the host's OpenAPI gen.
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+    "pyrefly>=0.16.0",
+]
+
+# Discovery signal: lotek enumerates installed extensions via this entry-point group.
+[project.entry-points."lotek.extensions"]
+pastel = "pastel"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pastel"]
+
+# Ship lotek-extension.toml + docs INSIDE the wheel package dir (importlib.resources). 🔴 force-included
+# at WHEEL-BUILD time — an `editable = true` path install skips the build and discovery SILENTLY skips
+# the extension. Use a non-editable path source for local dev.
+[tool.hatch.build.targets.wheel.force-include]
+"lotek-extension.toml" = "pastel/lotek-extension.toml"
+"docs/PASTEL.md" = "pastel/docs/PASTEL.md"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 110
+# Lint target only (requires-python stays >=3.14). The gate's ruff build does not yet accept py314.
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.pyrefly]
+search-path = [".", "tests"]
