@@ -474,6 +474,18 @@
       .then(function (blob) { downloadBlob(blob, safeName(currentName()) + ".html"); })
       .catch(function () { toast("Export failed", true); });
   });
+  document.getElementById("ved-open-html").addEventListener("click", function () {
+    // Open synchronously in the click gesture so the popup blocker allows it, then fill it in.
+    var win = window.open("", "_blank");
+    fetch(cfg.exportHtmlBase, { method: "POST", headers: headers(true), body: JSON.stringify({ model: model, title: currentName() }) })
+      .then(function (r) { return r.ok ? r.blob() : Promise.reject(r); })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        if (win) { win.location = url; } else { window.open(url, "_blank"); }
+        setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      })
+      .catch(function () { if (win) { win.close(); } toast("Open failed", true); });
+  });
   function downloadBlob(blob, name) {
     var url = URL.createObjectURL(blob), a = document.createElement("a");
     a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
