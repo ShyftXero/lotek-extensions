@@ -1,0 +1,57 @@
+{% extends pastel_base %}
+{% block title %}{{ paste.title or 'Paste' }} · Pastel{% endblock %}
+{% block appbar_title %}{{ paste.title or 'Paste' }}{% endblock %}
+
+{% macro csrf() %}{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}{% endmacro %}
+
+{% block head_extra %}
+<style>
+  .px-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
+  .px-wrap h1{font-size:20px;margin:0 0 4px}
+  .px-muted{color:#8aa0b0;font-size:13px}
+  .px-tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:4px 0 18px}
+  .px-tools a{font-size:13px}
+  .px-share{background:#0e151c;border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;margin:0 0 16px}
+  .px-share code{word-break:break-all;color:#9fe9d7}
+  .px-body{border:1px solid #1c2a35;border-radius:6px;padding:16px 20px;background:#0e151c;line-height:1.5}
+  .px-body pre{background:#07100f;border:1px solid #16313b;border-radius:4px;padding:10px 12px;overflow:auto}
+  .px-body code{font-family:ui-monospace,Menlo,Consolas,monospace}
+  .px-body img{max-width:100%}
+  .px-body table{border-collapse:collapse}
+  .px-body th,.px-body td{border:1px solid #1c2a35;padding:4px 8px}
+  button{background:#16313b;color:#9fe9d7;border:1px solid #2a5566;border-radius:4px;padding:6px 12px;font-size:13px;cursor:pointer}
+  .px-danger{color:#e0796f;border-color:#e0796f;background:transparent}
+  form.px-inline{display:inline}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="px-wrap">
+  {% if owner %}
+    {% if request.args.get('notice') %}
+      <div class="px-muted">{{ {'created':'Paste created — share the link below.','updated':'Paste updated.'}.get(request.args.get('notice'),'') }}</div>
+    {% endif %}
+    <div class="px-share">
+      <div class="px-muted">Shareable link (the GUID is the credential):</div>
+      <code>{{ url_for('pastel.public_view', guid=paste.guid, _external=True) }}</code>
+    </div>
+    <div class="px-tools">
+      <a href="{{ raw_url }}">raw</a>
+      {% if paste.expires_at %}<span class="px-muted">· expires {{ paste.expires_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+      {% if paste.max_reads %}<span class="px-muted">· {{ paste.read_count }}/{{ paste.max_reads }} reads</span>{% endif %}
+      {% if paste.password_hash %}<span class="px-muted">· 🔒 password</span>{% endif %}
+      {% if paste.retired_at %}<span class="px-muted">· retired: {{ paste.retired_cause }}</span>{% endif %}
+    </div>
+    {% if pastel_can_write %}
+    <form class="px-inline" method="post" action="{{ url_for('pastel.delete', paste_id=paste.id) }}"
+          onsubmit="return confirm('Delete this paste?')">
+      {{ csrf() }}<button type="submit" class="px-danger">Delete</button>
+    </form>
+    {% endif %}
+  {% else %}
+    <div class="px-tools"><a href="{{ raw_url }}">view raw</a></div>
+  {% endif %}
+
+  <div class="px-body">{{ body_html }}</div>
+</div>
+{% endblock %}
