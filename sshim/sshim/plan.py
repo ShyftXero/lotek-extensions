@@ -157,32 +157,34 @@ def _validate(profile: Profile) -> None:
 
 def _anchor_cmd_a(sess: Session, renderer: str) -> str:
     p = sess.profile
-    target = f"{p.rendezvous_user}@{p.rendezvous_host} -p {p.rendezvous_port}"
+    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    port = f"-p {p.rendezvous_port}"
     fwd = f"-R 127.0.0.1:{sess.socks_port}"
     if renderer == "posix":
-        return f"ssh {fwd} {_POSIX_OPTS} -- {target}"
+        return f"ssh {fwd} {_POSIX_OPTS} {port} -- {target}"
     if renderer == "ssh_exe":
-        return f"ssh.exe {fwd} {_WIN_OPTS} -- {target}"
+        return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}"
     if renderer == "powershell_encoded":
-        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} -- {target}")
+        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}")
     raise ValueError(f"topology A anchor has no {renderer!r} rendering; use posix/ssh_exe/powershell_encoded")
 
 
 def _traveler_cmd_a(sess: Session, renderer: str) -> str:
     p = sess.profile
     local = sess.socks_port  # traveler reuses the same loopback number for clarity
-    target = f"{p.rendezvous_user}@{p.rendezvous_host} -p {p.rendezvous_port}"
+    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    port = f"-p {p.rendezvous_port}"
     fwd = f"-L {local}:127.0.0.1:{sess.socks_port}"
     hint = (
         f"  # then point your browser/CLI at socks5h://127.0.0.1:{local} "
         f"(remote DNS — the anchor resolves names)"
     )
     if renderer == "posix":
-        return f"ssh {fwd} {_POSIX_OPTS} -- {target}{hint}"
+        return f"ssh {fwd} {_POSIX_OPTS} {port} -- {target}{hint}"
     if renderer == "ssh_exe":
-        return f"ssh.exe {fwd} {_WIN_OPTS} -- {target}{hint}"
+        return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}{hint}"
     if renderer == "powershell_encoded":
-        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} -- {target}") + hint
+        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}") + hint
     raise ValueError(f"topology A traveler has no {renderer!r} rendering")
 
 
@@ -190,7 +192,8 @@ def _traveler_cmd_a(sess: Session, renderer: str) -> str:
 
 def _traveler_cmd_b(sess: Session, renderer: str) -> str:
     p = sess.profile
-    target = f"{p.anchor_user}@{p.anchor_host} -p {p.anchor_port}"
+    target = f"{p.anchor_user}@{p.anchor_host}"
+    port = f"-p {p.anchor_port}"
     fwd = f"-D {sess.socks_port}"
     # NOTE: -D resolves on the TRAVELER, not the anchor. Not socks5h. Stated.
     hint = (
@@ -198,11 +201,11 @@ def _traveler_cmd_b(sess: Session, renderer: str) -> str:
         f"locally (traveler), so this is NOT remote DNS. Use topology A for that."
     )
     if renderer == "posix":
-        return f"ssh {fwd} {_POSIX_OPTS} -- {target}{hint}"
+        return f"ssh {fwd} {_POSIX_OPTS} {port} -- {target}{hint}"
     if renderer == "ssh_exe":
-        return f"ssh.exe {fwd} {_WIN_OPTS} -- {target}{hint}"
+        return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}{hint}"
     if renderer == "powershell_encoded":
-        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} -- {target}") + hint
+        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}") + hint
     raise ValueError(f"traveler has no {renderer!r} rendering; use posix/ssh_exe/powershell_encoded")
 
 
@@ -211,14 +214,15 @@ def _traveler_cmd_b(sess: Session, renderer: str) -> str:
 def _anchor_cmd_c(sess: Session, renderer: str) -> str:
     p = sess.profile
     # expose the anchor's OWN sshd on the rendezvous loopback at jump_port
-    target = f"{p.rendezvous_user}@{p.rendezvous_host} -p {p.rendezvous_port}"
+    target = f"{p.rendezvous_user}@{p.rendezvous_host}"
+    port = f"-p {p.rendezvous_port}"
     fwd = f"-R 127.0.0.1:{sess.jump_port}:127.0.0.1:22"
     if renderer == "posix":
-        return f"ssh {fwd} {_POSIX_OPTS} -- {target}"
+        return f"ssh {fwd} {_POSIX_OPTS} {port} -- {target}"
     if renderer == "ssh_exe":
-        return f"ssh.exe {fwd} {_WIN_OPTS} -- {target}"
+        return f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}"
     if renderer == "powershell_encoded":
-        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} -- {target}")
+        return _powershell_encoded(f"ssh.exe {fwd} {_WIN_OPTS} {port} -- {target}")
     raise ValueError(f"topology C anchor has no {renderer!r} rendering")
 
 

@@ -57,7 +57,7 @@ def test_topology_a_posix_round_trip():
     assert "-N" in anchor
     assert "ExitOnForwardFailure=yes" in anchor
     assert "UserKnownHostsFile=/dev/null" in anchor
-    assert "sshim@vps.example -p 443" in anchor
+    assert "sshim@vps.example" in anchor
     assert f"-L {sess.socks_port}:127.0.0.1:{sess.socks_port}" in traveler
     assert sess.rendezvous_password not in anchor
     assert sess.rendezvous_password not in traveler
@@ -92,7 +92,7 @@ def test_topology_b_direct_socks_no_anchor_leg():
     assert plan.anchor == {}
     traveler = plan.traveler["posix"]
     assert f"-D {sess.socks_port}" in traveler
-    assert "sshim@home.tail.net -p 22" in traveler
+    assert "sshim@home.tail.net" in traveler
     assert any("not remote DNS" in n for n in plan.notes)
     assert "NOT remote DNS" in traveler
 
@@ -287,3 +287,38 @@ def test_is_listable_keeps_recently_died_then_ages_off():
     assert is_listable(died_recently, now=now)  # within grace -> still visible
     long_dead = now - LISTABLE_GRACE - timedelta(minutes=1)
     assert not is_listable(long_dead, now=now)  # aged off
+
+
+def test_the_ssh_port_is_an_option_before_the_host_everywhere():
+    """Regression: `-p <port>` must be an ssh OPTION, before `--` and the host.
+
+    It used to be emitted as `... -- user@host -p PORT`, where `--` ends option parsing:
+    ssh then ignored the port entirely and dialled 22, so a session minted for a
+    non-standard rendezvous port silently connected to the wrong service (or nowhere).
+    Caught by the hhr2 e2e (curl never came back through the pivot).
+    """
+    import re
+
+    cases = [
+        (Profile(name="a", topology="relay_reverse_socks", rendezvous_host="rdv.example", rendezvous_port=22022), 22022),
+        (Profile(name="b", topology="direct_socks", anchor_host="anchor.example", anchor_port=2222), 2222),
+        (Profile(name="c", topology="relay_sshuttle", rendezvous_host="rdv.example", rendezvous_port=22022, anchor_host="a.example"), 22022),
+    ]
+    for prof, port in cases:
+        pl = render_plan(mint(prof))
+        for leg_name in ("anchor", "traveler"):
+            for renderer, cmd in getattr(pl, leg_name).items():
+                if renderer == "sshuttle":
+                    continue  # sshuttle wraps ssh via -J host:port, not a bare -p
+                if renderer == "powershell_encoded":
+                    import base64
+                    blob = cmd.split("EncodedCommand ", 1)[1].split("  #", 1)[0].strip()
+                    cmd = base64.b64decode(blob).decode("utf-16-le")
+                head, sep, tail = cmd.partition(" -- ")
+                assert sep, f"{leg_name}/{renderer}: no `--` separator: {cmd}"
+                assert re.search(rf"-p {port}\b", head), (
+                    f"{leg_name}/{renderer}: `-p {port}` must sit BEFORE `--`: {cmd}"
+                )
+                assert f"-p {port}" not in tail.replace("  #", "\n#"), (
+                    f"{leg_name}/{renderer}: `-p {port}` must not land in the host/command tail: {cmd}"
+                )
