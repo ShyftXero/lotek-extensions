@@ -23,6 +23,7 @@ callers get ``None`` and decide the status.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 import threading
 import time
@@ -423,6 +424,25 @@ def mint_session(
     return row, sess.ssh_password
 
 
+def give_back_relay(row, release) -> bool:
+    """Hand this session's container back to the host. Best-effort; returns True if it was released.
+
+    ONE implementation for every teardown path. The first version released only from the dashboard
+    kill route, so an agent-killed pivot left its container running — the same forgotten-call-site bug
+    the acquire path had. A host that already reaped the container (TTL, admin reap) must not fail the
+    caller's kill, so a raising release is logged and swallowed.
+    """
+    handle = relay_handle(getattr(row, "params", None))
+    if not handle or release is None:
+        return False
+    try:
+        release(handle)
+        return True
+    except Exception as exc:  # noqa: BLE001 — teardown is best-effort, never blocks a kill
+        _log.warning("sshim: relay release failed for %s: %s", handle, exc)
+        return False
+
+
 def _params_with_relay(base: dict, mode: str, handle: str | None) -> dict:
     """The stored profile snapshot plus HOW this session's relay is provided.
 
@@ -617,3 +637,5 @@ def plan_to_dict(p: plan.Plan) -> dict:
             "missing or corrupt). Re-mint for a fresh identity — do not paste an empty secret."
         ),
     }
+
+_log = logging.getLogger(__name__)

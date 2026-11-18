@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify, request
 from sshim import host
 from sshim.deps import (
     exclusive_container_acquire,
+    exclusive_container_release,
     get_config,
     host_audit,
     is_standalone,
@@ -37,6 +38,7 @@ from sshim.service import (
     Denied,
     Invalid,
     SessionDead,
+    give_back_relay,
     kill_session,
     load_visible,
     mint_session,
@@ -166,4 +168,6 @@ def kill_session_api(session_id: uuid.UUID):
             kill_session(db, row, owner_id=actor_id, is_admin=is_admin, host_audit=host_audit())
         except Denied as exc:
             return jsonify({"error": "forbidden", "detail": str(exc)}), 403
+        # Give the container back — an agent-killed pivot must reap exactly like a UI-killed one.
+        give_back_relay(row, exclusive_container_release())
         return jsonify(status="killed", id=str(session_id))

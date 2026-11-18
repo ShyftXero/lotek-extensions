@@ -249,3 +249,22 @@ def test_every_mint_call_site_passes_the_acquire_hook():
                 if "acquire" not in keywords:
                     missing.append(f"{name}:{node.lineno}")
     assert not missing, f"mint_session call sites without acquire=<hook>: {missing}"
+
+
+def test_every_kill_call_site_gives_the_container_back():
+    """Structural guard: the machine API's kill forgot to release, so an agent-killed pivot leaked its
+    container. Both kill paths must call the shared helper."""
+    import ast
+    from pathlib import Path
+
+    missing = []
+    for name in ("blueprint.py", "api_pat.py"):
+        src = (Path(__file__).resolve().parents[1] / "sshim" / name).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and "kill" in node.name:
+                called = {n.func.id for n in ast.walk(node)
+                          if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+                if "give_back_relay" not in called:
+                    missing.append(f"{name}:{node.name}")
+    assert not missing, f"kill paths that do not release the relay: {missing}"
