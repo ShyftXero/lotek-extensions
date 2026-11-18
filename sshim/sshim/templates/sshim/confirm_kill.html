@@ -1,0 +1,37 @@
+{% extends sshim_base %}
+{% block title %}sshim — kill {{ row.profile_name }}{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>Kill this pivot?</h1>
+  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }} · SOCKS {{ row.socks_port }}</p>
+
+  {% if connected is sameas true %}
+  {# The relay told us a leg is dialled in RIGHT NOW. This is the case the confirmation exists for:
+     a single click would drop a live foothold the operator has already staged. #}
+  <div class="risk">
+    <strong>A leg is connected right now</strong>
+    Killing this drops the live session. The anchor side stays staged on that host, but the operator
+    must dial again — and its credentials are gone with the pivot.
+  </div>
+  {% elif connected is sameas false %}
+  <p class="note">No leg is currently dialled into this relay.</p>
+  {% else %}
+  {# Phase 1 cannot see the rendezvous, so say that instead of implying nothing is attached. #}
+  <p class="note">sshim cannot see this rendezvous, so it cannot tell whether a leg is still dialled in.
+    Assume it may be.</p>
+  {% endif %}
+
+  <div class="note">
+    Killing is final. The session's credentials are destroyed with it; if you need it back, mint a new
+    one and re-stage the anchor.
+  </div>
+
+  <form method="post" action="{{ url_for('sshim.kill', session_id=row.id) }}">
+    <input type="hidden" name="confirm" value="1">
+    <div class="toolbar" style="margin-top:16px">
+      <button class="btn" type="submit">Yes, kill it</button>
+      <a class="btn btn-lime" href="{{ url_for('sshim.session_detail', session_id=row.id) }}">Keep it</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
