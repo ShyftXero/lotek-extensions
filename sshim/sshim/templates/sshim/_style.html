@@ -21,6 +21,17 @@
   .sshim .sub{color:var(--dim);font-size:14px;margin:0 0 20px}
   .sshim .mono{font-family:var(--mono)}
   .sshim .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  /* Bulk-kill bar above the running-pivots table. The count and the single primary action live
+     together so "Kill N pivots" always says how many, and a disabled button reads as zero. */
+  .sshim .bulkbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+  .sshim .bulkbar-hint{color:var(--dim);font-size:12px}
+  .sshim .table-scroll{overflow-x:auto}
+  .sshim .dt-toolbar{margin:0 0 10px}
+  /* The select column is chrome, not data: a 1%-wide column with no horizontal padding is what keeps
+     the checkbox from pushing the table into horizontal scroll at 390px. */
+  .sshim .sshim-col-select{width:1%;white-space:nowrap;padding-left:0;padding-right:0}
+  .sshim .sshim-col-select input{width:16px;height:16px;margin:0;vertical-align:middle;accent-color:var(--lime)}
+  @media(max-width:520px){ .sshim .sshim-col-select{padding:0 2px} }
   .sshim .btn{font:500 14px/1 Inter,sans-serif;letter-spacing:-.35px;color:var(--text);
     background:var(--panel);border:1px solid var(--border-2);border-radius:4px;padding:8px 14px;cursor:pointer}
   .sshim .btn:hover{border-color:var(--lime-dark)}

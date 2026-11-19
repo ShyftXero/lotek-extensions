@@ -253,18 +253,31 @@ def test_every_mint_call_site_passes_the_acquire_hook():
 
 def test_every_kill_call_site_gives_the_container_back():
     """Structural guard: the machine API's kill forgot to release, so an agent-killed pivot leaked its
-    container. Both kill paths must call the shared helper."""
+    container. Both kill paths must reach the ONE release helper — directly, or through
+    `service.kill_many`, which is the bulk path's single implementation of "kill then release".
+
+    `kill_many` is asserted to release itself, so accepting it here cannot hide a forgotten call."""
     import ast
     from pathlib import Path
 
+    root = Path(__file__).resolve().parents[1] / "sshim"
     missing = []
     for name in ("blueprint.py", "api_pat.py"):
-        src = (Path(__file__).resolve().parents[1] / "sshim" / name).read_text(encoding="utf-8")
+        src = (root / name).read_text(encoding="utf-8")
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and "kill" in node.name:
                 called = {n.func.id for n in ast.walk(node)
                           if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-                if "give_back_relay" not in called:
+                if not called & {"give_back_relay", "kill_many"}:
                     missing.append(f"{name}:{node.name}")
     assert not missing, f"kill paths that do not release the relay: {missing}"
+
+    service_src = (root / "service.py").read_text(encoding="utf-8")
+    kill_many = next(
+        n for n in ast.walk(ast.parse(service_src))
+        if isinstance(n, ast.FunctionDef) and n.name == "kill_many"
+    )
+    called = {n.func.id for n in ast.walk(kill_many)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "give_back_relay" in called, "service.kill_many must give each container back"

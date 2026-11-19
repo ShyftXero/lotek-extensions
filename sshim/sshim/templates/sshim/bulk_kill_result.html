@@ -1,0 +1,41 @@
+{% extends sshim_base %}
+{% block title %}sshim — bulk kill result{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+{% set killed = results|selectattr('status', 'equalto', 'killed')|list %}
+{% set missing = results|selectattr('status', 'equalto', 'not_found')|list %}
+<div class="sshim">
+  <h1>Killed {{ killed|length }} of {{ results|length }}</h1>
+  {% if missing %}
+  {# The whole reason this page exists: a bulk kill that silently skipped one leaves a live pivot the
+     operator believes is gone. Name every id that did NOT die. #}
+  <div class="warn">
+    <strong>{{ missing|length }} pivot{{ '' if missing|length == 1 else 's' }} were not killed.</strong>
+    Not found, or not yours — sshim does not tell those apart, so a foreign id cannot be probed.
+    Anything you expected here is still running: re-check it in the list.
+  </div>
+  {% endif %}
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Session</th><th>Result</th><th>Container</th></tr></thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td class="mono">{{ r.id }}</td>
+          <td class="{{ 'status-active' if r.status == 'killed' else 'status-killed' }}">
+            {% if r.status == 'killed' %}killed{% else %}not found{% endif %}
+          </td>
+          <td class="mono">
+            {% if r.status != 'killed' %}—{% elif r.released %}released{% else %}no container / already reaped{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="toolbar" style="margin-top:16px">
+    <a class="btn btn-lime" href="{{ url_for('sshim.index') }}">Back to running pivots</a>
+  </div>
+</div>
+{% endblock %}
