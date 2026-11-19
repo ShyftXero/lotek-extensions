@@ -7,6 +7,11 @@
 {% macro csrf() %}{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}{% endmacro %}
 
 {% block head_extra %}
+{# create editor: CodeMirror (line numbers + markdown highlighting), jsdelivr = CSP-allowlisted.
+   Degrades to the plain textarea + localStorage autosave if it never loads. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.min.js"></script>
 <style>
   .px-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
   .px-wrap h1{font-size:20px;margin:0 0 4px}
@@ -17,10 +22,14 @@
   .px-field input,.px-field select,.px-field textarea{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;
       border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
   .px-field textarea{min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical}
+  .px-field .CodeMirror{border:1px solid #1c2a35;border-radius:4px;height:auto;min-height:220px;font-size:13px}
   .px-row{display:flex;gap:14px;flex-wrap:wrap}
   .px-row .px-field{flex:1 1 150px}
   button{background:#16313b;color:#9fe9d7;border:1px solid #2a5566;border-radius:4px;padding:8px 16px;font-size:14px;cursor:pointer}
   button:hover{background:#1c3d49}
+  .px-danger{color:#e0796f;border-color:#e0796f;background:transparent}
+  .px-bulkbar{display:flex;align-items:center;gap:14px;margin:0 0 10px}
+  .px-sel{margin-right:6px;vertical-align:middle}
   .px-card{border:1px solid #1c2a35;border-radius:6px;padding:10px 14px;margin:0 0 8px;background:#0e151c}
   .px-card .meta{font-size:12px;color:#8aa0b0;margin-top:3px}
   .px-pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;border:1px solid #2a5566;color:#8aa0b0;margin-right:5px}
@@ -80,9 +89,20 @@
 
   <h2>Your pastes</h2>
   {% if pastes %}
+    {% if pastel_can_write %}
+    <form id="px-bulk" method="post" action="{{ url_for('pastel.bulk_delete') }}">
+      {{ csrf() }}
+      <div class="px-bulkbar">
+        <label class="px-muted"><input type="checkbox" id="px-all"> select all</label>
+        <button type="submit" class="px-danger">Delete selected</button>
+      </div>
+    {% endif %}
     {% for p in pastes %}
     <div class="px-card">
-      <div><a href="{{ url_for('pastel.owner_view', paste_id=p.id) }}">{{ p.title or '(untitled)' }}</a></div>
+      <div>
+        {% if pastel_can_write %}<input type="checkbox" class="px-sel" name="ids" value="{{ p.id }}">{% endif %}
+        <a href="{{ url_for('pastel.owner_view', paste_id=p.id) }}">{{ p.title or '(untitled)' }}</a>
+      </div>
       <div class="meta">
         {% if p.retired_at %}<span class="px-pill px-retired">retired: {{ p.retired_cause }}</span>{% endif %}
         {% if p.expires_at %}<span class="px-pill">expires {{ p.expires_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
@@ -92,6 +112,7 @@
       </div>
     </div>
     {% endfor %}
+    {% if pastel_can_write %}</form>{% endif %}
   {% else %}
     <p class="px-muted">No pastes yet.</p>
   {% endif %}
@@ -100,23 +121,53 @@
 {#- Autosave the draft body to localStorage so a reload / accidental nav does not lose it; cleared on
     submit. Native localStorage, no dependency. ponytail: a single-draft store, not per-tab history. -#}
 <script>
-(function () {
-  var KEY = "pastel:draft:body", body = document.getElementById("px-body"),
-      title = document.getElementById("px-title"), form = document.getElementById("px-form"),
+// Runs on DOMContentLoaded so the deferred CodeMirror scripts have executed first. Upgrades the body
+// textarea to CodeMirror (line numbers + markdown highlighting) and autosaves the draft to
+// localStorage; both work through getVal/setVal so the plain-textarea fallback is identical.
+document.addEventListener("DOMContentLoaded", function () {
+  var KEY = "pastel:draft:body",
+      ta = document.getElementById("px-body"),
+      form = document.getElementById("px-form"),
       note = document.getElementById("px-autosave");
-  if (!body || !form) return;
+  if (!ta || !form) return;
+
+  var cm = window.CodeMirror
+    ? window.CodeMirror.fromTextArea(ta, { lineNumbers: true, mode: "markdown", lineWrapping: true, viewportMargin: Infinity })
+    : null;
+  var getVal = function () { return cm ? cm.getValue() : ta.value; };
+  var setVal = function (v) { if (cm) cm.setValue(v); else ta.value = v; };
+
   try {
     var saved = localStorage.getItem(KEY);
-    if (saved && !body.value) { body.value = saved; if (note) note.textContent = "restored draft"; }
+    if (saved && !getVal()) { setVal(saved); if (note) note.textContent = "restored draft"; }
   } catch (e) {}
-  var t;
-  body.addEventListener("input", function () {
+
+  var t, save = function () {
     clearTimeout(t);
     t = setTimeout(function () {
-      try { localStorage.setItem(KEY, body.value); if (note) note.textContent = "saved"; } catch (e) {}
+      try { localStorage.setItem(KEY, getVal()); if (note) note.textContent = "saved"; } catch (e) {}
     }, 400);
+  };
+  if (cm) { cm.on("change", save); } else { ta.addEventListener("input", save); }
+
+  form.addEventListener("submit", function () {
+    if (cm) cm.save();            // sync CodeMirror -> textarea so the POST carries the edited body
+    try { localStorage.removeItem(KEY); } catch (e) {}
   });
-  form.addEventListener("submit", function () { try { localStorage.removeItem(KEY); } catch (e) {} });
-})();
+
+  // Bulk select + delete on the "Your pastes" list.
+  var bulk = document.getElementById("px-bulk");
+  if (bulk) {
+    var all = document.getElementById("px-all");
+    if (all) all.addEventListener("change", function () {
+      bulk.querySelectorAll(".px-sel").forEach(function (c) { c.checked = all.checked; });
+    });
+    bulk.addEventListener("submit", function (e) {
+      var n = bulk.querySelectorAll(".px-sel:checked").length;
+      if (!n) { e.preventDefault(); alert("Select at least one paste to delete."); return; }
+      if (!confirm("Delete " + n + " paste(s)? This cannot be undone.")) e.preventDefault();
+    });
+  }
+});
 </script>
 {% endblock %}

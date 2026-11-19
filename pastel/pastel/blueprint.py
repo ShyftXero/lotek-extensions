@@ -178,6 +178,32 @@ def delete(paste_id: uuid.UUID):
     return _back(notice="deleted")
 
 
+@bp.post("/bulk-delete")
+def bulk_delete():
+    """Delete one or more of the caller's own pastes selected on the list page. Each id is gated the
+    same as single delete (load_own + delete_paste); unknown / not-owned / bad ids are skipped, so a
+    stale checkbox can never 403 the whole batch."""
+    _require_write()
+    author_id, is_admin = current_actor_id(), current_actor_is_admin()
+    with get_config().session_factory() as db:
+        for raw in request.form.getlist("ids"):
+            try:
+                pid = uuid.UUID(raw)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            paste = load_own(db, pid, author_id=author_id, is_admin=is_admin)
+            if paste is None:
+                continue
+            try:
+                delete_paste(
+                    db, paste,
+                    author_id=author_id, is_admin=is_admin, host_audit=host_audit(),
+                )
+            except Denied:
+                continue
+    return _back(notice="deleted")
+
+
 # --------------------------------------------------------------------------- public surface (GUID)
 
 
