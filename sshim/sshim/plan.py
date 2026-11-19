@@ -552,6 +552,24 @@ STATUS_ACTIVE = "active"
 STATUS_KILLED = "killed"
 STATUS_EXPIRED = "expired"  # derived only, returned by effective_status
 
+#: Lifecycle ORDER for any list that sorts by status: live pivots first, then TTL deaths, then explicit
+#: kills. Alphabetical (active, expired, killed) is right by accident today; this constant is the rule,
+#: so a later status cannot silently sort into the wrong place. ONE home — surfaces ask
+#: :func:`status_rank` rather than each spelling out its own ordering.
+STATUS_SORT_ORDER = (STATUS_ACTIVE, STATUS_EXPIRED, STATUS_KILLED)
+
+
+def status_rank(status: str) -> int:
+    """Numeric sort key for a status (``active`` -> 0, ``expired`` -> 1, ``killed`` -> 2).
+
+    An unknown status sorts last rather than raising: a list must still render a row whose status a
+    future slice introduces, and the rank is a presentation order, not a liveness decision (that stays
+    :func:`effective_status`)."""
+    try:
+        return STATUS_SORT_ORDER.index(status)
+    except ValueError:
+        return len(STATUS_SORT_ORDER)
+
 
 def dies_at(expires_at: datetime, *, kill_at: datetime | None = None) -> datetime:
     """When this session stops being live: the EARLIEST of its TTL and its opt-in kill date.

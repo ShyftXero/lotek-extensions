@@ -39,6 +39,7 @@ from sshim.service import (
     Invalid,
     SessionDead,
     give_back_relay,
+    kill_many,
     kill_session,
     load_visible,
     mint_session,
@@ -171,3 +172,31 @@ def kill_session_api(session_id: uuid.UUID):
         # Give the container back — an agent-killed pivot must reap exactly like a UI-killed one.
         give_back_relay(row, exclusive_container_release())
         return jsonify(status="killed", id=str(session_id))
+
+
+@machine_bp.post("/sessions/bulk-kill")
+@host.require_scope("write")
+def bulk_kill_sessions():
+    """Kill a list of pivots, per-id authorized, with a per-id result.
+
+    The browser twin is ``POST /sshim/sessions/bulk-kill``; both call ``service.kill_many`` so the
+    tenancy rule, the per-pivot audit entry and the container teardown have one implementation. An
+    unknown id (or one this token may not see) is reported as ``not_found`` inside a 200 — the same
+    answer as a malformed uuid, so the batch result cannot be used as an existence oracle. A partial
+    failure is a 200 with the failed ids named, never a 500 and never a silent skip.
+    """
+    actor_id, is_admin = _principal()
+    body = _body()
+    raw = body.get("ids")
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    elif not isinstance(raw, list):
+        raw = []
+    with get_config().session_factory() as db:
+        results = kill_many(
+            db, [str(i) for i in raw],
+            owner_id=actor_id, is_admin=is_admin,
+            host_audit=host_audit(), release=exclusive_container_release(),
+        )
+    killed = sum(1 for r in results if r["status"] == "killed")
+    return jsonify(results=results, killed=killed, failed=len(results) - killed)

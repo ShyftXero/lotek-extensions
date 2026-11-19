@@ -20,6 +20,11 @@ no binary on disk, runs on a borrowed box. When both sides hang up, it's gone. *
 4. **Re-fetch anytime** from the running-pivots list (`/sshim/`). The commands are regenerated from the
    stored session, so you can pull them back on a different borrowed box — **and so is the identity**:
    the password is stored sealed (see below) and re-shown to its owner.
+5. **Act on several at once.** The list sorts/filters/paginates through the host's shared data-table
+   component, and has a leading checkbox column. Check rows (or the header box for the current filter),
+   press **Kill N pivots**, and confirm the named targets — the confirmation lists profile + rendezvous
+   + port, and the result page names every id that did **not** die. A selection survives filtering and
+   paging: hiding a row does not deselect it.
 
 ## Topologies
 
@@ -106,6 +111,23 @@ rendezvous host. **sshim does not create accounts.**
   pasted credential must already exist on that box).
 
 The UI never implies sshim created an account it did not.
+
+## Bulk kill
+
+`POST /sshim/sessions/bulk-kill` takes repeated `ids` fields and kills each pivot through the SAME
+per-pivot path as the single kill: `load_visible` per id (an unknown *or* not-yours id is `not_found`,
+indistinguishable — no existence oracle), one audit entry **per pivot**, and `give_back_relay` per id.
+The response is a **per-id** result (`killed` / `not_found`), so a partial failure names exactly which
+pivots died and which did not; it never reports a batch as a success. The machine twin is
+`POST /sshim/machine/sessions/bulk-kill` with `{"ids": ["…"]}`, returning the same shape plus
+`killed` / `failed` counts.
+
+The confirmation is **server-rendered** (the single-pivot kill's `confirm=1` gate at scale), so it is
+not a client-side nicety: nothing is torn down until a second request carries every listed id back.
+
+How the table sorts: Status uses the lifecycle order **active → expired → killed**
+(`plan.status_rank`), and Expires / Kill at sort on the **ISO timestamp** (`data-sort-value`), not the
+rendered `HH:MM:SS` — a clock alone is wrong across days.
 
 ## Lifetime — TTL plus an opt-in kill date
 

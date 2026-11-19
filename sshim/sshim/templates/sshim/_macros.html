@@ -1,0 +1,22 @@
+{# ── data-table helpers ──────────────────────────────────────────────────────────────────────────────
+   sshim has NO host template seam: core's `_data_table.html` is not on a standalone sshim app's Jinja
+   loader, and sshim may not import `app.*` (pinned by tests/test_mount_no_app_import.py). So these
+   macros REPLICATE the documented attribute contract core's `static/data-table.js` reads
+   (`table[data-dt]`, `th[data-sort]` / `data-sort-type="num"`, `span.sort-ind`,
+   `input.dt-filter[data-dt-filter=id]`, `div.dt-pager[data-dt-pager=id]`, `td[data-sort-value]`).
+
+   MOUNTED in lotek the script ships on every page (base.html), so a table wired with these gets sort /
+   live filter / client paging for free. STANDALONE it degrades to a plain table, which is honest: the
+   page never depends on a host to render. Same route exploiteer took (see its `_macros.html`). We do
+   NOT redefine core's `.data-table` / `.dt-*` CSS — it would collide with the host's when mounted. #}
+{% macro sortth(label, numeric=false) -%}
+  <th data-sort{% if numeric %} data-sort-type="num"{% endif %}>{{ label }}<span class="sort-ind" aria-hidden="true"></span></th>
+{%- endmacro %}
+
+{% macro dt_filter(table_id, placeholder="Filter…") -%}
+  <div class="dt-toolbar"><input class="input dt-filter" data-dt-filter="{{ table_id }}" placeholder="{{ placeholder }}" autocomplete="off" aria-label="Filter table" /></div>
+{%- endmacro %}
+
+{% macro dt_pager(table_id) -%}
+  <div class="dt-pager" data-dt-pager="{{ table_id }}"></div>
+{%- endmacro %}

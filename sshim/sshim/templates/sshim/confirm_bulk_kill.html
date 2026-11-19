@@ -1,0 +1,53 @@
+{% extends sshim_base %}
+{% block title %}sshim — kill {{ targets|length }} pivots{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>Kill {{ targets|length }} pivot{{ '' if targets|length == 1 else 's' }}?</h1>
+  <p class="sub mono">Every pivot below is torn down: its commands stop being served and its credential
+    is destroyed. If you need one back, mint a new one and re-stage the anchor.</p>
+
+  {% if targets %}
+  {# The confirmation LISTS what will die — profile + rendezvous + port — because this is the
+     per-pivot confirmation at scale. A batch count alone would ask the operator to approve a number,
+     not the pivots they selected. #}
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Profile</th><th>Topology</th><th>Rendezvous</th><th>Port</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for t in targets %}
+        {% set row = t.row %}
+        <tr>
+          <td>{{ row.profile_name or '—' }}</td>
+          <td>{{ row.topology }}</td>
+          <td class="mono">{{ row.rendezvous_host or '—' }}</td>
+          <td class="mono">{{ (row.params or {}).get('rendezvous_port') or '—' }}</td>
+          <td class="status-{{ t.status }}">{{ t.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="note">None of the selected ids are visible to you, so there is nothing to list. They will be
+    reported as not found if you continue.</p>
+  {% endif %}
+
+  {% if ids|length > targets|length %}
+  <p class="note">{{ ids|length - targets|length }} selected id{{ '' if ids|length - targets|length == 1 else 's' }}
+    could not be listed (unknown, or not yours). {{ 'It' if ids|length - targets|length == 1 else 'They' }}
+    will be reported as not found — a pivot you cannot see is indistinguishable from one that does not
+    exist.</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('sshim.bulk_kill') }}">
+    <input type="hidden" name="confirm" value="1">
+    {# Carry EVERY requested id, not just the listed ones: the result must name the ones that failed,
+       and dropping an unlisted id here would turn a partial failure into a silent success. #}
+    {% for sid in ids %}<input type="hidden" name="ids" value="{{ sid }}">{% endfor %}
+    <div class="toolbar" style="margin-top:16px">
+      <button class="btn btn-lime" type="submit">Yes, kill {{ targets|length }} pivot{{ '' if targets|length == 1 else 's' }}</button>
+      <a class="btn btn-ghost" href="{{ url_for('sshim.index') }}">Keep them</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

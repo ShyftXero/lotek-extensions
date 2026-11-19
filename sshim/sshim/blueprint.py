@@ -40,6 +40,7 @@ from sshim.plan import (
     Profile,
     deviation_risks,
     effective_status,
+    status_rank,
 )
 from sshim.service import (
     Denied,
@@ -48,6 +49,7 @@ from sshim.service import (
     create_profile,
     delete_profile,
     give_back_relay,
+    kill_many,
     kill_session,
     load_profile_visible,
     load_visible,
@@ -139,13 +141,17 @@ def index():
     now = now_utc()
     with get_config().session_factory() as db:
         rows = visible_sessions(db, **_actor_kw(), now=now)
-        sessions = [
-            {
+        sessions = []
+        for r in rows:
+            status = effective_status(r.status, r.expires_at, now=now, kill_at=r.kill_at)
+            sessions.append({
                 "row": r,
-                "status": effective_status(r.status, r.expires_at, now=now, kill_at=r.kill_at),
-            }
-            for r in rows
-        ]
+                "status": status,
+                # Presentation-only lifecycle order (active -> expired -> killed); the ONE predicate is
+                # plan.status_rank so a second copy of this ordering cannot appear in a template.
+                "status_rank": status_rank(status),
+                "rendezvous_port": (r.params or {}).get("rendezvous_port"),
+            })
         return render_template("sshim/sessions.html", sessions=sessions, now=now)
 
 
@@ -382,6 +388,56 @@ def kill(session_id: uuid.UUID):
         # the kill fail — the operator asked to tear this pivot down, and it IS down either way.
         give_back_relay(row, exclusive_container_release())
     return redirect(url_for("sshim.index"))
+
+
+# ── bulk kill ─────────────────────────────────────────────────────────────────
+
+def _bulk_ids() -> list[str]:
+    """The requested session ids: repeated `ids` fields, and a comma-separated form as a convenience.
+
+    Kept as raw strings on purpose — :func:`service.kill_many` owns the uuid parsing so a malformed id
+    is reported as `not_found` exactly like an unknown one, instead of a 400 that would tell a caller
+    which shape exists."""
+    ids: list[str] = []
+    for value in request.form.getlist("ids"):
+        ids.extend(part.strip() for part in value.split(",") if part.strip())
+    return ids
+
+
+@bp.post("/sessions/bulk-kill")
+def bulk_kill():
+    """Kill the selected pivots, with a MANDATORY confirmation that lists every target.
+
+    The confirmation is server-rendered (mirroring the single-pivot kill's ``confirm=1`` gate), so it
+    works with JS off and cannot be skipped by a client that never loaded the page script. It lists
+    profile + rendezvous + port for each visible target; ids the caller may not see are carried
+    through to the result as `not_found` rather than being hidden from the report.
+    """
+    ids = _bulk_ids()
+    with get_config().session_factory() as db:
+        if (request.form.get("confirm") or "") != "1":
+            now = now_utc()
+            targets = []
+            for raw in ids:
+                try:
+                    session_id = uuid.UUID(raw)
+                except (TypeError, ValueError):
+                    continue
+                row = load_visible(db, session_id, **_actor_kw())
+                if row is not None:
+                    targets.append({
+                        "row": row,
+                        # The SAME liveness predicate as every other surface: a confirmation that
+                        # called an expired pivot "active" would be a lie at the moment of consent.
+                        "status": effective_status(
+                            row.status, row.expires_at, now=now, kill_at=row.kill_at
+                        ),
+                    })
+            return render_template("sshim/confirm_bulk_kill.html", targets=targets, ids=ids)
+        results = kill_many(
+            db, ids, **_actor_kw(), host_audit=host_audit(), release=exclusive_container_release()
+        )
+    return render_template("sshim/bulk_kill_result.html", results=results)
 
 
 # ── profiles ───────────────────────────────────────────────────────────────────

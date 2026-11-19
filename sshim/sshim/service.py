@@ -496,6 +496,50 @@ def kill_session(db, row: models.Session, *, owner_id, is_admin, host_audit=None
     db.commit()
 
 
+def kill_many(db, session_ids, *, owner_id, is_admin, host_audit=None, release=None) -> list[dict]:
+    """Kill each id in turn, returning a **per-id** result.
+
+    ONE implementation for every bulk surface (the dashboard form and the PAT machine API), because
+    the rules that matter here are the ones that already have a home:
+
+    * visibility is :func:`load_visible` **per id** — the same owner-or-admin rule as the single kill,
+      so an unknown id and somebody else's id are both ``not_found``, indistinguishable (no existence
+      oracle, INV-TENANCY-01). A malformed uuid takes the same path.
+    * the audit entry is :func:`kill_session`'s, i.e. one entry PER PIVOT — never one row for a batch.
+    * teardown is :func:`give_back_relay` per id, so a partial failure cannot strand a container the
+      caller believes is gone.
+
+    A failure on one id never aborts the batch: the caller gets one result per DISTINCT id, in input
+    order, each ``{"id", "status": "killed"|"not_found", "released": bool}``. That is the whole point —
+    a bulk kill that silently skips one leaves a live pivot the operator believes is dead.
+    """
+    results: list[dict] = []
+    seen: set[str] = set()
+    for raw in session_ids:
+        key = str(raw)
+        if key in seen:  # a duplicate submit (two forms, a retried request) kills once
+            continue
+        seen.add(key)
+        try:
+            session_id = uuid.UUID(key)
+        except (TypeError, ValueError, AttributeError):
+            results.append({"id": key, "status": "not_found", "released": False})
+            continue
+        row = load_visible(db, session_id, owner_id=owner_id, is_admin=is_admin)
+        if row is None:
+            results.append({"id": key, "status": "not_found", "released": False})
+            continue
+        try:
+            kill_session(db, row, owner_id=owner_id, is_admin=is_admin, host_audit=host_audit)
+        except Denied:
+            # Unreachable after load_visible (same predicate, same request) — but if the rule ever
+            # diverges, fail toward 404-not-403 rather than telling the caller it exists.
+            results.append({"id": key, "status": "not_found", "released": False})
+            continue
+        results.append({"id": key, "status": "killed", "released": give_back_relay(row, release)})
+    return results
+
+
 def reveal_password(row: models.Session, *, secret_key_path: Path) -> str | None:
     """The session's password, unsealed — or ``None`` when the key can't open it (FAIL CLOSED).
 
