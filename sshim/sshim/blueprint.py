@@ -416,7 +416,8 @@ def bulk_kill():
     ids = _bulk_ids()
     with get_config().session_factory() as db:
         if (request.form.get("confirm") or "") != "1":
-            rows = []
+            now = now_utc()
+            targets = []
             for raw in ids:
                 try:
                     session_id = uuid.UUID(raw)
@@ -424,8 +425,15 @@ def bulk_kill():
                     continue
                 row = load_visible(db, session_id, **_actor_kw())
                 if row is not None:
-                    rows.append(row)
-            return render_template("sshim/confirm_bulk_kill.html", rows=rows, ids=ids)
+                    targets.append({
+                        "row": row,
+                        # The SAME liveness predicate as every other surface: a confirmation that
+                        # called an expired pivot "active" would be a lie at the moment of consent.
+                        "status": effective_status(
+                            row.status, row.expires_at, now=now, kill_at=row.kill_at
+                        ),
+                    })
+            return render_template("sshim/confirm_bulk_kill.html", targets=targets, ids=ids)
         results = kill_many(
             db, ids, **_actor_kw(), host_audit=host_audit(), release=exclusive_container_release()
         )
