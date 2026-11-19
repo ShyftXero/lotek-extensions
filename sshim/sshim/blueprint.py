@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from flask import Blueprint, abort, current_app, redirect, render_template, request, url_for
+from flask import Blueprint, abort, redirect, render_template, request, url_for
 
 from sshim._version import __version__
 from sshim.deps import (
@@ -47,6 +47,7 @@ from sshim.service import (
     SessionDead,
     create_profile,
     delete_profile,
+    give_back_relay,
     kill_session,
     load_profile_visible,
     load_visible,
@@ -56,7 +57,6 @@ from sshim.service import (
     parse_kill_at,
     plan_for,
     profile_from_fields,
-    relay_handle,
     visible_profiles,
     visible_sessions,
 )
@@ -380,13 +380,7 @@ def kill(session_id: uuid.UUID):
             abort(403, str(exc))
         # Give the container back. A host that already reaped it (TTL, or an admin reap) must not make
         # the kill fail — the operator asked to tear this pivot down, and it IS down either way.
-        handle = relay_handle(row.params)
-        release = exclusive_container_release()
-        if handle and release is not None:
-            try:
-                release(handle)
-            except Exception as exc:  # noqa: BLE001 — teardown is best-effort, never blocks a kill
-                current_app.logger.warning("sshim: relay release failed for %s: %s", handle, exc)
+        give_back_relay(row, exclusive_container_release())
     return redirect(url_for("sshim.index"))
 
 

@@ -1,0 +1,20 @@
+name     = "Outdated or Vulnerable Software Component"
+category = "Patch Management"
+severity = "high"
+
+description = """
+<p>A service or component reachable at {{AFFECTED}} is running an outdated version with known, published vulnerabilities, identified by banner or version fingerprinting and matched against public CVE records.</p>
+"""
+
+impact = """
+<p>An outdated component with published CVEs is a known, documented weakness with a fix the target has not applied, which is why the default here is high rather than a note. The ceiling depends on which CVE applies: a minor information leak at the low end, unauthenticated remote code execution at the high end. What is consistent is that the weakness is public. The advisory names the affected versions and hands an attacker a starting point. A published advisory is not a ready exploit, though. Plenty of CVEs have no public exploit, and whether one lands depends on how the component is configured and reached. Rate the finding on the specific CVE(s) confirmed against this version, not on the fact that it is out of date, and confirm the version is reachable and exploitable before you move it up toward critical.</p>
+"""
+
+replication = """
+<ul><li>Version identified through service or banner fingerprinting. Correlate the reported version against the vendor's advisories and the NVD for applicable CVEs.</li></ul>
+"""
+
+remediation = """
+<p>Patch or upgrade the affected component to a supported, fixed release. Check the specific CVE(s) for the exact fixed version, since a minor bump does not always include the fix. Put a recurring patch cadence in place rather than treating this as a one-time cleanup, and remove unused or end-of-life software instead of leaving it reachable.</p>
+<p><strong>References</strong></p><ul><li>OWASP Top 10 A06:2021: Vulnerable and Outdated Components</li><li>CWE-1104: Use of Unmaintained Third Party Components</li><li>NIST National Vulnerability Database (NVD)</li></ul>
+"""

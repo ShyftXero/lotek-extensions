@@ -64,3 +64,22 @@ to this range, so this cap cannot be widened by a stale or malformed setting."""
 [db]
 base = "sshim.models:Base"       # the module whose IMPORT registers the tables
 table_prefix = "sshim_"
+
+# ── The per-pivot relay container (lotek#1747) ─────────────────────────────────────────────────────
+# sshim generates a random ssh_user/ssh_password per pivot. That identity only EXISTS if something
+# provisions it, and an external sshd cannot: an operator's box has whatever accounts it has. This
+# container is what makes the random credential real — lotek-pivot-sshd reads USER_NAME/USER_PASSWORD
+# and creates that account inside the container.
+#
+# `sharing = "exclusive"` because a relay must NOT be shared: one container per pivot means one netns,
+# one loopback and one authorized_keys, so no session can reach another's SOCKS port. `binding =
+# "public"` because both legs dial it from different networks — which requires an administrator to open
+# a port window (`ephemeral_relay.public_port_range`); without one, acquire refuses LOUDLY rather than
+# silently falling back to an unprovisioned host.
+[[service_containers]]
+name = "sshim-relay"
+image = "lotek-pivot-sshd:533144219762"   # content-addressed tag of the relay sshd image
+port = 2222                                # the in-container sshd port (public port is allocated per pivot)
+sharing = "exclusive"
+binding = "public"
+healthcheck = "tcp"                        # sshd has no HTTP /health

@@ -1,0 +1,21 @@
+name     = "Kerberoasting"
+category = "Active Directory - Kerberos"
+severity = "high"
+
+description = """
+<p>One or more accounts have a Service Principal Name (SPN) registered in Active Directory. Any authenticated domain user, with no elevated rights, can request a Kerberos service ticket (TGS) for those SPNs. The ticket is encrypted with the service account's password-derived key and cracks offline (hashcat mode 13100) to recover the cleartext password. The request is ordinary Kerberos traffic and produces no failed-logon on the target.</p>
+"""
+
+impact = """
+<p>The payoff is a service-account password, and service accounts are often the weak link: high-privilege identities (SQL, Exchange, SCCM, backup agents) set up years ago with a password that never changed. How bad it gets depends on that account's rights and on whether the password is weak enough to crack. A strong password holds. A weak one on a privileged account opens lateral movement and escalation. Cracking is offline, so only the initial TGS request is visible.</p>
+"""
+
+replication = """
+<ul><li>Request TGS tickets for every SPN-bearing account: <code>GetUserSPNs.py {{DOMAIN}}/user:pass -dc-ip {{TARGET_HOST}} -request -outputfile kerb.hashes</code></li><li>Crack offline: <code>hashcat -m 13100 kerb.hashes wordlist.txt</code></li></ul>
+<p>Service accounts confirmed roastable: {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Move the SPN-bearing accounts above to Group Managed Service Accounts (gMSA), which use a 120-character password that rotates automatically. Where an SPN has to live on a normal user account, set a 25+ character random password and force AES-only ticket encryption (disable RC4 for the account) so the ticket is not worth cracking. For detection, watch for one account requesting many distinct service tickets in a short window (Event ID 4769), which is a strong roasting signal.</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1558.003: Steal or Forge Kerberos Tickets, Kerberoasting</li><li>CWE-522: Insufficiently Protected Credentials</li><li>Microsoft: Group Managed Service Accounts overview</li></ul>
+"""

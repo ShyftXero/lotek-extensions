@@ -1,0 +1,20 @@
+name     = "SMB Null Session Allowed"
+category = "Network - SMB"
+severity = "medium"
+
+description = """
+<p>The host(s) at {{AFFECTED}} allow anonymous (null) SMB sessions. An unauthenticated connection with an empty username and password (<code>-u '' -p ''</code>) is accepted for RPC enumeration, which lets an attacker list local and domain users, groups, shares, and password policy without a single valid credential.</p>
+"""
+
+impact = """
+<p>This is reconnaissance, not direct access, but it feeds the attacks that follow. Enumerated usernames become the target list for password spraying and AS-REP/Kerberoast candidate selection, enumerated shares reveal more attack surface, and the disclosed password policy (lockout threshold, complexity) tells an attacker exactly how hard they can spray before tripping a lockout. On its own it is an information leak. Its value is as a head start on everything else.</p>
+"""
+
+replication = """
+<ul><li>Enumerate over the null session: <code>enum4linux-ng -A {{TARGET_HOST}}</code></li><li>Confirm and pull users and shares directly: <code>nxc smb {{TARGET_HOST}} -u '' -p '' --shares --users</code></li></ul>
+"""
+
+remediation = """
+<p>Restrict anonymous access: set <code>RestrictAnonymous</code> = 2 and <code>RestrictAnonymousSAM</code> = 1 (or the equivalent <em>Network access: Do not allow anonymous enumeration of SAM accounts and shares</em> Group Policy) across the domain. Remove shares that have no business reason to exist and tighten ACLs on the rest, so that even if a null session is ever re-enabled by mistake it discloses nothing useful.</p>
+<p><strong>References</strong></p><ul><li>MITRE ATT&amp;CK T1135: Network Share Discovery</li><li>CWE-287: Improper Authentication</li><li>CIS Microsoft Windows Benchmarks: anonymous access controls</li></ul>
+"""

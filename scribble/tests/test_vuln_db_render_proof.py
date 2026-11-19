@@ -1,4 +1,4 @@
-"""Task V proof: the rewritten lotek vuln-DB templates (scribble/seed/lotek_vulnerabilities.json)
+"""Task V proof: the rewritten lotek vuln-DB templates (scribble/seed/vulns/)
 render real, specific prose end-to-end -- through the REAL promote path (facts -> declared
 TemplateVariable rules -> BoardFinding.variables), not a hand-built shortcut -- for both HTML and
 DOCX, with (a) realistic populated facts and (b) a deliberately empty/absent fact set.
