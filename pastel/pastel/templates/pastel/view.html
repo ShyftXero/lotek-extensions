@@ -5,7 +5,20 @@
 {% macro csrf() %}{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}{% endmacro %}
 
 {% block head_extra %}
+{# #382: rich edit experience — CodeMirror 5 (line numbers + markdown highlighting). jsdelivr is
+   CSP-allowlisted (script-src/style-src). Degrades to a plain textarea if the CDN or JS fails. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.min.js"></script>
 <style>
+  .px-edit{margin:0 0 20px}
+  .px-edit label{display:block;font-size:13px;color:#8aa0b0;margin:12px 0 4px}
+  .px-edit input[type=text]{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
+  .px-edit textarea{width:100%;box-sizing:border-box;min-height:300px;background:#07100f;color:#dfe9f0;border:1px solid #16313b;border-radius:4px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+  .px-edit .CodeMirror{border:1px solid #16313b;border-radius:4px;height:auto;min-height:300px;font-size:13px}
+  .px-edit .px-save{margin-top:12px}
+  details.px-preview{margin:0 0 16px}
+  details.px-preview>summary{cursor:pointer;color:#8aa0b0;font-size:13px;margin-bottom:8px}</style>
   .px-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
   .px-wrap h1{font-size:20px;margin:0 0 4px}
   .px-muted{color:#8aa0b0;font-size:13px}
@@ -48,10 +61,42 @@
       {{ csrf() }}<button type="submit" class="px-danger">Delete</button>
     </form>
     {% endif %}
+
+    {% if pastel_can_write %}
+    {# #382: edit title + body in-place. CodeMirror syncs back to the textarea on submit. #}
+    <form class="px-edit" method="post" action="{{ url_for('pastel.update', paste_id=paste.id) }}">
+      {{ csrf() }}
+      <label for="px-title">Title</label>
+      <input id="px-title" type="text" name="title" value="{{ paste.title or '' }}" autocomplete="off">
+      <label for="px-body-edit">Body (markdown)</label>
+      <textarea id="px-body-edit" name="body">{{ paste.body }}</textarea>
+      <button type="submit" class="px-save">Save</button>
+    </form>
+    <details class="px-preview"><summary>Rendered preview</summary>
+      <div class="px-body">{{ body_html }}</div>
+    </details>
+    {% else %}
+    <div class="px-body">{{ body_html }}</div>
+    {% endif %}
   {% else %}
     <div class="px-tools"><a href="{{ raw_url }}">view raw</a></div>
+    <div class="px-body">{{ body_html }}</div>
   {% endif %}
-
-  <div class="px-body">{{ body_html }}</div>
 </div>
+{% endblock %}
+
+{% block body_extra %}
+<script>
+  // #382: upgrade the edit textarea to CodeMirror (line numbers + markdown highlighting).
+  // fromTextArea auto-syncs edited content back into the textarea on submit, so the plain-textarea
+  // fallback and the POST contract are unchanged if CodeMirror never loads (CDN blocked / JS off).
+  document.addEventListener('DOMContentLoaded', function () {
+    var ta = document.getElementById('px-body-edit');
+    if (ta && window.CodeMirror) {
+      window.CodeMirror.fromTextArea(ta, {
+        lineNumbers: true, mode: 'markdown', lineWrapping: true, viewportMargin: Infinity,
+      });
+    }
+  });
+</script>
 {% endblock %}

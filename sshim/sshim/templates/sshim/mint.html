@@ -20,9 +20,9 @@
         <select name="profile_id" id="profile_id" style="width:100%">
           <option value="{{ primary_id }}" selected
             data-topology="relay_reverse_socks"
-            data-rhost="{{ primary_host }}" data-rport="{{ primary_port }}" data-ruser=""
+            data-rhost="{{ primary_host }}" data-rport="" data-ruser=""
             data-ahost="" data-aport="22" data-auser="" data-cidr="">★ {{ primary_label }} — {{ primary_host }}:{{ primary_port }}</option>
-          <option value="" data-topology="" data-rhost="" data-rport="22" data-ruser=""
+          <option value="" data-topology="" data-rhost="" data-rport="" data-ruser=""
             data-ahost="" data-aport="22" data-auser="" data-cidr="">— ad-hoc (fill below) —</option>
           {% for p in profiles %}
           <option value="{{ p.id }}"
@@ -61,7 +61,7 @@
       <div class="row">
         <label>Host <input type="text" name="rendezvous_host" value="{{ defaults.rendezvous_host }}"
                            placeholder="your vps / tailnet sshd" id="rv-host"></label>
-        <label>Port <input type="number" name="rendezvous_port" value="{{ defaults.rendezvous_port }}" min="1" max="65535"></label>
+        <label>Port <input type="number" name="rendezvous_port" value="" min="1" max="65535" placeholder="blank = random per pivot"></label>
         <label>User <input type="text" name="rendezvous_user" value="{{ defaults.rendezvous_user }}"
                        placeholder="blank = random per pivot"></label>
       </div>
