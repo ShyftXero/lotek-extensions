@@ -1,0 +1,17 @@
+{# Deviation-risk banner — included by BOTH the mint page and the session detail.
+
+   One predicate, one home: the `risk_notes` this partial renders are `plan.deviation_risks(...)`, called
+   by the blueprint for each page. This template never decides whether there IS a risk — it renders the
+   reasons it is handed and nothing at all when the tuple is empty, which is why the secure default (a
+   random port on your own box + a one-use 18-character ephemeral password) stays silent.
+
+   Non-blocking by design: it names the risk, it never disables Mint/Kill. Amber (.risk), deliberately
+   distinct from the lime .warn secret-handling note in detail.html. #}
+{% if risk_notes %}
+<div class="risk" role="note" aria-label="configuration risk">
+  <strong>Security note — this configuration deviates from sshim's secure default.</strong>
+  <ul>{% for reason in risk_notes %}<li>{{ reason }}</li>{% endfor %}</ul>
+  <span class="risk-continue">Non-blocking: random ports reduce exposure to scanning and brute-force.
+    Continue only if you accept the risk.</span>
+</div>
+{% endif %}

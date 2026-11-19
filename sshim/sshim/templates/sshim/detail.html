@@ -1,0 +1,168 @@
+{% extends sshim_base %}
+{% block title %}sshim — {{ row.profile_name or row.topology }}{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim" id="sshim-detail"
+     data-expires="{{ row.expires_at.isoformat() }}" data-created="{{ row.created_at.isoformat() if row.created_at else '' }}"
+     data-socks="{{ row.socks_port }}" data-jump="{{ row.jump_port }}" data-status="{{ status }}">
+  <div class="toolbar">
+    <a class="btn btn-ghost" href="{{ url_for('sshim.index') }}">← pivots</a>
+    <h1 style="margin:0">{{ row.profile_name or row.topology }}</h1>
+    <span class="status-{{ status }} mono"><span class="dot {{ 'dot-active' if status == 'active' else 'dot-dead' }}"></span>{{ status }}</span>
+  </div>
+  <p class="sub mono">{{ row.topology }} · rendezvous {{ row.rendezvous_host or '—' }}:{{ (row.params or {}).get('rendezvous_port', 22) }} · SOCKS {{ row.socks_port }} · TTL {{ row.ttl_minutes }}min{% if row.kill_at %} · kill at {{ row.kill_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}</p>
+
+  <div class="ttlbar"><span id="ttlfill"></span></div>
+
+  {% set _mode = (row.params or {}).get('relay_mode') %}
+  <p class="mono" style="font-size:12px;margin:2px 0 8px;color:var(--dim)">
+    relay:
+    {% if _mode == 'container' %}<strong style="color:var(--lime-soft)">core-hosted single-use container</strong>
+      <span class="sub">— this pivot's random user &amp; password are installed by that container</span>
+    {% else %}<strong>{{ row.rendezvous_host or '—' }}:{{ (row.params or {}).get('rendezvous_port', 22) }}</strong>
+      <span class="sub">— external; this session's account must already exist there</span>
+    {% endif %}
+  </p>
+
+  {# ── the one signature, in reading order: operator | relay | anchor.
+     Left is where YOU are; right is the target network. Lime on the relay and the wires. ── #}
+  <div class="diagram">
+    <div class="node">operator<br><span class="sub">you / Linux</span></div>
+    <div class="wire"><span>-L {{ row.socks_port }}</span></div>
+    <div class="node node-relay">relay<br><span class="sub">{{ row.rendezvous_host or 'rendezvous' }}</span></div>
+    <div class="wire"><span>-R {{ row.socks_port }}</span></div>
+    <div class="node">anchor<br><span class="sub">foothold / Windows</span></div>
+  </div>
+
+  {# Deviation-risk banner — the SAME predicate (`plan.deviation_risks`) the mint page renders, judged
+     against this session's stored profile snapshot. Silent for the secure default; amber otherwise. It
+     sits above the secret note so a pinned port / static credential reads before the handling advice. #}
+  {% include "sshim/_risk.html" %}
+
+  {% if dead_reason %}
+  <div class="note">{{ dead_reason }} No commands and no credential are served for this session.
+    <a href="{{ url_for('sshim.mint_form') }}">Mint a new pivot</a>.</div>
+  {% elif plan and plan.session.ssh_password %}
+  {# The pivot's OWN generated identity. The password is stored SEALED on this instance (never
+     cleartext), so its owner can re-fetch it here from a different borrowed box. #}
+  <div class="warn">⚡ SSH identity for this pivot — paste the password at the ssh prompt, never on argv:
+    <div class="row" style="align-items:center;gap:12px">
+      <span class="mono">user</span><code class="mono" id="ssh-user">{{ plan.session.ssh_user }}</code>
+      <span class="mono">password</span><div class="secret" id="secret">{{ plan.session.ssh_password }}</div>
+      <button class="btn" type="button" onclick="copyText('ssh-user',this)">Copy user</button>
+      <button class="btn" type="button" onclick="copyText('secret',this)">Copy password</button>
+    </div>
+    <span class="sub">A generated identity only exists if something <em>provisioned</em> it on the
+      rendezvous: an sshim relay container does (from <code>USER_NAME</code>/<code>USER_PASSWORD</code>); an
+      external box does not — pin a real user in the profile for those.</span>
+  </div>
+  {% elif plan %}
+  <div class="note">⚠ This session's stored password could not be unsealed on this instance (its sealing
+    key is missing or corrupt). The commands below are still correct — paste a credential you know, or
+    <a href="{{ url_for('sshim.mint_form') }}">re-mint</a> for a fresh identity.</div>
+  {% endif %}
+
+  <div class="panes">
+    {% for leg, legname, legos, legdefault in [
+        ('operator','Operator leg','your side · default Linux ssh', operator_renderer),
+        ('anchor','Anchor leg','foothold · default Windows ssh.exe', anchor_renderer)] %}
+    {% set cmds = (plan.anchor if leg == 'anchor' else plan.operator) if plan else {} %}
+    <div class="pane" data-leg="{{ leg }}">
+      <h3>{{ legname }} <span class="leg-os">{{ legos }}</span></h3>
+      {% if cmds %}
+      <div class="row">
+        <label>renderer
+          <select class="r-renderer">
+            {% for rname in cmds.keys() %}<option value="{{ rname }}" {{ 'selected' if rname == legdefault }}>{{ rname }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>encoding
+          <select class="r-encoding">
+            {% for e in sshim_encodings %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+          </select>
+        </label>
+        <label><input type="checkbox" class="r-raw"> raw</label>
+        <button class="btn" type="button" onclick="bumpPort(1)">+1 port</button>
+        <button class="btn btn-lime r-copy" type="button">Copy</button>
+      </div>
+      <pre class="r-out"></pre>
+      {% else %}
+      <p class="note">This leg runs nothing for topology {{ row.topology }} — the box just runs sshd.</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if plan and plan.notes %}<ul class="sub mono">{% for n in plan.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+
+  {% if status == 'active' %}
+  <form method="post" action="{{ url_for('sshim.kill', session_id=row.id) }}" style="margin-top:16px">
+    <button class="btn" type="submit">Kill this pivot</button>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+var LEGS = {anchor: {{ (plan.anchor if plan else {}) | tojson }}, operator: {{ (plan.operator if plan else {}) | tojson }}};
+var root = document.getElementById('sshim-detail');
+var ORIG_SOCKS = parseInt(root.dataset.socks, 10), ORIG_JUMP = parseInt(root.dataset.jump, 10);
+var portDelta = 0;
+
+function enc(s, kind){
+  if(kind === 'url') return encodeURIComponent(s);
+  if(kind === 'url_double') return encodeURIComponent(encodeURIComponent(s));
+  if(kind === 'base64') return btoa(unescape(encodeURIComponent(s)));
+  return s;
+}
+// ponytail: naive literal-port replace (ceiling: could touch a colliding 22/443; socks/jump are random
+// 1024-65535 so collisions are rare). A real re-roll is a re-mint, which persists a new session.
+function nudge(s){
+  if(!portDelta) return s;
+  s = s.split(String(ORIG_SOCKS)).join(String(ORIG_SOCKS + portDelta));
+  if(ORIG_JUMP && ORIG_JUMP !== ORIG_SOCKS) s = s.split(String(ORIG_JUMP)).join(String(ORIG_JUMP + portDelta));
+  return s;
+}
+function renderPane(pane){
+  var leg = pane.dataset.leg, out = pane.querySelector('.r-out');
+  if(!out) return;
+  var rn = pane.querySelector('.r-renderer').value;
+  var raw = pane.querySelector('.r-raw').checked;
+  var kind = raw ? 'none' : pane.querySelector('.r-encoding').value;
+  var cmd = (LEGS[leg] || {})[rn] || '';
+  out.textContent = enc(nudge(cmd), kind);
+}
+function renderAll(){ document.querySelectorAll('.pane').forEach(renderPane); }
+function bumpPort(n){ portDelta += n; renderAll(); }
+function copyText(id, btn){
+  navigator.clipboard.writeText(document.getElementById(id).textContent).then(function(){
+    var o = btn.textContent; btn.textContent = 'copied ✓'; btn.classList.add('copied');
+    setTimeout(function(){ btn.textContent = o; btn.classList.remove('copied'); }, 1200);
+  });
+}
+document.querySelectorAll('.pane').forEach(function(pane){
+  pane.querySelectorAll('select, .r-raw').forEach(function(el){ el.addEventListener('change', function(){ renderPane(pane); }); });
+  var cp = pane.querySelector('.r-copy');
+  if(cp) cp.addEventListener('click', function(){
+    var o = cp.textContent; navigator.clipboard.writeText(pane.querySelector('.r-out').textContent).then(function(){
+      cp.textContent = 'copied ✓'; cp.classList.add('copied');
+      setTimeout(function(){ cp.textContent = o; cp.classList.remove('copied'); }, 1200);
+    });
+  });
+});
+renderAll();
+
+// TTL countdown bar — depletes to the session's expiry; at zero the bar empties + goes dim.
+(function(){
+  var fill = document.getElementById('ttlfill');
+  var exp = Date.parse(root.dataset.expires + 'Z');
+  var created = root.dataset.created ? Date.parse(root.dataset.created + 'Z') : (exp - 1800000);
+  function tick(){
+    var now = Date.now(), total = exp - created, left = exp - now;
+    var pct = Math.max(0, Math.min(100, (left / total) * 100));
+    fill.style.width = pct + '%';
+    if(left <= 0){ fill.style.background = 'var(--border-2)'; return; }
+    setTimeout(tick, 1000);
+  }
+  tick();
+})();
+</script>
+{% endblock %}
