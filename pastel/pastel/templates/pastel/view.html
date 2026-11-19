@@ -18,7 +18,8 @@
   .px-edit .CodeMirror{border:1px solid #16313b;border-radius:4px;height:auto;min-height:300px;font-size:13px}
   .px-edit .px-save{margin-top:12px}
   details.px-preview{margin:0 0 16px}
-  details.px-preview>summary{cursor:pointer;color:#8aa0b0;font-size:13px;margin-bottom:8px}</style>
+  details.px-preview>summary{cursor:pointer;color:#8aa0b0;font-size:13px;margin-bottom:8px}
+  .px-copy{margin-left:8px}
   .px-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
   .px-wrap h1{font-size:20px;margin:0 0 4px}
   .px-muted{color:#8aa0b0;font-size:13px}
@@ -46,7 +47,8 @@
     {% endif %}
     <div class="px-share">
       <div class="px-muted">Shareable link (the GUID is the credential):</div>
-      <code>{{ url_for('pastel.public_view', guid=paste.guid, _external=True) }}</code>
+      <code id="px-share-url">{{ url_for('pastel.public_view', guid=paste.guid, _external=True) }}</code>
+      <button type="button" class="px-copy" data-copy="#px-share-url">Copy</button>
     </div>
     <div class="px-tools">
       <a href="{{ raw_url }}">raw</a>
@@ -97,6 +99,18 @@
         lineNumbers: true, mode: 'markdown', lineWrapping: true, viewportMargin: Infinity,
       });
     }
+    // Copy the shareable URL to the clipboard (HTTPS only; navigator.clipboard needs a secure ctx).
+    document.querySelectorAll('.px-copy').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var el = document.querySelector(btn.dataset.copy);
+        var text = el ? el.textContent.trim() : '';
+        if (!text || !navigator.clipboard) return;
+        navigator.clipboard.writeText(text).then(function () {
+          var old = btn.textContent; btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = old; }, 1200);
+        });
+      });
+    });
   });
 </script>
 {% endblock %}
