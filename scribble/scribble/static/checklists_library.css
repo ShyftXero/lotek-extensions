@@ -1,0 +1,40 @@
+/* Checklist-library page (`/scribble/checklists`, templates/scribble/checklists_library.html) — the
+   coverage-checklist EDITOR surface: create/import a checklist, rename/hide/duplicate/export each one.
+   Keyed to the host's CSS variables, exactly like checklists_panel.css, so it themes correctly
+   standalone AND inside lotek.
+   ────────────────────────────────────────────────────────────────────────────────────────────────
+   WHY THIS IS ITS OWN FILE (ext#79). These `.cklib-*` rules used to live in scribble.css, and this page
+   used to hardcode `{% extends "scribble/base.html" %}` — so a MOUNTED scribble rendered this page in
+   scribble's OWN shell (its sidebar/appbar, not lotek's), and the rules only reached the host as a
+   side-effect of that wrong shell dragging scribble.css along. Switching the page to `scribble_base`
+   (so it renders in the host's shell like every other scribble page) drops scribble.css, which is the
+   same break ext#44 hit on the coverage panel. So the rules live here now and the page links this file
+   through its `head_extra` block, which works in both contexts.
+   This file is injected into the HOST's <head>, so it contains library-page classes ONLY — nothing
+   element-level, nothing shared with the host shell — and every selector is scoped under a `.cklib-*`
+   class, so it is safe to inject anywhere. Do NOT link scribble.css from a host page instead: it
+   redefines `:root`, `body`, `.card`, `.btn` and the shell. */
+
+.cklib-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.cklib-showhidden { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+.cklib-form { padding: 12px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 8px; }
+/* Field theming for the form's raw <input>/<select>/<textarea>: scribble.css's `.card input…` fallback
+   no longer reaches this page once it renders in the host shell, so the form carries its own, scoped to
+   `.cklib-form` (host-safe) and matching that fallback token-for-token so the controls look unchanged. */
+.cklib-form input, .cklib-form select, .cklib-form textarea {
+  background: var(--field-bg); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px 10px;
+  font: inherit; max-width: 100%;
+}
+.cklib-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.cklib-form-row input { flex: 1; min-width: 180px; }
+.cklib-form textarea { width: 100%; font-family: monospace; font-size: 12px; }
+.cklib-form-actions { display: flex; gap: 8px; align-items: center; }
+.cklib-err { color: var(--danger); font-size: 12px; }
+.cklib-card { padding: 10px 12px; margin: 8px 0; }
+.cklib-card.is-hidden { opacity: .55; }
+.cklib-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cklib-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.cklib-count { margin-left: auto; font-size: 12px; }
+.cklib-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.cklib-act { padding: 2px 10px; font-size: 12px; text-decoration: none; }

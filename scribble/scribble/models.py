@@ -202,6 +202,24 @@ class ReportBoard(Base, TimestampMixin):
     # only when the host provides an AI hook). Free operator text, escaped at render.
     methodology_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     scope_limitations_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ext#106: this engagement's chosen report Theme NAME. NULL = inherit the install default
+    # (``ScribbleSettings.default_report_theme``) -- which is why it sits exactly where that default does
+    # in ``report_html_api._selected_theme``'s precedence, overriding it per-engagement. The picker UI is
+    # Tier B; the COLUMN lands now because the sibling snapshot below cannot be retrofitted. Additive +
+    # nullable: create_all adds a plain column, every read coerces None to "inherit".
+    report_theme: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ext#106: the resolved Theme payload FROZEN at first delivery (the first themed export -- html/zip).
+    # A self-contained JSON snapshot of the Tokens, Marks and stamp actually rendered, referencing no
+    # external Theme, so a delivered report re-renders identically after the install default / override
+    # row / reader preference / ``?theme=`` changes underneath it, AND still renders if the Theme it came
+    # from is later uninstalled (it falls closed to this payload). Written once and then WINS over every
+    # mutable input for this engagement -- a signed deliverable's branding must not drift from the copy in
+    # the client's hands. Immutable here; re-snapshot-with-audit is Tier B. Serialized/read through
+    # ``reporting.theme_registry.freeze_resolved_theme`` / ``thaw_resolved_theme``; ``build_theme_assets``
+    # re-validates the thawed tokens + re-vets the Mark at the render boundary, so a tampered row still
+    # degrades rather than injecting. Additive + nullable: create_all adds a plain column, None reads as
+    # "not yet delivered" (resolve live).
+    report_theme_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
     groups: Mapped[list[FindingGroup]] = relationship(
         back_populates="engagement", cascade="all, delete-orphan", order_by="FindingGroup.order_index"

@@ -2302,8 +2302,13 @@ def render_report_html(
     template: str | None = None,
     override_lookup: OverrideLookup | None = None,
     override_theme_names: tuple[str, ...] = (),
+    resolved_theme: ResolvedTheme | None = None,
 ) -> str:
     """Render a full, self-contained HTML report for ``ctx``.
+
+    ``resolved_theme`` is a Delivery Snapshot thawed from the Engagement (ext#106): when present it is
+    rendered verbatim and the ``theme``/``override_lookup`` resolution is bypassed, so a delivered
+    report keeps its frozen branding regardless of what the Theme name would resolve to now.
 
     ``inline_assets=True`` embeds evidence-gallery + inline-content IMAGES as ``data:`` URIs via the
     ``artifact_bytes(storage_path) -> bytes`` callback, so the returned document has zero external
@@ -2327,7 +2332,8 @@ def render_report_html(
     """
     resolver = _AssetResolver("inline" if inline_assets else "none", artifact_bytes)
     sel_layout, sel_theme = resolve_selection(
-        layout=layout, theme=theme, template=template, override_lookup=override_lookup
+        layout=layout, theme=theme, template=template, override_lookup=override_lookup,
+        resolved_theme=resolved_theme,
     )
     return _render_document(
         ctx, resolver, theme=sel_theme,
@@ -2346,6 +2352,7 @@ def export_zip(
     template: str | None = None,
     override_lookup: OverrideLookup | None = None,
     loot: Iterable[tuple[str, bytes]] | None = None,
+    resolved_theme: ResolvedTheme | None = None,
 ) -> bytes:
     """Build a ZIP of ``report.html`` (assets externalized to ``artifacts/<name>``) + the referenced
     ``artifacts/`` files, for delivery without one giant inlined HTML file (PLAN.md §7).
@@ -2357,7 +2364,8 @@ def export_zip(
     + the actor); ``None`` omits it (e.g. the exporter used with no host)."""
     resolver = _AssetResolver("zip", artifact_bytes)
     sel_layout, sel_theme = resolve_selection(
-        layout=layout, theme=theme, template=template, override_lookup=override_lookup
+        layout=layout, theme=theme, template=template, override_lookup=override_lookup,
+        resolved_theme=resolved_theme,
     )
     html_doc = _render_document(
         ctx, resolver, theme=sel_theme,

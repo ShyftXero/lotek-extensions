@@ -47,7 +47,7 @@
   <p class="muted">Used whenever a Report does not choose its own Theme. Leave blank to fall back to
      Scribble's own built-in default ({{ '"auto"' }}).</p>
   <form id="thm-default-form" class="thm-default-form">
-    <select id="thm-default-select" name="name">
+    <select id="thm-default-select" name="name" aria-label="Per-install default theme">
       <option value=""{% if not default_name %} selected{% endif %}>— inherit (auto) —</option>
       {% for name in known_names %}
       <option value="{{ name }}"{% if name == default_name %} selected{% endif %}>{{ name }}</option>
@@ -99,7 +99,7 @@
      Theme's name. Every value is validated against the same closed Token/font schema a bundled Theme
      file is held to; an invalid Theme is refused and nothing is stored.</p>
   <form id="thm-new-form" class="thm-form" enctype="multipart/form-data">
-    <input type="file" id="thm-new-file" accept=".toml,text/plain" />
+    <input type="file" id="thm-new-file" accept=".toml,text/plain" aria-label="Theme .toml file to upload" />
     <textarea id="thm-new-toml" rows="10" placeholder="[identity]&#10;name = &quot;acme&quot;&#10;label = &quot;Acme&quot;&#10;&#10;[tokens]&#10;accent = &quot;#0f766e&quot;"></textarea>
     <div class="thm-form-actions">
       <button type="submit" class="btn btn-primary">Upload</button>

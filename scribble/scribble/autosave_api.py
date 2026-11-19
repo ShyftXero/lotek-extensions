@@ -23,14 +23,108 @@ the two renders separate means this endpoint never needs engagement/template con
 
 from __future__ import annotations
 
+from typing import Any
+
 from flask import jsonify, request
 
+from scribble.artifacts_api import _as_uuid  # one shared body-id parser (lotek#335)
+from scribble.authz import can_view_engagement
 from scribble.content import schema
 from scribble.content.render_html import render_block
-from scribble.deps import get_config, open_session
-from scribble.models import BoardFinding
+from scribble.deps import current_actor, get_config, open_session
+from scribble.models import BoardFinding, ReportBoard
 
 _REGISTERED = False
+
+
+# --------------------------------------------------------------------------------------- one home
+# The finding-block read/write/authorize, extracted so the legacy per-finding route (below) AND the
+# unified autosave seam's ``finding`` kind (ext#321) call the SAME three functions. Two writers of "a
+# ProseMirror doc into content_json + cache the rendered HTML" is exactly the drift this seam kills, so
+# there is one implementation and both entry points delegate to it.
+
+
+def save_finding_block(finding_id: Any, block: str, doc: Any) -> str | None:
+    """Store ``doc`` into one named block of a finding + re-derive/cache its HTML; return the rendered
+    HTML, or ``None`` if the finding does not exist (the legacy route maps that to 404; the seam gates it
+    at ``authorize_finding`` first, so its ``save`` only ever runs on an existing finding).
+
+    ``finding_id`` is accepted as either a ``uuid.UUID`` (the ``<uuid:...>`` route already parsed it) or a
+    string (the seam carries a JSON string handle id) — ``_as_uuid`` coerces both, None for a non-id.
+    """
+    fid = _as_uuid(finding_id)
+    if fid is None:
+        return None
+    with open_session() as db:
+        finding = db.get(BoardFinding, fid)
+        if finding is None:
+            return None
+
+        html = render_block(doc, artifact_url=_artifact_url)
+
+        # Reassign (don't mutate in place): content_json/content_html are plain JSON columns, not
+        # MutableDict, so SQLAlchemy only detects a new object being set on the attribute.
+        content_json = dict(finding.content_json or {})
+        content_json[block] = doc
+        finding.content_json = content_json
+
+        content_html = dict(finding.content_html or {})
+        content_html[block] = html
+        finding.content_html = content_html
+
+        db.commit()
+        return html
+
+
+def load_finding_block(finding_id: Any, block: str) -> tuple[Any, str] | None:
+    """Return ``(doc, cached_html)`` for one block of a finding (an empty doc / "" for an unwritten
+    block), or ``None`` if the finding does not exist. Same id-coercion contract as
+    :func:`save_finding_block`."""
+    fid = _as_uuid(finding_id)
+    if fid is None:
+        return None
+    with open_session() as db:
+        finding = db.get(BoardFinding, fid)
+        if finding is None:
+            return None
+        doc = (finding.content_json or {}).get(block) or schema.empty_doc()
+        html = (finding.content_html or {}).get(block, "")
+        return doc, html
+
+
+def authorize_finding(actor: Any, finding_id: Any) -> bool:
+    """The mandatory CLIENT-TENANCY gate for the seam's ``finding`` kind. Fail-closed.
+
+    The legacy ``/findings/<id>/blocks`` route is safe only because scribble's blueprint-wide
+    ``before_request`` gate (``scribble.authz._gate``) resolves its ``<uuid:finding_id>`` view-arg to the
+    finding's engagement and runs ``can_view_engagement`` (client tenancy — ``can_view_client``) before it
+    runs. The seam is mounted by CORE on its OWN blueprint, and the finding id rides in the JSON BODY, not
+    the view args, so that gate structurally cannot reach it — exactly the gap
+    ``artifacts_api.create_artifact`` closes by calling ``can_view_engagement`` directly (authz.py).
+    Without this, any logged-in actor could read/overwrite ANOTHER client's finding via
+    ``/_kit/autosave``. So this reuses the SAME predicate (one home), not a copy.
+
+    (Ownership — ``owner_id`` — is attribution only and never a gate; CLIENT tenancy is. The two are
+    distinct axes; this gates the latter. Standalone scribble with no host mounted degrades to allow, like
+    every other ``can_view_*`` caller.)
+
+    The ``actor`` the seam hands us IS the host's current user (core mounts it as ``g.current_user``); we
+    fall back to scribble's own ``current_actor()`` — the SAME injected hook — so the gate holds even if a
+    future mounter passes nothing. No actor, a non-id, no such finding, or a foreign-tenant finding ->
+    refuse (the seam answers 403; it does not distinguish those, the right fail-closed posture).
+    """
+    resolved = actor if actor is not None else current_actor()
+    if resolved is None:
+        return False
+    fid = _as_uuid(finding_id)
+    if fid is None:
+        return False
+    with open_session() as db:
+        finding = db.get(BoardFinding, fid)
+        if finding is None:
+            return False
+        engagement = db.get(ReportBoard, finding.engagement_id)
+        return engagement is not None and can_view_engagement(engagement, resolved)
 
 
 def register(api_bp, bp) -> None:
@@ -47,45 +141,43 @@ def register(api_bp, bp) -> None:
     if _REGISTERED:
         return
 
+    # Both routes DELEGATE to the one-home functions above; the seam's ``finding`` kind calls the same
+    # three, so there is a single writer of a finding block (ext#321).
     @api_bp.post("/findings/<uuid:finding_id>/blocks/<string:block>")
-    def autosave_block(finding_id: int, block: str):
+    def autosave_block(finding_id, block: str):
         doc = request.get_json(silent=True)
         if not schema.is_doc(doc):
             return (
                 jsonify(ok=False, error="body must be a ProseMirror doc: {'type': 'doc', 'content': [...]}"),
                 400,
             )
-
-        with open_session() as db:
-            finding = db.get(BoardFinding, finding_id)
-            if finding is None:
-                return jsonify(ok=False, error="finding not found"), 404
-
-            html = render_block(doc, artifact_url=_artifact_url)
-
-            # Reassign (don't mutate in place): content_json/content_html are plain JSON columns, not
-            # MutableDict, so SQLAlchemy only detects a new object being set on the attribute.
-            content_json = dict(finding.content_json or {})
-            content_json[block] = doc
-            finding.content_json = content_json
-
-            content_html = dict(finding.content_html or {})
-            content_html[block] = html
-            finding.content_html = content_html
-
-            db.commit()
-            return jsonify(ok=True, html=html)
+        html = save_finding_block(finding_id, block, doc)
+        if html is None:
+            return jsonify(ok=False, error="finding not found"), 404
+        return jsonify(ok=True, html=html)
 
     @api_bp.get("/findings/<uuid:finding_id>/blocks/<string:block>")
-    def get_block(finding_id: int, block: str):
-        with open_session() as db:
-            finding = db.get(BoardFinding, finding_id)
-            if finding is None:
-                return jsonify(ok=False, error="finding not found"), 404
+    def get_block(finding_id, block: str):
+        loaded = load_finding_block(finding_id, block)
+        if loaded is None:
+            return jsonify(ok=False, error="finding not found"), 404
+        doc, html = loaded
+        return jsonify(ok=True, doc=doc, html=html)
 
-            doc = (finding.content_json or {}).get(block) or schema.empty_doc()
-            html = (finding.content_html or {}).get(block, "")
-            return jsonify(ok=True, doc=doc, html=html)
+    # ext#321: register the finding surface on the unified autosave seam, so /_kit/autosave serves
+    # findings through the SAME save/load/authorize as the legacy route (one home). Defensive import: a
+    # kit pinned before the seam shipped has no register_autosave_kind — skip rather than break the mount.
+    try:
+        from lotek_kit.autosave import register_autosave_kind  # type: ignore[missing-import]
+    except ImportError:  # pragma: no cover - only on an older pinned kit (or standalone scribble)
+        pass
+    else:
+        register_autosave_kind(
+            "finding",
+            load=load_finding_block,
+            save=save_finding_block,
+            authorize=authorize_finding,
+        )
 
     @bp.context_processor
     def _inject_editor_globals():

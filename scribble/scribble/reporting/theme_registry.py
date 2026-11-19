@@ -43,10 +43,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from scribble.reporting import theme_files
-from scribble.reporting.theme_discovery import discover_installed_themes
-from scribble.reporting.theme_files import ThemeFile, ThemeFileError
+from scribble.reporting.theme_discovery import discover_installed_themes, discover_user_themes
+from scribble.reporting.theme_files import FontFace, ThemeFile, ThemeFileError
 from scribble.reporting.themes import DEFAULT_THEME, THEMES, ReportTheme
 
 PROVENANCE_BUNDLED = "bundled"
@@ -67,10 +68,28 @@ class ResolvedTheme:
     theme: ReportTheme
     file: ThemeFile | None
     provenance: str
+    # Explicit docx template path, populated from InstalledThemeDescriptor.docx_template_path
+    # for installed and user themes. Takes precedence over any fallback on ThemeFile.
+    docx_path: Path | None = None
 
     @property
     def carries_payload(self) -> bool:
         return self.file is not None
+
+    def docx_template_path(self) -> Path | None:
+        """Path to a theme-specific .docx template, or None (caller falls back to default.docx)."""
+        if self.docx_path is not None:
+            return self.docx_path
+        if self.file is None:
+            return None
+        fn = getattr(self.file, "docx_template_path", None)
+        if callable(fn):
+            p = fn()
+            return Path(p) if p is not None and not isinstance(p, Path) else p
+        tpl = getattr(self.file, "docx_template", None)
+        if tpl is not None:
+            return Path(tpl) if not isinstance(tpl, Path) else tpl
+        return None
 
 
 def _report_theme_from_file(file: ThemeFile) -> ReportTheme:
@@ -112,15 +131,24 @@ def resolve_theme(
     if not wanted:
         return ResolvedTheme(theme=THEMES[DEFAULT_THEME], file=None, provenance=PROVENANCE_BUNDLED)
 
-    # 2. Installed. Materialise the TOML only now, for the one Theme actually selected — discovery
-    #    deliberately does not call the loaders, so a firm-brand package's file read does not happen on
-    #    every render of every OTHER report.
+    # 2. Installed (pip entry-point). User themes checked next (step 2b) so pip wins over files.
     descriptor = discover_installed_themes().themes.get(wanted)
     if descriptor is not None:
         file = _parse_or_none(wanted, descriptor.load_toml, PROVENANCE_INSTALLED)
         if file is not None:
             return ResolvedTheme(
-                theme=_report_theme_from_file(file), file=file, provenance=PROVENANCE_INSTALLED
+                theme=_report_theme_from_file(file), file=file, provenance=PROVENANCE_INSTALLED,
+                docx_path=_call_docx_fn(descriptor.docx_template_path, wanted),
+            )
+
+    # 2b. User themes directory (scribble-theme add). Not cached — files can change.
+    user_descriptor = discover_user_themes().get(wanted)
+    if user_descriptor is not None:
+        file = _parse_or_none(wanted, user_descriptor.load_toml, user_descriptor.provenance)
+        if file is not None:
+            return ResolvedTheme(
+                theme=_report_theme_from_file(file), file=file, provenance=user_descriptor.provenance,
+                docx_path=_call_docx_fn(user_descriptor.docx_template_path, wanted),
             )
 
     # 3. Override.
@@ -132,6 +160,18 @@ def resolve_theme(
             )
 
     return ResolvedTheme(theme=THEMES[DEFAULT_THEME], file=None, provenance=PROVENANCE_BUNDLED)
+
+
+def _call_docx_fn(fn: Callable[[], str | None] | None, name: str) -> Path | None:
+    """Safely call a descriptor's docx_template_path() and return a Path, or None."""
+    if fn is None:
+        return None
+    try:
+        raw = fn()
+        return Path(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("scribble: Theme %r docx_template_path() failed: %s", name, exc)
+        return None
 
 
 def _parse_or_none(name: str, load: Callable[[], str | None], provenance: str) -> ThemeFile | None:
@@ -172,6 +212,94 @@ def _parse_or_none(name: str, load: Callable[[], str | None], provenance: str) -
         return None
 
 
+# ── Delivery Snapshot (ext#106): freeze a resolved Theme to JSON and back ─────────────────────────
+
+#: Bumped only on a breaking change to the snapshot shape. ``thaw_resolved_theme`` reads defensively
+#: (``.get`` with fallbacks) so a v1 row keeps thawing after a field is added.
+_SNAPSHOT_VERSION = 1
+
+
+def freeze_resolved_theme(resolved: ResolvedTheme) -> dict:
+    """Serialize a :class:`ResolvedTheme` to a self-contained, JSON-safe snapshot (ext#106).
+
+    Captures the Theme's whole rendered payload -- Tokens, print Tokens, Mark (``logo_svg``), stamp and
+    font faces -- plus its Provenance, so :func:`thaw_resolved_theme` can reproduce the exact same
+    render WITHOUT resolving any Theme by name. That independence is the point: the install default can
+    change, an override row can be edited, the source Theme can be uninstalled, and a report delivered
+    off this snapshot still renders byte-identically.
+
+    NOT frozen: font BYTES. The faces are captured by filename + ``font_package``, so an installed
+    Theme's custom typeface re-embeds only while that package stays installed; after it is uninstalled
+    the faces fall back to the stack (``build_font_face_css`` degrades to ``""`` for an absent file --
+    by design). The bundled Themes this ships with carry no faces, so the DoD (re-render identically
+    after the install default changes) is unaffected. ponytail: capture face bytes too if a delivered
+    report must keep its exact typeface across an uninstall.
+    """
+    file = resolved.file
+    return {
+        "v": _SNAPSHOT_VERSION,
+        "provenance": resolved.provenance,
+        "theme": {
+            "name": resolved.theme.name,
+            "label": resolved.theme.label,
+            "stamp": resolved.theme.stamp,
+        },
+        "file": None if file is None else {
+            "name": file.name,
+            "label": file.label,
+            "tokens": dict(file.tokens),
+            "embed_fonts": file.embed_fonts,
+            "faces": [
+                {"family": f.family, "weight": f.weight, "style": f.style, "file": f.file}
+                for f in file.faces
+            ],
+            "stamp": file.stamp,
+            "print_tokens": dict(file.print_tokens),
+            "font_package": file.font_package,
+            "logo_svg": file.logo_svg,
+        },
+    }
+
+
+def thaw_resolved_theme(snapshot: dict) -> ResolvedTheme:
+    """Reconstruct a :class:`ResolvedTheme` from a :func:`freeze_resolved_theme` snapshot.
+
+    Resolves NOTHING by name -- it rebuilds the payload straight from the stored dict -- which is what
+    makes a delivered report render from its own frozen branding even after the Theme it came from is
+    gone. ``build_theme_assets`` still re-validates the thawed Tokens through the closed grammar and
+    re-vets the Mark through ``marks.resolve_mark`` (keyed on the stored Provenance) at the render
+    boundary, so a tampered row degrades to the base sheet rather than injecting -- the same
+    belt-and-braces re-check a freshly resolved Theme already gets there.
+
+    Reads defensively: a missing field falls back to the ``auto``/empty default rather than raising, so
+    a partially-written or future-shaped row never 500s a client deliverable.
+    """
+    t = snapshot.get("theme") or {}
+    theme = ReportTheme(
+        name=t.get("name", DEFAULT_THEME), label=t.get("label", ""), stamp=t.get("stamp", "")
+    )
+    f = snapshot.get("file")
+    file = None
+    if isinstance(f, dict):
+        file = ThemeFile(
+            name=f.get("name", theme.name),
+            label=f.get("label", theme.label),
+            tokens=dict(f.get("tokens") or {}),
+            embed_fonts=bool(f.get("embed_fonts", False)),
+            faces=tuple(
+                FontFace(family=x["family"], weight=x["weight"], style=x["style"], file=x["file"])
+                for x in (f.get("faces") or ())
+            ),
+            stamp=f.get("stamp", ""),
+            print_tokens=dict(f.get("print_tokens") or {}),
+            logo_svg=f.get("logo_svg"),
+            **({"font_package": f["font_package"]} if f.get("font_package") else {}),
+        )
+    return ResolvedTheme(
+        theme=theme, file=file, provenance=snapshot.get("provenance", PROVENANCE_BUNDLED)
+    )
+
+
 def list_all_themes(*, override_names: tuple[str, ...] = ()) -> list[ReportTheme]:
     """Every selectable Theme, in switcher order: bundled, then installed, then override.
 
@@ -185,8 +313,11 @@ def list_all_themes(*, override_names: tuple[str, ...] = ()) -> list[ReportTheme
 
     for name in sorted(discover_installed_themes().themes):
         if name not in seen:
-            # Labelled from the name until its TOML is parsed. Parsing every installed Theme just to
-            # read a display label would put third-party file reads on every page view.
+            out.append(ReportTheme(name=name, label=name.replace("-", " ").title(), stamp=""))
+            seen.add(name)
+
+    for name in sorted(discover_user_themes()):
+        if name not in seen:
             out.append(ReportTheme(name=name, label=name.replace("-", " ").title(), stamp=""))
             seen.add(name)
 

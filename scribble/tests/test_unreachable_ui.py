@@ -194,6 +194,36 @@ def test_vuln_map_page_lists_and_add_form(client, session_factory):
     assert 'name="template_id"' in body
 
 
+# ── ext#241: first-class discoverability + explainer + visible rule types ──────────────────────────────
+
+def test_vuln_map_surfaced_on_library_landing(client, session_factory):
+    """The map must be reachable from the library landing with a label + one-line description, not just
+    the corner button (ext#241)."""
+    with session_factory() as db:
+        _make_template(db, "TLS misconfig")
+    body = client.get(f"{UI}/library").get_data(as_text=True)
+    assert f"{UI}/library/vuln-map" in body, "landing links to the map"
+    assert "automation brain" in body, "landing carries the one-line description of its role"
+
+
+def test_vuln_map_page_states_its_automation_role(client, session_factory):
+    body = client.get(f"{UI}/library/vuln-map").get_data(as_text=True)
+    assert "finding→vuln automation brain" in body
+    assert "promote_job" in body
+
+
+def test_vuln_map_shows_tag_and_cwe_rules(client, session_factory, clean_vuln_map):
+    """tag/CWE mappings drive auto-promotion too; before ext#241 they rendered as all-dash invisible
+    rows. The map must show them as their own columns."""
+    with session_factory() as db:
+        t = _make_template(db, "SQL Injection")
+        db.add(ScribbleVulnMap(tag="injection", cwe_id="CWE-89", template_id=t.id))
+        db.commit()
+    body = client.get(f"{UI}/library/vuln-map").get_data(as_text=True)
+    assert "<th>Tag</th>" in body and "<th>CWE</th>" in body
+    assert "injection" in body and "CWE-89" in body
+
+
 def test_vuln_map_create_and_delete(client, session_factory, clean_vuln_map):
     with session_factory() as db:
         t_id = _make_template(db, "TLS misconfig").id

@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from scribble.reporting.context import ReportContext
+from scribble.reporting.theme_registry import ResolvedTheme
 
 # The image + port the auto-provisioned PDF converter runs. Gotenberg's LibreOffice route listens on 3000
 # inside the container; core binds it to 127.0.0.1 and hands back the URL. Default is lotek-gotenberg — a
@@ -58,6 +59,9 @@ class ExportOptions:
     template: str | None = None
     override_lookup: OverrideLookup | None = None
     override_theme_names: tuple[str, ...] = ()
+    # A Delivery Snapshot thawed from the Engagement (ext#106): when set, the themed exporters render it
+    # verbatim and ignore ``theme``/``override_lookup``, so a delivered report keeps its frozen branding.
+    resolved_theme: ResolvedTheme | None = None
     # Optional provider of the engagement's RAW job loot for the zip bundle: called (once, lazily) by the
     # zip exporter and yields ``(arcname, bytes)`` streamed from the object store. Only the route sets it
     # (it holds the host objects seam + actor); other formats ignore it.
@@ -223,6 +227,7 @@ def _render_html(ctx: ReportContext, opts: ExportOptions) -> bytes:
         template=opts.template,
         override_lookup=opts.override_lookup,
         override_theme_names=opts.override_theme_names,
+        resolved_theme=opts.resolved_theme,
     ))
 
 
@@ -255,6 +260,7 @@ def _render_zip(ctx: ReportContext, opts: ExportOptions) -> bytes:
         template=opts.template,
         override_lookup=opts.override_lookup,
         loot=opts.loot() if opts.loot else None,
+        resolved_theme=opts.resolved_theme,
     )
 
 

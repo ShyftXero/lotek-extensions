@@ -1,0 +1,37 @@
+# How Pastel MOUNTS into a host (lotek). Named [mount], NOT [extension] — a host may emit its own
+# [extension] table before appending this file, and TOML forbids a duplicate table, so an [extension]
+# header here would make tomllib raise and silently un-discover the whole extension.
+[mount]
+name = "pastel"
+entrypoint = "pastel"             # importable module exposing register(...)
+url_prefix = "/pastel"
+
+[[nav]]
+label = "Pastel"
+path = "/"
+icon = "📋"
+
+[host]
+# PAT/Bearer MACHINE api (relative to url_prefix) — how a runner posts a paste. The host treats it as a
+# machine surface: skipped by the cookie/session dashboard gate and CSRF-exempt, like lotek's /api/v1.
+machine_prefix = "/machine"
+# The UNAUTHENTICATED public surface (relative to url_prefix): the GUID paste URLs a reader opens with
+# no login. The host validates this is a strict sub-path of url_prefix, so it can only expose part of
+# THIS extension. Read-only GET, so not CSRF-exempt. What guards it is NOT a session: the URL carries a
+# 128-bit unguessable GUID that names one paste, plus (optionally) an expiry, a read-count cap and an
+# HTTP Basic password. There is no anonymous list, count or search surface.
+public_prefix = "/p"
+docs = "docs/PASTEL.md"
+docs_title = "Pastel (pastes)"
+
+# The audit-verb vocabulary this extension emits, bare (the host namespaces each to `ext:pastel:<verb>`).
+# INV-AUDIT-03's reader half: keep this in step with every host_audit(...) call site — tests/test_manifest.py
+# asserts they match. `retire` records an AUTOMATIC retirement (expiry or read-limit) without content;
+# `delete` records an explicit owner/admin delete.
+[audit]
+verbs = ["retire", "delete"]
+
+# Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
+[db]
+base = "pastel.models:Base"      # the module whose IMPORT registers the tables
+table_prefix = "pastel_"

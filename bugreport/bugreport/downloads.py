@@ -22,11 +22,15 @@ What that means concretely:
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import quote
 
 from flask import Response
 
 from bugreport.models import INLINE_SAFE_TYPES, Attachment
+from bugreport.service import StorageError
+
+_log = logging.getLogger(__name__)
 
 
 def _disposition(row: Attachment) -> str:
@@ -55,15 +59,34 @@ def send_attachment(row: Attachment, blobs, *, chunk_size: int = 65536) -> Respo
     """
     blob_id = row.id
 
+    # Open EAGERLY, inside the view, so a missing blob (``KeyError``) or a configured-but-unreachable
+    # store (``StorageError``) surfaces as a catchable exception BEFORE any header goes out — not from
+    # inside the generator, which Flask iterates after the view returns, by which point a 200 and the
+    # headers are already committed and the backend error can only become a 500. A real store does its
+    # GetObject at ``__enter__``, so this is where an unreachable store fails fast. Mirrors the
+    # write-path seam in ``service.attach`` (#124/#299, #300).
+    try:
+        cm = blobs.open(blob_id)
+        body = cm.__enter__()
+    except KeyError:
+        raise  # bytes are gone — the caller turns this into a 404, not a 500
+    except Exception as exc:
+        # ponytail: broad catch narrowed by site — blobs.open() only fails with botocore errors
+        _log.warning("bugreport: blob open failed — treating storage as unavailable", exc_info=True)
+        raise StorageError("file storage is unavailable") from exc
+
     def _stream():
-        with blobs.open(blob_id) as body:
-            while True:
-                chunk = body.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
+        while True:
+            chunk = body.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
 
     resp = Response(_stream(), mimetype=row.content_type)
+    # Close the store handle when the response closes — not from inside the generator, whose ``finally``
+    # never runs if the body is never iterated (a HEAD, or a client that disconnects before the first
+    # byte). ``call_on_close`` fires exactly once however the response ends.
+    resp.call_on_close(lambda: cm.__exit__(None, None, None))
     resp.headers["Content-Disposition"] = _disposition(row)
     resp.headers["Content-Length"] = str(row.size)
     resp.headers["X-Content-Type-Options"] = "nosniff"

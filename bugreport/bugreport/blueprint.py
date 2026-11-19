@@ -277,6 +277,10 @@ def download_attachment(attachment_id: uuid.UUID):
             # The row survived its bytes. Not a 500: nothing is wrong with the request.
             _log.warning("bugreport: attachment %s has no stored bytes", attachment_id)
             abort(404)
+        except StorageError:
+            # The object store is configured but unreachable — the read-path twin of the upload 503.
+            _log.warning("bugreport: storage unavailable reading attachment %s", attachment_id, exc_info=True)
+            abort(503, "file storage is unavailable")
 
 
 # --------------------------------------------------------------------------- editor inline artifacts
@@ -340,6 +344,9 @@ def artifact_raw(report_id: uuid.UUID, attachment_id: uuid.UUID):
         except KeyError:
             _log.warning("bugreport: artifact %s has no stored bytes", attachment_id)
             abort(404)
+        except StorageError:
+            _log.warning("bugreport: storage unavailable reading artifact %s", attachment_id, exc_info=True)
+            abort(503, "file storage is unavailable")
 
 
 @bp.get("/s/<token>")
@@ -368,6 +375,11 @@ def shared_attachment(token: str):
             return send_attachment(row, blobs)
         except KeyError:
             abort(404)
+        except StorageError:
+            # The token already proved the holder may read this file — a 503 here leaks nothing a
+            # wrong token would hide, and matches the authenticated download path.
+            _log.warning("bugreport: storage unavailable reading shared attachment", exc_info=True)
+            abort(503, "file storage is unavailable")
 
 
 @bp.post("/attachments/<uuid:attachment_id>/share")

@@ -212,14 +212,16 @@ def test_checklists_library_page_links_the_panel_stylesheet(client):
 
 
 def test_mounted_library_page_still_ships_its_cklib_rules(mounted_client):
-    """`.cklib-*` (library page only) lives in scribble.css, which the HOST's base never links — so by the
-    reasoning above it should be unstyled when mounted. Measured: it is not, because
-    `checklists_library.html` hardcodes `{% extends "scribble/base.html" %}` and therefore renders in
-    scribble's own shell even on the host, dragging scribble.css along.
+    """`.cklib-*` (library page only) must reach the page when scribble is MOUNTED, where the HOST's base
+    links nothing on the extension's behalf (no scribble.css). ext#79 switched this page from a hardcoded
+    `{% extends "scribble/base.html" %}` (which rendered it in scribble's OWN shell and dragged scribble.css
+    along) to `scribble_base` (the host's shell, like every other scribble page) — which drops scribble.css,
+    the same break ext#44 hit on the coverage panel. So the rules now live in a page-linked
+    static/checklists_library.css that the page links through `head_extra`.
 
-    So this guards the REACHABILITY, not the hardcode: switch that page to `scribble_base` (the filed
-    follow-up) and the rules silently stop arriving — which is the moment they need moving into a
-    page-linked stylesheet, the same treatment `.ckp-*` got. Fail then, loudly."""
+    This guards that REACHABILITY: every `.cklib-*` class the page renders must be defined in a stylesheet
+    the page itself links, with NO dependence on the host linking scribble.css. Drop the link, or move a
+    rule back into scribble.css, and this fails — loudly, in the one shell where the defect was real."""
     test_client, _ = mounted_client
     html = test_client.get("/scribble/checklists").get_data(as_text=True)
 

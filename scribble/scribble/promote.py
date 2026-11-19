@@ -691,7 +691,31 @@ def _promote_findings(
     for dto_id, finding in new_by_source.items():
         refs[dto_id] = finding.id
 
+    # threat_intel (KEV/EPSS) enrichment (#642 / ext#247): promotion is the dashboard seam the
+    # enrichment driver hangs off. The driver gates on per-engagement egress CONSENT itself (default
+    # OFF, forced OFF internal), so this is a no-op — no hook call, no egress, no audit — unless an
+    # operator turned consent on for this engagement; and the live feed is core-side stubbed until
+    # lotek#674, so with consent on it still degrades honestly to no snapshot. Runs on the freshly
+    # promoted rows only (a re-promote keeps its existing dated snapshot). Inside the same SAVEPOINT as
+    # the inserts, so the lookup audit commits atomically with the enrichment (and re-runs on a retry).
+    enrich_threat_intel(db, new_by_source.values())
+
     return {"promoted": promoted, "skipped": skipped, "parents": parents_created, "refs": refs}
+
+
+def enrich_threat_intel(db: Any, findings) -> None:
+    """Populate each finding's ``threat_intel`` KEV/EPSS snapshot via the consent-gated
+    :class:`scribble.enrichment.ThreatIntelDriver`. A finding with no CVEs is skipped (nothing to look
+    up); the driver returns ``None`` — leaving ``threat_intel`` untouched — when consent is off, the
+    feed is unmounted, or the feed is degraded. ONE home for "enrich on promote", so the call site stays
+    a single line and the consent/audit policy stays entirely inside the driver."""
+    from scribble.enrichment import ThreatIntelDriver  # lazy: keep promote import-light
+
+    driver = ThreatIntelDriver()
+    for finding in findings:
+        if not getattr(finding, "cve_ids", None):
+            continue
+        driver.apply(db, finding, driver.propose(db, finding))
 
 
 def remap_job_findings(db: Any, *, engagement: Any, job_finding_ids) -> dict:

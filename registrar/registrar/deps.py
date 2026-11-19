@@ -130,6 +130,29 @@ def host_can_operate_on(engagement_id: uuid.UUID) -> bool:
         return False
 
 
+def resolve_staged_engagement(raw) -> uuid.UUID | None:
+    """Parse + authorize the engagement a confirm-tier action is staged *for*.
+
+    Binding the staged row to an engagement is what arms ``service.approve``'s confirm-time operator
+    re-check (INV-EXT-02): without it ``StagedAction.engagement_id`` is always None and that guard is
+    dead (ext#139). The symmetry is deliberate — the INITIATOR must hold operator capability on the
+    engagement at stage time (here), and the DIFFERENT confirmer's capability is re-checked at approve
+    time. ``None``/empty -> an org-level/unbound action (admin-only to read, no operator binding).
+
+    Raises ``ValueError`` on a malformed id and ``PermissionError`` when the initiator is not an
+    operator on the target engagement; the API callers map those to 400 / 403.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        eid = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError(f"engagement_id is not a valid UUID: {raw!r}") from None
+    if not host_can_operate_on(eid):
+        raise PermissionError("not an operator on the target engagement")
+    return eid
+
+
 def host_visible_engagement_ids():
     """Engagements the current principal may read (to scope transient-server lists), or ``None``
     standalone (no scoping). Mounted error -> empty set (fail closed)."""
