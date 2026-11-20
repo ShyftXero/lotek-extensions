@@ -22,7 +22,11 @@
   .px-field input,.px-field select,.px-field textarea{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;
       border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
   .px-field textarea{min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical}
-  .px-field .CodeMirror{border:1px solid #1c2a35;border-radius:4px;height:auto;min-height:220px;font-size:13px}
+  /* A FIXED height, not height:auto + min-height: CodeMirror's .CodeMirror-scroll is height:100%,
+     and a percentage cannot resolve against an `auto` parent — the editor collapses to one line.
+     The editor scrolls internally; 220px is the container height. */
+  .px-field .CodeMirror{border:1px solid #1c2a35;border-radius:4px;height:220px;font-size:13px}
+  .px-field .CodeMirror-scroll{height:100%}
   /* Dark CodeMirror (the default theme is bright white) — here, not base.html, so it also loads when mounted. */
   .CodeMirror{background:#07100f;color:#dfe9f0}
   .CodeMirror-gutters{background:#0e151c;border-right:1px solid #16313b}
