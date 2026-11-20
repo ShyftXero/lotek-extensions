@@ -43,6 +43,7 @@ from pastel.service import (
     Denied,
     Invalid,
     PasswordRequired,
+    adjust_access,
     create,
     delete_paste,
     fetch_for_read,
@@ -158,6 +159,39 @@ def update(paste_id: uuid.UUID):
             return _back(error="invalid")
         except ValueError:
             _log.warning("pastel: unexpected ValueError on %s", request.path, exc_info=True)
+            return _back(error="invalid")
+    return redirect(url_for("pastel.owner_view", paste_id=paste_id, notice="updated"))
+
+
+@bp.post("/<uuid:paste_id>/access")
+def adjust_paste_access(paste_id: uuid.UUID):
+    """Owner adjusts access controls: add reads, extend expiry (days from now), set/clear password."""
+    _require_write()
+
+    def _pos_int(name):
+        raw = (request.form.get(name) or "").strip()
+        if not raw:
+            return None
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
+    with get_config().session_factory() as db:
+        paste = _load_own_or_404(db, paste_id)
+        try:
+            adjust_access(
+                db, paste,
+                author_id=current_actor_id(), is_admin=current_actor_is_admin(),
+                add_reads=_pos_int("add_reads"), extend_days=_pos_int("extend_days"),
+                new_password=((request.form.get("new_password") or "").strip() or None),
+                clear_password=bool(request.form.get("clear_password")),
+                host_audit=host_audit(),
+            )
+        except Denied as exc:
+            abort(403, str(exc))
+        except Invalid:
             return _back(error="invalid")
     return redirect(url_for("pastel.owner_view", paste_id=paste_id, notice="updated"))
 

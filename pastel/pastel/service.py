@@ -200,6 +200,58 @@ def update_own(db, paste: Paste, *, author_id, is_admin, title=..., body=...) ->
     return paste
 
 
+def adjust_access(
+    db, paste: Paste, *, author_id, is_admin,
+    add_reads=None, extend_days=None, new_password=None, clear_password=False, host_audit=None,
+) -> Paste:
+    """Owner/admin adjusts a paste's ACCESS controls after creation: add N reads (bumps the cap, and
+    REOPENS a read-exhausted paste so it serves again), extend expiry to now+N days (reopens an expired
+    one), set/change/clear the view password. Deliberately does what update_own refuses — the operator
+    explicitly wants to reopen/extend. Audited ext:pastel:adjust_access. No-op fields are ignored."""
+    if not (is_admin or (author_id is not None and paste.author_id == author_id)):
+        raise Denied("not your paste")
+    changed: dict = {}
+
+    if add_reads is not None:
+        if add_reads <= 0:
+            raise Invalid("add_reads must be a positive integer")
+        # Only a CAPPED paste gains reads; an uncapped one is already unlimited.
+        if paste.max_reads is not None:
+            paste.max_reads = paste.max_reads + add_reads
+            changed["add_reads"] = add_reads
+            # reopen if it was retired for hitting the cap and now has headroom
+            if paste.retired_cause == CAUSE_READ_LIMIT and paste.read_count < paste.max_reads:
+                paste.retired_at = None
+                paste.retired_cause = None
+
+    if extend_days is not None:
+        if extend_days <= 0:
+            raise Invalid("extend_days must be a positive integer")
+        paste.expires_at = _now() + timedelta(days=extend_days)   # from NOW, per the operator
+        changed["extend_days"] = extend_days
+        if paste.retired_cause == CAUSE_EXPIRED:
+            paste.retired_at = None
+            paste.retired_cause = None
+
+    if clear_password:
+        paste.password_hash = None
+        changed["password"] = "cleared"
+    elif new_password:
+        paste.password_hash = generate_password_hash(str(new_password))
+        changed["password"] = "set"
+
+    if not changed:
+        raise Invalid("nothing to change")
+    if host_audit is not None:
+        host_audit(
+            db, "ext:pastel:adjust_access", subject_type="pastel_paste",
+            subject_id=str(paste.id), before=None, after=changed,
+        )
+    db.commit()
+    db.refresh(paste)
+    return paste
+
+
 def delete_paste(db, paste: Paste, *, author_id, is_admin, host_audit=None) -> None:
     """Explicit owner/admin delete — a real DELETE (not a tombstone). Audited as ``delete`` with the
     guid but no content."""
