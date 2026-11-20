@@ -207,7 +207,7 @@ def delete_paste(db, paste: Paste, *, author_id, is_admin, host_audit=None) -> N
         raise Denied("not your paste")
     if host_audit is not None:
         host_audit(
-            db, "delete", subject_type="pastel_paste", subject_id=str(paste.id),
+            db, "ext:pastel:delete", subject_type="pastel_paste", subject_id=str(paste.id),
             before={"guid": paste.guid}, after=None,
         )
     db.delete(paste)
@@ -225,7 +225,7 @@ def _retire(db, paste: Paste, cause: str, *, host_audit=None) -> None:
     paste.retired_cause = cause
     if host_audit is not None:
         host_audit(
-            db, "retire", subject_type="pastel_paste", subject_id=str(paste.id),
+            db, "ext:pastel:retire", subject_type="pastel_paste", subject_id=str(paste.id),
             before=None, after={"cause": cause},
         )
     db.commit()
