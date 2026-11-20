@@ -48,6 +48,7 @@ from pastel.service import (
     delete_paste,
     fetch_for_read,
     load_own,
+    maybe_purge,
     update_own,
     visible_pastes,
 )
@@ -55,6 +56,17 @@ from pastel.service import (
 _log = logging.getLogger(__name__)
 
 bp = Blueprint("pastel", __name__, template_folder="templates")
+
+
+@bp.before_request
+def _purge_hook():
+    """No core reaper: purge expired pastes on page loads, throttled (service.maybe_purge). A failure
+    here must NEVER break the page it decorates — purging is housekeeping, not part of any response."""
+    try:
+        with get_config().session_factory() as db:
+            maybe_purge(db)
+    except Exception:  # noqa: BLE001 — housekeeping must never surface as a 500
+        _log.warning("pastel: purge sweep failed", exc_info=True)
 
 
 @bp.context_processor
