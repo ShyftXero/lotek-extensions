@@ -11,8 +11,10 @@
 <div class="card">
   <h2>Recent engagements</h2>
   {% if engagements %}
-  <table class="table">
-    <thead><tr><th>Name</th><th>Client</th><th>Scope</th><th>Status</th></tr></thead>
+  <div class="table-scroll">
+  <table class="table" id="scribble-dashboard-engagements-table"
+         data-dt data-dt-page-size="25" data-dt-colfilter data-dt-empty="No reports yet.">
+    <thead><tr><th data-sort>Name</th><th data-sort>Client</th><th data-sort>Scope</th><th data-sort>Status</th></tr></thead>
     <tbody>
       {% for e in engagements %}
       <tr>
@@ -24,6 +26,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="muted">No reports yet.
     <a href="{{ url_for('scribble.engagements') }}">Import an engagement</a> to start its finding board.</p>

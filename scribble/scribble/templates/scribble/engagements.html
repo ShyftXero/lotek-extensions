@@ -7,8 +7,10 @@
   </div>
   <p class="muted">One report board per engagement. Import an engagement to start (or continue) its report.</p>
   {% if rows %}
-  <table class="table">
-    <thead><tr><th>Engagement</th><th>Client</th><th>Report board</th><th></th></tr></thead>
+  <div class="table-scroll">
+  <table class="table" id="scribble-engagements-table"
+         data-dt data-dt-page-size="25" data-dt-colfilter data-dt-empty="No report boards.">
+    <thead><tr><th data-sort>Engagement</th><th data-sort>Client</th><th data-sort>Report board</th><th></th></tr></thead>
     <tbody>
       {% for r in rows %}
       <tr>
@@ -42,6 +44,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="muted">No engagements you can operate on yet. Create an engagement in lotek first, then import it here.</p>
   {% endif %}
