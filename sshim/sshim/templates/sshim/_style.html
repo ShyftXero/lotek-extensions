@@ -92,4 +92,12 @@
   .sshim .wire{flex:1;height:1px;background:var(--lime);min-width:40px;position:relative}
   .sshim .wire span{position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:var(--bg);padding:0 6px;color:var(--lime-soft);font-size:11px}
   .sshim .copied{color:var(--lime)!important}
+  /* Mobile: the operator→relay→anchor strip is a fixed horizontal row (~505px) that overflows a narrow
+     viewport — stack it vertically below 520px so the anchor node is never clipped off-screen. */
+  @media(max-width:520px){
+    .sshim .diagram{flex-direction:column;align-items:stretch}
+    .sshim .node{white-space:normal;text-align:center}
+    .sshim .wire{flex:none;width:1px;height:22px;min-width:0;margin:4px auto}
+    .sshim .wire span{top:50%;transform:translate(-50%,-50%)}
+  }
 </style>
