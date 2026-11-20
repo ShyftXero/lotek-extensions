@@ -15,7 +15,9 @@
   .px-edit label{display:block;font-size:13px;color:#8aa0b0;margin:12px 0 4px}
   .px-edit input[type=text]{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
   .px-edit textarea{width:100%;box-sizing:border-box;min-height:300px;background:#07100f;color:#dfe9f0;border:1px solid #16313b;border-radius:4px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
-  .px-edit .CodeMirror{border:1px solid #16313b;border-radius:4px;height:auto;min-height:300px;font-size:13px}
+  /* Fixed height (NOT height:auto + min-height) so CodeMirror's height:100% scroll area resolves. */
+  .px-edit .CodeMirror{border:1px solid #16313b;border-radius:4px;height:300px;font-size:13px}
+  .px-edit .CodeMirror-scroll{height:100%}
   /* Dark CodeMirror (default theme is bright white) — here, not base.html, so it also loads when mounted. */
   .CodeMirror{background:#07100f;color:#dfe9f0}
   .CodeMirror-gutters{background:#0e151c;border-right:1px solid #16313b}
