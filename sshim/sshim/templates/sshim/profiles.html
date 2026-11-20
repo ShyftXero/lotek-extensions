@@ -1,4 +1,5 @@
 {% extends sshim_base %}
+{% from "sshim/_macros.html" import sortth, dt_filter %}
 {% block title %}sshim — profiles{% endblock %}
 {% block content %}{% include "sshim/_style.html" %}
 <div class="sshim">
@@ -14,8 +15,11 @@
   </form>
 
   {% if profiles %}
-  <table>
-    <thead><tr><th>Name</th><th>Topology</th><th>Rendezvous</th><th>Anchor</th><th></th></tr></thead>
+  {{ dt_filter("profiles-table", "filter profiles — name, topology, host…") }}
+  <div class="table-scroll">
+  <table id="profiles-table" class="table data-table" data-dt data-dt-page-size="25"
+         data-dt-colfilter data-dt-empty="No profiles match this filter.">
+    <thead><tr>{{ sortth("Name") }}{{ sortth("Topology") }}{{ sortth("Rendezvous") }}{{ sortth("Anchor") }}<th></th></tr></thead>
     <tbody>
       {% for p in profiles %}
       <tr>
@@ -32,6 +36,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="note">No profiles{% if q %} matching “{{ q }}”{% endif %}. Save one below — deleting a profile
     never tears down the pivots minted from it (they regenerate from their own snapshot).</p>
