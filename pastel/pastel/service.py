@@ -144,6 +144,7 @@ def create(
     expires_in=None,
     expires_at=None,
     max_reads=None,
+    host_audit=None,
 ) -> Paste:
     """Create a paste. Raises Invalid on a bad body/title/ttl/max_reads. ``password`` is hashed here."""
     paste = Paste(
@@ -156,6 +157,12 @@ def create(
         password_hash=_clean_password(password),
     )
     db.add(paste)
+    db.flush()  # assign paste.id before auditing
+    if host_audit is not None:
+        host_audit(
+            db, "ext:pastel:create", subject_type="pastel_paste",
+            subject_id=str(paste.id), before=None, after={"guid": paste.guid},
+        )
     db.commit()
     db.refresh(paste)
     return paste
@@ -215,14 +222,16 @@ def adjust_access(
     if add_reads is not None:
         if add_reads <= 0:
             raise Invalid("add_reads must be a positive integer")
-        # Only a CAPPED paste gains reads; an uncapped one is already unlimited.
-        if paste.max_reads is not None:
-            paste.max_reads = paste.max_reads + add_reads
-            changed["add_reads"] = add_reads
-            # reopen if it was retired for hitting the cap and now has headroom
-            if paste.retired_cause == CAUSE_READ_LIMIT and paste.read_count < paste.max_reads:
-                paste.retired_at = None
-                paste.retired_cause = None
+        # Only a CAPPED paste gains reads; adding to an unlimited one is a clear error, not a silent
+        # no-op that would surface as the generic "could not be saved".
+        if paste.max_reads is None:
+            raise Invalid("cannot add reads to an unlimited paste")
+        paste.max_reads = paste.max_reads + add_reads
+        changed["add_reads"] = add_reads
+        # reopen if it was retired for hitting the cap and now has headroom
+        if paste.retired_cause == CAUSE_READ_LIMIT and paste.read_count < paste.max_reads:
+            paste.retired_at = None
+            paste.retired_cause = None
 
     if extend_days is not None:
         if extend_days <= 0:
@@ -234,8 +243,9 @@ def adjust_access(
             paste.retired_cause = None
 
     if clear_password:
-        paste.password_hash = None
-        changed["password"] = "cleared"
+        if paste.password_hash is not None:   # only record a real change
+            paste.password_hash = None
+            changed["password"] = "cleared"
     elif new_password:
         paste.password_hash = generate_password_hash(str(new_password))
         changed["password"] = "set"
