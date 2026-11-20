@@ -112,10 +112,11 @@
 <div class="card">
   <h2>Themes <span class="muted">({{ rows|length }})</span></h2>
   <div class="table-scroll">
-  <table class="table">
+  <table class="table" id="scribble-themes-table"
+         data-dt data-dt-page-size="25" data-dt-colfilter data-dt-empty="No themes.">
     <thead>
       <tr>
-        <th>Name</th><th>Label</th><th>Provenance</th><th>Default</th><th></th>
+        <th data-sort>Name</th><th data-sort>Label</th><th data-sort>Provenance</th><th data-sort>Default</th><th></th>
       </tr>
     </thead>
     <tbody>
@@ -135,22 +136,26 @@
           {% endif %}
         </td>
       </tr>
-      {% if is_admin and t.provenance == "override" %}
-      <tr class="thm-edit-row" id="thm-edit-row-{{ t.id }}" hidden>
-        <td colspan="5">
-          <textarea class="thm-edit-toml" data-thm-id="{{ t.id }}" rows="10">{{ t.source_toml }}</textarea>
-          <div class="thm-form-actions">
-            <button type="button" class="btn btn-primary thm-save" data-thm-id="{{ t.id }}">Save</button>
-            <button type="button" class="btn ghost thm-cancel" data-thm-id="{{ t.id }}">Cancel</button>
-            <span class="thm-err" id="thm-edit-err-{{ t.id }}"></span>
-          </div>
-        </td>
-      </tr>
-      {% endif %}
       {% endfor %}
     </tbody>
   </table>
   </div>
+  {# Override-Theme edit panels live OUTSIDE the table: the DataTable widget (data-table.js) snapshots
+     one <tr> per row, so an interleaved edit <tr> would be sorted/paged/filtered as its own orphan row.
+     The Edit/Cancel/Save JS toggles these by id (getElementById) and reads the textarea by
+     [data-thm-id] selector, both position-independent, so relocating the panel here is behaviour-safe. #}
+  {% for t in rows %}
+  {% if is_admin and t.provenance == "override" %}
+  <div class="thm-edit-row" id="thm-edit-row-{{ t.id }}" hidden>
+    <textarea class="thm-edit-toml" data-thm-id="{{ t.id }}" rows="10">{{ t.source_toml }}</textarea>
+    <div class="thm-form-actions">
+      <button type="button" class="btn btn-primary thm-save" data-thm-id="{{ t.id }}">Save</button>
+      <button type="button" class="btn ghost thm-cancel" data-thm-id="{{ t.id }}">Cancel</button>
+      <span class="thm-err" id="thm-edit-err-{{ t.id }}"></span>
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
 </div>
 
 <style>
@@ -160,6 +165,7 @@
     border-radius: 8px; padding: 8px 10px; font: 13px/1.4 var(--font-mono, monospace); width: 100%;
   }
   .thm-form-actions { display: flex; gap: 8px; align-items: center; }
+  .thm-edit-row { margin-top: 12px; } /* standalone edit panel (relocated out of the DataTable) */
   .thm-err { color: var(--sev-high); }
   .thm-row-error { color: var(--sev-high); font-size: 12px; }
   .thm-default-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

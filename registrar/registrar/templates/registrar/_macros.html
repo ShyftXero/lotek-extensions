@@ -1,0 +1,13 @@
+{# data-table helpers — mirrors the attribute contract core's static/data-table.js reads.
+   We do NOT redefine core's .data-table/.dt-* CSS. #}
+{% macro sortth(label, numeric=false) -%}
+  <th data-sort{% if numeric %} data-sort-type="num"{% endif %}>{{ label }}<span class="sort-ind" aria-hidden="true"></span></th>
+{%- endmacro %}
+
+{% macro dt_filter(table_id, placeholder="Filter…") -%}
+  <div class="dt-toolbar"><input class="input dt-filter" data-dt-filter="{{ table_id }}" placeholder="{{ placeholder }}" autocomplete="off" aria-label="Filter table" /></div>
+{%- endmacro %}
+
+{% macro dt_pager(table_id) -%}
+  <div class="dt-pager" data-dt-pager="{{ table_id }}"></div>
+{%- endmacro %}

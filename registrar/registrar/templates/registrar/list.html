@@ -1,4 +1,5 @@
 {% extends registrar_base %}
+{% from "registrar/_macros.html" import sortth, dt_filter, dt_pager %}
 {% block title %}Registrar — Infrastructure{% endblock %}
 {% block appbar_title %}Infrastructure{% endblock %}
 {% block content %}
@@ -17,84 +18,141 @@
     Confirm-tier actions an agent staged. A different interactive user approves (two-person control) or
     rejects; the initiator sees their own but cannot approve it.
   </p>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
-      <th style="padding:6px">Verb</th><th style="padding:6px">Provider</th><th style="padding:6px">Args</th>
-      <th style="padding:6px">Initiator</th><th style="padding:6px">Staged</th><th style="padding:6px"></th></tr></thead>
-    <tbody>
-    {% for a in staged %}
-      <tr style="border-bottom:1px solid #16222b">
-        <td style="padding:6px">{{ a.verb }}</td><td style="padding:6px">{{ a.provider }}</td>
-        <td style="padding:6px;font-family:monospace;font-size:12px;color:#9fb2c0">{{ a.args }}</td>
-        <td style="padding:6px;font-family:monospace;font-size:11px">{{ a.initiator }}</td>
-        <td style="padding:6px;color:#9fb2c0">{{ a.at }}</td>
-        <td style="padding:6px;white-space:nowrap">
-          {% if can_write %}
-          {% if a.approvable %}
-          <form method="post" action="{{ url_for('registrar.approve_staged_ui', staged_id=a.id) }}" style="display:inline"
-                onsubmit="return confirm('Approve and EXECUTE this {{ a.verb }} action?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
-            <button type="submit" style="padding:4px 10px;border:1px solid #2f6b3f;background:#12341f;color:#8ff0b0;border-radius:4px;cursor:pointer">Approve</button>
-          </form>
-          {% else %}<span style="color:#7f93a3;font-size:12px">you staged this</span>{% endif %}
-          <form method="post" action="{{ url_for('registrar.reject_staged_ui', staged_id=a.id) }}" style="display:inline"
-                onsubmit="return confirm('Reject this staged {{ a.verb }} action?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
-            <button type="submit" style="padding:4px 10px;border:1px solid #6b2f3a;background:#3a1720;color:#ff9db0;border-radius:4px;cursor:pointer">Reject</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-    {% else %}
-      <tr><td colspan="6" style="padding:12px 6px;color:#7f93a3">Nothing staged.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  {% if staged %}
+  {{ dt_filter("staged-table", "filter staged actions — verb, provider, initiator…") }}
+  <div class="table-scroll">
+    <table id="staged-table" class="table data-table" data-dt data-dt-page-size="25"
+           data-dt-colfilter data-dt-empty="No staged actions match this filter.">
+      <thead><tr>
+        {{ sortth("Verb") }}
+        {{ sortth("Provider") }}
+        {{ sortth("Args") }}
+        {{ sortth("Initiator") }}
+        {{ sortth("Staged") }}
+        <th></th>
+      </tr></thead>
+      <tbody>
+      {% for a in staged %}
+        <tr>
+          <td>{{ a.verb }}</td>
+          <td>{{ a.provider }}</td>
+          <td style="font-family:monospace;font-size:12px;color:#9fb2c0">{{ a.args }}</td>
+          <td style="font-family:monospace;font-size:11px">{{ a.initiator }}</td>
+          <td style="color:#9fb2c0">{{ a.at }}</td>
+          <td style="white-space:nowrap">
+            {% if can_write %}
+            {% if a.approvable %}
+            <form method="post" action="{{ url_for('registrar.approve_staged_ui', staged_id=a.id) }}" style="display:inline"
+                  onsubmit="return confirm('Approve and EXECUTE this {{ a.verb }} action?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+              <button type="submit" style="padding:4px 10px;border:1px solid #2f6b3f;background:#12341f;color:#8ff0b0;border-radius:4px;cursor:pointer">Approve</button>
+            </form>
+            {% else %}<span style="color:#7f93a3;font-size:12px">you staged this</span>{% endif %}
+            <form method="post" action="{{ url_for('registrar.reject_staged_ui', staged_id=a.id) }}" style="display:inline"
+                  onsubmit="return confirm('Reject this staged {{ a.verb }} action?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+              <button type="submit" style="padding:4px 10px;border:1px solid #6b2f3a;background:#3a1720;color:#ff9db0;border-radius:4px;cursor:pointer">Reject</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ dt_pager("staged-table") }}
+  {% else %}
+  <p style="color:#7f93a3;font-size:13px">Nothing staged.</p>
+  {% endif %}
 
   <h2 style="font-size:15px;margin:18px 0 6px">Servers</h2>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
-      <th style="padding:6px">Name</th><th style="padding:6px">Kind</th><th style="padding:6px">State</th>
-      <th style="padding:6px">Provider</th><th style="padding:6px">IP</th><th style="padding:6px">Role</th></tr></thead>
-    <tbody>
-    {% for s in servers %}
-      <tr style="border-bottom:1px solid #16222b">
-        <td style="padding:6px">{{ s.name }}</td><td style="padding:6px">{{ s.kind }}</td>
-        <td style="padding:6px">{{ s.state }}</td><td style="padding:6px">{{ s.provider }}</td>
-        <td style="padding:6px">{{ s.ip }}</td><td style="padding:6px">{{ s.role }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="6" style="padding:12px 6px;color:#7f93a3">No servers tracked.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  {% if servers %}
+  {{ dt_filter("servers-table", "filter servers — name, kind, state, provider, IP, role…") }}
+  <div class="table-scroll">
+    <table id="servers-table" class="table data-table" data-dt data-dt-page-size="25"
+           data-dt-colfilter data-dt-empty="No servers match this filter.">
+      <thead><tr>
+        {{ sortth("Name") }}
+        {{ sortth("Kind") }}
+        {{ sortth("State") }}
+        {{ sortth("Provider") }}
+        {{ sortth("IP") }}
+        {{ sortth("Role") }}
+      </tr></thead>
+      <tbody>
+      {% for s in servers %}
+        <tr>
+          <td>{{ s.name }}</td>
+          <td>{{ s.kind }}</td>
+          <td>{{ s.state }}</td>
+          <td>{{ s.provider }}</td>
+          <td>{{ s.ip }}</td>
+          <td>{{ s.role }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ dt_pager("servers-table") }}
+  {% else %}
+  <p style="color:#7f93a3;font-size:13px">No servers tracked.</p>
+  {% endif %}
 
   <h2 style="font-size:15px;margin:22px 0 6px">Domains</h2>
-  <table style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead><tr style="text-align:left;color:#7f93a3;border-bottom:1px solid #24333f">
-      <th style="padding:6px">Domain</th><th style="padding:6px">Provider</th><th style="padding:6px">Registered</th></tr></thead>
-    <tbody>
-    {% for d in domains %}
-      <tr style="border-bottom:1px solid #16222b">
-        <td style="padding:6px">{{ d.name }}</td><td style="padding:6px">{{ d.provider }}</td>
-        <td style="padding:6px">{{ 'yes' if d.registered else 'no' }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="3" style="padding:12px 6px;color:#7f93a3">No domains tracked.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  {% if domains %}
+  {{ dt_filter("domains-table", "filter domains — name, provider…") }}
+  <div class="table-scroll">
+    <table id="domains-table" class="table data-table" data-dt data-dt-page-size="25"
+           data-dt-colfilter data-dt-empty="No domains match this filter.">
+      <thead><tr>
+        {{ sortth("Domain") }}
+        {{ sortth("Provider") }}
+        {{ sortth("Registered") }}
+      </tr></thead>
+      <tbody>
+      {% for d in domains %}
+        <tr>
+          <td>{{ d.name }}</td>
+          <td>{{ d.provider }}</td>
+          <td>{{ 'yes' if d.registered else 'no' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ dt_pager("domains-table") }}
+  {% else %}
+  <p style="color:#7f93a3;font-size:13px">No domains tracked.</p>
+  {% endif %}
 
   <h2 style="font-size:15px;margin:22px 0 6px">Recent actions</h2>
-  <table style="width:100%;border-collapse:collapse;font-size:12px;color:#9fb2c0">
-    <tbody>
-    {% for a in audit %}
-      <tr><td style="padding:4px 6px">{{ a.at }}</td><td style="padding:4px 6px">{{ a.verb }}</td>
-        <td style="padding:4px 6px">{{ a.tier }}</td><td style="padding:4px 6px">{{ a.result }}</td></tr>
-    {% else %}
-      <tr><td style="padding:8px 6px;color:#7f93a3">No actions yet.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  {% if audit %}
+  {{ dt_filter("audit-table", "filter audit log — verb, tier, result…") }}
+  <div class="table-scroll">
+    <table id="audit-table" class="table data-table" data-dt data-dt-page-size="25"
+           data-dt-colfilter data-dt-empty="No audit entries match this filter."
+           style="font-size:12px;color:#9fb2c0">
+      <thead><tr>
+        {{ sortth("When") }}
+        {{ sortth("Verb") }}
+        {{ sortth("Tier") }}
+        {{ sortth("Result") }}
+      </tr></thead>
+      <tbody>
+      {% for a in audit %}
+        <tr>
+          <td>{{ a.at }}</td>
+          <td>{{ a.verb }}</td>
+          <td>{{ a.tier }}</td>
+          <td>{{ a.result }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ dt_pager("audit-table") }}
+  {% else %}
+  <p style="color:#7f93a3;font-size:13px">No actions yet.</p>
+  {% endif %}
 </div>
 {% endblock %}

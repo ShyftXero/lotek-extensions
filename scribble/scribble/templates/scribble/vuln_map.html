@@ -20,8 +20,11 @@
     fix it here, and the next promotion picks it up automatically.
   </p>
 
-  <table class="table" style="width:100%">
-    <thead><tr><th>Source</th><th>Title pattern</th><th>Dedupe prefix</th><th>Tag</th><th>CWE</th><th>→ Template</th><th></th></tr></thead>
+  <div class="table-scroll">
+  <table class="table" id="scribble-vuln-map-table"
+         data-dt data-dt-page-size="25" data-dt-colfilter
+         data-dt-empty="No mappings yet — a promoted finding falls back to its scan title with no library write-up.">
+    <thead><tr><th data-sort>Source</th><th data-sort>Title pattern</th><th data-sort>Dedupe prefix</th><th data-sort>Tag</th><th data-sort>CWE</th><th data-sort>→ Template</th><th></th></tr></thead>
     <tbody>
     {% for m in mappings %}
       <tr>
@@ -40,11 +43,10 @@
           {% endif %}
         </td>
       </tr>
-    {% else %}
-      <tr><td colspan="7" class="muted">No mappings yet — a promoted finding falls back to its scan title with no library write-up.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 
 {% if scribble_can_write %}
