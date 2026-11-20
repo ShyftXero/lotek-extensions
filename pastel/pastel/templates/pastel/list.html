@@ -1,6 +1,6 @@
 {% extends pastel_base %}
 {% block title %}Pastel{% endblock %}
-{% block appbar_title %}Pastes{% endblock %}
+{% block appbar_title %}<a href="{{ url_for('pastel.index') }}" style="color:inherit;text-decoration:none">PASTEL</a>{% endblock %}
 
 {#- One hidden CSRF field for every form. `csrf_token` is a Jinja global installed by flask-wtf's
     CSRFProtect in the HOST; standalone there is none, hence the `is defined` guard. -#}
@@ -55,13 +55,13 @@
 {% block content %}
 <div class="px-wrap">
   {% if request.args.get('notice') %}
-    <div class="px-banner px-banner-ok">{{ {'created':'Paste created.','updated':'Paste updated.','deleted':'Paste deleted.'}.get(request.args.get('notice'),'') }}</div>
+    <div class="px-banner px-banner-ok">{{ {'created':'Pastel created.','updated':'Pastel updated.','deleted':'Pastel deleted.'}.get(request.args.get('notice'),'') }}</div>
   {% endif %}
   {% if request.args.get('error') %}
     <div class="px-banner px-banner-err">{{ {'invalid':'That paste could not be saved — check the fields.'}.get(request.args.get('error'),'Something went wrong.') }}</div>
   {% endif %}
 
-  <h1>New paste</h1>
+  <h1>New Pastel</h1>
   <p class="px-muted">Markdown. Shared by an unguessable link. Optionally expiring, read-limited, or password-protected.</p>
 
   {% if pastel_can_write %}
@@ -99,7 +99,7 @@
   <p class="px-muted">You do not have permission to create pastes here.</p>
   {% endif %}
 
-  <h2>Your pastes</h2>
+  <h2>Your Pastels</h2>
   {% if pastes %}
     {% if pastel_can_write %}
     <form id="px-bulk" method="post" action="{{ url_for('pastel.bulk_delete') }}">
