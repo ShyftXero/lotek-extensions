@@ -107,6 +107,7 @@ def create_paste():
                 password=request.form.get("password") or None,
                 expires_in=request.form.get("expires_in"),
                 max_reads=request.form.get("max_reads"),
+                host_audit=host_audit(),
             )
         except Invalid:
             return _back(error="invalid")
@@ -291,4 +292,8 @@ def public_raw(guid: str):
             return _challenge()
         if paste is None:
             abort(404)
-        return Response(paste.body, mimetype="text/plain; charset=utf-8")
+        return Response(
+            paste.body, mimetype="text/plain; charset=utf-8",
+            # raw attacker-authored bytes: never let a sniffing client render them as HTML.
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
