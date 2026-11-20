@@ -267,10 +267,11 @@ def mint():
     with get_config().session_factory() as db:
         # A saved profile pre-fills the generator; its fields are the source unless the operator
         # overrode them on the form (an ad-hoc mint). Either way we build + validate a plan.Profile.
-        if saved_id == PRIMARY_PROFILE_ID:
-            # The PRIMARY profile is not a row: it means "rendezvous on this lotek host". Resolve it
-            # server-side so a submit works even with JS off, and so the host is whatever this
-            # deployment actually answers on rather than a name shipped in the package.
+        if saved_id == PRIMARY_PROFILE_ID and not (form.get("rendezvous_host") or "").strip():
+            # The PRIMARY profile means "rendezvous on this lotek host" — but ONLY when the operator did
+            # NOT type their own host. A typed rendezvous host WINS (the ★ default is a convenience, not a
+            # lock; silently replacing a typed host is the "my server was not honored" bug). Resolving it
+            # server-side still makes a JS-off submit work, because the field is blank in that case.
             _ph, _pp = primary_relay()
             form = {**form, "rendezvous_host": _ph, "rendezvous_port": str(_pp)}
         elif saved_id:
@@ -294,6 +295,12 @@ def mint():
                 anchor_user=form.get("anchor_user"),
                 cidr=form.get("cidr") or "",
             )
+            # Use the core relay container ONLY when the rendezvous IS this lotek host (the ★/blank path).
+            # A pinned EXTERNAL host means the operator supplied their own rendezvous — honor it via the
+            # Phase-1 external path, never silently replace its host/port/user with the container's.
+            _own_host, _ = primary_relay()
+            _rv_host = (form.get("rendezvous_host") or "").strip()
+            _use_core_relay = (not _rv_host) or (_rv_host == _own_host)
             # Phase 2: when the host provides exclusive_container_acquire, request a core-hosted single-use
             # relay here instead of emitting a command to an operator's own box (lotek#1747; the accessor
             # is deps.exclusive_container_acquire, and Phase 1 deliberately never calls it).
@@ -306,10 +313,11 @@ def mint():
                 profile_id=profile_id,
                 kill_at=parse_kill_at(form.get("kill_at")),
                 host_audit=host_audit(),
-                # Phase 2: when the host exposes exclusive_container_acquire, the session rides a
-                # core-hosted single-use relay that PROVISIONS this pivot's random identity. Absent
-                # (standalone, or the seam not yet deployed) it is None and behaviour is Phase 1's.
-                acquire=exclusive_container_acquire(),
+                # Phase 2: the core-hosted single-use relay container PROVISIONS this pivot's random
+                # identity — but it lives on THIS lotek host, so pass it ONLY when the rendezvous is this
+                # host (★/blank). A pinned external host rides the Phase-1 external path (acquire=None),
+                # which honors the operator's own host/port/user.
+                acquire=(exclusive_container_acquire() if _use_core_relay else None),
             )
         except Invalid as exc:
             # Re-render the form with the operator's own values and the reason, instead of a bare 400

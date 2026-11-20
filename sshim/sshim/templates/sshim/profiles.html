@@ -51,15 +51,15 @@
       </label>
     </div>
     <div class="row">
-      <label>Rendezvous host <input type="text" name="rendezvous_host" placeholder="vps.example"></label>
-      <label>Port <input type="number" name="rendezvous_port" value="22" min="1" max="65535"></label>
-      <label>User <input type="text" name="rendezvous_user" value="sshim"></label>
+      <label>Rendezvous host <input type="text" name="rendezvous_host" placeholder="your vps / tailnet sshd"></label>
+      <label>Port <input type="number" name="rendezvous_port" value="" min="1" max="65535" placeholder="blank = random per pivot"></label>
+      <label>User <input type="text" name="rendezvous_user" placeholder="blank = random per pivot"></label>
     </div>
     <div class="row">
-      <label>Anchor host <input type="text" name="anchor_host" placeholder="home.tail.net"></label>
+      <label>Anchor host <input type="text" name="anchor_host" placeholder="10.10.5.20 / jumpbox.corp.local"></label>
       <label>Port <input type="number" name="anchor_port" value="22" min="1" max="65535"></label>
-      <label>User <input type="text" name="anchor_user" value="sshim"></label>
-      <label>CIDR <input type="text" name="cidr" placeholder="192.168.1.0/24"></label>
+      <label>User <input type="text" name="anchor_user" placeholder="blank = random per pivot"></label>
+      <label>CIDR <input type="text" name="cidr" placeholder="10.10.5.0/24 (blank = auto-detect)"></label>
     </div>
     <button class="btn btn-lime" type="submit" style="margin-top:12px">Save profile</button>
   </form>
