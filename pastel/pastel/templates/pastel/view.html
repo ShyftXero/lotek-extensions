@@ -58,6 +58,7 @@
 {% block content %}
 <div class="px-wrap">
   {% if owner %}
+    <div class="px-tools"><a href="{{ url_for('pastel.index') }}">← Pastes</a></div>
     {% if request.args.get('notice') %}
       <div class="px-muted">{{ {'created':'Paste created — share the link below.','updated':'Paste updated.'}.get(request.args.get('notice'),'') }}</div>
     {% endif %}
