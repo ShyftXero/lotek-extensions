@@ -23,6 +23,17 @@
       border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
   .px-field textarea{min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical}
   .px-field .CodeMirror{border:1px solid #1c2a35;border-radius:4px;height:auto;min-height:220px;font-size:13px}
+  /* Dark CodeMirror (the default theme is bright white) — here, not base.html, so it also loads when mounted. */
+  .CodeMirror{background:#07100f;color:#dfe9f0}
+  .CodeMirror-gutters{background:#0e151c;border-right:1px solid #16313b}
+  .CodeMirror-linenumber{color:#5a6b78}
+  .CodeMirror-cursor{border-left:1px solid #9fe9d7}
+  .CodeMirror-selected{background:#1c2a35}
+  .CodeMirror-activeline-background{background:#0e151c}
+  .cm-s-default .cm-header{color:#9fe9d7}.cm-s-default .cm-quote{color:#8aa0b0}
+  .cm-s-default .cm-link,.cm-s-default .cm-url{color:#37c9d6}
+  .cm-s-default .cm-comment,.cm-s-default .cm-meta{color:#5a6b78}
+  .cm-s-default .cm-string{color:#3ad29a}.cm-s-default .cm-variable-2{color:#9fe9d7}
   .px-row{display:flex;gap:14px;flex-wrap:wrap}
   .px-row .px-field{flex:1 1 150px}
   button{background:#16313b;color:#9fe9d7;border:1px solid #2a5566;border-radius:4px;padding:8px 16px;font-size:14px;cursor:pointer}

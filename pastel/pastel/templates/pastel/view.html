@@ -16,6 +16,17 @@
   .px-edit input[type=text]{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
   .px-edit textarea{width:100%;box-sizing:border-box;min-height:300px;background:#07100f;color:#dfe9f0;border:1px solid #16313b;border-radius:4px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
   .px-edit .CodeMirror{border:1px solid #16313b;border-radius:4px;height:auto;min-height:300px;font-size:13px}
+  /* Dark CodeMirror (default theme is bright white) — here, not base.html, so it also loads when mounted. */
+  .CodeMirror{background:#07100f;color:#dfe9f0}
+  .CodeMirror-gutters{background:#0e151c;border-right:1px solid #16313b}
+  .CodeMirror-linenumber{color:#5a6b78}
+  .CodeMirror-cursor{border-left:1px solid #9fe9d7}
+  .CodeMirror-selected{background:#1c2a35}
+  .CodeMirror-activeline-background{background:#0e151c}
+  .cm-s-default .cm-header{color:#9fe9d7}.cm-s-default .cm-quote{color:#8aa0b0}
+  .cm-s-default .cm-link,.cm-s-default .cm-url{color:#37c9d6}
+  .cm-s-default .cm-comment,.cm-s-default .cm-meta{color:#5a6b78}
+  .cm-s-default .cm-string{color:#3ad29a}.cm-s-default .cm-variable-2{color:#9fe9d7}
   .px-edit .px-save{margin-top:12px}
   details.px-preview{margin:0 0 16px}
   details.px-preview>summary{cursor:pointer;color:#8aa0b0;font-size:13px;margin-bottom:8px}

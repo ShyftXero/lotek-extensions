@@ -21,7 +21,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+import threading
+import time
+
+from sqlalchemy import delete, select, update
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from pastel.db import utcnow
@@ -236,7 +239,11 @@ def adjust_access(
     if extend_days is not None:
         if extend_days <= 0:
             raise Invalid("extend_days must be a positive integer")
-        paste.expires_at = _now() + timedelta(days=extend_days)   # from NOW, per the operator
+        # Extend from the current expiry if it is still in the future, else from now — so "extend"
+        # never SHORTENS a paste that already lives longer (expire_date + N, or today + N).
+        cur = _naive_utc(paste.expires_at) if paste.expires_at is not None else None
+        base = cur if (cur is not None and cur > _now()) else _now()
+        paste.expires_at = base + timedelta(days=extend_days)
         changed["extend_days"] = extend_days
         if paste.retired_cause == CAUSE_EXPIRED:
             paste.retired_at = None
@@ -293,6 +300,35 @@ def _retire(db, paste: Paste, cause: str, *, host_audit=None) -> None:
     db.commit()
 
 
+# ── automatic purge (no core reaper) ──────────────────────────────────────────────────────────────
+PURGE_INTERVAL_SECONDS = 60.0
+_last_purge_at = 0.0
+_purge_lock = threading.Lock()
+
+
+def purge_expired(db, *, now: datetime | None = None) -> int:
+    """Hard-DELETE pastes whose expiry has passed — the body LEAVES the DB, not just a tombstone.
+    Read-limit-retired pastes are left in place (an adjust_access `add_reads` can still reopen them);
+    they are purged once their own expiry passes. Returns the row count deleted."""
+    now = now or _now()
+    res = db.execute(delete(Paste).where(Paste.expires_at.is_not(None), Paste.expires_at < now))
+    db.commit()
+    return res.rowcount or 0
+
+
+def maybe_purge(db, *, interval: float = PURGE_INTERVAL_SECONDS) -> int | None:
+    """Throttled purge for a before_request hook: at most one DELETE per `interval` per worker
+    process. The timestamp is taken BEFORE the purge, so a failing purge can't turn every request
+    into a retry loop. None when skipped."""
+    global _last_purge_at
+    tick = time.monotonic()
+    with _purge_lock:
+        if tick - _last_purge_at < interval:
+            return None
+        _last_purge_at = tick
+    return purge_expired(db)
+
+
 def fetch_for_read(db, guid: str, *, password=None, host_audit=None) -> Paste | None:
     """Resolve a PUBLIC GUID fetch to a servable paste, applying every access gate, or raise
     PasswordRequired, or return None (caller -> 404). This is the ONLY path that counts a read."""
@@ -331,6 +367,15 @@ def fetch_for_read(db, guid: str, *, password=None, host_audit=None) -> Paste | 
         if paste.read_count >= paste.max_reads:
             # This fetch consumed the FINAL slot: serve it, then retire so the next fetch is a 404.
             _retire(db, paste, CAUSE_READ_LIMIT, host_audit=host_audit)
+    else:
+        # Uncapped: still COUNT the read (every paste has a read count) — no cap to enforce.
+        db.execute(
+            update(Paste)
+            .where(Paste.id == paste.id, Paste.retired_at.is_(None))
+            .values(read_count=Paste.read_count + 1)
+        )
+        db.commit()
+        db.refresh(paste)
 
     return paste
 
