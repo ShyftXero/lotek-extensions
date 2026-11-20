@@ -62,7 +62,7 @@
     </div>
     <div class="px-field">
       <label for="px-body">Content <span class="px-autosave" id="px-autosave"></span></label>
-      <textarea id="px-body" name="body" required maxlength="{{ pastel_max_body }}"></textarea>
+      <textarea id="px-body" name="body" maxlength="{{ pastel_max_body }}"></textarea>
     </div>
     <div class="px-row">
       <div class="px-field">
@@ -150,9 +150,13 @@ document.addEventListener("DOMContentLoaded", function () {
   };
   if (cm) { cm.on("change", save); } else { ta.addEventListener("input", save); }
 
-  form.addEventListener("submit", function () {
+  form.addEventListener("submit", function (e) {
     if (cm) cm.save();            // sync CodeMirror -> textarea so the POST carries the edited body
-    try { localStorage.removeItem(KEY); } catch (e) {}
+    // NOT a `required` attr: CodeMirror hides the textarea, and a hidden required field is
+    // unfocusable so the browser silently blocks submit. Guard here instead; server also validates.
+    if (!ta.value.trim()) { e.preventDefault(); if (cm) cm.focus(); else ta.focus();
+      if (note) note.textContent = "body is required"; return; }
+    try { localStorage.removeItem(KEY); } catch (e2) {}
   });
 
   // Bulk select + delete on the "Your pastes" list.

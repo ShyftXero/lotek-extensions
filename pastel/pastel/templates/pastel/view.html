@@ -49,6 +49,9 @@
       <div class="px-muted">Shareable link (the GUID is the credential):</div>
       <code id="px-share-url">{{ url_for('pastel.public_view', guid=paste.guid, _external=True) }}</code>
       <button type="button" class="px-copy" data-copy="#px-share-url">Copy</button>
+      <div class="px-muted" style="margin-top:8px">Raw link:</div>
+      <code id="px-raw-url">{{ url_for('pastel.public_raw', guid=paste.guid, _external=True) }}</code>
+      <button type="button" class="px-copy" data-copy="#px-raw-url">Copy raw</button>
     </div>
     <div class="px-tools">
       <a href="{{ raw_url }}">raw</a>
