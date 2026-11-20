@@ -1,0 +1,16 @@
+{# data-table helpers — replicate the attribute contract core's static/data-table.js reads
+   (table[data-dt], th[data-sort]/data-sort-type="num", span.sort-ind, input.dt-filter[data-dt-filter=id],
+   div.dt-pager[data-dt-pager=id], td[data-sort-value]). Mounted in lotek the script ships on every
+   page; standalone this degrades to a plain table. We do NOT redefine core's .data-table/.dt-* CSS.
+   Mirrors sshim/_macros.html. #}
+{% macro sortth(label, numeric=false) -%}
+  <th data-sort{% if numeric %} data-sort-type="num"{% endif %}>{{ label }}<span class="sort-ind" aria-hidden="true"></span></th>
+{%- endmacro %}
+
+{% macro dt_filter(table_id, placeholder="Filter…") -%}
+  <div class="dt-toolbar"><input class="input dt-filter" data-dt-filter="{{ table_id }}" placeholder="{{ placeholder }}" autocomplete="off" aria-label="Filter table" /></div>
+{%- endmacro %}
+
+{% macro dt_pager(table_id) -%}
+  <div class="dt-pager" data-dt-pager="{{ table_id }}"></div>
+{%- endmacro %}
