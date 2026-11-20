@@ -267,13 +267,14 @@ def mint():
     with get_config().session_factory() as db:
         # A saved profile pre-fills the generator; its fields are the source unless the operator
         # overrode them on the form (an ad-hoc mint). Either way we build + validate a plan.Profile.
-        if saved_id == PRIMARY_PROFILE_ID and not (form.get("rendezvous_host") or "").strip():
-            # The PRIMARY profile means "rendezvous on this lotek host" — but ONLY when the operator did
-            # NOT type their own host. A typed rendezvous host WINS (the ★ default is a convenience, not a
-            # lock; silently replacing a typed host is the "my server was not honored" bug). Resolving it
-            # server-side still makes a JS-off submit work, because the field is blank in that case.
-            _ph, _pp = primary_relay()
-            form = {**form, "rendezvous_host": _ph, "rendezvous_port": str(_pp)}
+        if saved_id == PRIMARY_PROFILE_ID:
+            # This branch OWNS the ★ id (never falls through to the UUID parse below). Fill the primary
+            # host/port server-side ONLY when the operator did NOT type their own — a typed rendezvous
+            # host WINS (the ★ default is a convenience, not a lock; silently replacing a typed host was
+            # the "my server was not honored" bug). The blank case also makes a JS-off submit work.
+            if not (form.get("rendezvous_host") or "").strip():
+                _ph, _pp = primary_relay()
+                form = {**form, "rendezvous_host": _ph, "rendezvous_port": str(_pp)}
         elif saved_id:
             try:
                 pid = uuid.UUID(saved_id)
