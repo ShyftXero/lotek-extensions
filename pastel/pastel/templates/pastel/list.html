@@ -1,0 +1,193 @@
+{% extends pastel_base %}
+{% block title %}Pastel{% endblock %}
+{% block appbar_title %}<a href="{{ url_for('pastel.index') }}" style="color:inherit;text-decoration:none">PASTEL</a>{% endblock %}
+
+{#- One hidden CSRF field for every form. `csrf_token` is a Jinja global installed by flask-wtf's
+    CSRFProtect in the HOST; standalone there is none, hence the `is defined` guard. -#}
+{% macro csrf() %}{% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}{% endmacro %}
+
+{% block head_extra %}
+{# create editor: CodeMirror (line numbers + markdown highlighting), jsdelivr = CSP-allowlisted.
+   Degrades to the plain textarea + localStorage autosave if it never loads. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.min.js"></script>
+<style>
+  .px-wrap{max-width:900px;margin:0 auto;padding:28px 20px;width:100%;box-sizing:border-box}
+  .px-wrap h1{font-size:20px;margin:0 0 4px}
+  .px-wrap h2{font-size:15px;margin:26px 0 8px}
+  .px-muted{color:#8aa0b0;font-size:13px}
+  .px-field{display:block;margin:10px 0}
+  .px-field label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#8aa0b0;margin-bottom:4px}
+  .px-field input,.px-field select,.px-field textarea{width:100%;box-sizing:border-box;background:#0e151c;color:#dfe9f0;
+      border:1px solid #1c2a35;border-radius:4px;padding:8px 10px;font-size:14px}
+  .px-field textarea{min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical}
+  /* A FIXED height, not height:auto + min-height: CodeMirror's .CodeMirror-scroll is height:100%,
+     and a percentage cannot resolve against an `auto` parent — the editor collapses to one line.
+     The editor scrolls internally; 220px is the container height. */
+  .px-field .CodeMirror{border:1px solid #1c2a35;border-radius:4px;height:220px;font-size:13px}
+  .px-field .CodeMirror-scroll{height:100%}
+  /* Dark CodeMirror (the default theme is bright white) — here, not base.html, so it also loads when mounted. */
+  .CodeMirror{background:#07100f;color:#dfe9f0}
+  .CodeMirror-gutters{background:#0e151c;border-right:1px solid #16313b}
+  .CodeMirror-linenumber{color:#5a6b78}
+  .CodeMirror-cursor{border-left:1px solid #9fe9d7}
+  .CodeMirror-selected{background:#1c2a35}
+  .CodeMirror-activeline-background{background:#0e151c}
+  .cm-s-default .cm-header{color:#9fe9d7}.cm-s-default .cm-quote{color:#8aa0b0}
+  .cm-s-default .cm-link,.cm-s-default .cm-url{color:#37c9d6}
+  .cm-s-default .cm-comment,.cm-s-default .cm-meta{color:#5a6b78}
+  .cm-s-default .cm-string{color:#3ad29a}.cm-s-default .cm-variable-2{color:#9fe9d7}
+  .px-row{display:flex;gap:14px;flex-wrap:wrap}
+  .px-row .px-field{flex:1 1 150px}
+  button{background:#16313b;color:#9fe9d7;border:1px solid #2a5566;border-radius:4px;padding:8px 16px;font-size:14px;cursor:pointer}
+  button:hover{background:#1c3d49}
+  .px-danger{color:#e0796f;border-color:#e0796f;background:transparent}
+  .px-bulkbar{display:flex;align-items:center;gap:14px;margin:0 0 10px}
+  .px-sel{margin-right:6px;vertical-align:middle}
+  .px-card{border:1px solid #1c2a35;border-radius:6px;padding:10px 14px;margin:0 0 8px;background:#0e151c}
+  .px-card .meta{font-size:12px;color:#8aa0b0;margin-top:3px}
+  .px-pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;border:1px solid #2a5566;color:#8aa0b0;margin-right:5px}
+  .px-pill.px-retired{color:#e0796f;border-color:#e0796f}
+  .px-banner{margin:0 0 12px;padding:9px 12px;border-radius:4px;font-size:13px;background:#12202a}
+  .px-banner-ok{border:1px solid #3ad29a}
+  .px-banner-err{border:1px solid #e0796f;color:#e0796f}
+  .px-autosave{font-size:12px;color:#8aa0b0;margin-left:8px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="px-wrap">
+  {% if request.args.get('notice') %}
+    <div class="px-banner px-banner-ok">{{ {'created':'Pastel created.','updated':'Pastel updated.','deleted':'Pastel deleted.'}.get(request.args.get('notice'),'') }}</div>
+  {% endif %}
+  {% if request.args.get('error') %}
+    <div class="px-banner px-banner-err">{{ {'invalid':'That paste could not be saved — check the fields.'}.get(request.args.get('error'),'Something went wrong.') }}</div>
+  {% endif %}
+
+  <h1>New Pastel</h1>
+  <p class="px-muted">Markdown. Shared by an unguessable link. Optionally expiring, read-limited, or password-protected.</p>
+
+  {% if pastel_can_write %}
+  <form method="post" action="{{ url_for('pastel.create_paste') }}" id="px-form">
+    {{ csrf() }}
+    <div class="px-field">
+      <label for="px-title">Title <span class="px-muted">(optional)</span></label>
+      <input id="px-title" name="title" maxlength="{{ pastel_max_title }}" autocomplete="off">
+    </div>
+    <div class="px-field">
+      <label for="px-body">Content <span class="px-autosave" id="px-autosave"></span></label>
+      <textarea id="px-body" name="body" maxlength="{{ pastel_max_body }}"></textarea>
+    </div>
+    <div class="px-row">
+      <div class="px-field">
+        <label for="px-expires">Expires</label>
+        <select id="px-expires" name="expires_in">
+          <option value="never">never</option>
+          {% for t in pastel_ttl_tokens %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="px-field">
+        <label for="px-maxreads">Max reads <span class="px-muted">(blank = unlimited)</span></label>
+        <input id="px-maxreads" name="max_reads" type="number" min="1" inputmode="numeric" autocomplete="off">
+      </div>
+      <div class="px-field">
+        <label for="px-pw">Password <span class="px-muted">(blank = none)</span></label>
+        <input id="px-pw" name="password" type="password" autocomplete="new-password">
+      </div>
+    </div>
+    <p class="px-muted" style="margin:4px 0 0">Retirement is reversible by the owner (reads/expiry can be extended) and platform admins can read any paste — don't treat a paste as a self-destructing or admin-blind secret.</p>
+    <button type="submit">Create paste</button>
+  </form>
+  {% else %}
+  <p class="px-muted">You do not have permission to create pastes here.</p>
+  {% endif %}
+
+  <h2>Your Pastels</h2>
+  {% if pastes %}
+    {% if pastel_can_write %}
+    <form id="px-bulk" method="post" action="{{ url_for('pastel.bulk_delete') }}">
+      {{ csrf() }}
+      <div class="px-bulkbar">
+        <label class="px-muted"><input type="checkbox" id="px-all"> select all</label>
+        <button type="submit" class="px-danger">Delete selected</button>
+      </div>
+    {% endif %}
+    {% for p in pastes %}
+    <div class="px-card">
+      <div>
+        {% if pastel_can_write %}<input type="checkbox" class="px-sel" name="ids" value="{{ p.id }}">{% endif %}
+        <a href="{{ url_for('pastel.owner_view', paste_id=p.id) }}">{{ p.title or '(untitled)' }}</a>
+      </div>
+      <div class="meta">
+        {% if p.retired_at %}<span class="px-pill px-retired">retired: {{ p.retired_cause }}</span>{% endif %}
+        {% if p.expires_at %}<span class="px-pill">expires {{ p.expires_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+        {% if p.max_reads %}<span class="px-pill">{{ p.read_count }}/{{ p.max_reads }} reads</span>{% endif %}
+        {% if p.password_hash %}<span class="px-pill">🔒 password</span>{% endif %}
+        <span class="px-muted">{{ p.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
+      </div>
+    </div>
+    {% endfor %}
+    {% if pastel_can_write %}</form>{% endif %}
+  {% else %}
+    <p class="px-muted">No pastes yet.</p>
+  {% endif %}
+</div>
+
+{#- Autosave the draft body to localStorage so a reload / accidental nav does not lose it; cleared on
+    submit. Native localStorage, no dependency. ponytail: a single-draft store, not per-tab history. -#}
+<script>
+// Runs on DOMContentLoaded so the deferred CodeMirror scripts have executed first. Upgrades the body
+// textarea to CodeMirror (line numbers + markdown highlighting) and autosaves the draft to
+// localStorage; both work through getVal/setVal so the plain-textarea fallback is identical.
+document.addEventListener("DOMContentLoaded", function () {
+  var KEY = "pastel:draft:body",
+      ta = document.getElementById("px-body"),
+      form = document.getElementById("px-form"),
+      note = document.getElementById("px-autosave");
+  if (!ta || !form) return;
+
+  var cm = window.CodeMirror
+    ? window.CodeMirror.fromTextArea(ta, { lineNumbers: true, mode: "markdown", lineWrapping: true, viewportMargin: Infinity })
+    : null;
+  var getVal = function () { return cm ? cm.getValue() : ta.value; };
+  var setVal = function (v) { if (cm) cm.setValue(v); else ta.value = v; };
+
+  try {
+    var saved = localStorage.getItem(KEY);
+    if (saved && !getVal()) { setVal(saved); if (note) note.textContent = "restored draft"; }
+  } catch (e) {}
+
+  var t, save = function () {
+    clearTimeout(t);
+    t = setTimeout(function () {
+      try { localStorage.setItem(KEY, getVal()); if (note) note.textContent = "saved"; } catch (e) {}
+    }, 400);
+  };
+  if (cm) { cm.on("change", save); } else { ta.addEventListener("input", save); }
+
+  form.addEventListener("submit", function (e) {
+    if (cm) cm.save();            // sync CodeMirror -> textarea so the POST carries the edited body
+    // NOT a `required` attr: CodeMirror hides the textarea, and a hidden required field is
+    // unfocusable so the browser silently blocks submit. Guard here instead; server also validates.
+    if (!ta.value.trim()) { e.preventDefault(); if (cm) cm.focus(); else ta.focus();
+      if (note) note.textContent = "body is required"; return; }
+    try { localStorage.removeItem(KEY); } catch (e2) {}
+  });
+
+  // Bulk select + delete on the "Your pastes" list.
+  var bulk = document.getElementById("px-bulk");
+  if (bulk) {
+    var all = document.getElementById("px-all");
+    if (all) all.addEventListener("change", function () {
+      bulk.querySelectorAll(".px-sel").forEach(function (c) { c.checked = all.checked; });
+    });
+    bulk.addEventListener("submit", function (e) {
+      var n = bulk.querySelectorAll(".px-sel:checked").length;
+      if (!n) { e.preventDefault(); alert("Select at least one paste to delete."); return; }
+      if (!confirm("Delete " + n + " paste(s)? This cannot be undone.")) e.preventDefault();
+    });
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,21 @@
+name     = "SQL Injection"
+category = "Web Application"
+severity = "critical"
+
+description = """
+<p>A parameter at {{TARGET_URL}} is concatenated straight into a SQL query instead of being bound as a parameter, so an attacker can change what the query does: add conditions, union in extra result sets, or chain statements through crafted input.</p>
+"""
+
+impact = """
+<p>The baseline is unauthorized read or modification of database contents, potentially every table the application's database account can reach, plus authentication bypass. Depending on the database engine, its configured privileges, and any file-system or command features left enabled, it can also reach remote code execution or lateral movement onto the database host. It is rated critical because the common case already exposes the data the application exists to protect, and the worst case is host compromise.</p>
+"""
+
+replication = """
+<ul><li>Confirm with a boolean- or time-based probe (e.g. <code>' AND 1=1--</code> versus <code>' AND 1=2--</code>, or <code>' OR SLEEP(5)--</code>), then enumerate: <code>sqlmap -u '{{TARGET_URL}}' --batch</code></li></ul>
+<p>Location(s): {{AFFECTED}}</p>
+"""
+
+remediation = """
+<p>Use parameterized queries or prepared statements (or a vetted ORM that does so by default) for every query that touches user input. String concatenation into SQL should not appear anywhere in the codebase. Run the application's database account with least privilege (no <code>FILE</code> or <code>xp_cmdshell</code>-class rights, no access beyond the schemas it needs), validate and allow-list input as a second layer, and treat a WAF rule as a stopgap, never the fix.</p>
+<p><strong>References</strong></p><ul><li>OWASP Top 10 A03:2021: Injection</li><li>OWASP SQL Injection Prevention Cheat Sheet</li><li>CWE-89: Improper Neutralization of Special Elements used in an SQL Command</li></ul>
+"""

@@ -1,0 +1,95 @@
+{# sshim design tokens — Unkey-inspired dark/mono/lime terminal-tool aesthetic (Eli via /inspo).
+   Included at the top of every content template so the tokens land whether sshim renders standalone
+   (its own base) or MOUNTED in lotek (the host base, whose head this partial cannot reach otherwise).
+   UI polish is Blade's lane — these are the structural tokens + the one signature (the topology diagram
+   gets the lime). #}
+<style>
+  .sshim{
+    --bg:#040406; --panel:#0a0a0a; --panel-2:#09090b;
+    --text:#e3e4e9; --dim:#a1a1aa; --muted:#c9c9ca;
+    --border:#27272a; --border-2:#464853;
+    --lime:#c9e735; --lime-soft:#dff088; --lime-dark:#68781d;
+    --mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+    color:var(--text); background:var(--bg);
+    font-family:Inter,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    font-size:16px; line-height:1.5; padding:24px; max-width:1440px; margin:0 auto;
+  }
+  .sshim a{color:var(--lime-soft);text-decoration:none}
+  .sshim a:hover{color:var(--lime)}
+  .sshim h1{font-size:44px;font-weight:400;letter-spacing:-.5px;margin:0 0 4px}
+  .sshim h2{font-size:22px;font-weight:400;margin:24px 0 8px}
+  .sshim .sub{color:var(--dim);font-size:14px;margin:0 0 20px}
+  .sshim .mono{font-family:var(--mono)}
+  .sshim .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  /* Bulk-kill bar above the running-pivots table. The count and the single primary action live
+     together so "Kill N pivots" always says how many, and a disabled button reads as zero. */
+  .sshim .bulkbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
+  .sshim .bulkbar-hint{color:var(--dim);font-size:12px}
+  .sshim .table-scroll{overflow-x:auto}
+  .sshim .dt-toolbar{margin:0 0 10px}
+  /* The select column is chrome, not data: a 1%-wide column with no horizontal padding is what keeps
+     the checkbox from pushing the table into horizontal scroll at 390px. */
+  .sshim .sshim-col-select{width:1%;white-space:nowrap;padding-left:0;padding-right:0}
+  .sshim .sshim-col-select input{width:16px;height:16px;margin:0;vertical-align:middle;accent-color:var(--lime)}
+  @media(max-width:520px){ .sshim .sshim-col-select{padding:0 2px} }
+  .sshim .btn{font:500 14px/1 Inter,sans-serif;letter-spacing:-.35px;color:var(--text);
+    background:var(--panel);border:1px solid var(--border-2);border-radius:4px;padding:8px 14px;cursor:pointer}
+  .sshim .btn:hover{border-color:var(--lime-dark)}
+  .sshim .btn-lime{background:var(--lime);color:#0a0a0a;border-color:var(--lime);font-weight:600}
+  .sshim .btn-lime:hover{background:var(--lime-soft)}
+  .sshim .btn-ghost{background:transparent}
+  .sshim table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:14px}
+  .sshim th{text-align:left;color:var(--dim);font-weight:400;font-size:12px;text-transform:uppercase;
+    letter-spacing:.08em;padding:8px 12px;border-bottom:1px solid var(--border)}
+  .sshim td{padding:10px 12px;border-bottom:1px solid var(--border)}
+  .sshim tr:hover td{background:var(--panel-2)}
+  .sshim .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:middle}
+  .sshim .dot-active{background:var(--lime);box-shadow:0 0 6px var(--lime)}
+  .sshim .dot-dead{background:var(--border-2)}
+  .sshim .status-active{color:var(--lime)}
+  .sshim .status-expired,.sshim .status-killed{color:var(--dim)}
+  .sshim .panes{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.sshim .panes{grid-template-columns:1fr}}
+  .sshim .pane{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:16px}
+  .sshim .pane h3{margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+  .sshim .leg-os{color:var(--lime-soft);font-size:12px}
+  .sshim pre{font-family:var(--mono);font-size:14px;white-space:pre-wrap;word-break:break-all;
+    background:#000;border:1px solid var(--border);border-radius:4px;padding:12px;margin:8px 0;color:var(--muted)}
+  .sshim select,.sshim input[type=text],.sshim input[type=number]{font-family:var(--mono);font-size:13px;
+    background:#000;color:var(--text);border:1px solid var(--border-2);border-radius:4px;padding:6px 8px}
+  .sshim label{font-size:13px;color:var(--dim)}
+  .sshim .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
+  .sshim .note{color:var(--dim);font-size:13px;border-left:2px solid var(--lime-dark);padding:6px 10px;margin:6px 0}
+  .sshim .warn{color:var(--lime-soft);font-size:13px;border-left:2px solid var(--lime);padding:6px 10px;margin:10px 0;background:rgba(201,231,53,.05)}
+  /* A CONFIGURATION-RISK banner is not the lime secret-handling note: amber, so the eye never lumps
+     "paste this secret once" together with "you pinned a well-known port on a public box". */
+  .sshim .risk{--amber:#f5b23d;--amber-soft:#ffd894;color:var(--amber-soft);font-size:13px;
+    border:1px solid var(--amber);border-left-width:3px;border-radius:4px;padding:10px 12px;margin:12px 0;
+    background:rgba(245,178,61,.07)}
+  .sshim .risk strong{color:var(--amber);font-weight:600;display:block;margin-bottom:4px}
+  .sshim .risk ul{margin:4px 0 6px;padding-left:20px}
+  .sshim .risk li{margin:2px 0}
+  .sshim .risk .risk-continue{color:var(--dim)}
+  /* Topology picker: three radio "cards". Choosing the topology is the first decision, so it reads
+     as a choice, not a dropdown buried under a form. */
+  .sshim .topo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 4px}
+  @media(max-width:860px){.sshim .topo-grid{grid-template-columns:1fr}}
+  .sshim .topo{border:1px solid var(--border-2);border-radius:6px;padding:10px 12px;cursor:pointer;
+    display:flex;flex-direction:column;gap:3px;background:var(--panel);transition:border-color .12s}
+  .sshim .topo:hover{border-color:var(--lime-dark)}
+  .sshim .topo:has(input:checked){border-color:var(--lime);box-shadow:0 0 0 1px var(--lime) inset}
+  .sshim .topo input{margin:0 0 4px}
+  .sshim .topo b{font-family:var(--mono);font-size:14px;color:var(--text)}
+  .sshim .topo span{font-size:12px;color:var(--dim);line-height:1.35}
+  .sshim .err{color:#ffb4b4;font-size:13px;border-left:2px solid #b45454;padding:6px 10px;margin:10px 0;background:rgba(180,84,84,.08)}
+  .sshim .secret{font-family:var(--mono);background:#000;border:1px solid var(--lime-dark);border-radius:4px;padding:10px;color:var(--lime-soft);word-break:break-all}
+  .sshim .ttlbar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin:4px 0 16px}
+  .sshim .ttlbar>span{display:block;height:100%;background:var(--lime)}
+  /* the one place we spend the visual budget: the anchor -> relay <- operator diagram */
+  .sshim .diagram{display:flex;align-items:center;gap:0;font-family:var(--mono);font-size:13px;margin:14px 0}
+  .sshim .node{border:1px solid var(--border-2);border-radius:4px;padding:8px 12px;color:var(--text);white-space:nowrap}
+  .sshim .node-relay{border-color:var(--lime);color:var(--lime);box-shadow:0 0 8px rgba(201,231,53,.35)}
+  .sshim .wire{flex:1;height:1px;background:var(--lime);min-width:40px;position:relative}
+  .sshim .wire span{position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:var(--bg);padding:0 6px;color:var(--lime-soft);font-size:11px}
+  .sshim .copied{color:var(--lime)!important}
+</style>

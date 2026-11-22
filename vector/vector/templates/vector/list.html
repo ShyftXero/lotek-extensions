@@ -1,4 +1,5 @@
 {% extends vector_base %}
+{% from "vector/_macros.html" import sortth, dt_filter, dt_pager %}
 {% block title %}Vector — Attack Paths{% endblock %}
 {% block appbar_title %}Attack Paths{% endblock %}
 {% block appbar_actions %}
@@ -50,30 +51,41 @@
     {% endif %}
   </div>
   {% if diagrams %}
-  <table class="vec-tbl">
-    <thead><tr><th>Name</th><th>Phases</th><th>Nodes</th><th>Updated</th><th></th></tr></thead>
-    <tbody>
-      {% for d in diagrams %}
-      <tr data-id="{{ d.id }}">
-        <td class="vec-name"><a href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">{{ d.name }}</a>{% if d.builtin %}<span class="vec-badge">example</span>{% endif %}</td>
-        <td class="vec-muted">{{ d.phase_count }}</td>
-        <td class="vec-muted">{{ d.node_count }}</td>
-        <td class="vec-muted">{{ d.updated }}</td>
-        <td>
-          <div class="vec-row-actions">
-            <a class="vec-btn sm" href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">Open</a>
-            <a class="vec-btn sm" href="{{ url_for('vector.api_export_html', diagram_id=d.id) }}">HTML</a>
-            <a class="vec-btn sm" href="{{ url_for('vector.api_export_json', diagram_id=d.id) }}">JSON</a>
-            {% if vector_can_write %}
-            <button class="vec-btn sm" data-dup="{{ d.id }}">Duplicate</button>
-            {% if not d.builtin %}<button class="vec-btn sm danger" data-del="{{ d.id }}">Delete</button>{% endif %}
-            {% endif %}
-          </div>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  {{ dt_filter("diagrams-table", "filter diagrams — name…") }}
+  <div class="table-scroll">
+    <table id="diagrams-table" class="vec-tbl table data-table" data-dt data-dt-page-size="25"
+           data-dt-colfilter data-dt-empty="No diagrams match this filter.">
+      <thead><tr>
+        {{ sortth("Name") }}
+        {{ sortth("Phases", numeric=true) }}
+        {{ sortth("Nodes", numeric=true) }}
+        {{ sortth("Updated") }}
+        <th></th>
+      </tr></thead>
+      <tbody>
+        {% for d in diagrams %}
+        <tr data-id="{{ d.id }}">
+          <td class="vec-name"><a href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">{{ d.name }}</a>{% if d.builtin %}<span class="vec-badge">example</span>{% endif %}</td>
+          <td class="vec-muted" data-sort-value="{{ d.phase_count }}">{{ d.phase_count }}</td>
+          <td class="vec-muted" data-sort-value="{{ d.node_count }}">{{ d.node_count }}</td>
+          <td class="vec-muted">{{ d.updated }}</td>
+          <td>
+            <div class="vec-row-actions">
+              <a class="vec-btn sm" href="{{ url_for('vector.edit_diagram', diagram_id=d.id) }}">Open</a>
+              <a class="vec-btn sm" href="{{ url_for('vector.api_export_html', diagram_id=d.id) }}">HTML</a>
+              <a class="vec-btn sm" href="{{ url_for('vector.api_export_json', diagram_id=d.id) }}">JSON</a>
+              {% if vector_can_write %}
+              <button class="vec-btn sm" data-dup="{{ d.id }}">Duplicate</button>
+              {% if not d.builtin %}<button class="vec-btn sm danger" data-del="{{ d.id }}">Delete</button>{% endif %}
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ dt_pager("diagrams-table") }}
   {% else %}
   <div class="vec-empty">No diagrams yet.{% if vector_can_write %} Create one, or import a JSON model.{% endif %}</div>
   {% endif %}

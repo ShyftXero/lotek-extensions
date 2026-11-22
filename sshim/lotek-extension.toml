@@ -1,0 +1,85 @@
+# How this extension MOUNTS into a host (lotek). Named [mount], NOT [extension], on purpose — a host
+# may emit its own [extension] table before appending this file and TOML forbids a duplicate table, so
+# an [extension] header here would make tomllib raise and silently un-discover the whole extension.
+# sshim has NO seed step, so the `seed` key is omitted.
+[mount]
+name = "sshim"
+entrypoint = "sshim"              # importable module exposing register(...)
+url_prefix = "/sshim"
+
+[[nav]]
+label = "sshim"
+path = "/"
+icon = "🛰️"
+
+[host]
+# Path (relative to url_prefix) of this extension's PAT/Bearer MACHINE api — how an AGENT lists its
+# running pivots and RE-FETCHES a session's full plan. The host treats it as a machine surface: skipped
+# by the cookie/session dashboard gate and CSRF-exempt, exactly like lotek's own /api/v1. MUST be a
+# proper sub-path of url_prefix.
+machine_prefix = "/machine"
+docs = "docs/SSHIM.md"
+docs_title = "sshim (SSH pivot generator)"
+
+# The audit-verb vocabulary this extension emits, bare (the host namespaces each to `ext:sshim:<verb>`).
+# INV-AUDIT-03's reader half: an action the /admin/audit filter does not know about is written but not
+# selectable. Keep this in step with every `host_audit(...)` call site — tests/test_manifest.py asserts
+# they match. Minting and killing a pivot are outward-capability lifecycle events, so both are audited.
+[audit]
+verbs = ["mint_session", "kill_session"]
+
+# ADMIN-scope, per-install knobs (lotek#485). The HOST owns the form, the admin gate, the storage
+# (`settings` row `ext:sshim:<key>`) and the audit row — this extension only READS them, through
+# `deps.host_setting`, and re-clamps `max_ttl_minutes` to the same bounds declared here so a setting
+# that sizes an outward capability's lifetime cannot widen past this range.
+# EMPTY by design. sshim ships no rendezvous default: a fixed host on a well-known inbound port is the
+# one thing this tool must not hand an operator, and Phase 1's rendezvous is the operator's OWN box, so a
+# shipped default would only ever point at a resource that exists in Phase 2. Blank = the Mint page opens
+# with an empty rendezvous field, and minting fails with "configure a rendezvous host" until one is named.
+[[settings]]
+key = "default_relay_host"
+label = "Default rendezvous host (blank — set only if you want one pre-filled)"
+type = "str"
+default = ""
+group = "Rendezvous"
+help = """A `host:port` to PRE-FILL the Mint page's rendezvous field with. Ships blank on purpose: \
+the rendezvous is a 3rd-party box the operator controls (a VPS, a tailnet node), and pinning a \
+well-known inbound port by default is exactly the exposure sshim warns about. An operator can type any \
+rendezvous per session or save named profiles. Phase 2 (lotek#1747) will let a profile instead request \
+a lotek-hosted single-use relay through `exclusive_container_acquire`."""
+
+[[settings]]
+key = "max_ttl_minutes"
+label = "Max session TTL (minutes)"
+type = "int"
+default = 240
+min = 1
+max = 1440
+group = "Lifetime"
+help = """Hard ceiling on how long a minted pivot's commands stay live before the session is treated \
+as expired. A pivot is disposable — lower is safer. `deps.max_ttl_minutes()` re-clamps the stored value \
+to this range, so this cap cannot be widened by a stale or malformed setting."""
+
+# Tables this extension OWNS. lotek's tests/test_extension_schema.py requires this block.
+[db]
+base = "sshim.models:Base"       # the module whose IMPORT registers the tables
+table_prefix = "sshim_"
+
+# ── The per-pivot relay container (lotek#1747) ─────────────────────────────────────────────────────
+# sshim generates a random ssh_user/ssh_password per pivot. That identity only EXISTS if something
+# provisions it, and an external sshd cannot: an operator's box has whatever accounts it has. This
+# container is what makes the random credential real — lotek-pivot-sshd reads USER_NAME/USER_PASSWORD
+# and creates that account inside the container.
+#
+# `sharing = "exclusive"` because a relay must NOT be shared: one container per pivot means one netns,
+# one loopback and one authorized_keys, so no session can reach another's SOCKS port. `binding =
+# "public"` because both legs dial it from different networks — which requires an administrator to open
+# a port window (`ephemeral_relay.public_port_range`); without one, acquire refuses LOUDLY rather than
+# silently falling back to an unprovisioned host.
+[[service_containers]]
+name = "sshim-relay"
+image = "lotek-pivot-sshd:533144219762"   # content-addressed tag of the relay sshd image
+port = 2222                                # the in-container sshd port (public port is allocated per pivot)
+sharing = "exclusive"
+binding = "public"
+healthcheck = "tcp"                        # sshd has no HTTP /health

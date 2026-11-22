@@ -1,0 +1,194 @@
+{% extends sshim_base %}
+{% from "sshim/_macros.html" import sortth, dt_filter %}
+{% block title %}sshim — running pivots{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>sshim</h1>
+  <p class="sub mono">disposable SSH-only pivots · running list · Phase 1 (3rd-party rendezvous)</p>
+
+  <div class="toolbar">
+    <a class="btn btn-lime" href="{{ url_for('sshim.mint_form') }}">+ Mint pivot</a>
+    <a class="btn btn-ghost" href="{{ url_for('sshim.profiles') }}">Profiles</a>
+  </div>
+
+  {% if not sessions %}
+    <p class="note">No running pivots. Mint one — it points two ssh clients at a rendezvous box and
+      dies on TTL or disconnect. Nothing persists but shell history.</p>
+  {% else %}
+  {{ dt_filter("pivot-table", "filter pivots — profile, host, user, status…") }}
+
+  {# Bulk kill. The form is server-rendered all the way through: this button submits the
+     selection to a MANDATORY confirmation page (the single-pivot kill's `confirm=1` gate at
+     scale), which lists profile + rendezvous + port before anything is torn down. #}
+  <form method="post" action="{{ url_for('sshim.bulk_kill') }}" id="pivot-bulk-form">
+    <div class="bulkbar">
+      <span id="pivot-selection-count" class="mono" aria-live="polite">0 selected</span>
+      <button type="submit" class="btn btn-lime" id="pivot-kill-btn" disabled>Kill 0 pivots</button>
+      <span class="bulkbar-hint">you will confirm the exact pivots first</span>
+    </div>
+    {# The JS keeps a selection Set keyed by session id and materialises one hidden input per id here,
+       so a selection made before filtering/paging is still submitted while its row is off screen. #}
+    <div id="pivot-bulk-ids"></div>
+
+    <div class="table-scroll">
+      <table id="pivot-table" class="table data-table" data-dt data-dt-page-size="25"
+             data-dt-colfilter data-dt-empty="No pivots match this filter.">
+        <thead><tr>
+          <th class="sshim-col-select">
+            <input type="checkbox" id="pivot-select-all" aria-label="Select all visible pivots" />
+          </th>
+          {{ sortth("Profile") }}
+          {{ sortth("Topology") }}
+          {{ sortth("Rendezvous") }}
+          {{ sortth("User") }}
+          {{ sortth("SOCKS", numeric=true) }}
+          {# Lifecycle order, not alphabetical: active -> expired -> killed. The key comes from
+             plan.status_rank (the one predicate), never a second copy in this template. #}
+          {{ sortth("Status") }}
+          {# Sort on the ISO timestamp, NOT the rendered HH:MM:SS — a clock alone is wrong across days. #}
+          {{ sortth("Expires") }}
+          {{ sortth("Kill at") }}
+          <th></th>
+        </tr></thead>
+        <tbody>
+          {% for s in sessions %}
+          {% set r = s.row %}
+          {# Host, then port: zero-padded so the text key orders host-first within a host too. #}
+          {% set rv_key = (r.rendezvous_host or '') ~ ':' ~ ('%05d'|format(s.rendezvous_port or 22)) %}
+          <tr>
+            <td class="sshim-col-select">
+              <input type="checkbox" class="pivot-select" name="ids" value="{{ r.id }}"
+                     aria-label="Select pivot {{ r.profile_name or r.id }}" />
+            </td>
+            <td>{{ r.profile_name or '—' }}</td>
+            <td>{{ r.topology }}</td>
+            <td class="mono" data-sort-value="{{ rv_key }}">{{ r.rendezvous_host or '—' }}</td>
+            <td class="mono">{{ r.ssh_user or '—' }}</td>
+            <td data-sort-value="{{ r.socks_port }}">{{ r.socks_port }}</td>
+            <td class="status-{{ s.status }}" data-sort-value="{{ s.status_rank }}">
+              <span class="dot {{ 'dot-active' if s.status == 'active' else 'dot-dead' }}"></span>{{ s.status }}
+            </td>
+            <td class="mono" data-sort-value="{{ r.expires_at.isoformat() }}">{{ r.expires_at.strftime('%H:%M:%S') }}</td>
+            <td class="mono" data-sort-value="{{ r.kill_at.isoformat() if r.kill_at else '' }}">{{ r.kill_at.strftime('%H:%M:%S') if r.kill_at else '—' }}</td>
+            <td><a href="{{ url_for('sshim.session_detail', session_id=r.id) }}">open →</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </form>
+  <p class="sub mono" style="margin-top:12px">Active + recently-died pivots (a TTL death stays visible, not a 404).</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block body_extra %}
+{% if sessions %}
+<script>
+/* Multi-select over a DataTables-managed table.
+ *
+ * The selection is a Set of session ids keyed by checkbox VALUE, not DOM state: DataTables hides
+ * (filters) and detaches (pages) rows, so anything that read "the checked boxes on screen" would
+ * silently drop a selection the operator cannot currently see. The rules:
+ *
+ *   - a checkbox change adds/removes ONE id, wherever its row is;
+ *   - "select all" applies to the currently visible rows only — it never clears a hidden selection;
+ *   - on every DataTables draw the Set is re-applied to the row checkboxes (a row that was hidden and
+ *     is now shown comes back checked), then the count/button sync;
+ *   - on submit every selected id becomes its own hidden `ids` input and the row checkboxes drop
+ *     their name, so the server receives the Set exactly once, including ids whose rows are filtered
+ *     out. With JS off the plain checkboxes still submit the visible selection.
+ */
+(function () {
+  "use strict";
+
+  var form = document.getElementById("pivot-bulk-form");
+  var table = document.getElementById("pivot-table");
+  if (!form || !table) return;
+
+  var countEl = document.getElementById("pivot-selection-count");
+  var button = document.getElementById("pivot-kill-btn");
+  var selectAll = document.getElementById("pivot-select-all");
+  var holder = document.getElementById("pivot-bulk-ids");
+  var selected = new Set();
+
+  function boxes() { return table.querySelectorAll("input.pivot-select"); }
+  function rowOf(box) { return box.closest ? box.closest("tr") : null; }
+  function hidden(tr) {
+    return !tr || window.getComputedStyle(tr).display === "none";
+  }
+  function visibleBoxes() {
+    return Array.prototype.filter.call(boxes(), function (b) { return !hidden(rowOf(b)); });
+  }
+
+  function sync() {
+    var n = selected.size;
+    if (countEl) countEl.textContent = n + " selected";
+    if (button) {
+      button.disabled = n === 0;
+      button.textContent = "Kill " + n + (n === 1 ? " pivot" : " pivots");
+    }
+    if (selectAll) {
+      var vis = visibleBoxes();
+      var on = vis.filter(function (b) { return selected.has(b.value); }).length;
+      selectAll.checked = vis.length > 0 && on === vis.length;
+      selectAll.indeterminate = on > 0 && on < vis.length;
+    }
+  }
+
+  function reapply() {
+    Array.prototype.forEach.call(boxes(), function (b) { b.checked = selected.has(b.value); });
+    sync();
+  }
+
+  table.addEventListener("change", function (e) {
+    var box = e.target;
+    if (!box || !box.classList || !box.classList.contains("pivot-select")) return;
+    if (box.checked) selected.add(box.value); else selected.delete(box.value);
+    sync();
+  });
+
+  if (selectAll) selectAll.addEventListener("change", function () {
+    // Only the rows the operator can SEE. Hiding is not deselecting.
+    visibleBoxes().forEach(function (b) {
+      if (selectAll.checked) selected.add(b.value); else selected.delete(b.value);
+      b.checked = selected.has(b.value);
+    });
+    sync();
+  });
+
+  form.addEventListener("submit", function () {
+    if (selected.size === 0) return; // the button is disabled at zero; belt and braces
+    // The Set is authoritative: one hidden input per id, and the row checkboxes stop contributing so
+    // a filtered-out row is still sent exactly once (and never twice).
+    Array.prototype.forEach.call(boxes(), function (b) { b.removeAttribute("name"); });
+    holder.innerHTML = "";
+    selected.forEach(function (id) {
+      var input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "ids";
+      input.value = id;
+      holder.appendChild(input);
+    });
+  });
+
+  function hookDataTable() {
+    var $ = window.jQuery;
+    if (!$ || !$.fn || !$.fn.dataTable || !$.fn.dataTable.isDataTable(table)) return false;
+    $(table).on("draw.dt", reapply); // re-check rows a filter/page just brought back
+    return true;
+  }
+
+  // data-table.js may initialise on DOMContentLoaded (its listener is registered before this one,
+  // because base.html loads it above body_extra), or immediately if the document already parsed.
+  if (!hookDataTable()) {
+    document.addEventListener("DOMContentLoaded", function () {
+      if (!hookDataTable()) setTimeout(hookDataTable, 0);
+    });
+  }
+
+  reapply(); // seed from the server-rendered checked state (and set the zero-state button)
+})();
+</script>
+{% endif %}
+{% endblock %}

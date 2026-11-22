@@ -40,7 +40,7 @@ _PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>ved</title><meta name="csrf-token" content="t"></head>
 <body>
 <input id="ved-name" value="n"><button id="ved-save">Save</button>
-<button id="ved-export-json">j</button><button id="ved-export-html">h</button>
+<button id="ved-export-json">j</button><button id="ved-export-html">h</button><button id="ved-open-html">o</button>
 <div class="ved" data-diagram-id="new" data-api-base="/vector/api" data-can-write="{can_write}"
      data-dashboard="/vector/" data-export-html-base="/vector/api/export/html">
   <div class="ved-tabs">{tabs}</div>

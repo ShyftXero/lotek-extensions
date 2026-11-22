@@ -1,0 +1,60 @@
+[project]
+name = "sshim"
+version = "0.1.0.dev0"
+description = "sshim — a disposable SSH-only pivot generator for lotek (revshells.com for ssh). Phase 1: zero core changes, rendezvous is a 3rd-party box."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.0.0",
+    "sqlalchemy>=2.0.0",
+    "jinja2>=3.1.0",
+    "markupsafe>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
+    "pyrefly>=0.16.0",
+]
+
+# Discovery signal: lotek enumerates installed extensions via this entry-point group
+# (importlib.metadata.entry_points(group="lotek.extensions")). The value is the entrypoint MODULE that
+# exposes register(...); ep.name is the slug and ep.load() imports that module.
+[project.entry-points."lotek.extensions"]
+sshim = "sshim"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sshim"]
+
+# Ship lotek-extension.toml INSIDE the wheel's package dir so the host can read the mount/nav/host/db
+# manifest from the installed package via importlib.resources. 🔴 This is force-included at WHEEL-BUILD
+# time — an `editable = true` path install skips the build, the manifest is absent, and discovery
+# SILENTLY skips the extension. Use a non-editable path source for local dev.
+[tool.hatch.build.targets.wheel.force-include]
+"lotek-extension.toml" = "sshim/lotek-extension.toml"
+"docs/SSHIM.md" = "sshim/docs/SSHIM.md"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 110
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.pyrefly]
+# `tests/` is not a package and pytest injects its directory on sys.path, so `from conftest import …`
+# resolves at RUN time but not for a static checker unless it is told where to look.
+search-path = [".", "tests"]

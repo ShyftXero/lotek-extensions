@@ -1,0 +1,156 @@
+{% extends sshim_base %}
+{% block title %}sshim — mint a pivot{% endblock %}
+{% block content %}{% include "sshim/_style.html" %}
+<div class="sshim">
+  <h1>Mint a pivot</h1>
+  <p class="sub mono">operator → rendezvous ← anchor · no binary on disk · dies on TTL or disconnect</p>
+
+  {# Deviation-risk banner — same partial, same predicate as the session detail. Silent while the
+     rendezvous is blank/randomly-ported; amber the moment a pinned well-known port is in the form. #}
+  {% include "sshim/_risk.html" %}
+  {% if error %}<div class="err" id="form-error">✗ {{ error }}</div>{% endif %}
+
+  <form method="post" action="{{ url_for('sshim.mint') }}" id="mint-form">
+    {# Profile FIRST. The built-in "lotek host" entry is the primary path: it resolves to THIS
+       dashboard's own sshd, so the rendezvous is already filled and Mint is one click. A saved profile
+       or an ad-hoc address still work. #}
+    <h2>Profile</h2>
+    <div class="row">
+      <label style="flex:1">Rendezvous / target
+        <select name="profile_id" id="profile_id" style="width:100%">
+          <option value="{{ primary_id }}" selected
+            data-topology="relay_reverse_socks"
+            data-rhost="{{ primary_host }}" data-rport="" data-ruser="" data-name="{{ primary_label }}"
+            data-ahost="" data-aport="22" data-auser="" data-cidr="">★ {{ primary_label }} — {{ primary_host }}:{{ primary_port }}</option>
+          <option value="" data-topology="" data-rhost="" data-rport="" data-ruser=""
+            data-ahost="" data-aport="22" data-auser="" data-cidr="">— ad-hoc (fill below) —</option>
+          {% for p in profiles %}
+          <option value="{{ p.id }}"
+            data-topology="{{ p.topology }}" data-rhost="{{ p.rendezvous_host or '' }}"
+            data-rport="{{ p.rendezvous_port }}" data-ruser="{{ p.rendezvous_user }}"
+            data-ahost="{{ p.anchor_host or '' }}" data-aport="{{ p.anchor_port }}"
+            data-auser="{{ p.anchor_user }}" data-cidr="{{ p.cidr }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <h2>Topology</h2>
+    <div class="topo-grid">
+      <label class="topo">
+        <input type="radio" name="topology" value="relay_reverse_socks"
+               {{ 'checked' if defaults.topology == 'relay_reverse_socks' }}>
+        <b>Relay</b><span>both ends behind NAT — you supply a rendezvous</span>
+      </label>
+      <label class="topo">
+        <input type="radio" name="topology" value="direct_socks"
+               {{ 'checked' if defaults.topology == 'direct_socks' }}>
+        <b>Direct</b><span>the anchor is reachable (public IP / tailnet)</span>
+      </label>
+      <label class="topo">
+        <input type="radio" name="topology" value="relay_sshuttle"
+               {{ 'checked' if defaults.topology == 'relay_sshuttle' }}>
+        <b>Relay + sshuttle</b><span>route the whole subnet, not one SOCKS port</span>
+      </label>
+    </div>
+
+    {# Only the addresses this topology actually needs are shown (see the script at the bottom).
+       Both groups render so the form still works without JS. #}
+    <div data-topo="relay_reverse_socks relay_sshuttle">
+      <h2>Rendezvous <span class="sub mono">the always-on box both legs dial</span></h2>
+      <div class="row">
+        <label>Host <input type="text" name="rendezvous_host" value="{{ defaults.rendezvous_host }}"
+                           placeholder="your vps / tailnet sshd" id="rv-host"></label>
+        <label>Port <input type="number" name="rendezvous_port" value="" min="1" max="65535" placeholder="blank = random per pivot"></label>
+        <label>User <input type="text" name="rendezvous_user" value="{{ defaults.rendezvous_user }}"
+                       placeholder="blank = random per pivot"></label>
+      </div>
+      <p class="note">No default host ships — name your own. The loopback port each session forwards to is random.
+        Leave <b>User</b> blank and every pivot gets its <b>own</b> random low-privilege identity (and password):
+        an account must already exist on the box (a relay container provisions one from
+        <code>USER_NAME</code>/<code>USER_PASSWORD</code>; an external sshd only if you pin a real user here).</p>
+    </div>
+
+    <div data-topo="direct_socks relay_sshuttle">
+      <h2>Anchor <span class="sub mono">your foothold inside the target network</span></h2>
+      <div class="row">
+        <label>Host <input type="text" name="anchor_host" value="{{ defaults.anchor_host }}"
+                           placeholder="10.10.5.20 / jumpbox.corp.local" id="anc-host"></label>
+        <label>Port <input type="number" name="anchor_port" value="{{ defaults.anchor_port }}" min="1" max="65535"></label>
+        <label>User <input type="text" name="anchor_user" value="{{ defaults.anchor_user }}"
+                       placeholder="blank = random per pivot"></label>
+      </div>
+    </div>
+
+    <div data-topo="relay_sshuttle">
+      <h2>Subnet <span class="sub mono">what sshuttle routes</span></h2>
+      <div class="row">
+        <label>CIDR <input type="text" name="cidr" value="{{ defaults.cidr }}" placeholder="10.10.5.0/24 (blank = auto-detect)"></label>
+      </div>
+    </div>
+
+    <details>
+      <summary class="btn btn-ghost" style="display:inline-block">Advanced — TTL, kill date, name, profile</summary>
+      <div class="row">
+        <label>TTL (min) <input type="number" name="ttl_minutes" value="{{ defaults.ttl_minutes }}" min="1" max="{{ max_ttl }}"></label>
+        {# OPT-IN, off by default. An ADDITIONAL bound on top of the TTL — never a replacement. #}
+        <label>Kill at (UTC) <input type="datetime-local" name="kill_at" value="{{ defaults.kill_at }}"></label>
+        <label>Name <input type="text" name="name" value="{{ defaults.name }}" placeholder="acme-dmz"></label>
+      </div>
+      <p class="note">Kill at is optional and blank by default. It is treated as <b>UTC</b> and only ever
+        shortens the TTL: once it passes, the session is <code>killed</code> and its commands stop being served.</p>
+    </details>
+
+    <div class="toolbar" style="margin-top:16px">
+      <button class="btn btn-lime" type="submit">Mint →</button>
+      <a class="btn btn-ghost" href="{{ url_for('sshim.index') }}">Cancel</a>
+    </div>
+    <p class="note">A pivot dies on TTL, its kill date, or disconnect. Each session gets its own random
+      user + password, shown on the next page and stored <b>sealed</b> so you can re-fetch them from another box.</p>
+  </form>
+</div>
+<script>
+(function(){
+  var form = document.getElementById('mint-form');
+
+  // Show only the address groups the selected topology needs. A hidden group would be a field you
+  // cannot fill yet whose name still appears in a validation error — the old bug: picking Direct
+  // reported "requires anchor_host" while the anchor inputs sat collapsed in Advanced.
+  function sync(){
+    var t = form.querySelector('input[name=topology]:checked');
+    t = t ? t.value : 'relay_reverse_socks';
+    form.querySelectorAll('[data-topo]').forEach(function(el){
+      var want = (el.dataset.topo || '').split(/\s+/);
+      var on = want.indexOf(t) !== -1;
+      el.style.display = on ? '' : 'none';
+      el.querySelectorAll('input,select,textarea').forEach(function(i){ i.disabled = !on; });
+    });
+    // an error belongs to whichever group is now visible; hide a stale one if its group is gone
+    var err = document.getElementById('form-error');
+    if (err) err.style.display = '';
+  }
+  form.querySelectorAll('input[name=topology]').forEach(function(r){
+    r.addEventListener('change', sync);
+  });
+  sync();
+
+  // A profile fills everything, so the common case is pick-a-profile → Mint.
+  var pf = document.getElementById('profile_id');
+  function applyProfile(){
+    var o = pf && pf.selectedOptions[0]; if(!o) return;
+    var d = o.dataset;
+    if (!d.topology) return;
+    var radio = form.querySelector('input[name=topology][value="' + d.topology + '"]');
+    if (radio) radio.checked = true;
+    form.rendezvous_host.value = d.rhost; form.rendezvous_port.value = d.rport;
+    form.rendezvous_user.value = d.ruser; form.anchor_host.value = d.ahost;
+    form.anchor_port.value = d.aport; form.anchor_user.value = d.auser;
+    form.cidr.value = d.cidr;
+    if (o.value && o.value !== '') form.name.value = (o.dataset.name || o.textContent).trim();
+    sync();
+  }
+  applyProfile();
+  if (pf) pf.addEventListener('change', applyProfile);
+})();
+</script>
+{% endblock %}

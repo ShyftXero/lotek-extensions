@@ -1,0 +1,17 @@
+{# Standalone fallback base. MOUNTED in lotek, content templates extend the HOST base_template instead
+   (passed as `sshim_base`), inheriting the dashboard chrome/nav/auth; this file only renders when sshim
+   runs on its own. The sshim surface defines its own dark/mono/lime tokens in _style.html regardless. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}sshim{% endblock %}</title>
+<style>html,body{margin:0;background:#040406;color:#e3e4e9;color-scheme:dark}</style>
+{% block head_extra %}{% endblock %}
+</head>
+<body>
+  {% block content %}{% endblock %}
+{% block body_extra %}{% endblock %}
+</body>
+</html>

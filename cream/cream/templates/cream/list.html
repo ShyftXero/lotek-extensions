@@ -1,4 +1,5 @@
 {% extends cream_base %}
+{% from "cream/_macros.html" import sortth, dt_filter %}
 {% block title %}CREAM — Quotes &amp; Invoices{% endblock %}
 {% block appbar_title %}Quotes &amp; Invoices{% endblock %}
 {% block content %}
@@ -41,10 +42,12 @@
     {% endif %}
   </form>
   {% endif %}
-  <table class="cr-table">
+  {{ dt_filter("cream-docs", "filter documents — number, kind, title, client, status…") }}
+  <div class="table-scroll">
+  <table id="cream-docs" class="cr-table table data-table" data-dt data-dt-page-size="25"
+         data-dt-colfilter data-dt-empty="No documents match this filter.">
     <thead><tr>
-      <th>Number</th><th>Kind</th><th>Title</th><th>Bill to</th><th>Status</th>
-      <th style="text-align:right">Total</th><th></th>
+      {{ sortth("Number") }}{{ sortth("Kind") }}{{ sortth("Title") }}{{ sortth("Bill to") }}{{ sortth("Status") }}{{ sortth("Total", numeric=true) }}<th></th>
     </tr></thead>
     <tbody>
     {% for d in documents %}
@@ -60,7 +63,7 @@
         <td>{{ d.title }}</td>
         <td>{{ d.client }}</td>
         <td><span class="cr-pill {{ d.status }}">{{ d.status }}</span></td>
-        <td style="text-align:right">{{ '%.2f'|format(d.total) }} {{ d.currency }}</td>
+        <td style="text-align:right" data-sort-value="{{ d.total }}">{{ '%.2f'|format(d.total) }} {{ d.currency }}</td>
         <td style="text-align:right">
           {% if d.editable and cream_can_write %}
             <a href="{{ url_for('cream.edit_document', doc_id=d.id) }}">Edit</a>
@@ -72,13 +75,10 @@
           {% endif %}
         </td>
       </tr>
-    {% else %}
-      <tr><td colspan="7" style="padding:16px 6px;color:#7f93a3">
-        {% if filter_status or filter_kind %}No documents match this filter.{% else %}No documents yet.{% endif %}
-      </td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% if truncated %}
   <p class="cr-trunc">Showing the {{ cream_list_limit }} most recent. Narrow with the filters above, or
      use the machine API for the full set.</p>

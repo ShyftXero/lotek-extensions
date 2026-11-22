@@ -62,16 +62,26 @@ def test_upload_endpoint_has_no_baked_in_extension_default(text, label):
         assert line.lstrip().startswith(("//", "*")), f"{label}: /scribble appears in live code, not a comment"
 
 
-def test_autosave_loop_is_gated_on_a_finding_id():
+def test_autosave_loop_short_circuits_without_a_persistence_target():
     """A host that wires its own persistence (a form-submit adopter such as bugreport) mounts WITHOUT a
-    findingId; the per-block autosave/fetch/presence loop targets ".../findings/<id>/blocks/<block>",
-    which is meaningless there, so each of the four network functions must short-circuit — making the
-    editor a plain field the host reads with getDoc(), with no background requests. scribble always
-    supplies a findingId, so its behaviour is unchanged."""
-    for fn in ("scheduleSave", "saveNow", "fetchLatest", "startPresence"):
+    findingId AND without a docHandle; the per-block autosave/fetch/presence loop then has no target, so
+    each network function must short-circuit — making the editor a plain field the host reads with
+    getDoc(), with no background requests. Since ext#321 phase 1c the persistence target is the unified
+    `contentTarget(state)` (seam when a docHandle is present, legacy finding route otherwise, else null),
+    so autosave/fetch gate on `contentTarget(state) == null`. Presence stays finding-scoped — it has no
+    seam equivalent yet — so it still gates on `state.findingId == null`. scribble always supplies a
+    findingId, so its behaviour is unchanged."""
+    for fn in ("scheduleSave", "saveNow", "fetchLatest"):
         i = EDITOR.find(f"function {fn}(state) {{")
         assert i != -1, f"{fn} not found"
-        assert "state.findingId == null" in EDITOR[i:i + 130], f"{fn} is not gated on a findingId"
+        head = EDITOR[i:i + 160]
+        # Robust to both spellings: an inline `if (contentTarget(state) == null) return;` (scheduleSave,
+        # fetchLatest) OR a hoisted `var target = contentTarget(state); if (target == null) return;` (saveNow).
+        assert "contentTarget(state)" in head, f"{fn} does not resolve a content target"
+        assert "== null) return" in head, f"{fn} does not short-circuit without a target"
+    i = EDITOR.find("function startPresence(state) {")
+    assert i != -1, "startPresence not found"
+    assert "state.findingId == null" in EDITOR[i:i + 130], "startPresence is not gated on a findingId"
 
 
 def test_no_external_resource_or_dynamic_eval():
