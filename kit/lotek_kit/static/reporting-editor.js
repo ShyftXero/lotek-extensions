@@ -519,8 +519,33 @@
   // owns the single shared beforeunload listener; editor.js just reports into it via
   // `setExternalPending(key, bool)` so image-upload-pending and text-save-pending share one guard
   // instead of each subsystem wiring its own `beforeunload` handler.
+  // The autosave/load target: the unified seam when a doc handle is present, else the legacy per-finding
+  // route (back-compat). Returns null when the editor has no persistence target (a form-submit adopter).
+  // The seam and the legacy route return the SAME {ok, html} / {ok, doc, html} shapes, so callers below
+  // branch only on the URL/body, never on the response.
+  function contentTarget(state) {
+    if (state.docHandle) {
+      var h = state.docHandle;
+      var q = "kind=" + encodeURIComponent(h.kind) + "&id=" + encodeURIComponent(String(h.id)) +
+        "&block=" + encodeURIComponent(h.block);
+      return {
+        saveUrl: "/_kit/autosave",
+        saveBody: function (doc) { return { kind: h.kind, id: String(h.id), block: h.block, doc: doc }; },
+        loadUrl: "/_kit/autosave?" + q,
+        key: h.kind + ":" + h.id + ":" + h.block,
+      };
+    }
+    if (state.findingId != null) {
+      var base = state.apiBase + "/findings/" + state.findingId + "/blocks/" + encodeURIComponent(state.block);
+      return { saveUrl: base, saveBody: function (doc) { return doc; }, loadUrl: base,
+               key: state.findingId + ":" + state.block };
+    }
+    return null;
+  }
+
   function pendingKey(state) {
-    return "fr-editor:" + state.findingId + ":" + state.block;
+    var t = contentTarget(state);
+    return "fr-editor:" + (t ? t.key : "none");
   }
 
   function armPendingGuard(state) {
@@ -536,7 +561,7 @@
   // which is meaningless there, so all four short-circuit and the editor becomes a plain field whose
   // value the host reads with getDoc(). scribble always supplies a findingId, so it is unaffected.
   function scheduleSave(state) {
-    if (state.findingId == null) return;
+    if (contentTarget(state) == null) return;
     state.dirty = true;
     armPendingGuard(state);
     setStatus(state, "editing…");
@@ -547,16 +572,17 @@
   }
 
   function saveNow(state) {
-    if (state.findingId == null) return;
+    var target = contentTarget(state);
+    if (target == null) return;
     if (!state.dirty) return;
     var doc = domToDoc(state.editableEl);
     state.dirty = false;
     setStatus(state, "saving…");
-    fetch(state.apiBase + "/findings/" + state.findingId + "/blocks/" + encodeURIComponent(state.block), {
+    fetch(target.saveUrl, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(doc),
+      body: JSON.stringify(target.saveBody(doc)),
     })
       .then(function (res) {
         if (!res.ok) throw new Error("autosave failed: HTTP " + res.status);
@@ -580,8 +606,9 @@
   }
 
   function fetchLatest(state) {
-    if (state.findingId == null) return;
-    fetch(state.apiBase + "/findings/" + state.findingId + "/blocks/" + encodeURIComponent(state.block), {
+    var target = contentTarget(state);
+    if (target == null) return;
+    fetch(target.loadUrl, {
       credentials: "same-origin",
     })
       .then(function (res) {
@@ -967,6 +994,7 @@
 
     var state = {
       findingId: opts.findingId,
+      docHandle: opts.docHandle,
       engagementId: opts.engagementId,
       block: opts.block,
       apiBase: opts.apiBase,
@@ -1018,8 +1046,8 @@
       ev.preventDefault();
     });
 
-    if (state.findingId != null && !opts.initialDoc) fetchLatest(state);
-    if (state.findingId != null) startPresence(state);
+    if (contentTarget(state) != null && !opts.initialDoc) fetchLatest(state);
+    if (state.findingId != null) startPresence(state);  // presence stays finding-scoped (per-surface)
 
     return {
       getDoc: function () {
@@ -1066,6 +1094,16 @@
       // Ids are opaque strings now — reject only genuinely absent/empty.
       engagementId: engagementId ? engagementId : null,
       block: options.block || ds.block,
+      // Unified autosave seam (ext#321): a doc handle {kind,id,block} (opts.docHandle or
+      // data-doc-kind/-doc-id/-doc-block) routes autosave + load to the host /_kit/autosave endpoint
+      // instead of the legacy apiBase/findings route. Absent -> legacy per-finding path (back-compat).
+      // findingId still drives presence + inline-image uploads either way.
+      docHandle:
+        options.docHandle != null
+          ? options.docHandle
+          : (ds.docKind && ds.docId && ds.docBlock
+              ? { kind: ds.docKind, id: ds.docId, block: ds.docBlock }
+              : null),
       // No default: the kit primitive assumes no extension. The host supplies `apiBase` (data-api-base)
       // — scribble passes "/scribble/api" from its template — or explicit `uploadUrl` etc. later.
       apiBase: options.apiBase || ds.apiBase || "",
@@ -1088,6 +1126,6 @@
     mount: mount,
     // Exposed for tests/tooling/debugging and for a future TipTap adapter that wants to reuse the
     // JSON<->DOM walkers instead of reimplementing them.
-    _internal: { docToFragment: docToFragment, domToDoc: domToDoc, NODE: NODE },
+    _internal: { docToFragment: docToFragment, domToDoc: domToDoc, NODE: NODE, contentTarget: contentTarget },
   };
 })(window, document);
