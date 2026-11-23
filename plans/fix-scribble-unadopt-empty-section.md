@@ -30,24 +30,27 @@ Plague's r1 review of PR #406 raised one CONCERN with two halves, both from issu
 Baseline (recorded, review r1 on hhr2): `1 passed, 7 deselected in 2.27s` for
 `uv run pytest -p no:cacheprovider -q -o addopts="" tests/test_e2e_webui.py` @ `aaaa296`.
 
-| eval | before | after (target) |
+| eval | before | after (measured) |
 |---|---|---|
-| `tests/test_e2e_webui.py` on hhr2 | 1 passed | 1 passed, with the shared-section assertions |
-| mutation: `doomed` = every finding sharing a group with a doomed row | GREEN (r1 defect) | RED |
-| pre-fix route (no section prune) vs the new empty-section assertion | — | RED |
-| `tests/test_unadopt_job.py` (new both-arms section tests) | — | N passed |
-| `tests/test_migration_single_head.py` | 1 passed | 1 passed |
+| `tests/test_e2e_webui.py` on hhr2 | 1 passed, 7 deselected (r1) | **8 passed** (whole file), `1 passed, 7 deselected` targeted |
+| mutation: `doomed` = every finding sharing a group with a doomed row | GREEN (r1 defect) | **RED** — `1 failed, 7 passed`, line 554 |
+| pre-fix route (no section prune) vs the new empty-section assertion | — | **RED** — `1 failed, 7 passed`, line 633 |
+| `tests/test_unadopt_job.py` + `tests/test_board.py` (local) | 76 passed | **80 passed** |
+| `tests/test_migration_single_head.py` (+deps) single head | 1 passed | 37 passed, 5 skipped |
 
 ## Done
 - [x] Reproduced Plague's reading of the fixture: `group_id` is NULL on all six seeded rows.
 - [x] Confirmed the schema cannot distinguish an adopt-created section from a human one today.
 
+- [x] `FindingGroup.machine_authored` + additive migration off head `c7d9f1b3e5a2`.
+- [x] Prune emptied auto sections in `unadopt_job_destroy`; never touch manual/holding sections.
+- [x] Shared-section e2e fixture + both-sides section assertions.
+- [x] Docstring: "the subset the board path reads".
+- [x] Red proofs (three unit arms + two e2e mutations), hhr2 run.
+
 ## Remaining
-- [ ] `FindingGroup.machine_authored` + additive migration off head `c7d9f1b3e5a2`.
-- [ ] Prune emptied auto sections in `unadopt_job_destroy`; never touch manual/holding sections.
-- [ ] Shared-section e2e fixture + both-sides section assertions.
-- [ ] Docstring: "the subset the board path reads".
-- [ ] Red proofs, hhr2 run, `### TEST RESULTS @ <sha>` comment.
+- [ ] `### TEST RESULTS @ <sha>` comment on PR #406.
+- [ ] Re-review (Plague) → merge.
 
 ## Notes / gotchas
 - New column is nullable/defaulted, so `db.py`'s legacy additive path backfills it on adoption DBs too;

@@ -32,9 +32,14 @@ from scribble.seed import seed_defaults
 from scribble.seed.demo import seed_demo
 from scribble.testing import register_kit_assets_shim, store_evidence, wire_mock_host
 
-# The MOUNTED-host bundle, wired exactly as `app/extensions.py::_inject_host` wires it in core (its own
-# docstring says so). Reused rather than re-hand-rolled: this test's whole point is that the page works
-# under the real host contract, so a second, subtly different stub here would prove the wrong thing.
+# The MOUNTED-host bundle -- the subset the board path reads, not the whole upstream contract. Reused
+# rather than re-hand-rolled: this test's whole point is that the page works under the real host
+# contract, so a second, subtly different stub here would prove the wrong thing. It is NOT identical to
+# what `app/extensions.py::_inject_host` wires in core: `_wire_stub_host` + `wire_mock_host` omit extras
+# that seam also sets (`http_observations`, `service_inventory`, `module_catalog`, `set_exploitability`,
+# `cve_details_for`, `launch_job`, and the rest of that bundle). The engagement/board routes driven here
+# read none of them today, so "the same board" is what this proves -- not "the same host". A future
+# board reader that does read one would fail closed under this stub, and this comment is the reason why.
 from tests.conftest import FakeFindingDTO, StubHost, _wire_stub_host
 
 try:
@@ -293,6 +298,14 @@ _BETA_TITLE = "Beta RCE on db-01"
 _BETA_NOTE = f"Scan coverage: job {_BETA_JOB}"
 _MANUAL_TITLE = "Operator-authored note (kept)"
 
+# The two report sections. #402's production board had ONE auto-created "External" section holding
+# everything (its evidence: "Section External: eight findings remain"), so both jobs' rows AND both
+# coverage notes share the ONE auto section here -- the two-job shared-section case. The hand-authored
+# finding lives in a section of its own, because "do not delete a manually authored section silently" is
+# only assertable if there IS one: it must still be there at the end, holding that finding.
+_AUTO_SECTION = "External"
+_MANUAL_SECTION = "Operator Notes"
+
 
 @pytest.fixture(scope="module")
 def unadopt_app(tmp_path_factory):
@@ -313,6 +326,12 @@ def unadopt_app(tmp_path_factory):
     `source_job_id` with NO `source_finding_id`; a hand-authored row carries neither. The two jobs are
     registered on the host's reverse index (`list_jobs`, keyed by the engagement) because that is what
     `_is_source_job` consults.
+
+    SECTIONS are seeded the shape the ADOPT path produces, not hand-waved: `findings_service.
+    auto_section_job_findings` find-or-creates each job's External/Internal `FindingGroup` and marks it
+    `machine_authored` (ext#402). So `_AUTO_SECTION` is one such group holding BOTH jobs' rows and notes
+    -- a shared section -- while `_MANUAL_SECTION` is what a person makes on the board: no machine
+    provenance, its own hand-authored finding.
     """
     tmp = tmp_path_factory.mktemp("scribble-e2e-unadopt")
     flask_app = Flask(__name__)
@@ -358,6 +377,12 @@ def unadopt_app(tmp_path_factory):
                                  source_job_id=_BETA_JOB)
         # The hand-authored finding: no job id, no source finding id -> nothing may remove it.
         manual = BoardFinding(engagement=engagement, title=_MANUAL_TITLE, severity=Severity.low)
+        auto_section = FindingGroup(engagement=engagement, name=_AUTO_SECTION, order_index=0,
+                                    machine_authored=True)
+        manual_section = FindingGroup(engagement=engagement, name=_MANUAL_SECTION, order_index=1)
+        for row in [*alpha_rows, beta_row, alpha_note, beta_note]:
+            row.group = auto_section  # ONE shared section, both jobs, exactly as adopt leaves it
+        manual.group = manual_section
         for row in [*alpha_rows, beta_row, alpha_note, beta_note, manual]:
             session.add(row)
         session.flush()
@@ -368,6 +393,8 @@ def unadopt_app(tmp_path_factory):
             "beta_note": str(beta_note.id),
             "manual": str(manual.id),
             "engagement_id": str(engagement.id),
+            "auto_section": str(auto_section.id),
+            "manual_section": str(manual_section.id),
         }
         session.commit()
 
@@ -389,14 +416,21 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
     DB state and the refreshed DOM -- for BOTH un-adopt options, on an engagement with a second job in
     the same section and a hand-authored finding.
 
-    ONE test, both options, on one engagement:
+    ONE test, both options, on one engagement. Sections matter: both jobs sit in the ONE auto-created
+    "External" section (the production shape), next to a section a person authored.
       A. "Un-adopt + delete findings…" for job-alpha  -> only alpha's rows (and its coverage note) go;
-         the operator sees alpha's titles in the confirm BEFORE accepting; the link is cleared once.
+         the operator sees alpha's titles in the confirm BEFORE accepting; the link is cleared once. The
+         SHARED section survives because job-beta's rows are still in it.
       B. "Un-adopt (keep findings)" for job-beta      -> the link is cleared, NOTHING is deleted.
+      C. destroying job-beta with its link already gone empties "External": the auto-created section
+         goes with its last row (#402: no stale empty job block), while the operator's own section --
+         and the finding in it -- stays.
 
     What it would do if the guard were wrong in the PERMISSIVE direction: a destroy that deleted too
-    much fails the beta/manual survival assertions, and one that deleted nothing (the #402 defect) fails
-    the alpha-is-gone assertions on BOTH the DOM and the DB. Neither arm can pass vacuously.
+    much fails the beta/manual survival assertions AND the sections one (a "clear the whole shared
+    section" regression takes beta's rows or the whole card), and one that deleted nothing (the #402
+    defect) fails the alpha-is-gone assertions on BOTH the DOM and the DB. Neither arm can pass
+    vacuously.
     """
     base = unadopt_app["base_url"]
     ids = unadopt_app["ids"]
@@ -418,6 +452,19 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
             ).all()
             return sorted((f.title, f.source_finding_id) for f in rows)
 
+    def rendered_section_names() -> list[str]:
+        """The section cards the board actually rendered, in board order (the ungrouped bucket is not a
+        section and is skipped -- its group id is the empty string)."""
+        return page.locator(
+            ".scribble-board-group[data-group-id]:not(.scribble-board-group-ungrouped)"
+        ).evaluate_all("els => els.map(e => e.querySelector('.scribble-board-group-name').value)")
+
+    def db_section_names() -> list[str]:
+        with unadopt_app["session_factory"]() as db:
+            return sorted(g.name for g in db.scalars(
+                select(FindingGroup).where(FindingGroup.engagement_id == eng_id)
+            ).all())
+
     page.goto(board_url())
 
     # ---- BEFORE: both jobs' blocks and the manual finding are on the board and in the DB.
@@ -426,6 +473,9 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
     assert set(ids["alpha"]) <= set(before_dom)
     assert {ids["beta"], ids["manual"]} <= set(before_dom)
     assert len(before_dom) == 6, before_dom
+    # Both jobs' rows really are in ONE rendered section, and the operator's own section is there too.
+    assert rendered_section_names() == [_AUTO_SECTION, _MANUAL_SECTION], rendered_section_names()
+    assert db_section_names() == sorted([_AUTO_SECTION, _MANUAL_SECTION])
     assert sorted(t for t, _ in before_db) == sorted(
         [*_ALPHA_TITLES, _ALPHA_NOTE, _BETA_TITLE, _BETA_NOTE, _MANUAL_TITLE]
     )
@@ -503,6 +553,14 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
     assert ids["alpha_note"] not in after_dom
     assert {ids["beta"], ids["manual"]} <= set(after_dom)
     assert len(after_dom) == len(before_dom) - 3, after_dom
+    # The shared section SURVIVES: job-beta's rows are still in it, so it is not an empty stale block.
+    # (A destroy that cleared the whole section -- or deleted it outright -- fails right here.)
+    assert rendered_section_names() == [_AUTO_SECTION, _MANUAL_SECTION], rendered_section_names()
+    shared = page.locator(f'.scribble-board-group[data-group-id="{ids["auto_section"]}"]')
+    assert shared.count() == 1
+    assert sorted(shared.locator(".scribble-board-finding").evaluate_all(
+        "els => els.map(e => e.dataset.findingId)"
+    )) == sorted([ids["beta"], ids["beta_note"]]), "the shared section lost job-beta's rows"
     # ...and the panel no longer offers a control for alpha, while beta's is still there.
     assert page.locator(
         f'.scribble-unadopt-destroy[data-destroy-url*="/unadopt-job/{_ALPHA_JOB}/"]'
@@ -570,6 +628,15 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
     # survives; the link was already cleared, so the host is NOT asked a third time.
     assert db_rows() == [(_MANUAL_TITLE, None)]
     assert rendered_finding_ids() == [ids["manual"]]
+    # #402: emptying the auto-created section removes it -- no stale empty "External" card -- and the
+    # section a PERSON authored is untouched, finding and all. Both halves, on the DOM and in the DB.
+    assert rendered_section_names() == [_MANUAL_SECTION], rendered_section_names()
+    assert db_section_names() == [_MANUAL_SECTION], db_section_names()
+    manual_card = page.locator(f'.scribble-board-group[data-group-id="{ids["manual_section"]}"]')
+    assert manual_card.count() == 1
+    assert manual_card.locator(".scribble-board-finding").evaluate_all(
+        "els => els.map(e => e.dataset.findingId)"
+    ) == [ids["manual"]]
     assert [call[0] for call in stub.unadopt_calls] == [_ALPHA_JOB, _BETA_JOB]
     assert len(dialogs) == 3, dialogs
     beta_confirm = dialogs[2]
@@ -593,6 +660,9 @@ def test_unadopt_destroy_removes_only_the_adopted_block_in_the_real_ui(page, una
         "db_rows_before": len(before_db), "db_rows_after": len(after_db),
         "db_titles_after": [t for t, _ in after_db],
         "db_titles_final": [t for t, _ in db_rows()],
+        "sections_before": [_AUTO_SECTION, _MANUAL_SECTION],
+        "sections_after_alpha_destroy": ["External (with job-beta's 2 rows)", _MANUAL_SECTION],
+        "sections_final": db_section_names(),
         "remove_job_adoption_calls": [call[0] for call in stub.unadopt_calls],
     }, indent=2))
 
