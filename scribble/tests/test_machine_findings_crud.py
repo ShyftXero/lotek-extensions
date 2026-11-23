@@ -1582,6 +1582,42 @@ def test_group_patch_rejects_malformed_input(client, token, session_factory, bod
         assert db.get(fm.FindingGroup, gid).name == "Web"
 
 
+@pytest.mark.parametrize(
+    "body",
+    [{"name": "Web Application Findings"}, {"include_in_report": False}, {"order_mode": "manual"}],
+    ids=["rename", "include-toggle", "order-mode"],
+)
+def test_group_patch_records_human_ownership_of_a_machine_created_section(
+    client, token, session_factory, body
+):
+    """PROVENANCE CLEARED on the MACHINE surface too (ext#402, Plague r2). The cookie board route does
+    this (`test_board.py::test_update_group_records_human_ownership_...`); these two surfaces feed the
+    same destroy decision, so they must not drift -- a PAT client renaming an auto section is exactly as
+    much a person choosing it as the board's name input is.
+
+    RED on the pre-fix route for all three parameters. The audit row is asserted here as well: it is
+    the only record explaining why a later destroy KEPT the section, so the before/after must name the
+    flag change.
+    """
+    eid = _engagement(session_factory)
+    gid = _group(session_factory, eid, "External")
+    with session_factory() as db:
+        db.get(fm.FindingGroup, gid).machine_authored = True
+        db.commit()
+    recorded = _install_audit_recorder(client.application)
+
+    resp = client.patch(f"{M}/engagements/{eid}/groups/{gid}", json=body)
+    assert resp.status_code == 200, (body, resp.get_json())
+    with session_factory() as db:
+        assert db.get(fm.FindingGroup, gid).machine_authored is False, (
+            "a human edit left the section marked 'nobody chose it' -- a destroy would discard it"
+        )
+
+    row = next(r for r in recorded if r[0] == "ext:scribble:update_group")
+    assert row[3]["machine_authored"] is True, "the audit lost the before-state of the provenance flip"
+    assert row[4]["machine_authored"] is False, "the audit lost that the section became human-authored"
+
+
 # ── 7. tenancy: a finding in another tenant's engagement is not addressable ──────────────────────────
 
 

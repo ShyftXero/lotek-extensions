@@ -319,6 +319,11 @@ class FindingGroup(Base, TimestampMixin):
     # well), so provenance has to be RECORDED, not inferred from the name or the assessment type.
     # Deliberately NOT set by the UI's create-group route or by the PAT API's: both name a section
     # a caller asked for, and "do not delete a manually authored section silently" covers them.
+    # It is CLEARED (ext#402, Plague r2) by both `update_group` surfaces -- a person renaming this
+    # section, or deciding whether it renders in the client report, has authored it, so the destroy
+    # must leave it alone. Any human edit clears it; the "is this still the machine's" signal cannot
+    # be derived from a field value (`place_finding` flips `order_mode` to manual for machine
+    # placements too), which is why the clearing lives in the routes, not in a predicate here.
     machine_authored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     engagement: Mapped[ReportBoard] = relationship(back_populates="groups")

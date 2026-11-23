@@ -1937,20 +1937,39 @@ def register(api_bp, bp) -> None:
             if group is None:
                 return jsonify(error="group not found"), 404
 
+            touched = False
             if "name" in payload:
                 name = (payload.get("name") or "").strip()
                 if not name:
                     return jsonify(error="name cannot be empty"), 400
                 group.name = name
+                touched = True
 
             if "order_mode" in payload:
                 try:
                     group.order_mode = OrderMode(payload["order_mode"])
                 except ValueError:
                     return jsonify(error=f"invalid order_mode {payload['order_mode']!r}"), 400
+                touched = True
 
             if "include_in_report" in payload:
                 group.include_in_report = bool(payload["include_in_report"])
+                touched = True
+
+            # PROVENANCE (ext#402, Plague r2): this route IS the human authoring surface -- the adopt path
+            # never calls it (it goes through `findings_service.create_group` directly) -- so any accepted
+            # edit here means a person configured this section, and it is no longer "a section nobody
+            # chose". Clearing the flag makes the destroy leave it alone, which is what #402's second
+            # clause asks for, AND is what preserves an `include_in_report=False` choice across a
+            # destroy + re-adopt (a pruned section is re-created by `create_group` with the default,
+            # silently re-including an excluded section in a client report).
+            #
+            # Any of the three fields clears it, not just `name`: an exclusion decision is a STRONGER
+            # statement of ownership than a rename. `order_mode` is deliberately NOT a signal at the
+            # MODEL level (`place_finding` flips it to `manual` for a machine placement too) -- it is only
+            # one HERE, because a request to this route is a person asking for it.
+            if touched:
+                group.machine_authored = False
 
             db.commit()
             result = {

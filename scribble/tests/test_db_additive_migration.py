@@ -194,3 +194,77 @@ def test_a_failed_widening_degrades_instead_of_unmounting_the_extension(caplog):
         with eng.begin() as c:
             c.execute(text("DROP VIEW IF EXISTS scribble_findings_pin"))
         Base.metadata.drop_all(eng)
+
+
+# ── the column shape the additive sync leaves behind (ext#402, Plague r2) ────────────────────────────────
+
+_MACHINE_AUTHORED_REV = "b5e2c8a1f730"
+_MACHINE_AUTHORED_PARENT = "c7d9f1b3e5a2"
+
+
+def _group_columns(engine) -> dict:
+    return {c["name"]: c for c in inspect(engine).get_columns("scribble_finding_groups")}
+
+
+def test_the_machine_authored_revision_tightens_the_column_the_adoption_path_left_nullable(tmp_path):
+    """`_additive_column_sync` adds a DEFAULTED model column as a bare nullable ``ADD COLUMN`` — no server
+    default — so a pre-Alembic database gets ``machine_authored`` NULLABLE with NULL in every row. The
+    model declares it NOT NULL. The revision that owns the column used to guard on PRESENCE alone and
+    no-op, leaving that shape in place forever: harmless today (a NULL reads falsy, the conservative
+    "hand-authored"), but a future ``WHERE machine_authored IS FALSE`` reader would silently drop every
+    such row — the SoftHostId drift class again.
+
+    Drives the REAL adoption-path code (`_additive_column_sync`) and the REAL revision, so the premise is
+    what a legacy deployment actually looks like rather than a hand-built table.
+    """
+    from alembic import command
+    from sqlalchemy.exc import IntegrityError
+
+    from scribble.db import Base, _alembic_config, make_session_factory, run_migrations
+    from scribble.models import FindingGroup, ReportBoard
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'adopted.db'}")
+    run_migrations(eng)  # fresh: built from the models, stamped at head
+
+    session_factory = make_session_factory(eng)
+    with session_factory() as db:
+        board = ReportBoard(name="E")
+        db.add(board)
+        db.flush()
+        db.add(FindingGroup(engagement_id=board.id, name="External"))
+        db.commit()
+
+    # Rewind to the legacy shape through the code, not by hand: drop the column, then let the adoption
+    # sync re-add it exactly as it does on a pre-Alembic database.
+    with eng.begin() as c:
+        c.execute(text("ALTER TABLE scribble_finding_groups DROP COLUMN machine_authored"))
+    _additive_column_sync(eng)
+
+    col = _group_columns(eng)["machine_authored"]
+    assert col["nullable"] is True, "premise: the sync no longer leaves a defaulted column nullable"
+    with eng.connect() as c:
+        assert c.execute(text(
+            "SELECT machine_authored FROM scribble_finding_groups WHERE name = 'External'"
+        )).scalar_one() is None, "premise: the sync backfills nothing — the existing row is NULL"
+
+    with eng.begin() as c:
+        command.stamp(_alembic_config(c), _MACHINE_AUTHORED_PARENT)  # this revision now pending
+    run_migrations(eng)
+
+    col = _group_columns(eng)["machine_authored"]
+    assert col["nullable"] is False, (
+        "the revision no-opped on presence alone: the model declares NOT NULL while the database kept a "
+        "nullable column full of NULLs"
+    )
+    with eng.connect() as c:
+        assert c.execute(text(
+            "SELECT machine_authored FROM scribble_finding_groups WHERE name = 'External'"
+        )).scalar_one() in (0, False), "the pre-existing row was not backfilled to false"
+    # ...and the constraint is enforced by the database, not merely declared in reflected metadata.
+    with pytest.raises(IntegrityError), eng.begin() as c:
+        c.execute(text("UPDATE scribble_finding_groups SET machine_authored = NULL"))
+
+    # Idempotent: a second mount is a no-op (this revision is now the recorded head).
+    run_migrations(eng)
+    assert _group_columns(eng)["machine_authored"]["nullable"] is False
+    Base.metadata.drop_all(eng)

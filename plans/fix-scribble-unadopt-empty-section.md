@@ -56,3 +56,42 @@ Baseline (recorded, review r1 on hhr2): `1 passed, 7 deselected in 2.27s` for
 - New column is nullable/defaulted, so `db.py`'s legacy additive path backfills it on adoption DBs too;
   the Alembic revision is still required for the Alembic-owned path.
 - The hhr2 host must not launch a browser here: e2e runs happen only on `hhr2:~/code/lotek-ext-wt/402`.
+
+## Round 2 (Plague r2 @ 9293d7e, 2026-11-23)
+
+Plague's r2 CONCERN: `machine_authored` survives a HUMAN configuring the section. Two measured harms:
+
+- rename `External` → `Web Application Findings` via `POST /scribble/api/groups/<id>`, then destroy the only
+  job → the renamed section is gone (a person named it; the destroy discards that);
+- toggle `include_in_report=False` (a client-deliverable decision), destroy, re-adopt → `create_group`
+  re-creates the section with `include_in_report=True`, so an excluded section silently returns IN the
+  client report.
+
+### Hypothesis (declared before the code)
+
+- **H4** — provenance must be cleared by the HUMAN authoring route, not by a field-value heuristic:
+  `update_group` (both surfaces) is that route — nothing in the adopt/auto-section machinery calls it — so
+  any accepted edit there means a person configured the section. This is also the only place the signal
+  can live: `order_mode` is flipped to `manual` by `place_finding` for a machine placement too, so a
+  model-level or value-based predicate would mis-fire.
+- **H5** — with provenance cleared, the section is not pruned, so re-adopt REUSES it
+  (`_find_or_create_section` finds by assessment type) and the operator's `include_in_report=False`
+  survives. That closes the report-exclusion harm without touching `create_group`.
+- **H6** — the reviewer's alternative (name the doomed sections in preview/confirm) is insufficient on its
+  own: it does not fix the re-adopt resurrection at all, and it makes an irreversible delete depend on the
+  operator reading a dialog. Chosen: clear-on-any-human-edit.
+
+### Evals (before = @ 9293d7e, measured)
+
+| eval | before | after |
+|---|---|---|
+| `test_update_group_rename_clears_machine_authored` (UI route) | RED: still True | pass |
+| `test_update_group_include_toggle_clears_machine_authored` (UI) | RED | pass |
+| `test_update_group_order_mode_clears_machine_authored` (UI) | RED | pass |
+| machine PATCH twin clears provenance (`test_machine_findings_crud.py`) | RED | pass |
+| destroy after a rename KEEPS the renamed section (`test_unadopt_job.py`) | RED: section gone | pass |
+| destroy after `include_in_report=False` + re-adopt keeps the exclusion | RED: re-created True | pass |
+| migration: nullable-with-NULLs column → backfilled + NOT NULL | RED: stays nullable | pass |
+| `removed_section_names` asserted (`["External"]` / `[]`) | unasserted | pass |
+| `tests/test_unadopt_job.py tests/test_board.py` (local) | 80 passed | TBD |
+| `tests/test_e2e_webui.py` (hhr2) | 8 passed | TBD |

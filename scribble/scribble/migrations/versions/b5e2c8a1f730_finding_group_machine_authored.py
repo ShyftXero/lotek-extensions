@@ -42,12 +42,32 @@ def _present(table: str) -> set[str]:
 
 
 def upgrade() -> None:
-    if _COLUMN in _present(_GROUPS):
-        return  # idempotent
-    op.add_column(
-        _GROUPS,
-        sa.Column(_COLUMN, sa.Boolean(), nullable=False, server_default=sa.false()),
-    )
+    insp = sa.inspect(op.get_bind())
+    if not insp.has_table(_GROUPS):
+        return  # nothing to add the column to; `create_all` + a stamp built it correctly
+    existing = {c["name"]: c for c in insp.get_columns(_GROUPS)}.get(_COLUMN)
+    if existing is None:
+        op.add_column(
+            _GROUPS,
+            sa.Column(_COLUMN, sa.Boolean(), nullable=False, server_default=sa.false()),
+        )
+        return
+    # The column is ALREADY there -- and it may not be the trusted one. On the ADOPTION path
+    # (`db.run_migrations` -> `_additive_column_sync`) every DEFAULTED model column is added as a bare
+    # `ALTER TABLE ... ADD COLUMN ... BOOLEAN`: nullable, no server default, and every existing row NULL.
+    # This revision then runs and, without the branch below, used to no-op on presence alone -- leaving a
+    # DB whose column the model declares NOT NULL but which is NULLABLE and full of NULLs, forever.
+    # Harmless today (a NULL is falsy, i.e. the conservative "hand-authored"), but a future
+    # `WHERE machine_authored IS FALSE` reader would silently drop every one of those rows -- the same
+    # drift class as the SoftHostId INTEGER column `_widen_soft_host_id_columns` exists for.
+    # So: presence is not enough. Tighten it, backfilling first (SET NOT NULL over NULLs would fail).
+    if not existing["nullable"]:
+        return  # already the declared shape (a normal Alembic-era upgrade) -- idempotent
+    op.execute(f'UPDATE "{_GROUPS}" SET "{_COLUMN}" = false WHERE "{_COLUMN}" IS NULL')
+    with op.batch_alter_table(_GROUPS) as batch:  # a plain ALTER COLUMN on PG; a rebuild on SQLite
+        batch.alter_column(
+            _COLUMN, existing_type=sa.Boolean(), nullable=False, server_default=sa.false(),
+        )
 
 
 def downgrade() -> None:

@@ -474,7 +474,10 @@ def _additive_column_sync(engine) -> None:
 
     Scope/limits — additive-only, never drops or renames, safe to run on every mount:
       * Columns: only NULLABLE or DEFAULTED columns are added (a NOT-NULL-no-default column can't be added
-        to populated rows, so it's skipped).
+        to populated rows, so it's skipped). A DEFAULTED column therefore lands NULLABLE, holding NULL in
+        every existing row — so a NOT NULL the model declares must be restored by the revision that owns
+        the column, which is why a revision adds a defaulted column AND repairs the column shape (see
+        ``b5e2c8a1f730``, ext#402/Plague r2). Do not assume ADD COLUMN here reproduces the model.
       * Constraints: only INDEXes are retrofitted. A UNIQUE/CHECK constraint on a column added this way is
         NOT enforced on upgraded DBs — a column that needs one must be handled explicitly (e.g. a bespoke
         migration), not relied upon through this path.

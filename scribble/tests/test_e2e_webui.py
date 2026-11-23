@@ -327,11 +327,13 @@ def unadopt_app(tmp_path_factory):
     registered on the host's reverse index (`list_jobs`, keyed by the engagement) because that is what
     `_is_source_job` consults.
 
-    SECTIONS are seeded the shape the ADOPT path produces, not hand-waved: `findings_service.
-    auto_section_job_findings` find-or-creates each job's External/Internal `FindingGroup` and marks it
-    `machine_authored` (ext#402). So `_AUTO_SECTION` is one such group holding BOTH jobs' rows and notes
-    -- a shared section -- while `_MANUAL_SECTION` is what a person makes on the board: no machine
-    provenance, its own hand-authored finding.
+    SECTIONS are built BY HAND to the shape the adopt path produces, not by calling it: `_AUTO_SECTION`
+    carries `machine_authored=True` exactly as `findings_service._find_or_create_section`'s create branch
+    sets it, and holds BOTH jobs' rows and notes (a shared section), while `_MANUAL_SECTION` is what a
+    person makes on the board: no machine provenance, its own hand-authored finding. So this file proves
+    the ROUTE honours the flag -- that a destroy prunes an empty machine section and never a manual one.
+    That the ADOPT path SETS it is covered by the provenance tests in `tests/test_board.py`; this fixture
+    never calls `findings_service.auto_section_job_findings`.
     """
     tmp = tmp_path_factory.mktemp("scribble-e2e-unadopt")
     flask_app = Flask(__name__)
