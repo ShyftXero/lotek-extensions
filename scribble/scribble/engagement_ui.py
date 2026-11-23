@@ -1200,10 +1200,28 @@ def register(api_bp, bp) -> None:
                 # Nothing of this engagement's came from the job and there is no link to clear.
                 return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
             removed_ids = [str(f.id) for f in doomed]
+            # #402: the sections those rows sat in, captured BEFORE they are deleted (afterwards nothing
+            # remembers which buckets the job had been poured into). Ordered, deduped.
+            touched_sections = list(dict.fromkeys(
+                f.group_id for f in doomed if f.group_id is not None
+            ))
             for finding in doomed:
                 storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
+            # #402: "An empty automatically-created section should not appear as a stale job block. Do not
+            # delete a manually authored section silently." Only a section THIS adopt created, and only
+            # once the delete above left it empty, goes — `delete_auto_section_if_empty` owns both the
+            # condition and the reason. A section still holding the other job's rows (a shared External
+            # bucket) keeps them, and the operator's own sections are never touched.
+            removed_sections = [
+                section.name
+                for section in (
+                    db.get(FindingGroup, group_id) for group_id in touched_sections
+                )
+                if section is not None and findings_service.delete_auto_section_if_empty(db, section)
+            ]
             _audit(db, "unadopt_job_destructive", subject_type="engagement", subject_id=engagement.id,
-                   before={"job_id": str(job_id), "removed_finding_ids": removed_ids})
+                   before={"job_id": str(job_id), "removed_finding_ids": removed_ids,
+                           "removed_section_names": removed_sections})
             db.commit()
         if is_source:
             host.remove_job_adoption(job_id, actor)
@@ -1919,20 +1937,39 @@ def register(api_bp, bp) -> None:
             if group is None:
                 return jsonify(error="group not found"), 404
 
+            touched = False
             if "name" in payload:
                 name = (payload.get("name") or "").strip()
                 if not name:
                     return jsonify(error="name cannot be empty"), 400
                 group.name = name
+                touched = True
 
             if "order_mode" in payload:
                 try:
                     group.order_mode = OrderMode(payload["order_mode"])
                 except ValueError:
                     return jsonify(error=f"invalid order_mode {payload['order_mode']!r}"), 400
+                touched = True
 
             if "include_in_report" in payload:
                 group.include_in_report = bool(payload["include_in_report"])
+                touched = True
+
+            # PROVENANCE (ext#402, Plague r2): this route IS the human authoring surface -- the adopt path
+            # never calls it (it goes through `findings_service.create_group` directly) -- so any accepted
+            # edit here means a person configured this section, and it is no longer "a section nobody
+            # chose". Clearing the flag makes the destroy leave it alone, which is what #402's second
+            # clause asks for, AND is what preserves an `include_in_report=False` choice across a
+            # destroy + re-adopt (a pruned section is re-created by `create_group` with the default,
+            # silently re-including an excluded section in a client report).
+            #
+            # Any of the three fields clears it, not just `name`: an exclusion decision is a STRONGER
+            # statement of ownership than a rename. `order_mode` is deliberately NOT a signal at the
+            # MODEL level (`place_finding` flips it to `manual` for a machine placement too) -- it is only
+            # one HERE, because a request to this route is a person asking for it.
+            if touched:
+                group.machine_authored = False
 
             db.commit()
             result = {

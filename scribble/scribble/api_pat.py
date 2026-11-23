@@ -3324,13 +3324,26 @@ def scribble_update_group(engagement_id: int, group_id: int):
             group = _group_of(db, engagement_id, group_id)
             if group is None:
                 return {"error": "not_found", "detail": "group not found on this engagement"}, 404
+            was_machine_authored = group.machine_authored
             before = {field: _enum_value(getattr(group, field)) for field in updates}
             for field, value in updates.items():
                 setattr(group, field, value)
+            # PROVENANCE (ext#402, Plague r2): a person configured this section, so it is no longer the
+            # adopt path's own. Mirrors the board's cookie route (`engagement_ui.update_group`) -- these
+            # two surfaces must not drift, or the delete decision differs by which one touched the
+            # section. See that route for why every updatable field clears it and why the signal can
+            # only live at the route (`place_finding` flips `order_mode` for machine placements too).
+            group.machine_authored = False
             body = _group_summary(group)
+            after = {field: body[field] for field in updates}
+            if was_machine_authored:
+                # Recorded only when it actually changed: the flag is what a later destroy reads, so its
+                # clearing belongs in the trail explaining why a section was kept.
+                before["machine_authored"] = True
+                after["machine_authored"] = group.machine_authored
             _audit(
                 db, "update_group", subject_type="finding_group", subject_id=group.id,
-                before=before, after={field: body[field] for field in updates},
+                before=before, after=after,
             )
             db.commit()
             return body, 200

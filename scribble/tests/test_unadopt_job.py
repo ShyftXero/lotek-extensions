@@ -255,3 +255,222 @@ def test_destructive_unadopt_removes_the_jobs_coverage_note(
     assert "RCE" not in titles, "the poured finding survived"
     assert "Scan coverage: job job-x" not in titles, "the coverage note survived the destroy"
     assert titles == {"Manual note about job job-x"}, titles
+
+
+# ── the emptied section (#402: no stale auto section, never a hand-authored one) ─────────────────────
+
+def _sections(session_factory, eid) -> dict[str, fm.FindingGroup]:
+    with session_factory() as db:
+        return {g.name: g for g in db.get(fm.ReportBoard, eid).groups}
+
+
+def _destroyed_sections(stub_host) -> list[str]:
+    """The section names the LAST destructive un-adopt recorded in its audit row. Kept as a helper so
+    every destroy assertion names the field the same way, and so a renamed audit field fails here once
+    rather than in five places."""
+    actions = [a for a in stub_host.audit_calls if a[0] == "ext:scribble:unadopt_job_destructive"]
+    assert actions, "the destructive un-adopt wrote no audit row at all"
+    return actions[-1][1]["before"]["removed_section_names"]
+
+
+def _machine_section(session_factory, eid, job_id, *, scope_type="external") -> str:
+    """Create the section the ADOPT path would create for ``job_id`` and move its rows in -- by calling
+    the SAME `findings_service.auto_section_job_findings` the adopt route calls, so the provenance flag
+    and the section name are the product's, not the test's. (The stub host's job carries no
+    ``scope_type``, which is why the adopt route itself sections nothing in this fixture.) Returns the
+    section id; asserts the section really is the machine's."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = db.get(fm.ReportBoard, eid)
+        findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type=scope_type)
+        db.commit()
+    with session_factory() as db:
+        sections = [g for g in db.get(fm.ReportBoard, eid).groups]
+        assert len(sections) == 1, [g.name for g in sections]
+        section = sections[0]
+        assert section.machine_authored is True, "premise: the adopt path marks what it creates"
+        return section.id
+
+
+def _put_rows_in(session_factory, eid, group_id, *, titles):
+    """Move the board rows named by ``titles`` into ``group_id`` (the operator's drag-drop effect)."""
+    with session_factory() as db:
+        eng = db.get(fm.ReportBoard, eid)
+        moved = 0
+        for finding in eng.findings:
+            if finding.title in titles:
+                finding.group_id = group_id
+                moved += 1
+        db.commit()
+        assert moved == len(titles), f"{moved} of {len(titles)} rows moved"
+
+
+def test_destructive_unadopt_removes_the_emptied_auto_section(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """#402's contract: "An empty automatically-created section should not appear as a stale job block.
+    Do not delete a manually authored section silently." — BOTH sides in one run.
+
+    The adopt path sections a job automatically, so a destroy that empties that section would otherwise
+    leave a bare "External" card on the board forever. Here the auto section holds ONLY job-x's rows and
+    is emptied by the destroy, so it must go; a hand-authored section holding a surviving finding must
+    stay. Revert `delete_auto_section_if_empty` to a no-op and the first assert goes RED; drop its
+    `machine_authored` check and the second does.
+    """
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
+           dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
+    with session_factory() as db:
+        auto = fm.FindingGroup(engagement_id=eid, name="External", order_index=0,
+                               machine_authored=True)
+        manual = fm.FindingGroup(engagement_id=eid, name="Operator Notes", order_index=1)
+        db.add_all([auto, manual])
+        db.flush()
+        auto_id, manual_id = auto.id, manual.id
+        db.add(fm.BoardFinding(engagement_id=eid, title="Operator note", severity=Severity.info,
+                              group_id=manual_id))
+        db.commit()
+    # (adopt wrote no coverage note here: it was ACKNOWLEDGED and its coverage was measured)
+    _put_rows_in(session_factory, eid, auto_id, titles=["RCE", "XSS"])
+    assert set(_sections(session_factory, eid)) == {"External", "Operator Notes"}
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "External" not in after, "the emptied auto-created section survived as a stale job block"
+    assert "Operator Notes" in after, "a hand-authored section was deleted silently"
+    with session_factory() as db:
+        assert {f.title for f in db.get(fm.ReportBoard, eid).findings} == {"Operator note"}
+    # The audit row must NAME what went (Plague r2): for a delete, the trail is the only record of it.
+    assert _destroyed_sections(stub_host) == ["External"]
+
+
+def test_destructive_unadopt_keeps_an_auto_section_that_still_holds_findings(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """The two-job SHARED section: clearing job-x out of one section must not take the section (nor
+    job-y's rows in it) with it. Only an EMPTY auto section is removable."""
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    with session_factory() as db:
+        auto = fm.FindingGroup(engagement_id=eid, name="External", order_index=0,
+                               machine_authored=True)
+        db.add(auto)
+        db.flush()
+        auto_id = auto.id
+        # A row this destroy does not select, sitting in the same shared section.
+        db.add(fm.BoardFinding(engagement_id=eid, title="Other job row", severity=Severity.high,
+                              group_id=auto_id, source_finding_id=999))
+        db.commit()
+    _put_rows_in(session_factory, eid, auto_id, titles=["RCE"])
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "External" in after, "a shared section was deleted while another job's row still used it"
+    assert after["External"].machine_authored is True, "provenance was rewritten"
+    with session_factory() as db:
+        assert {f.title for f in db.get(fm.ReportBoard, eid).findings} == {"Other job row"}
+    # ...and the audit says NOTHING was removed, so a reader cannot mistake this for a prune.
+    assert _destroyed_sections(stub_host) == []
+
+
+def test_destructive_unadopt_never_removes_a_hand_authored_section_even_when_emptied(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """An operator can drag an adopted row into a section THEY made. Emptying it must not delete it:
+    #402 says a manually authored section is never removed silently — "empty" alone is not consent."""
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    with session_factory() as db:
+        manual = fm.FindingGroup(engagement_id=eid, name="Client Narrative", order_index=0)
+        db.add(manual)
+        db.flush()
+        manual_id = manual.id
+        db.commit()
+    _put_rows_in(session_factory, eid, manual_id, titles=["RCE"])
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "Client Narrative" in after, "a hand-authored section was deleted because it went empty"
+    # ...and the board still renders it rather than erroring on an empty group.
+    assert client.get(f"/scribble/engagements/{eid}").status_code == 200
+
+
+# ── (d) a HUMAN taking ownership of a machine section (Plague r2, ext#402) ────────────────────────
+
+
+def test_destructive_unadopt_keeps_a_machine_section_the_operator_renamed(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """The measured r2 harm, end to end: adopt -> the path auto-creates `External` -> the operator
+    renames it to `Web Application Findings` on the board -> destroy the only job. The section must
+    SURVIVE: a person chose its name, so it is not "a section nobody chose" any more, and #402's
+    "do not delete a manually authored section silently" covers it.
+
+    RED on the pre-fix tree: the rename left `machine_authored` True, so the destroy pruned it and the
+    board came back with no sections at all.
+    """
+    eid, anchor = _engagement(session_factory)
+    # `job_id` on each DTO is what `source_facts` snapshots, and therefore what
+    # `auto_section_job_findings` keys on -- the DTOs in this file's other tests omit it because they
+    # hand-build their section instead.
+    _adopt(client, stub_host, eid, anchor, "job-x",
+           dtos=[FakeFindingDTO(id=101, title="RCE", job_id="job-x"),
+                 FakeFindingDTO(id=102, title="XSS", job_id="job-x")])
+    section_id = _machine_section(session_factory, eid, "job-x")
+    assert set(_sections(session_factory, eid)) == {"External"}
+
+    # The board's own name input: the cookie route, not a service call.
+    renamed = client.post(f"/scribble/api/groups/{section_id}",
+                          json={"name": "Web Application Findings"})
+    assert renamed.status_code == 200, renamed.get_json()
+    assert "Web Application Findings" in _sections(session_factory, eid)
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert set(after) == {"Web Application Findings"}, (
+        "the destroy discarded a section the operator named -- it is only visible in the audit row"
+    )
+    assert after["Web Application Findings"].machine_authored is False
+    # The job's rows still went (that is what destroy means); only the human-owned section stayed.
+    assert _finding_ids(session_factory, eid) == set()
+    assert _destroyed_sections(stub_host) == [], "the audit claims a section went that did not"
+
+
+def test_a_report_excluded_machine_section_stays_excluded_across_destroy_and_readopt(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """The worse r2 harm, end to end: the operator sets `include_in_report=False` on the auto section (a
+    CLIENT DELIVERABLE decision), un-adopts the only job, later re-adopts it. Pre-fix the destroy pruned
+    the section and `create_group` re-created it with the default `include_in_report=True`, silently
+    putting an excluded section BACK into the client report. With the human edit recorded, the section is
+    not pruned, so the re-adopt REUSES it and the exclusion survives.
+
+    RED on the pre-fix tree at the first `after` assertion (the section is gone) and at
+    `include_in_report` after the re-adopt (True).
+    """
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
+           dtos=[FakeFindingDTO(id=101, title="RCE", job_id="job-x")])
+    section_id = _machine_section(session_factory, eid, "job-x")
+
+    excluded = client.post(f"/scribble/api/groups/{section_id}", json={"include_in_report": False})
+    assert excluded.status_code == 200, excluded.get_json()
+    assert excluded.get_json()["include_in_report"] is False
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+    after = _sections(session_factory, eid)
+    assert set(after) == {"External"}, "the destroy pruned a section whose report inclusion a person set"
+    assert after["External"].include_in_report is False
+
+    # The reverse of the destroy: re-adopt the SAME job (its findings are re-poured from the host's view).
+    assert client.post(f"/scribble/engagements/{eid}/adopt-job/job-x").status_code in (302, 303)
+    reafter = _sections(session_factory, eid)
+    assert set(reafter) == {"External"}, "a second External section was created beside the excluded one"
+    assert reafter["External"].include_in_report is False, (
+        "re-adopt silently re-included a section the operator excluded from the client report"
+    )
+    assert reafter["External"].machine_authored is False

@@ -307,6 +307,24 @@ class FindingGroup(Base, TimestampMixin):
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     order_mode: Mapped[OrderMode] = mapped_column(Enum(OrderMode), default=OrderMode.auto_severity)
     include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True when the ADOPT path created this section (``findings_service._find_or_create_section``), i.e.
+    # nobody chose it: it is the External/Internal bucket `auto_section_job_findings` pours a job into.
+    #
+    # It exists for exactly one decision (ext#402): a destructive un-adopt may remove a section THAT this
+    # adopt created once the delete leaves it EMPTY -- otherwise every such destroy leaves a stale empty
+    # "External" card on the board -- and must never remove a section a person authored, nor one that
+    # still holds findings. Nothing else reads it; it is provenance, not policy. Same shape as
+    # ``VulnerabilityTemplate.machine_authored`` above, and the same distinction: no existing column
+    # separates the two cases (a human's "Report section type" select sets ``assessment_type_id`` as
+    # well), so provenance has to be RECORDED, not inferred from the name or the assessment type.
+    # Deliberately NOT set by the UI's create-group route or by the PAT API's: both name a section
+    # a caller asked for, and "do not delete a manually authored section silently" covers them.
+    # It is CLEARED (ext#402, Plague r2) by both `update_group` surfaces -- a person renaming this
+    # section, or deciding whether it renders in the client report, has authored it, so the destroy
+    # must leave it alone. Any human edit clears it; the "is this still the machine's" signal cannot
+    # be derived from a field value (`place_finding` flips `order_mode` to manual for machine
+    # placements too), which is why the clearing lives in the routes, not in a predicate here.
+    machine_authored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     engagement: Mapped[ReportBoard] = relationship(back_populates="groups")
     assessment_type: Mapped[AssessmentType | None] = relationship()

@@ -25,6 +25,7 @@ import io
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from flask import url_for
 from sqlalchemy import select
 
@@ -72,9 +73,11 @@ def _make_engagement(db, name: str = "Q3 Assessment") -> ReportBoard:
 
 
 def _make_group(
-    db, engagement, name, order_index: int = 0, order_mode: OrderMode = OrderMode.auto_severity
+    db, engagement, name, order_index: int = 0, order_mode: OrderMode = OrderMode.auto_severity,
+    machine_authored: bool = False,
 ) -> FindingGroup:
-    group = FindingGroup(engagement=engagement, name=name, order_index=order_index, order_mode=order_mode)
+    group = FindingGroup(engagement=engagement, name=name, order_index=order_index, order_mode=order_mode,
+                         machine_authored=machine_authored)
     db.add(group)
     db.commit()
     return group
@@ -815,6 +818,60 @@ def test_update_group_missing_404(client):
     assert resp.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "Web Application Findings"},  # identity: a person named it
+        {"include_in_report": False},          # deliverable: a person decided its client visibility
+        {"order_mode": "manual"},              # arrangement: a person ordered it
+    ],
+    ids=["rename", "include-toggle", "order-mode"],
+)
+def test_update_group_records_human_ownership_of_a_machine_created_section(
+    client, session_factory, body
+):
+    """PROVENANCE CLEARED (ext#402, Plague r2): a section the ADOPT path created stops being
+    "a section nobody chose" the moment a person configures it through this route.
+
+    Before this, `machine_authored` survived a rename, so a destructive un-adopt pruned a section the
+    operator had named `Web Application Findings`; and it survived `include_in_report=False`, so the
+    prune + a later re-adopt resurrected the section with `include_in_report=True`, silently putting an
+    EXCLUDED section back into a client report. Every field this route accepts clears the flag -- an
+    exclusion decision is a stronger statement of ownership than a rename -- which is safe because this
+    route IS the human surface (`findings_service.create_group` is what the adopt path calls).
+
+    RED on the pre-fix route for all three parameters (flag stayed True); the `order_mode` arm is why
+    the predicate lives here and not in the model: `place_finding` flips that same value for a MACHINE
+    placement, so the value alone cannot mean "a person".
+    """
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        group = _make_group(db, eng, "External", machine_authored=True)
+        group_id = group.id
+
+    resp = client.post(f"{API}/groups/{group_id}", json=body)
+    assert resp.status_code == 200, resp.get_json()
+
+    with session_factory() as db:
+        assert db.get(FindingGroup, group_id).machine_authored is False, (
+            "a human edit left the section marked 'nobody chose it' -- a destroy would discard it"
+        )
+
+
+def test_update_group_rejected_edit_does_not_claim_the_section(client, session_factory):
+    """The clearing must follow an ACCEPTED edit only. A 400 leaves the section exactly as it was --
+    a rejected request is not authorship (and must not quietly immunise a stale auto section)."""
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        group = _make_group(db, eng, "External", machine_authored=True)
+        group_id = group.id
+
+    assert client.post(f"{API}/groups/{group_id}", json={"order_mode": "by_vibes"}).status_code == 400
+
+    with session_factory() as db:
+        assert db.get(FindingGroup, group_id).machine_authored is True
+
+
 def test_update_group_rejects_empty_name(client, session_factory):
     with session_factory() as db:
         eng = _make_engagement(db)
@@ -1494,6 +1551,53 @@ def test_auto_section_unknown_scope_leaves_undecidable_findings_ungrouped(sessio
         eng = db.get(ReportBoard, eng_id)
         assert eng.groups == []
         assert db.get(BoardFinding, fid).group_id is None
+
+
+def test_auto_section_marks_a_section_it_creates_as_machine_authored(session_factory):
+    """PROVENANCE (ext#402): a section the auto-sectioner CREATES is `machine_authored` — the adopt path
+    chose it, so a destructive un-adopt may remove it once empty. No column distinguished the two before,
+    and the name does not (`External` is also the board compose form's default section type)."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Open port")
+        job_id = str(uuid.uuid7())
+        db.add(BoardFinding.from_template(tmpl, engagement_id=eng.id, target_host="8.8.8.8",
+                                          source_facts={"job_id": job_id}))
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert [(g.name, g.machine_authored) for g in eng.groups] == [("External", True)]
+
+
+def test_auto_section_reuses_a_hand_authored_section_without_marking_it(session_factory):
+    """A person can create the "External" section first (the compose form defaults that type). The
+    auto-sectioner then REUSES it — and reusing is not authority to delete: it stays unmarked, so a later
+    un-adopt that empties it must leave it alone."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Open port")
+        job_id = str(uuid.uuid7())
+        db.add(BoardFinding.from_template(tmpl, engagement_id=eng.id, target_host="8.8.8.8",
+                                          source_facts={"job_id": job_id}))
+        # What the UI's create-group route does: an operator-made section, External type, unmarked.
+        at = db.scalar(select(AssessmentType).where(AssessmentType.slug == "external"))
+        findings_service.create_group(db, eng, name="External", assessment_type=at)
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert [(g.name, g.machine_authored) for g in eng.groups] == [("External", False)]
 
 
 def test_section_type_for_finding_rules():
