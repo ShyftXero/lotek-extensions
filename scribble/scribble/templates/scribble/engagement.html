@@ -245,6 +245,19 @@
 
 <div class="scribble-fview" id="scribble-view-board" role="tabpanel" aria-label="Grouped by section">
 {% if scribble_can_write %}
+{# Select all / Select none for the board's bulk move + delete. Without it, ticking every finding meant
+   pasting a console one-liner, and the bulk bar below hides itself at zero selection, so there was no
+   visible way to CLEAR a partial selection either. Always present; the bulk bar appears once something
+   is selected. #}
+<div class="scribble-select-bar" id="scribble-select-bar">
+  <label class="scribble-select-all-label" for="scribble-select-all">
+    <input type="checkbox" id="scribble-select-all" aria-label="Select all findings on the board"
+           aria-checked="false" />
+    <span>Select all</span>
+  </label>
+  <button type="button" class="btn" id="scribble-select-none" disabled>Select none</button>
+  <span class="muted scribble-select-count" id="scribble-select-count" role="status" aria-live="polite">0 of 0 selected</span>
+</div>
 {# The multi-select bulk bar lives INSIDE the Section panel — moving a finding means changing its report
    section, which is only meaningful here; hidden automatically in the Vulnerability/Host pivots (whose
    own per-bucket "Assign all" control does the cross-axis move). #}
@@ -536,6 +549,12 @@
   .scribble-bulk-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; padding: 8px 12px;
     border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface, #12202a); font-size: 13px; }
   .scribble-bulk-bar select { font: inherit; }
+  /* Board-wide selection control: sits above the board so it is reachable with nothing selected. */
+  .scribble-select-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 8px; font-size: 13px; }
+  .scribble-select-all-label { display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer;
+    user-select: none; }
+  .scribble-select-bar #scribble-select-none { padding: 2px 9px; font-size: 12px; }
+  .scribble-select-count { font-size: 12px; }
   .scribble-finding-check { margin-right: 4px; }
   .scribble-attack-list { list-style: none; padding: 0; margin: 8px 0; }
   .scribble-attack-list li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
@@ -695,6 +714,7 @@
     });
   })();
 </script>
+<script src="{{ url_for('scribble.static', filename='select-all.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='board.js') }}"></script>
 <script src="{{ url_for('scribble.static', filename='checklists.js') }}"></script>
 {#
