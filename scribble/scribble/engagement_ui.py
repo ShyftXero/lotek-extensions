@@ -1200,10 +1200,28 @@ def register(api_bp, bp) -> None:
                 # Nothing of this engagement's came from the job and there is no link to clear.
                 return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
             removed_ids = [str(f.id) for f in doomed]
+            # #402: the sections those rows sat in, captured BEFORE they are deleted (afterwards nothing
+            # remembers which buckets the job had been poured into). Ordered, deduped.
+            touched_sections = list(dict.fromkeys(
+                f.group_id for f in doomed if f.group_id is not None
+            ))
             for finding in doomed:
                 storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
+            # #402: "An empty automatically-created section should not appear as a stale job block. Do not
+            # delete a manually authored section silently." Only a section THIS adopt created, and only
+            # once the delete above left it empty, goes — `delete_auto_section_if_empty` owns both the
+            # condition and the reason. A section still holding the other job's rows (a shared External
+            # bucket) keeps them, and the operator's own sections are never touched.
+            removed_sections = [
+                section.name
+                for section in (
+                    db.get(FindingGroup, group_id) for group_id in touched_sections
+                )
+                if section is not None and findings_service.delete_auto_section_if_empty(db, section)
+            ]
             _audit(db, "unadopt_job_destructive", subject_type="engagement", subject_id=engagement.id,
-                   before={"job_id": str(job_id), "removed_finding_ids": removed_ids})
+                   before={"job_id": str(job_id), "removed_finding_ids": removed_ids,
+                           "removed_section_names": removed_sections})
             db.commit()
         if is_source:
             host.remove_job_adoption(job_id, actor)

@@ -255,3 +255,112 @@ def test_destructive_unadopt_removes_the_jobs_coverage_note(
     assert "RCE" not in titles, "the poured finding survived"
     assert "Scan coverage: job job-x" not in titles, "the coverage note survived the destroy"
     assert titles == {"Manual note about job job-x"}, titles
+
+
+# ── the emptied section (#402: no stale auto section, never a hand-authored one) ─────────────────────
+
+def _sections(session_factory, eid) -> dict[str, fm.FindingGroup]:
+    with session_factory() as db:
+        return {g.name: g for g in db.get(fm.ReportBoard, eid).groups}
+
+
+def _put_rows_in(session_factory, eid, group_id, *, titles):
+    """Move the board rows named by ``titles`` into ``group_id`` (the operator's drag-drop effect)."""
+    with session_factory() as db:
+        eng = db.get(fm.ReportBoard, eid)
+        moved = 0
+        for finding in eng.findings:
+            if finding.title in titles:
+                finding.group_id = group_id
+                moved += 1
+        db.commit()
+        assert moved == len(titles), f"{moved} of {len(titles)} rows moved"
+
+
+def test_destructive_unadopt_removes_the_emptied_auto_section(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """#402's contract: "An empty automatically-created section should not appear as a stale job block.
+    Do not delete a manually authored section silently." — BOTH sides in one run.
+
+    The adopt path sections a job automatically, so a destroy that empties that section would otherwise
+    leave a bare "External" card on the board forever. Here the auto section holds ONLY job-x's rows and
+    is emptied by the destroy, so it must go; a hand-authored section holding a surviving finding must
+    stay. Revert `delete_auto_section_if_empty` to a no-op and the first assert goes RED; drop its
+    `machine_authored` check and the second does.
+    """
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
+           dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
+    with session_factory() as db:
+        auto = fm.FindingGroup(engagement_id=eid, name="External", order_index=0,
+                               machine_authored=True)
+        manual = fm.FindingGroup(engagement_id=eid, name="Operator Notes", order_index=1)
+        db.add_all([auto, manual])
+        db.flush()
+        auto_id, manual_id = auto.id, manual.id
+        db.add(fm.BoardFinding(engagement_id=eid, title="Operator note", severity=Severity.info,
+                              group_id=manual_id))
+        db.commit()
+    # (adopt wrote no coverage note here: it was ACKNOWLEDGED and its coverage was measured)
+    _put_rows_in(session_factory, eid, auto_id, titles=["RCE", "XSS"])
+    assert set(_sections(session_factory, eid)) == {"External", "Operator Notes"}
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "External" not in after, "the emptied auto-created section survived as a stale job block"
+    assert "Operator Notes" in after, "a hand-authored section was deleted silently"
+    with session_factory() as db:
+        assert {f.title for f in db.get(fm.ReportBoard, eid).findings} == {"Operator note"}
+
+
+def test_destructive_unadopt_keeps_an_auto_section_that_still_holds_findings(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """The two-job SHARED section: clearing job-x out of one section must not take the section (nor
+    job-y's rows in it) with it. Only an EMPTY auto section is removable."""
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    with session_factory() as db:
+        auto = fm.FindingGroup(engagement_id=eid, name="External", order_index=0,
+                               machine_authored=True)
+        db.add(auto)
+        db.flush()
+        auto_id = auto.id
+        # A row this destroy does not select, sitting in the same shared section.
+        db.add(fm.BoardFinding(engagement_id=eid, title="Other job row", severity=Severity.high,
+                              group_id=auto_id, source_finding_id=999))
+        db.commit()
+    _put_rows_in(session_factory, eid, auto_id, titles=["RCE"])
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "External" in after, "a shared section was deleted while another job's row still used it"
+    assert after["External"].machine_authored is True, "provenance was rewritten"
+    with session_factory() as db:
+        assert {f.title for f in db.get(fm.ReportBoard, eid).findings} == {"Other job row"}
+
+
+def test_destructive_unadopt_never_removes_a_hand_authored_section_even_when_emptied(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """An operator can drag an adopted row into a section THEY made. Emptying it must not delete it:
+    #402 says a manually authored section is never removed silently — "empty" alone is not consent."""
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    with session_factory() as db:
+        manual = fm.FindingGroup(engagement_id=eid, name="Client Narrative", order_index=0)
+        db.add(manual)
+        db.flush()
+        manual_id = manual.id
+        db.commit()
+    _put_rows_in(session_factory, eid, manual_id, titles=["RCE"])
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    after = _sections(session_factory, eid)
+    assert "Client Narrative" in after, "a hand-authored section was deleted because it went empty"
+    # ...and the board still renders it rather than erroring on an empty group.
+    assert client.get(f"/scribble/engagements/{eid}").status_code == 200

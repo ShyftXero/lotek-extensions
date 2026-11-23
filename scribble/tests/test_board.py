@@ -1496,6 +1496,53 @@ def test_auto_section_unknown_scope_leaves_undecidable_findings_ungrouped(sessio
         assert db.get(BoardFinding, fid).group_id is None
 
 
+def test_auto_section_marks_a_section_it_creates_as_machine_authored(session_factory):
+    """PROVENANCE (ext#402): a section the auto-sectioner CREATES is `machine_authored` — the adopt path
+    chose it, so a destructive un-adopt may remove it once empty. No column distinguished the two before,
+    and the name does not (`External` is also the board compose form's default section type)."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Open port")
+        job_id = str(uuid.uuid7())
+        db.add(BoardFinding.from_template(tmpl, engagement_id=eng.id, target_host="8.8.8.8",
+                                          source_facts={"job_id": job_id}))
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert [(g.name, g.machine_authored) for g in eng.groups] == [("External", True)]
+
+
+def test_auto_section_reuses_a_hand_authored_section_without_marking_it(session_factory):
+    """A person can create the "External" section first (the compose form defaults that type). The
+    auto-sectioner then REUSES it — and reusing is not authority to delete: it stays unmarked, so a later
+    un-adopt that empties it must leave it alone."""
+    from scribble import findings_service
+    with session_factory() as db:
+        eng = _make_engagement(db)
+        tmpl = _make_template(db, "Open port")
+        job_id = str(uuid.uuid7())
+        db.add(BoardFinding.from_template(tmpl, engagement_id=eng.id, target_host="8.8.8.8",
+                                          source_facts={"job_id": job_id}))
+        # What the UI's create-group route does: an operator-made section, External type, unmarked.
+        at = db.scalar(select(AssessmentType).where(AssessmentType.slug == "external"))
+        findings_service.create_group(db, eng, name="External", assessment_type=at)
+        db.commit()
+        eng_id = eng.id
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert findings_service.auto_section_job_findings(db, eng, job_id=job_id, scope_type="external") == 1
+        db.commit()
+    with session_factory() as db:
+        eng = db.get(ReportBoard, eng_id)
+        assert [(g.name, g.machine_authored) for g in eng.groups] == [("External", False)]
+
+
 def test_section_type_for_finding_rules():
     """The per-finding classifier (ext#346 item 2) in isolation: AD -> Internal; internal IP -> Internal;
     global IP -> External; hostname -> scope_default (possibly None)."""

@@ -28,7 +28,7 @@ import uuid
 from datetime import date
 from typing import NamedTuple
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from scribble.artifacts_api import _as_uuid  # noqa: E402 -- one shared body-id parser (lotek#335)
 from scribble.enums import (
@@ -313,14 +313,21 @@ def reorder_groups(engagement: ReportBoard, requested_order) -> list[uuid.UUID]:
     return ordered_ids
 
 
-def create_group(db, engagement: ReportBoard, *, name: str, assessment_type=None) -> FindingGroup:
+def create_group(db, engagement: ReportBoard, *, name: str, assessment_type=None,
+                 machine_authored: bool = False) -> FindingGroup:
     """Append a new ``FindingGroup`` to ``engagement`` (last position). Flushed, not committed, so the
-    caller can read the assigned PK and still roll the whole request back."""
+    caller can read the assigned PK and still roll the whole request back.
+
+    ``machine_authored=True`` records that the ADOPT path created this section and nobody chose it (see
+    ``FindingGroup.machine_authored``); every other caller — the UI's create-group route, the PAT API,
+    the demo seed — leaves the default, i.e. "a person authored this". Default-off is the conservative
+    answer: an unmarked section is never removed by a destructive un-adopt."""
     group = FindingGroup(
         engagement_id=engagement.id,
         assessment_type=assessment_type,
         name=name,
         order_index=len(engagement.groups),
+        machine_authored=machine_authored,
     )
     db.add(group)
     db.flush()
@@ -390,7 +397,13 @@ def section_type_for_finding(finding, *, scope_default: str | None = None) -> st
 
 def _find_or_create_section(db, engagement: ReportBoard, name: str) -> FindingGroup:
     """The engagement's ``FindingGroup`` for section ``name``, find-or-creating both the shared
-    ``AssessmentType`` (keyed on ``slug``) and the group. Flushed, not committed."""
+    ``AssessmentType`` (keyed on ``slug``) and the group. Flushed, not committed.
+
+    PROVENANCE (ext#402): only the CREATE branch marks the group ``machine_authored`` — this is the
+    adopt path's own section, so a destructive un-adopt may remove it once it is empty. A section that
+    already existed is REUSED and left unmarked: someone made it (possibly naming it "External" through
+    the board's own compose form, which sets the same ``assessment_type_id``), and reusing it is not
+    authority to delete it."""
     slug = name.lower()
     at = db.scalar(select(AssessmentType).where(AssessmentType.slug == slug))
     if at is None:
@@ -402,7 +415,7 @@ def _find_or_create_section(db, engagement: ReportBoard, name: str) -> FindingGr
         FindingGroup.assessment_type_id == at.id,
     ))
     if grp is None:
-        grp = create_group(db, engagement, name=name, assessment_type=at)
+        grp = create_group(db, engagement, name=name, assessment_type=at, machine_authored=True)
     return grp
 
 
@@ -457,6 +470,37 @@ def delete_group(db, group: FindingGroup) -> None:
     for finding in list(group.findings):
         finding.group_id = None
     db.delete(group)
+
+
+def delete_auto_section_if_empty(db, group: FindingGroup) -> bool:
+    """Remove ``group`` IFF the adopt path created it AND it now holds no findings; return whether it
+    went. The one place that decides "is this an empty automatically-created section" (ext#402).
+
+    Called by the destructive un-adopt after it deleted a job's rows, for every section one of those
+    rows sat in. Both conditions are REQUIRED and each rules out a documented harm:
+
+      * ``machine_authored`` false -> the section was authored by a person. #402: "Do not delete a
+        manually authored section silently." An empty hand-made section keeps showing its "Drop findings
+        here." card, which is the operator's own arrangement, not a stale job block.
+      * non-empty -> the section still holds findings this un-adopt did not remove (another job's rows,
+        a hand-authored finding, a detached child). That is the "two-job shared-section case": clearing
+        one job out of a shared section must never take the whole section with it.
+
+    Emptiness is read from the DATABASE, not from ``group.findings``: the caller deletes findings through
+    ``delete_finding`` and this may run in the same session, so a relationship collection loaded earlier
+    would be stale. The delete itself is a plain ``db.delete`` — not ``delete_group``, whose only job is
+    DETACHING findings, which cannot apply to a section proven empty here. Flushed, not committed.
+    """
+    if not getattr(group, "machine_authored", False):
+        return False
+    remaining = db.scalar(
+        select(func.count()).select_from(BoardFinding).where(BoardFinding.group_id == group.id)
+    )
+    if remaining:
+        return False
+    db.delete(group)
+    db.flush()
+    return True
 
 
 def detach_children(db, finding: BoardFinding) -> list[uuid.UUID]:
