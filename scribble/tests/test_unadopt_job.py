@@ -208,3 +208,50 @@ def test_destructive_unadopt_still_deletes_after_the_link_is_gone(
     assert _finding_ids(session_factory, eid) == set(), "the adopted block survived the destroy"
     actions = [a for a in stub_host.audit_calls if a[0] == "ext:scribble:unadopt_job_destructive"]
     assert len(actions) == 1, stub_host.audit_calls
+
+def test_the_panel_still_offers_the_destroy_after_the_link_is_gone(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """#402 review: the controls render from the LINK-derived list, so once the link is gone the operator
+    had no path to the route this PR fixes. The panel must also list jobs that still OWN rows here."""
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    # The adopt path writes the job's coverage note, which is the ONE row carrying source_job_id
+    # (coverage.py); it is what tells the panel this job still owns rows here.
+    with session_factory() as db:
+        db.add(fm.BoardFinding(engagement_id=eid, title="Scan coverage: job job-x",
+                               severity=Severity.info, source_job_id="job-x"))
+        db.commit()
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x").status_code in (302, 303)
+
+    body = client.get(f"/scribble/engagements/{eid}").get_data(as_text=True)
+    assert "/unadopt-job/job-x/destroy" in body, "no control reaches the destroy route any more"
+    assert "/unadopt-job/job-x/preview" in body
+
+def test_destructive_unadopt_removes_the_jobs_coverage_note(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """#402 review r2: the #656 coverage note is job-derived (source_job_id set, source_finding_id NULL).
+
+    Leaving it behind after the destroy says "job X was promoted into this engagement" about a board
+    whose rows are gone. It is selected by source_job_id, and an author-owned row that merely mentions
+    the job id in its TITLE must survive.
+    """
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x", dtos=[FakeFindingDTO(id=101, title="RCE")])
+    with session_factory() as db:
+        db.add(fm.BoardFinding(engagement_id=eid, title="Scan coverage: job job-x",
+                               severity=Severity.info, source_job_id="job-x"))
+        # An author row whose title mentions the job id but which carries no source id: it must survive.
+        db.add(fm.BoardFinding(engagement_id=eid, title="Manual note about job job-x",
+                               severity=Severity.info))
+        db.commit()
+
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy").status_code in (302, 303)
+
+    with session_factory() as db:
+        eng = db.get(fm.ReportBoard, eid)
+        titles = {f.title for f in eng.findings}
+    assert "RCE" not in titles, "the poured finding survived"
+    assert "Scan coverage: job job-x" not in titles, "the coverage note survived the destroy"
+    assert titles == {"Manual note about job job-x"}, titles

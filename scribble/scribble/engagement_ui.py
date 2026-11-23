@@ -66,6 +66,7 @@ from __future__ import annotations
 import io
 import json
 import uuid
+from types import SimpleNamespace
 from datetime import date
 
 from flask import abort, current_app, jsonify, redirect, render_template, request, send_file, url_for
