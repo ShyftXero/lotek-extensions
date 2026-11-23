@@ -1175,16 +1175,24 @@ def register(api_bp, bp) -> None:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
-            if not _is_source_job(engagement, job_id, actor):
-                return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
+            # #402: the reverse index (`_is_source_job`) scopes the LINK clear, never the delete. It
+            # used to gate the whole route, so after a link-only un-adopt (or an adopt that poured
+            # findings and then failed before marking the link) "Un-adopt + delete" deleted nothing
+            # and left the whole block on the board. The delete is already engagement-scoped:
+            # `enriched_findings` reads THIS board's rows, matched against this job's own finding ids.
+            is_source = _is_source_job(engagement, job_id, actor)
             doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
+            if not doomed and not is_source:
+                # Nothing of this engagement's came from the job and there is no link to clear.
+                return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
             removed_ids = [str(f.id) for f in doomed]
             for finding in doomed:
                 storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
             _audit(db, "unadopt_job_destructive", subject_type="engagement", subject_id=engagement.id,
                    before={"job_id": str(job_id), "removed_finding_ids": removed_ids})
             db.commit()
-        host.remove_job_adoption(job_id, actor)
+        if is_source:
+            host.remove_job_adoption(job_id, actor)
         for storage_path in storage_paths:
             delete_file(storage_path)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))

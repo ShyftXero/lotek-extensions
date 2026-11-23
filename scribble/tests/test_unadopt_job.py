@@ -179,3 +179,32 @@ def test_panel_renders_unadopt_controls_for_each_source_job(client, stub_host, s
     assert "/unadopt-job/job-alpha" in body                       # link-only affordance wired
     assert "/unadopt-job/job-alpha/preview" in body               # destructive preview wired
     assert "/unadopt-job/job-alpha/destroy" in body               # destructive destroy wired
+
+
+# ── (c) the destructive path does not depend on the LINK still being present (#402) ────────────────
+
+def test_destructive_unadopt_still_deletes_after_the_link_is_gone(
+    client, stub_host, session_factory, clean_vuln_map
+):
+    """#402: "Un-adopt + delete" left the whole block on the board.
+
+    `_is_source_job` (the reverse index) is about not clearing ANOTHER engagement's link. It was also
+    gating the whole route, so once the link was gone -- a prior link-only un-adopt, or an adopt that
+    poured findings and then failed before marking the link -- the destroy returned "success" having
+    deleted nothing. The delete is already engagement-scoped (enriched_findings reads THIS board's rows),
+    so the guard must scope only the link clear.
+    """
+    eid, anchor = _engagement(session_factory)
+    _adopt(client, stub_host, eid, anchor, "job-x",
+           dtos=[FakeFindingDTO(id=101, title="RCE"), FakeFindingDTO(id=102, title="XSS")])
+    # The link goes away FIRST (the operator's link-only un-adopt, or a failed adopt's aftermath).
+    assert client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x").status_code in (302, 303)
+    assert _finding_ids(session_factory, eid) == {("RCE", 101), ("XSS", 102)}
+
+    resp = client.post(f"/scribble/engagements/{eid}/unadopt-job/job-x/destroy")
+    assert resp.status_code in (302, 303), resp.data
+
+    # The block is gone: the destroy must not be a silent no-op just because the link was cleared.
+    assert _finding_ids(session_factory, eid) == set(), "the adopted block survived the destroy"
+    actions = [a for a in stub_host.audit_calls if a[0] == "ext:scribble:unadopt_job_destructive"]
+    assert len(actions) == 1, stub_host.audit_calls
