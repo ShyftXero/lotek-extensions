@@ -1039,11 +1039,16 @@ def remap_job_findings(db: Any, *, engagement: Any, job_finding_ids) -> dict:
 # ── un-adopt (#635): the inverse of promote_job — ONE home for "did job J enrich this finding" ──────
 
 
-def finding_is_enriched(finding: Any, job_finding_ids) -> bool:
+def finding_is_enriched(finding: Any, job_finding_ids, job_id: Any = None) -> bool:
     """Is ``finding`` a row a scan job POURED onto the board — i.e. one this un-adopt should remove?
 
     True iff it carries a ``source_finding_id`` (a synthesized parent write-up carries none, so it is
     author-owned content that survives an un-adopt) AND that id is one of the job's own scan-finding ids.
+
+    ALSO true for the job's COVERAGE NOTE (lotek#656): it is written by the adopt path with
+    ``source_job_id`` set and ``source_finding_id`` NULL, and its own prose says "job X was promoted into
+    this engagement". Leaving it behind says the job still fed a board whose rows are gone, so a destroy
+    that removes the findings must remove it too.
 
     THE single home for this predicate. A destructive un-adopt has two surfaces -- the PREVIEW that lists
     what would go, and the DELETE that removes it -- and they must agree exactly or the preview lies.
@@ -1051,10 +1056,17 @@ def finding_is_enriched(finding: Any, job_finding_ids) -> bool:
     delete removes" are the SAME set by construction, never two inline copies that drift. Guarded by
     ``scribble/tests/test_unadopt_single_predicate.py``.
     """
-    return finding.source_finding_id is not None and finding.source_finding_id in job_finding_ids
+    if finding.source_finding_id is not None:
+        return finding.source_finding_id in job_finding_ids
+    if job_id is None:
+        return False
+    return (
+        getattr(finding, "source_job_id", None) is not None
+        and str(finding.source_job_id) == str(job_id)
+    )
 
 
-def enriched_findings(engagement: Any, job_finding_ids) -> list:
+def enriched_findings(engagement: Any, job_finding_ids, job_id: Any = None) -> list:
     """Every ``BoardFinding`` on ``engagement`` that :func:`finding_is_enriched` selects for a job.
     The ONE caller of the predicate, shared by the un-adopt preview and the destructive delete."""
-    return [f for f in engagement.findings if finding_is_enriched(f, job_finding_ids)]
+    return [f for f in engagement.findings if finding_is_enriched(f, job_finding_ids, job_id)]

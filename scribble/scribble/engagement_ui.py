@@ -66,6 +66,7 @@ from __future__ import annotations
 import io
 import json
 import uuid
+from types import SimpleNamespace
 from datetime import date
 
 from flask import abort, current_app, jsonify, redirect, render_template, request, send_file, url_for
@@ -766,7 +767,20 @@ def register(api_bp, bp) -> None:
             # Reverse of promotion (#629): the host scan jobs whose findings were promoted INTO this
             # engagement. The host seam (`host.list_jobs`) is the ONE home for this derived view and
             # applies its own `user_can_view_job` to the session actor; [] standalone / unmounted.
-            source_jobs = host.list_jobs(engagement, current_actor())
+            source_jobs = list(host.list_jobs(engagement, current_actor()))
+            # #402: a job can still OWN rows on this board after its link was cleared (a link-only
+            # un-adopt, or an adopt that poured findings then failed before marking the link). Without an
+            # entry here, those rows have no control that reaches the destroy route, so the block stays
+            # forever. Render them as source jobs too; name falls back to the job id.
+            linked_ids = {str(j.id) for j in source_jobs}
+            orphan_ids = sorted({
+                str(f.source_job_id) for f in engagement.findings
+                if getattr(f, "source_job_id", None) is not None
+                and str(f.source_job_id) not in linked_ids
+            })
+            source_jobs += [
+                SimpleNamespace(id=jid, name=None, promoted_at=None) for jid in orphan_ids
+            ]
 
             # By-vulnerability / by-host rollups (Phase 1b, lotek #829): a re-pivot of the SAME board
             # findings through core's shared bucketer via the host seam, so an adopted job with a
@@ -1151,7 +1165,7 @@ def register(api_bp, bp) -> None:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
-            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
+            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor), job_id)
             return jsonify({
                 "job_id": str(job_id),
                 "findings": [{"id": str(f.id), "title": f.title} for f in doomed],
@@ -1175,16 +1189,24 @@ def register(api_bp, bp) -> None:
             engagement = db.get(ReportBoard, engagement_id)
             if engagement is None:
                 abort(404)
-            if not _is_source_job(engagement, job_id, actor):
+            # #402: the reverse index (`_is_source_job`) scopes the LINK clear, never the delete. It
+            # used to gate the whole route, so after a link-only un-adopt (or an adopt that poured
+            # findings and then failed before marking the link) "Un-adopt + delete" deleted nothing
+            # and left the whole block on the board. The delete is already engagement-scoped:
+            # `enriched_findings` reads THIS board's rows, matched against this job's own finding ids.
+            is_source = _is_source_job(engagement, job_id, actor)
+            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor), job_id)
+            if not doomed and not is_source:
+                # Nothing of this engagement's came from the job and there is no link to clear.
                 return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
-            doomed = enriched_findings(engagement, _job_finding_ids(job_id, actor))
             removed_ids = [str(f.id) for f in doomed]
             for finding in doomed:
                 storage_paths.extend(findings_service.delete_finding(db, finding).storage_paths)
             _audit(db, "unadopt_job_destructive", subject_type="engagement", subject_id=engagement.id,
                    before={"job_id": str(job_id), "removed_finding_ids": removed_ids})
             db.commit()
-        host.remove_job_adoption(job_id, actor)
+        if is_source:
+            host.remove_job_adoption(job_id, actor)
         for storage_path in storage_paths:
             delete_file(storage_path)
         return redirect(url_for("scribble.engagement_board", engagement_id=engagement_id))
