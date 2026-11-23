@@ -28,8 +28,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _TABLE = "scribble_findings"
-#: (column, old width, nullable) for every column that carries host-supplied text and must not be
-#: bounded. The title comes from the host finding (1024 there) and used to be VARCHAR(512) here.
+#: (column, old width, nullable) for every column that carries text a caller can make long.
+#: target_url is scanner evidence (dalfox wrote a comma-joined crawl result over 1024 chars). title is
+#: written by the operator on the finding-detail form, which has no length check; core's Finding.title is
+#: String(255), so the promotion path itself could never have overflowed the old VARCHAR(512).
 _COLUMNS: tuple[tuple[str, int, bool], ...] = (
     ("target_url", 1024, True),
     ("title", 512, False),

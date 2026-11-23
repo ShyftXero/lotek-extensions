@@ -420,13 +420,14 @@ def _bad_request(detail: str):
 # Named ``_COLUMN_``, not ``_PATCH_``: it started as a PATCH-only guard, which left the CREATE route on the
 # same blueprint writing the same columns unbounded — a 500 waiting on prod behind a green SQLite suite.
 # A cap that only one of two writers consults is not a boundary.
+#: title and target_url are deliberately ABSENT: both are Text since e9c4a2b7f310, so a cap here would
+#: refuse a value the promotion path now stores (a 1215-char URL adopted fine and then failed its own
+#: PATCH with "max 1024"). Every remaining entry still names a bounded column.
 _COLUMN_MAX_LEN = {
-    "title": 512,          # BoardFinding.title       String(512)
-    "category": 255,       # …category                     String(255)
-    "cvss_vector": 255,    # …cvss_vector                  String(255)
-    "target_host": 255,    # …target_host                  String(255)
-    "target_port": 16,     # …target_port                  String(16)
-    "target_url": 1024,    # …target_url                   String(1024)
+    "category": 255,       # ...category                   String(255)
+    "cvss_vector": 255,    # ...cvss_vector                String(255)
+    "target_host": 255,    # ...target_host                String(255)
+    "target_port": 16,     # ...target_port                String(16)
 }
 # Same-named fields on OTHER tables of this blueprint, named separately because ``name`` is three
 # different widths depending on which route is writing it (see ``_too_long``'s ``cap`` argument).

@@ -82,11 +82,15 @@ def test_a_long_finding_title_is_not_bounded_by_a_varchar():
 
 
 def test_caption_is_clipped_to_its_column():
-    """A caption is a display label: it must fit VARCHAR(255) instead of aborting the promotion."""
+    """A caption is a display label: it must fit a bounded caption column if one is ever reintroduced.
+
+    ``Artifact.caption`` is Text today (baseline migration e17599b0880a), so this guards the formatter,
+    not the current schema. The string matches what promote.py emits.
+    """
     from scribble.promote import CAPTION_MAX, _caption
 
     long_url = "https://example.test/" + "b" * 400
-    clipped = _caption(f"Scan screenshot \u2014 {long_url}")
+    clipped = _caption(f"Scan screenshot: {long_url}")
     assert len(clipped) == CAPTION_MAX
     assert clipped.endswith("\u2026")
     assert _caption("short") == "short"

@@ -459,9 +459,9 @@ class BoardFinding(Base, TimestampMixin):
     # relationship, to keep the self-ref config trivial and robust).
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
 
-    # TEXT, not VARCHAR(512): the title is carried through from the host finding, which allows 1024
-    # chars, so a longer scanner title aborted the promotion with StringDataRightTruncation (#402). A
-    # title is evidence, so widening beats silently clipping it.
+    # TEXT, not VARCHAR(512): the operator types this on the finding-detail form and nothing bounds it
+    # there. (Core's Finding.title is String(255), so the promotion path could not overflow 512 on its
+    # own; the surface that can is the form.) A title is evidence, so widening beats clipping it.
     title: Mapped[str] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(255))
     severity: Mapped[Severity] = mapped_column(Enum(Severity), default=Severity.medium)

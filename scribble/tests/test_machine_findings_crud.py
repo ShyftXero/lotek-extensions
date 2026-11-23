@@ -454,8 +454,9 @@ def test_patch_points_group_id_and_order_index_at_the_move_route(client, token, 
 
 @pytest.mark.parametrize(
     "field,cap",
-    [("title", 512), ("category", 255), ("cvss_vector", 255), ("target_host", 255),
-     ("target_port", 16), ("target_url", 1024)],
+    # title and target_url are Text since e9c4a2b7f310 and are deliberately absent here; see
+    # test_long_title_and_url_are_accepted below for the other half of that contract.
+    [("category", 255), ("cvss_vector", 255), ("target_host", 255), ("target_port", 16)],
 )
 def test_patch_refuses_a_value_that_would_overflow_its_column(client, token, session_factory, field, cap):
     """An over-long value must be a 400 at the boundary, not a 500 from the database.
@@ -479,8 +480,7 @@ def test_patch_refuses_a_value_that_would_overflow_its_column(client, token, ses
 
 @pytest.mark.parametrize(
     "field,cap",
-    [("title", 512), ("cvss_vector", 255), ("target_host", 255), ("target_port", 16),
-     ("target_url", 1024)],
+    [("cvss_vector", 255), ("target_host", 255), ("target_port", 16)],
 )
 def test_create_refuses_a_value_that_would_overflow_its_column(
     client, token, session_factory, field, cap
@@ -657,6 +657,27 @@ def test_artifact_upload_stores_a_unicode_filename_that_secure_filename_EXPANDS(
     # ENAMETOOLONG failure this guarded is structurally gone. The row still keeps the caller's name.
     assert read_evidence(app, evidence_ref) is not None
     assert stored_name.endswith(".png")
+
+
+def test_long_title_and_url_are_accepted(client, token, session_factory):
+    """The other half of the boundary: a Text column must ACCEPT a long value on both routes.
+
+    A cap that lingers after the column was widened refuses data the promotion path legitimately
+    stores (a 1215-char dalfox URL adopted fine, then failed its own PATCH with "max 1024"). Keep both
+    sides asserted so neither can drift alone.
+    """
+    eid = _engagement(session_factory)
+    long_url = "https://target.example.com/" + "a" * 4000
+    long_title = "T" * 4000
+
+    created = client.post(f"{M}/engagements/{eid}/findings",
+                          json={"title": long_title, "severity": "high", "target_url": long_url})
+    assert created.status_code == 201, created.get_json()
+    body = created.get_json()
+    fid = body.get("finding_id") or body.get("id")
+
+    patched = client.patch(f"{M}/findings/{fid}", json={"target_url": long_url + "b"})
+    assert patched.status_code == 200, patched.get_json()
 
 
 def test_group_name_that_would_overflow_its_column_is_refused(client, token, session_factory):
