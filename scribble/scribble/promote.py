@@ -118,6 +118,23 @@ def _match_title(pattern: str, title: str) -> bool:
     return fnmatch.fnmatchcase(title.lower(), pattern.lower())
 
 
+CAPTION_MAX = 255
+
+
+def _caption(text: str) -> str:
+    """Fit a derived artifact caption to the bounded caption column, if one is ever reintroduced.
+
+    A caption is a DISPLAY LABEL, not evidence: the full URL stays on the finding (``target_url``, now
+    TEXT) and in ``source_facts``. ``Artifact.caption`` is TEXT today, so this is a no-op for realistic
+    lengths; it stays as a guard because a bounded caption column aborted the whole promotion with
+    StringDataRightTruncation before (#402).
+    """
+    text = (text or "").strip()
+    if len(text) <= CAPTION_MAX:
+        return text
+    return text[: CAPTION_MAX - 1] + "\u2026"
+
+
 def resolve_vuln_template(
     db: Any, *, source: str | None, title: str | None, dedupe_key: str | None,
     tags: Any = None, cwe: str | None = None,
@@ -571,7 +588,7 @@ def _attach_scan_screenshots(db: Any, *, engagement: Any, targets: list, actor: 
                 storage_path=storage_path,
                 byte_size=size,
                 sha256=digest,
-                caption=f"Scan screenshot — {url}" if url else "Scan screenshot",
+                caption=_caption(f"Scan screenshot: {url}") if url else "Scan screenshot",
                 include_in_report=True,
                 created_by=created_by,
                 idempotency_key=key,
