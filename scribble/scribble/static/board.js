@@ -267,18 +267,55 @@
     var n = document.getElementById("scribble-bulk-n");
     if (n) n.textContent = String(ids.length);
     bar.hidden = ids.length === 0;
+    if (selCtl) selCtl.sync();  // the Select all / none control reports the same count
+  }
+
+  // Board-wide select control (static/select-all.js). One object owns the tri-state; every path that
+  // changes the selection below routes through it, so the boxes, the bulk bar and the control can never
+  // disagree. It clicks each box rather than setting .checked, which is why updateBulkBar runs for the
+  // whole batch from the change handler below.
+  var selCtl = null;
+  if (window.LotekSelectAll) {
+    selCtl = window.LotekSelectAll({
+      master: "scribble-select-all",
+      none: "scribble-select-none",
+      // "N of M selected", written by the control on every change. It is a role=status live region, so
+      // the count announces itself -- an unwritten live region is silent and reads as a broken control.
+      count: "scribble-select-count",
+      rows: function () {
+        return Array.prototype.slice.call(document.querySelectorAll(".scribble-finding-check"));
+      },
+      onAfterBatch: updateBulkBar,
+    });
+  } else {
+    // static/select-all.js did not load (bad deploy, blocked request). Never leave a checkbox that
+    // silently selects nothing: say so out loud, and take it out of the tab order.
+    if (window.console && window.console.error) {
+      window.console.error(
+        "scribble: static/select-all.js did not load -- the board's Select all control is inert."
+      );
+    }
+    var deadMaster = document.getElementById("scribble-select-all");
+    if (deadMaster) {
+      deadMaster.disabled = true;
+      deadMaster.title = "Select all is unavailable -- reload the page";
+    }
+    var deadCount = document.getElementById("scribble-select-count");
+    if (deadCount) deadCount.textContent = "Select all unavailable -- reload the page";
   }
 
   document.addEventListener("change", function (ev) {
-    if (ev.target.closest(".scribble-finding-check")) updateBulkBar();
+    if (ev.target.closest("#scribble-select-all")) return;  // the control's own handler applies it
+    if (!ev.target.closest(".scribble-finding-check")) return;
+    if (selCtl && selCtl.isApplying()) return;              // one report per batch, not one per box
+    updateBulkBar();
   });
 
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("#scribble-bulk-clear")) {
-      Array.prototype.forEach.call(
-        document.querySelectorAll(".scribble-finding-check:checked"),
-        function (cb) { cb.checked = false; }
-      );
+      // The bar's Clear and the header's Select none are the same action, and both go through the
+      // control so the tri-state and the count move with them. (Select none is wired by the helper.)
+      if (selCtl) selCtl.apply(false);
       updateBulkBar();
       return;
     }

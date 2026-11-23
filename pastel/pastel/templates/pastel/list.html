@@ -44,6 +44,8 @@
   button:hover{background:#1c3d49}
   .px-danger{color:#e0796f;border-color:#e0796f;background:transparent}
   .px-bulkbar{display:flex;align-items:center;gap:14px;margin:0 0 10px}
+  .px-bulkbar .px-none{padding:3px 10px;font-size:12px}
+  .px-bulkbar .px-none[disabled]{opacity:.5;cursor:default}
   .px-sel{margin-right:6px;vertical-align:middle}
   .px-card{border:1px solid #1c2a35;border-radius:6px;padding:10px 14px;margin:0 0 8px;background:#0e151c}
   .px-card .meta{font-size:12px;color:#8aa0b0;margin-top:3px}
@@ -109,7 +111,8 @@
     <form id="px-bulk" method="post" action="{{ url_for('pastel.bulk_delete') }}">
       {{ csrf() }}
       <div class="px-bulkbar">
-        <label class="px-muted"><input type="checkbox" id="px-all"> select all</label>
+        <label class="px-muted"><input type="checkbox" id="px-all" aria-label="Select all pastes" aria-checked="false"> Select all</label>
+        <button type="button" class="px-none" id="px-none" disabled>Select none</button>
         <button type="submit" class="px-danger">Delete selected</button>
       </div>
     {% endif %}
@@ -175,13 +178,58 @@ document.addEventListener("DOMContentLoaded", function () {
     try { localStorage.removeItem(KEY); } catch (e2) {}
   });
 
-  // Bulk select + delete on the "Your pastes" list.
+  // Bulk select + delete on the "Your pastes" list. Select all / Select none share one tri-state, held
+  // to the same contract as the shared control (core static/select-all.js, scribble static/select-all.js):
+  // a row box is CLICKED rather than assigned, so its change listener runs; `indeterminate` PLUS
+  // aria-checked reports "some but not all"; `isApplying()` lets a row listener stay quiet while a batch
+  // runs and `onAfterBatch` reports it once. Inline because Pastel ships no static asset route, so a
+  // shared file would mean adding one -- keep this in step with that file's `apply`/`sync` pair.
   var bulk = document.getElementById("px-bulk");
   if (bulk) {
     var all = document.getElementById("px-all");
-    if (all) all.addEventListener("change", function () {
-      bulk.querySelectorAll(".px-sel").forEach(function (c) { c.checked = all.checked; });
-    });
+    var none = document.getElementById("px-none");
+    var applying = false;
+    function rows() {
+      return Array.prototype.slice.call(bulk.querySelectorAll(".px-sel"))
+        .filter(function (c) { return !c.disabled; });
+    }
+    function syncAll() {
+      var boxes = rows();
+      var n = boxes.filter(function (c) { return c.checked; }).length;
+      var state = boxes.length === 0 || n === 0 ? "false" : n === boxes.length ? "true" : "mixed";
+      if (all) {
+        all.checked = state === "true";
+        all.indeterminate = state === "mixed";
+        all.setAttribute("aria-checked", state);
+        all.disabled = boxes.length === 0;
+      }
+      if (none) none.disabled = n === 0;
+      return n;
+    }
+    function applyAll(state, onAfterBatch) {
+      var changed = 0;
+      applying = true;
+      try {
+        rows().forEach(function (c) {
+          if (c.checked === state) return;   // never double-toggle a box that is already right
+          c.click();                         // flips the box AND fires its change listener
+          changed++;
+        });
+      } finally {
+        applying = false;
+      }
+      syncAll();
+      if (onAfterBatch) onAfterBatch(changed);
+      return changed;
+    }
+    function rowChanged() {
+      if (applying) return;                  // one report per batch, from onAfterBatch
+      syncAll();
+    }
+    if (all) all.addEventListener("change", function () { applyAll(all.checked); });
+    if (none) none.addEventListener("click", function () { applyAll(false); });
+    rows().forEach(function (c) { c.addEventListener("change", rowChanged); });
+    syncAll();
     bulk.addEventListener("submit", function (e) {
       var n = bulk.querySelectorAll(".px-sel:checked").length;
       if (!n) { e.preventDefault(); alert("Select at least one paste to delete."); return; }
