@@ -459,7 +459,10 @@ class BoardFinding(Base, TimestampMixin):
     # relationship, to keep the self-ref config trivial and robust).
     parent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("scribble_findings.id"), nullable=True)
 
-    title: Mapped[str] = mapped_column(String(512))
+    # TEXT, not VARCHAR(512): the title is carried through from the host finding, which allows 1024
+    # chars, so a longer scanner title aborted the promotion with StringDataRightTruncation (#402). A
+    # title is evidence, so widening beats silently clipping it.
+    title: Mapped[str] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(255))
     severity: Mapped[Severity] = mapped_column(Enum(Severity), default=Severity.medium)
     confidence: Mapped[Confidence] = mapped_column(Enum(Confidence), default=Confidence.medium)
@@ -476,7 +479,10 @@ class BoardFinding(Base, TimestampMixin):
     # Per-finding target context that feeds {{TARGET_*}} variables.
     target_host: Mapped[str | None] = mapped_column(String(255))
     target_port: Mapped[str | None] = mapped_column(String(16))
-    target_url: Mapped[str | None] = mapped_column(String(1024))
+    # TEXT, not VARCHAR(1024): a promoted finding's URL is evidence, and a tool can report one that
+    # exceeds 1024 chars (dalfox emits a comma-joined pair from a crawl). Postgres rejected the UPDATE with
+    # StringDataRightTruncation and the whole adopt returned 500 (lotek-extensions#402); SQLite hid it.
+    target_url: Mapped[str | None] = mapped_column(Text)
     # Optional link to a host ``Asset`` when mounted — ``SoftHostId`` for the SAME reason as
     # ``source_finding_id`` above: a v2 host Asset id is a UUID, and an Integer column cannot hold it.
     asset_id: Mapped[int | uuid.UUID | None] = mapped_column(SoftHostId, nullable=True)
