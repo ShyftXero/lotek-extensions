@@ -1,6 +1,8 @@
 # lotek-extensions repo rails
 
-This repo inherits the global `AGENTS.md` (`~/.pi/agent/AGENTS.md`). This file lists repo-specific rails only.
+This repo uses the global `AGENTS.md` for cross-repo rules.
+See: https://github.com/ShyftXero/lotek-cadre/blob/main/AGENTS.md
+Each host installs that file at `~/.pi/agent/AGENTS.md`. This file lists repo-specific rails only.
 
 Model pinning policy: pin Claude models to the 4.x series only. Do not pin or reference any 5.x models.
 
