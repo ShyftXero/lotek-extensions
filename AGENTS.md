@@ -1,7 +1,7 @@
 # lotek-extensions repo rails
 
 This repo uses the global `AGENTS.md` for cross-repo rules.
-See: https://github.com/ShyftXero/lotek-cadre/blob/main/AGENTS.md
+Global file: `lotek-cadre/AGENTS.md`. That repo is private, so this public repo names the path and not a URL.
 Each host installs that file at `~/.pi/agent/AGENTS.md`. This file lists repo-specific rails only.
 
 Model pinning policy: pin Claude models to the 4.x series only. Do not pin or reference any 5.x models.
@@ -116,6 +116,8 @@ Review each PR against its parent branch: `git diff <parent-branch>...HEAD`. Do 
 `.github/workflows/release-tag.yml` is the only workflow. It cuts the dated tag on merge to `main`.
 It runs no tests. This repo has no CI test gate.
 The branch ruleset requires the Plague status, per "Merge gate".
+
+Docs guard: `scripts/check_em_dash.sh` exits 1 when an em dash is in a tracked `AGENTS.md`. Run it before you push a doc change. It is a local check. It is not a workflow, so the two-workflow statement above still holds. The canonical copy is `lotek-cadre/guards/check-em-dash.sh`.
 
 ## Tests
 
