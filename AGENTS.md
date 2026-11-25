@@ -111,6 +111,11 @@ To recover, restore the base ref, reopen the PR, retarget it to `main`, then mer
 
 Review each PR against its parent branch: `git diff <parent-branch>...HEAD`. Do not review the whole stack against `main`.
 
+## CI
+
+`.github/workflows/release-tag.yml` is the only workflow. It cuts the dated tag on merge to `main`.
+The branch ruleset requires the Plague status, per "Merge gate".
+
 ## Tests
 
 Every change ships with tests that pin the behavior. A bugfix adds a test that fails before the fix and passes after it.
@@ -177,3 +182,11 @@ Extensions are pinned git dependencies. lotek installs each one from this monore
 A tag here is not a deploy. lotek deploys the extension only after lotek re-pins it and cuts a core release.
 
 Do not edit an installed copy under lotek's environment. The next `uv sync` replaces it.
+
+## Review lenses
+
+No repo lenses. The Plague defaults apply. The invariant contract is `ShyftXero/lotek` `INVARIANTS.md`.
+
+## Ownership exceptions
+
+None. The cadre roster owns every lane in this repo.
