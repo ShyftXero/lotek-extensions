@@ -1,8 +1,9 @@
 #!/bin/sh
 # check-em-dash.sh: fail when an em dash appears in a doc.
 #
-# Canonical copy: lotek-cadre/guards/check-em-dash.sh. This copy must stay
-# identical to it. Keep it in step when the canonical file changes.
+# Cadre keeps the canonical copy at lotek-cadre/guards/check-em-dash.sh. That
+# file lands with the cadre modernization PR. Until it lands, this copy is the
+# live one. Keep the two in step after the merger.
 #
 # Usage: check-em-dash.sh [path ...]
 #   No path: scan every tracked AGENTS.md in the current repo.

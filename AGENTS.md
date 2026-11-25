@@ -117,7 +117,7 @@ Review each PR against its parent branch: `git diff <parent-branch>...HEAD`. Do 
 It runs no tests. This repo has no CI test gate.
 The branch ruleset requires the Plague status, per "Merge gate".
 
-Docs guard: `scripts/check_em_dash.sh` exits 1 when an em dash is in a tracked `AGENTS.md`. Run it before you push a doc change. It is a local check. It is not a workflow, so the two-workflow statement above still holds. The canonical copy is `lotek-cadre/guards/check-em-dash.sh`.
+Docs guard: `scripts/check_em_dash.sh` exits 1 when an em dash is in a tracked `AGENTS.md`. Run it before you push a doc change. It is a local check. It is not a workflow. Cadre keeps the canonical copy at `lotek-cadre/guards/check-em-dash.sh`. That file lands with the cadre modernization PR. Until then, read this copy as the live one.
 
 ## Tests
 
