@@ -69,7 +69,7 @@ Override one command with `RAILS_OVERRIDE=1 <cmd>`. Every override is logged to 
 
 ## Review markers
 
-`gh pr create` denies while an applicable marker is missing for the current HEAD. This repo has no release step of its own, so the PR is the only gate for the extension tests.
+`gh pr create` denies while an applicable marker is missing for the current HEAD. The tag workflow runs no tests, so the PR review is the gate for the extension tests.
 
 ```sh
 /security-review
@@ -114,6 +114,7 @@ Review each PR against its parent branch: `git diff <parent-branch>...HEAD`. Do 
 ## CI
 
 `.github/workflows/release-tag.yml` is the only workflow. It cuts the dated tag on merge to `main`.
+It runs no tests. This repo has no CI test gate.
 The branch ruleset requires the Plague status, per "Merge gate".
 
 ## Tests
