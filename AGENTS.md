@@ -2,6 +2,8 @@
 
 This repo inherits the global `AGENTS.md` (`~/.pi/agent/AGENTS.md`). This file lists repo-specific rails only.
 
+Model pinning policy: pin Claude models to the 4.x series only. Do not pin or reference any 5.x models.
+
 ## Canonical sources
 
 - Ship loop: `ShyftXero/lotek-cadre` `cell/SHIP_LOOP.md`.
@@ -118,6 +120,8 @@ cd <ext> && uv run --extra dev pytest -q
 ```
 
 Prove a mounted behavior in lotek core too. An extension's real contract is how it behaves inside lotek. The mounted test lives in `lotek/tests/test_<ext>_extension.py`.
+
+Mounted tests inherit lotek's browser host guard. Do not run a browser, Playwright, e2e, or visual-verification job on a denied host. Run the heavy tiers on an hhr host. The guard is `lotek-cadre/guards/pi/browser-host-guard.ts`. The denied list is `lotek-cadre/guards/pi/denied-hosts.json`.
 
 ## Extension contract
 
