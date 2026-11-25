@@ -1,334 +1,195 @@
-# Working in this repo with Claude
+# lotek-extensions repo rails
 
-The home for lotek platform **extensions**. It adopts the [lotek](https://github.com/ShyftXero/lotek)
-framework's flow and processes. The essentials:
+This repo uses the global `AGENTS.md` for cross-repo rules.
+Global file: `lotek-cadre/AGENTS.md`. That repo is private, so this public repo names the path and not a URL.
+Each host installs that file at `~/.pi/agent/AGENTS.md`. This file lists repo-specific rails only.
 
-## One monorepo, self-contained subdirectories
+Model pinning policy: pin Claude models to the 4.x series only. Do not pin or reference any 5.x models.
 
-Each extension lives in its own subdir (`bugreport/`, `cream/`, `exploiteer/`, `registrar/`, `scribble/`,
-`vector/`), carrying its own `pyproject.toml`, `lotek-extension.toml`, and package. A change touches ONE
-extension's subdir unless it is a cross-cutting repo change (this file, CI, the plan template). Keep
-extensions independent — an extension reaches lotek only through the injected host contract, never by
-importing lotek or another extension.
+## Canonical sources
 
-### `kit/` is NOT an extension
+- Ship loop: `ShyftXero/lotek-cadre` `cell/SHIP_LOOP.md`.
+- Merge gate and rulesets: `ShyftXero/lotek-cadre` `cell/rulesets/README.md`.
+- Owned repos: `ShyftXero/lotek-cadre` `cell/owned-repos.txt`.
+- Security contract: `ShyftXero/lotek` `INVARIANTS.md`.
 
-`kit/` holds **`lotek-kit`**, a shared contract library (see `kit/README.md`). It is the one subdir with
-no `lotek-extension.toml`, no `lotek.extensions` entry point and no `register()` — lotek's discovery
-enumerates exactly that entry-point group, so their absence is what makes it structurally unmountable.
+Do not copy these files into this repo. Link to them.
 
-It exists because the rule above leaves two consumers who may not import each other with nowhere to put
-code they both need, so they copy it instead — this repo carries three hand-written drag-reorder
-implementations, and core knows the `attackpath/v1` schema id as a string literal. Core depends on the
-kit, extensions depend on the kit, and the kit depends on neither.
+## Inherited rules this repo depends on
 
-**The admission rule: something enters the kit only when two consumers that may not import each other
-both need it.** Convenience is not a reason to widen a package every consumer must install. `lotek-kit`
-carries **no runtime dependencies** (core takes it as a *base* dependency, so anything added here lands
-in lotek and in every extension downstream) and **never imports lotek or an extension**. All three
-constraints are pinned by tests in `kit/tests/`.
+- Dispatch: one shot spawns at depth 1. No fan-out. Fail fast on a dead tool or a dead path. No cross-session messaging.
+- Roster: use only the persona names in the global `AGENTS.md`. Do not invent a name.
+- Tools: every persona has `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, and the HUD tools. The front man is not denied tools.
+- Models: pin an explicit 4.x model. Never pin a 5-series model.
+- Browser work: run it on an allowed hhr node. The denied list is `lotek-cadre/guards/pi/denied-hosts.json`. The guard is `lotek-cadre/guards/pi/browser-host-guard.ts`.
+- Merge approval: a `VERDICT: ship @ <sha>` verdict on the current HEAD is approval.
+- HHR nodes: ephemeral substrate. Stage missing tools yourself. Run heavy tests on an hhr node, not a dev box.
 
-## Branch per change type — off `main` (GitHub Flow)
+## Layout
 
-Cut a **short-lived** branch off `main` (`feat/` · `fix/` · `chore/`), PR it **into `main`**, merge it,
-and let it **auto-delete** (`delete_branch_on_merge` is on). Don't pile new work onto a
-finished-but-unmerged branch. Prefix the branch with the extension when it helps: `feat/cream-pdf`.
+Each extension lives in its own subdirectory. The extensions are `bugreport/`, `cream/`, `exploiteer/`, `pastel/`, `registrar/`, `scribble/`, `sshim/`, and `vector/`.
 
-**Squash merge is DISABLED on this repository.** `gh pr merge --squash` fails with
-`GraphQL: Squash merges are not allowed on this repository`. Use `--merge` (a merge commit) or
-`--rebase`; `required_linear_history` is off, so a merge commit is permitted. Check rather than
-remember:
+Each extension carries its own `pyproject.toml`, `lotek-extension.toml`, package, tests, and lock file. A change touches one extension unless it is a cross-cutting repo change.
+
+An extension reaches lotek only through the injected host contract. Do not import lotek or another extension.
+
+`kit/` holds `lotek-kit`. It is a shared contract library, not an extension. It has no `lotek-extension.toml` and no `register()`.
+
+Admit code to the kit only when two consumers that may not import each other both need it. Convenience is not a reason. The kit has no runtime dependencies. The kit never imports lotek or an extension. `kit/tests/` pins these rules.
+
+## Worktrees and branches
+
+Use one worktree per session. Use `wt switch --create <type>/<name>`. It creates a sibling directory.
+
+Do not create worktrees under `.claude/worktrees/` or any hidden subdirectory. The pi `worktree-nudge` extension blocks those paths.
+
+Base every branch on `origin/main`. Run `git fetch origin` first.
+
+Use one of these prefixes: `feat/`, `fix/`, `chore/`, `docs/`. Put the extension name in the branch name when it helps. Example: `feat/cream-pdf`.
+
+## Commit gate
+
+Stage explicit paths. Run:
 
 ```sh
-gh api repos/ShyftXero/lotek-extensions \
-  --jq '{squash:.allow_squash_merge, merge:.allow_merge_commit, rebase:.allow_rebase_merge}'
+git add <paths>
+git commit -m "type: message"
 ```
 
-### Stacked PRs: merge order matters, and getting it wrong closes a PR
+The gate blocks `git add -A`, `git commit -a`, and a direct commit to `main`.
 
-When PR B targets PR A's branch rather than `main`:
-
-- **Merge B into A first, or omit `--delete-branch` until the stack is drained.** GitHub **closes** a PR
-  whose base branch is deleted — it does not retarget it. So `gh pr merge A --delete-branch` while B is
-  still open silently closes B.
-- **Recovering is order-forced**, because a *closed* PR cannot be retargeted and a PR with a *missing*
-  base cannot be reopened: restore the base ref (push it back — creating a ref, not a force-push) →
-  `gh pr reopen B` → `gh pr edit B --base main` → merge → delete the ref again.
-- **Prefer `--merge` over `--rebase` for the lower PR of a stack.** A merge commit keeps A's head a real
-  ancestor of `main`, so B's merge-base stays valid and B retargets cleanly showing only its own changes.
-  Rebase-merge rewrites SHAs and strands B's base, which then needs a force-push to repair — and
-  force-pushing is barred (`allow_force_pushes` is off on `main`, and agents must not force-push at all).
-- **Scope each review to the branch's own diff** (`git diff <parent-branch>...HEAD`), not
-  `git diff main...HEAD`, or B's review re-reads everything A already covered. The gate records a marker
-  against a HEAD and never inspects *what* was reviewed, so this is on you.
-
-## One working tree per session
-
-A git working tree has one shared `HEAD` and one index; two sessions in the same directory corrupt each
-other's commits. Use a worktree per session, under `.claude/worktrees/`:
+`ruff` must pass on the staged Python. `pyrefly` must pass for each touched subproject:
 
 ```sh
-git worktree add .claude/worktrees/<topic> -b <type>/<name> origin/main
+uvx ruff check <ext>
+cd <ext> && uv run --extra dev pyrefly check <files>
 ```
 
-## Agent commits carry a split identity
+Override one command with `RAILS_OVERRIDE=1 <cmd>`. Every override is logged to `<git-dir>/claude-rails-audit.jsonl`.
 
-`author` is the human who directed + approved the work; `committer` is `lotek-agent[bot]`, which typed it.
-Set it **per worktree**, never via `user.*`:
+## Review markers
 
-```sh
-git config extensions.worktreeConfig true
-git config --worktree author.name  "Eli McRae"          # + author.email
-git config --worktree committer.name "lotek-agent[bot]"  # + committer.email
-```
-
-PRs are opened with the bot's token so a PR is attributed to the agent that wrote it, not the human who
-directed it. **Until 2026-08-27 this was also load-bearing for approvals**: `main` required 1 approving
-review and GitHub forbids a PR author approving their own PR, so bot authorship was the only thing that
-let Eli approve an agent's work. Approvals on `main` are now **`0`** on this repo and on core, so nothing
-breaks if a PR is opened under human auth — keep doing it as the bot anyway, because it is what makes
-turning the requirement back on a one-field change. See ShyftXero/lotek#500.
-
-## Per-branch plan — `plans/<branch-slug>.md`
-
-Every branch carries a plan file in `plans/` (branch name, `/`→`-`), copied from `plans/TEMPLATE.md` and
-committed FIRST. Purpose · Status · Done · Remaining · Notes. It merges to `main` with the branch as a
-durable record.
-
-## Tests + lint are mandatory
-
-Every change ships with tests pinning expected behaviour; a bugfix adds a test that fails before and
-passes after. Before opening a PR, for the extension(s) you touched:
+`gh pr create` denies while an applicable marker is missing for the current HEAD. The tag workflow runs no tests, so the PR review is the gate for the extension tests.
 
 ```sh
-uvx ruff check <ext>                       # clean
-cd <ext> && python -m pytest -q            # the extension's own tests green (where present)
-```
-
-Prove a *mounted* behaviour (tenancy, the host seam) against lotek's suite too — an extension's real
-contract is how it behaves inside lotek. See the extension's coverage in
-`lotek/tests/test_<ext>_extension.py`.
-
-## The commit + PR gate
-
-A PreToolUse hook (`.claude/hooks/rails_gate.py`) gates commits AND `gh pr create` — ported from
-lotek core's `rails_gate.py` (2026-08, same author's design) so this repo enforces the same bar,
-adapted for a monorepo of four independent `uv` subprojects instead of one project:
-
-**Commit-time** (fast, runs on every `git commit`):
-- `explicit-staging` — blocks `git add -A`/`.` and `commit -a` (stage explicit paths instead).
-- `protected-branch` — refuses a commit landing directly on `main`.
-- `clean-checks` — `ruff` clean on the staged Python (one pass across all staged files; ruff's own
-  config discovery picks each file's nearest subproject `pyproject.toml`), **and now `pyrefly`
-  clean, per touched subproject** (`uv run --extra dev pyrefly check <files>`, run from that
-  subproject's own directory since each has its own venv/lock — `pyrefly`/`ruff`/`pytest` live
-  under each subproject's `[project.optional-dependencies].dev`, so `--extra dev` is required).
-  Fails OPEN (logs it) if `uv`/`pyrefly` aren't available; a real type error still denies.
-
-**PR-time** (`gh pr create` is blocked unless every APPLICABLE marker below is recorded for the
-current HEAD — there is no CI here to trust as a merge gate, so local verification before the PR
-is the real one):
-
-```sh
-/security-review                                      # review git diff main...HEAD, resolve findings
+/security-review
 python3 .claude/hooks/rails_gate.py --ack-review
-/adversarial-reviewer                                 # review git diff main...HEAD, resolve BLOCK/CONCERNS
+/adversarial-reviewer
 python3 .claude/hooks/rails_gate.py --ack-adversarial
-# run the relevant subproject suite(s): cd <ext> && uv run --extra dev pytest -q
+cd <ext> && uv run --extra dev pytest -q
 python3 .claude/hooks/rails_gate.py --ack-tests
-# only if the branch touches some subproject's tests/ — break each guard added, watch it fail, fix it
 python3 .claude/hooks/rails_gate.py --ack-transcripts
-gh pr create --base main --head <branch>              # ALL applicable markers present + current
 ```
 
-### 🔴 This repo's PR gate STAYS a gate, even as core's goes advisory (2026-09-04)
+Run `--ack-transcripts` when the branch changes a `tests/` directory.
 
-lotek core is **moving** its hard gate from `gh pr create` to **cutting a release** —
-**ShyftXero/lotek#638**, still open (draft) as of 2026-09-05. Once it lands, core's PR markers report
-and pass, while `scripts/cut-release-tag.sh` refuses to tag a commit without `--ack-tests` +
-`--ack-invariants` bound to that exact sha. **Do not mirror that here**, and the reason holds whether or
-not #638 has merged — it is structural, not a matter of timing:
+A marker binds to `git rev-parse HEAD`. A new commit voids it. Re-run and re-ack.
 
-**Extensions have no release step of their own.** They reach production only when core pins a new
-extension tag and someone cuts a *core* release — and the evidence that core release demands is
-**core's** suite and **core's** invariant contract. Neither runs `scribble/tests`, `cream/tests` or any
-sibling. So if this repo's PR gate went advisory too, an extension's own tests would be gated
-**nowhere**: advisory at the PR, absent at the release. Core can afford to loosen its PR gate precisely
-*because* #638 gives it a release gate to hand the requirement to; this repo has nothing to hand it to.
+A branch whose changed paths are all `.md` skips `--ack-tests`. It still needs both reviews.
 
-Consequences to keep straight:
+`--ack-invariants` is a pointer here, not a gate. The invariant contract and its tests live in lotek core. An `INV-...` tag must name a real entry in that file.
 
-- **`gh pr create` here still DENIES** on a missing applicable marker. That is deliberate, not lag.
-- **An extension change can reach prod without its own tests ever running in a gate** — if someone
-  overrides this gate, nothing downstream re-checks. That is the honest reason to earn the markers
-  rather than override them.
-- **A cross-repo PR needs care about WHICH hook runs.** The executing PreToolUse hook belongs to the
-  session's project directory, not to the repo you are editing: a session rooted in lotek that opens a
-  PR from an extensions worktree gets *core's* gate. **An earlier revision of this section claimed that
-  gate demands core's `--ack-invariants`, "a marker no extension diff can earn". That overstated it and
-  is corrected here.** Core's `_g_pre_pr_review` runs `_branch_is_docs_only` first, which drops BOTH
-  `--ack-tests` and `--ack-invariants` on a branch whose every changed path is `.md` — this branch's own
-  audit trail records exactly that (`pre-pr-review warn "docs-only branch: --ack-tests /
-  --ack-invariants not required"`). What core's gate still demands is `--ack-review` +
-  `--ack-adversarial`, which are repo-agnostic and **fully earnable from an extensions worktree**. So on
-  a docs-only branch `RAILS_OVERRIDE=1` is a *choice, not a necessity* — earn the two reviews instead.
-  The genuinely stuck case is a **non-docs** extension branch opened from a lotek-rooted session: core's
-  gate then does demand `--ack-invariants`, and it drops its lotek-specific markers only when
-  `R.is_submodule(cwd)` is true (via `git rev-parse --show-superproject-working-tree`), which is
-  **false** for a standalone `lotek-extensions` clone. That combination needs the override until #638
-  lands — say so in the PR when you use it.
-- If this ever *should* follow core, the missing piece is a release-time gate that runs the extensions'
-  own suites — not a matching loosening.
+## Merge gate
 
-Both `--ack-review` and `--ack-adversarial` also accept `--staged` (ack the staged tree before your
-final commit — the marker binds to `git write-tree` and survives the commit). Every marker is keyed
-to `git rev-parse HEAD` (or the staged tree for `--staged`); a further commit invalidates it and it
-must be re-acked. A branch whose every changed path is `.md` is exempt from `--ack-tests` only (not
-review/adversarial). Override any single gate with `RAILS_OVERRIDE=1 <cmd>` (logged to
-`<git-dir>/claude-rails-audit.jsonl`, same as every deny/fail-open/warn).
+A branch ruleset requires the `review/lotek-plague` status from the reviewer App. See `cell/rulesets/README.md`.
 
-**`push-identity` — PORTED (2026-08-22).** A `git push` to GitHub should authenticate as the bot, never as
-the human. Under the old regime this was a hard blocker — the human became the "last pusher" and
-`require_last_push_approval` barred their approval — but that flag and the approval requirement are both
-off since 2026-08-27, so a human-authenticated push now only misattributes the push. The
-gate denies a plain SSH push and points at `scripts/agent-push.sh` (now also present here); it recognises a
-transparent bot-auth AGENT WORKTREE (`_bot_auth_active`: lotek's `install-bot-push-auth.sh` wires an
-`includeIf` bot-auth include scoped to `…/lotek*/.git/worktrees/`, which covers this repo's worktrees too)
-and allows the plain push there. Byte-identical to lotek core's gate; its exhaustive unit tests live there.
+Merge with a merge commit:
 
-**Still not ported (deliberately):** lotek core's `branch-owner` (shared-worktree session collision guard),
-`merge-gate` (local `git merge` into main), and the `regression-test`/`ci-required-checks` soft advisories —
-add those later if this repo grows the same multi-session pressure lotek did.
-
-### Invariant divergence (intentional) — this repo has NO local invariant contract
-
-lotek core has a deterministic `INVARIANTS.md` + `pytest -m invariant` suite (~150 tagged tests) and
-a non-opt-in `--ack-invariants` gate that RUNS that suite and only records a marker if it's green.
-**This repo has no equivalent** — see "Security-invariant contract" below: the registry and its
-enforcing tests both live in lotek core, not here. Porting `--ack-invariants` as a REQUIRED
-`gh pr create` gate in this repo would fake a green check for a contract this repo cannot itself
-run. So `--ack-invariants` exists here only as a CLI (muscle-memory parity with lotek) that scans
-the four subprojects for `@pytest.mark.invariant` usage (there is none today) and logs an honest
-SKIP-with-reason to the audit trail — never a marker, never a required gate. The compensating
-control is the `invariant-pointer` gate below: a non-blocking reminder on every `gh pr create`.
-
-## Security-invariant contract lives in lotek CORE, not here
-
-The canonical security-invariant contract is lotek core's `INVARIANTS.md`
-(https://github.com/ShyftXero/lotek/blob/main/INVARIANTS.md; locally usually
-`~/Dropbox/code/lotek/INVARIANTS.md`) — this repo does not duplicate it and must not fork it.
-
-**Any extension change touching a core-reference id** (principal/client/engagement/job/finding/
-asset/object), **tenancy scoping, audit emission, or a confirm-tier verb MUST consult it first.**
-This repo's code already carries inline `INV-…` tags (`INV-EXT-*`, `INV-TENANCY-05/06`,
-`INV-INTEGRITY-03`, `INV-AUDIT-03/04`, `INV-SECRET-05`, …) — those are REFERENCES into lotek core's
-registry, not a local one. An inline `INV-…` tag that names no real entry in lotek core's
-`INVARIANTS.md` is a defect, not a stylistic choice.
-
-The `rails_gate.py` PR gate surfaces this as a lightweight, non-blocking reminder: every
-`gh pr create` gets an `additionalContext` note pointing at lotek's `INVARIANTS.md` (resolved to a
-local path if one of the usual checkout locations exists on disk, else the canonical URL) — it
-never fails or blocks if lotek core isn't present on this machine; it's a pointer, not a hard
-cross-repo dependency. See `_g_invariant_pointer` in `.claude/hooks/rails_gate.py`.
-
-## v2-native contract (every extension)
-
-- UUIDv7 surrogate PKs; cross-core refs are `sqlalchemy.Uuid` (or scribble's `SoftHostId`), **never
-  Integer/String** — see the trap below.
-- No authorization data in the extension — resolve engagement rights through the host seam
-  (`can_operate_on` / `visible_engagement_ids`), never a request body.
-- Own tables, prefixed. Confirm-tier outward actions are staged + audited server-side.
-- The `INVARIANTS.md` ratchet lives in lotek; an extension's invariants are proven by its lotek-side
-  tests (`test_<ext>_extension.py`).
-
-### 🔴 A PAT write 403s on your machine route — `g.principal` and the host seam
-
-```
-403 {"error":"forbidden","detail":"not an operator on this engagement"}
+```sh
+gh pr merge <n> --merge --match-head-commit <sha>
 ```
 
-…for a token whose user genuinely HOLDS an operator membership. Every host predicate an extension
-authorizes with — `can_operate_on`, `can_view_engagement`, `visible_engagement_ids` — resolves the caller
-from **`g.principal`** and **fails closed** when it is absent. Core's `api_v1._authenticate_pat` sets it,
-but that `before_request` fires only for `/api/v1`; an extension blueprint authenticates through
-`host_contract.pat_authenticate`, which until 2026-08-14 published only the `g.api_*` scalars. Result: a
-PAT could authenticate to `/<ext>/machine/*` and pass the scope gate, then be refused every write
-regardless of its memberships.
+The ruleset allows merge commits only. Squash and rebase are refused. Do not force-push.
 
-Fixed in lotek (`pat_authenticate` now also builds `g.principal`), but the lesson generalizes:
+Use the persona GitHub App token for a GitHub write. Do not use human auth.
 
-- **A stub host proves your logic, never the mount.** Each extension's own suite injects its own extras,
-  so a seam gap like this is invisible here and only appears MOUNTED in lotek. Always land a mounted
-  test in `lotek/tests/test_<ext>_extension.py` for anything that authorizes.
-- **This failed in the SAFE direction** (refuse, never leak), which is exactly why no test caught it.
-  A green suite is not evidence that an authorization path is reachable — assert the ALLOWED case too.
+## Stacked PRs
 
-### 🔴 `cannot cast type uuid to integer` — the core-ref column trap
+Merge the upper PR into the lower PR before you delete the lower base branch. GitHub closes a PR when its base branch is deleted. It does not retarget the PR.
 
+To recover, restore the base ref, reopen the PR, retarget it to `main`, then merge it.
+
+Review each PR against its parent branch: `git diff <parent-branch>...HEAD`. Do not review the whole stack against `main`.
+
+## CI
+
+`.github/workflows/release-tag.yml` is the only workflow. It cuts the dated tag on merge to `main`.
+It runs no tests. This repo has no CI test gate.
+The branch ruleset requires the Plague status, per "Merge gate".
+
+Docs guard: `scripts/check_em_dash.sh` exits 1 when an em dash is in a tracked `AGENTS.md`. Run it before you push a doc change. It is a local check. It is not a workflow. Cadre keeps the canonical copy at `lotek-cadre/guards/check-em-dash.sh`. That file lands with the cadre modernization PR. Until then, read this copy as the live one.
+
+## Tests
+
+Every change ships with tests that pin the behavior. A bugfix adds a test that fails before the fix and passes after it.
+
+Run the touched extension's tests in its own subproject:
+
+```sh
+cd <ext> && uv run --extra dev pytest -q
 ```
-sqlalchemy.exc.ProgrammingError: (psycopg.errors.CannotCoerce) cannot cast type uuid to integer
-```
 
-An extension column holding a **core (host) id** was declared `Integer` (or `String`). Core v2 keys every
-surrogate PK on UUIDv7, so the value is a `uuid.UUID`. This is INV-INTEGRITY-03's exact red path, and it
-bit `scribble_findings.source_finding_id` + `.asset_id` for real (fixed 2026-08-14).
+Prove a mounted behavior in lotek core too. An extension's real contract is how it behaves inside lotek. The mounted test lives in `lotek/tests/test_<ext>_extension.py`.
 
-**It hides in plain sight**: SQLite stores the value silently — only real Postgres refuses it. A green
-unit run against SQLite proves nothing about this class of bug.
+Browser host guard: when you run mounted tests in lotek, heavy UI and e2e tiers are denied on forbidden hosts by lotek's no-suite-here gate. Run them on hhr hosts. See lotek `AGENTS.md`, "Off-limits hosts". The guard is `lotek-cadre/guards/pi/browser-host-guard.ts`. The denied list is `lotek-cadre/guards/pi/denied-hosts.json`.
 
-Use `SoftHostId` (`scribble/db.py`): a TEXT-backed `TypeDecorator` that round-trips the ORIGINAL Python
-type (int for a legacy/standalone host, `uuid.UUID` for v2). There is **no** `ForeignKey` to a core table —
-the referenced table isn't known until mount time. Grep before shipping:
+## Extension contract
+
+- Use a UUIDv7 surrogate primary key.
+- Store a core reference as `sqlalchemy.Uuid`, or `SoftHostId` for a text-backed compatibility column. Never use `Integer` or `String`.
+- Keep authorization data out of the extension. Resolve engagement rights through the host seam: `can_operate_on` and `visible_engagement_ids`.
+- Prefix the extension's own tables.
+- Stage and audit a confirm-tier outward action on the server.
+
+### Authorization must pass when mounted
+
+Every host predicate reads `g.principal` and fails closed when it is absent. A stub host proves your logic. It does not prove the mount.
+
+Add a mounted test for any authorization path. Assert the allowed case as well as the refused case.
+
+### Core reference column type
+
+A core id column declared as `Integer` or `String` fails on Postgres with `cannot cast type uuid to integer`. SQLite accepts the value, so a SQLite run proves nothing.
+
+Use `SoftHostId` for a core reference. There is no `ForeignKey` to a core table, because the table is unknown until mount time.
+
+Run this check before you ship:
 
 ```sh
 grep -rnE "(_id|_by)\s*:.*mapped_column\((Integer|String)" <ext>/*/models.py
 ```
 
-Two follow-on gotchas once you change a declared type:
+`create_all` does not change the type of an existing column. Recreate or migrate the table.
 
-- **`create_all` never retrofits an existing column's type** — it only ADDS columns. Recreate the table
-  (or migrate); a pre-existing table keeps the old native INTEGER and keeps failing.
-- **A non-editable `uv` path install is cached by version** — after editing source, `uv sync` reports
-  "Audited" and does NOT rebuild. Force it: `uv sync --reinstall-package <ext>`.
+A non-editable `uv` path install is cached by version. Force a rebuild with `uv sync --reinstall-package <ext>`.
 
-### 🔴 Developing against a local checkout: non-editable path sources only
+### Local checkout for development
 
-An extension mounts only if the host can read its `lotek-extension.toml` via
-`importlib.resources.files("<pkg>")` — and that file is copied into the package by hatch
-`force-include` **at wheel-build time**. An `editable = true` path install skips the build, so the
-manifest is absent, `discover_extensions` **silently skips the extension**, and nothing mounts (the entry
-point still resolves and `import <pkg>` still works, which makes this baffling to debug — discovery
-swallows every exception by design). In lotek's `[tool.uv.sources]`, for local dev:
+Use a non-editable path source in lotek's `[tool.uv.sources]`:
 
 ```toml
-scribble = { path = "../lotek-extensions/scribble" }   # NOT editable = true
+scribble = { path = "../lotek-extensions/scribble" }
 ```
 
-Revert the override and re-sync to the **released tag** before the final gate run, or the suite proves
-unreleased code.
+Do not set `editable = true`. An editable install skips the wheel build, so `lotek-extension.toml` is absent and discovery silently skips the extension.
 
-## Shipping a change back to lotek (pinned git deps — vendoring is retired)
+Revert the override and sync the released tag before the final gate run.
 
-Extensions are **no longer vendored** into lotek. lotek installs each as a **pinned git dependency** from
-this public monorepo (one subdirectory per extension), discovers it via the `lotek.extensions` entry point,
-and reads its metadata from the wheel-shipped `lotek-extension.toml`. There is no vendored tree and no
-`stage-extension.sh`. To ship a change:
+## Shipping to lotek
 
-1. **Land it here.** PR the extension's subdir into `main` and merge it (see the merge-method note above
-   — **not** `--squash`). On merge, `.github/workflows/release-tag.yml` **currently still auto-cuts** the
-   dated release tag `v<YYYY.M.D.HHMMSS+g<sha>>` (committer date + short hash, via `scripts/build_id.py`) —
-   the same shape core's deploy loop selects — **so do NOT also cut it by hand**: you'd race the workflow
-   (its "skip if the tag exists" guard mostly absorbs a collision, but don't rely on that). **This repo is
-   migrating off GitHub Actions** onto a non-GitHub CI/CD (planned, not yet active); once Actions is retired
-   here, cut the tag manually instead —
-   `tag="$(python3 scripts/build_id.py)"; git tag -a "$tag" -m "Release $tag"; git push origin "$tag"`
-   (optionally `gh release create "$tag" --title "$tag" --generate-notes`). Either way the merge gate is the
-   reviewer / Plague verdict, not the tag. **A tag here is not a deploy** — it only gives lotek something to
-   pin. Nothing reaches an environment until lotek is re-pinned (step 2) and lotek cuts its own release.
-2. **Re-pin in lotek.** Bump that extension's `tag = "…"` under `[tool.uv.sources]` in lotek's
-   `pyproject.toml`, then `uv lock --upgrade-package <ext>` + `uv sync --extra extensions`, run the mounted
-   tests (`tests/test_<ext>_*`, `test_extension_nav`), and PR into lotek `main`.
+Extensions are pinned git dependencies. lotek installs each one from this monorepo by tag. Vendoring is retired.
 
-Never hand-edit an installed copy under lotek's environment — it is replaced on the next `uv sync`.
-See `README.md` ("How lotek consumes these") for the consumer side, and the runtime loader in lotek's
-`src/app/extensions.py`.
+1. Merge the extension change here. `.github/workflows/release-tag.yml` cuts a dated tag `v<YYYY.M.D.HHMMSS+g<sha>>` on merge. Do not cut the tag by hand.
+2. Re-pin the extension in lotek. Update `tag = "..."` under `[tool.uv.sources]` in lotek's `pyproject.toml`. Run `uv lock --upgrade-package <ext>` and `uv sync --extra extensions`. Run the mounted tests.
+
+A tag here is not a deploy. lotek deploys the extension only after lotek re-pins it and cuts a core release.
+
+Do not edit an installed copy under lotek's environment. The next `uv sync` replaces it.
+
+## Review lenses
+
+No repo lenses. The Plague defaults apply. The invariant contract is `ShyftXero/lotek` `INVARIANTS.md`.
+
+## Ownership exceptions
+
+None. The cadre roster owns every lane in this repo.
