@@ -90,7 +90,7 @@ surprise re-skin the "bundled always wins" policy exists to prevent.
 
 ## Error surfacing
 
-``CLAUDE.md`` records a real incident: lotek's own extension discovery swallows every exception by
+``AGENTS.md`` records a real incident: lotek's own extension discovery swallows every exception by
 design, which once made a genuine mounting bug ("a PAT write 403s") baffling to debug because nothing
 said an extension had failed to load at all. This module does the opposite on purpose — a broken
 installed Theme (an import error in the package, a malformed entry point, a target that is not

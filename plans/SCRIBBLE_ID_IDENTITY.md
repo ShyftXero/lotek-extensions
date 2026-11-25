@@ -28,7 +28,7 @@ write, as a *numeric value out of range* from the database (Postgres `int4` tops
 sees names arithmetic, not identity, and points at the database rather than at the seam that mangled the
 value — verified 2026-08-15, not inferred.
 
-`CLAUDE.md` opens the v2-native contract for every extension with "UUIDv7 surrogate PKs". The host seam
+`AGENTS.md` opens the v2-native contract for every extension with "UUIDv7 surrogate PKs". The host seam
 that records a promotion accepts an int only. **The documented contract is unimplementable, as written,
 for any extension that promotes a job** — including a hypothetical new one built to spec on day one.
 
@@ -124,4 +124,4 @@ in days rather than hours — so it deserves an explicit yes, not a drift into i
 
 - `plans/fix-scribble-softhostid-retrofit.md` — the 500 that started this; same root family (a core id
   shape meeting a column or a parser that assumes `int`).
-- `CLAUDE.md` §"v2-native contract" and §"the core-ref column trap".
+- `AGENTS.md` §"v2-native contract" and §"the core-ref column trap".

@@ -41,7 +41,7 @@ view."*
 
 ## Remaining
 - [ ] **owed, not blocking:** one run of the mounted panel against **lotek's real `base.html` +
-      `styles.css`** on the lotek side, at the extension-pin bump (the extensions CLAUDE.md rule "prove
+      `styles.css`** on the lotek side, at the extension-pin bump (the extensions AGENTS.md rule "prove
       a mounted behaviour against lotek's suite too"). The round-2 reviewer did exactly this by hand and
       it passed, and this branch's new `mounted_panel_page` lane covers the panel-supplies-its-own-layout
       half — neither is the lotek-side run the rule asks for.

@@ -36,7 +36,7 @@ Both facts below were measured, not assumed, and both eliminate the obvious alte
 - [x] `kit/lotek_kit/assets.py` — stdlib asset accessor
 - [x] `kit/tests/` — 44 tests, all green
 - [x] `.claude/hooks/rails_gate.py` `_SUBPROJECTS` += `"kit"`
-- [x] `CLAUDE.md` + `kit/README.md`: `kit/` is not an extension
+- [x] `AGENTS.md` + `kit/README.md`: `kit/` is not an extension
 - [x] Verified end to end: `uv sync` installs `lotek-kit==2026.9.3.40038+ga467191` (the dated build id
       with HEAD's short hash), `uv build --wheel` ships `lotek_kit/static/` as package data with no
       `force-include`, ruff clean, pyrefly 0 errors
@@ -63,7 +63,7 @@ Nothing on this branch. Stacked follow-ups, in order:
   enumerates only that entry-point group (`lotek:src/app/extensions.py:361,418`), so their absence is
   what makes the kit structurally unmountable. A guard test pins this.
 - **`static/` lives INSIDE `lotek_kit/`, never at the project root behind `force-include`.** That is
-  what dodges the trap in CLAUDE.md where an editable path install skips the wheel build and the
+  what dodges the trap in AGENTS.md where an editable path install skips the wheel build and the
   force-included file is silently absent at runtime.
 - **The schema id rename is NOT in this PR.** `attackpath/v1` can only replace `vector.attackpath/v1`
   once vector is gone (#159) — until then the mounted vector normalizer re-stamps the old id at

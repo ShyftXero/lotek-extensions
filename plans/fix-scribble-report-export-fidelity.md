@@ -225,7 +225,7 @@ special at the parser) and the `isinstance(raw_meta, dict)` guard. Both now have
   `vector/render.py::json_for_script`), so there is no `</script>` inside it and three LINEAR `str.find`
   scans + `json.loads` are a complete, deterministic extraction. (This started as a non-greedy regex; that
   regex was quadratic in `embed_html` — the ReDoS finding recorded above — and was replaced.) scribble does **not** import vector (extensions
-  are independent — CLAUDE.md); it reads a JSON blob out of a snapshot it already stores, and treats it
+  are independent — AGENTS.md); it reads a JSON blob out of a snapshot it already stores, and treats it
   as untrusted (every field is coerced/capped on the way out).
 - **Figure numbers are assigned in `context.py`, not in either renderer.** That is the only way "the
   numbering is identical in HTML and DOCX" can be structurally true rather than a coincidence two

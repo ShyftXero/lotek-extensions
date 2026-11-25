@@ -16,7 +16,7 @@ templates, list/resume engagements, and render the deliverable over the API.
 - [x] `GET /machine/engagements` (list) + `GET /machine/engagements/{id}`.
 - [x] `GET /machine/engagements/{id}/report?format=html|docx` — read scope, `can_view_engagement`, audit read event. NO pdf.
 - [x] scribble + cream creates wrapped in the host `idempotent` seam — including the `template_id` branch of `add_finding`, which returned in-session and so silently minted duplicates on a keyed retry (it has no natural dedup key, unlike the `lotek_finding_id` branch's `source_finding_id`).
-- [x] **`source_finding_id` / `asset_id`: `Integer` → `SoftHostId`** — they hold CORE ids, which are UUIDs on v2. See the CLAUDE.md section this branch added.
+- [x] **`source_finding_id` / `asset_id`: `Integer` → `SoftHostId`** — they hold CORE ids, which are UUIDs on v2. See the AGENTS.md section this branch added.
 - [x] Tests green: sanitizer 16, cream idempotency 6; full mounted lifecycle passes in lotek.
 
 ## Remaining

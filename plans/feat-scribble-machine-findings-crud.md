@@ -446,7 +446,7 @@ cannot be fixed from this repo. The branch introduces no regression; it adds ins
   upload path too — and the 222 API cap stays as the fast 400. See round 2, finding 5.
 - Anything mounted. Each extension's suite injects its own stub host, so the seam gap class
   (`g.principal`) is invisible here by construction — a mounted test in lotek's
-  `tests/test_scribble_*` is still owed by whoever re-pins the extension, per CLAUDE.md.
+  `tests/test_scribble_*` is still owed by whoever re-pins the extension, per AGENTS.md.
 
 ## Red-then-green
 
@@ -1016,7 +1016,7 @@ pins the number. Added as `test_artifact_upload_accepts_a_filename_AT_the_cap`. 
 is a boundary test in name only.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->
 
 ## Red-then-green — review round 2

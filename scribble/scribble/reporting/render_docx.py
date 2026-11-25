@@ -597,7 +597,7 @@ def _diagram_model(embed_html: str | None, budget: list[int] | None = None) -> d
     """The ``vector.attackpath/v1`` document carried inside a stored snapshot, or ``None``.
 
     Reads a JSON blob out of HTML scribble already stores -- it does not import vector (extensions stay
-    independent -- CLAUDE.md) and does not execute anything. Never raises: a snapshot that is not
+    independent -- AGENTS.md) and does not execute anything. Never raises: a snapshot that is not
     vector's, is truncated, or is not JSON degrades to ``None`` and the caller still emits the section
     heading + caption, so the diagram is never silently absent."""
     if not embed_html or len(embed_html) > _MAX_DIAGRAM_SCAN_CHARS:

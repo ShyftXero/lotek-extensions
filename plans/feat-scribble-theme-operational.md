@@ -45,7 +45,7 @@ installed through the `scribble.report_themes` entry point. See "Why the brand i
       counts as delivery (first export? every export? an explicit action?). A snapshot taken at the
       wrong moment is worse than none. This is the one piece that does not retrofit cleanly.
 - [ ] **#109 acceptance, the mounted half.** The engine is proven against a real install (above), but
-      CLAUDE.md is explicit that a stub host proves logic and never the mount — the override CRUD
+      AGENTS.md is explicit that a stub host proves logic and never the mount — the override CRUD
       authorizes, so it needs a test in lotek's `tests/test_scribble_*`.
 - [ ] Re-pin scribble in lotek and run the mounted suite.
 - [ ] #107 brand sign-off on the two PROPOSED severity values.
@@ -86,7 +86,7 @@ inside `@media screen`. Do not "fix" the code to match that paragraph; fix the p
 is the guard. An earlier cut of `theme_css` carried "brand identity" tokens to paper automatically and
 that test caught the dark theme's screen orange printing over the paper ramp.
 
-**A stub host proves logic, never the mount** (CLAUDE.md). Anything touching authz — and the override
+**A stub host proves logic, never the mount** (AGENTS.md). Anything touching authz — and the override
 CRUD does — needs a mounted test in lotek's `tests/test_scribble_*`.
 
 **GPG signing** is on globally and pinentry cannot prompt in this environment; the brand repo has

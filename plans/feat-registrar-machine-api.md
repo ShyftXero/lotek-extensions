@@ -57,5 +57,5 @@ machine API.
   regression from this port.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->

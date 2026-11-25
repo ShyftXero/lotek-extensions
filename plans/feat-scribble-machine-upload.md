@@ -86,5 +86,5 @@ preflight block, watching the test fail with exactly that 400, and restoring it.
 - `scribble/lotek-extension.toml` already declares `[host] machine_prefix`, so no manifest change.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->

@@ -9,13 +9,13 @@
 lotek core is moving its hard gate from `gh pr create` to cutting a release
 (**ShyftXero/lotek#638**, branch `chore/rails-release-gate`, opened 2026-09-04, on Eli's directive:
 *"the new gate for the project is cutting a release. prs want tests but can be flexible."*) — **still
-open as a draft as of 2026-09-05**. This repo's `CLAUDE.md` describes its own PR gate as
+open as a draft as of 2026-09-05**. This repo's `AGENTS.md` describes its own PR gate as
 "the real one", which is still true **here** — and the reason it is still true is worth writing down,
 because the obvious next move (mirror core, loosen this gate too) would be wrong.
 
 ## Done
 
-- [x] `CLAUDE.md`: a section explaining why this repo's PR gate stays a gate — extensions have no
+- [x] `AGENTS.md`: a section explaining why this repo's PR gate stays a gate — extensions have no
       release step of their own, so there is nothing to hand the requirement to. Core's release
       evidence is core's suite + core's invariant contract, and neither runs an extension's tests.
 - [x] Recorded the cross-repo hook subtlety: the executing hook belongs to the *session's* project
@@ -38,7 +38,7 @@ because the obvious next move (mirror core, loosen this gate too) would be wrong
       `.git/claude-rails-audit.jsonl` shows `pre-pr-review warn "docs-only branch: --ack-tests /
       --ack-invariants not required"` immediately before `override "bypassed via RAILS_OVERRIDE=1"`.
       What the override actually bypassed was `--ack-review` + `--ack-adversarial`, which are
-      repo-agnostic and earnable here. CLAUDE.md now says so plainly and flags the earlier text as an
+      repo-agnostic and earnable here. AGENTS.md now says so plainly and flags the earlier text as an
       overstatement rather than silently editing it.
 - [x] **Earned the two markers** rather than leaving the override standing: reviewed the branch diff
       (2 markdown files, 67 added lines) for security and adversarially, then recorded `--ack-review`
@@ -56,8 +56,8 @@ because the obvious next move (mirror core, loosen this gate too) would be wrong
 - Security review of the diff: the change adds only prose to two `.md` files. No code, no hook, no
   workflow, no dependency, no credential, no URL beyond `ShyftXero/lotek#638` and the existing PR link.
   Nothing here is executed by anything; `.claude/hooks/rails_gate.py` is untouched (`git diff
-  origin/main...HEAD --name-only` is exactly `CLAUDE.md` + `plans/docs-rails-release-gate-note.md`).
-  The one security-relevant property of a docs change to `CLAUDE.md` is that it *instructs future
+  origin/main...HEAD --name-only` is exactly `AGENTS.md` + `plans/docs-rails-release-gate-note.md`).
+  The one security-relevant property of a docs change to `AGENTS.md` is that it *instructs future
   agents* — and the correction moves in the safe direction: it removes a false justification for
   `RAILS_OVERRIDE=1` and tells the reader to earn the markers instead.
 - The alternative shape — mirror core and let extension tests be advisory at the PR — is deliberately

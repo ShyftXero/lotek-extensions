@@ -12,7 +12,7 @@ stranded fix that exists — the **UUIDv7 alignment of `vector`** — back into 
 lost on the cutover.
 
 Vector's models/routes/actor-id still used **Integer** PKs and `int`-guarded actor ids here, which also
-**violates this repo's own documented v2-native contract** (CLAUDE.md: "UUIDv7 surrogate PKs; cross-core
+**violates this repo's own documented v2-native contract** (AGENTS.md: "UUIDv7 surrogate PKs; cross-core
 refs are `sqlalchemy.Uuid`, never Integer/String"). lotek's core keys `User`/`Client`/`Job` on UUIDv7, so
 the old `isinstance(ident, int)` guard in `current_actor_id()` returned `None` for every mounted diagram —
 a silent owner-scope loss (`owner_id == None` reads as universally visible). This is the security-relevant

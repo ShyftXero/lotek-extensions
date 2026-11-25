@@ -185,7 +185,7 @@ def _parse_or_none(name: str, load: Callable[[], str | None], provenance: str) -
     Every one of those paths logs. Degrading safely and degrading silently are different decisions, and
     only the first is wanted: a Theme that fails here still renders a perfectly clean report, just an
     UNBRANDED one, so without a log the single artifact this feature exists to produce reaches a client
-    looking wrong with nothing anywhere to say why. ``CLAUDE.md`` records how baffling lotek's
+    looking wrong with nothing anywhere to say why. ``AGENTS.md`` records how baffling lotek's
     swallow-everything extension discovery made a real bug, and INV-EXT-05 requires a denial to be loud.
     """
     try:
