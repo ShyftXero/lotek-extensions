@@ -6,7 +6,7 @@
 
 Required approving reviews on `main` were dropped from `1` to `0` on **this repo and
 core** on 2026-08-27, at Eli's direction, while testing and the rails are being
-overhauled. This branch makes this repo's `CLAUDE.md` describe what is now true.
+overhauled. This branch makes this repo's `AGENTS.md` describe what is now true.
 
 Companion to ShyftXero/lotek#501. Tracking issue: ShyftXero/lotek#500.
 
@@ -41,9 +41,9 @@ returns only this branch's own past-tense sentence.
 
 ## Done
 
-- `CLAUDE.md` — the bot-PR-authorship rationale (now about attribution, with the
+- `AGENTS.md` — the bot-PR-authorship rationale (now about attribution, with the
   approval history recorded rather than deleted).
-- `CLAUDE.md` — the `push-identity` gate description (a human-authenticated push no
+- `AGENTS.md` — the `push-identity` gate description (a human-authenticated push no
   longer bars an approval; it only misattributes).
 
 ## Remaining — knowingly deferred
@@ -68,4 +68,4 @@ still the right default for attribution.
 - The `push-identity` gate itself is **unchanged and still active**. Only its stated
   justification moved; it is still the right default, now for attribution rather than
   to keep an approval legal.
-- Restoring the gate is one field — see the command in core's `CLAUDE.md` gates table.
+- Restoring the gate is one field — see the command in core's `AGENTS.md` gates table.

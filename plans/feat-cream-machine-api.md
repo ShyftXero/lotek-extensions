@@ -64,5 +64,5 @@ Finalization stays human-only: this surface exposes DRAFTING only, with **no `/i
   already carries a working copy of this code, so no re-vendor follows this merge.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->

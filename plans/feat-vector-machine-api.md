@@ -56,7 +56,7 @@ This branch therefore **adapts** `api_pat.py` to `<int:diagram_id>`, matching th
 schema, seed, browser API, blueprint, standalone and existing rows — and does not belong in an API port.
 
 ### Known limitation this port INHERITS (not a regression)
-CLAUDE.md's v2 contract requires UUIDv7 PKs, and lotek's core `User.id` **is** a UUID. Because this repo's
+AGENTS.md's v2 contract requires UUIDv7 PKs, and lotek's core `User.id` **is** a UUID. Because this repo's
 `Diagram.owner_id` is still `Integer`, a mounted vector cannot store a real lotek user id — today's
 *browser* surface has exactly the same problem (`deps.current_actor_id()` returns `None` for a
 `uuid.UUID`, so every mounted diagram is already unattributed). The machine API is written to degrade the
@@ -77,5 +77,5 @@ which is the pre-existing mounted behaviour and not something this branch introd
   it; the PAT stubs follow that same pattern (`app.pat`).
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->

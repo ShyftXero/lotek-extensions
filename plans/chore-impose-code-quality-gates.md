@@ -38,7 +38,7 @@ enforces the same bar: lint+type clean at commit time, and a reviewed/tested/tra
       pointing at lotek core's `INVARIANTS.md` (resolves a local path if one of the usual checkout
       locations exists — it found `~/Dropbox/code/lotek/INVARIANTS.md` on this machine — else the
       canonical GitHub URL). Fails soft/open if lotek core isn't present; never a hard dependency.
-- [x] CLAUDE.md updated: "The commit + PR gate" section rewritten (gate list, marker workflow, what
+- [x] AGENTS.md updated: "The commit + PR gate" section rewritten (gate list, marker workflow, what
       was NOT ported and why), "Invariant divergence" explained, and a new "Security-invariant
       contract lives in lotek CORE, not here" section making the INVARIANTS.md pointer explicit —
       including the rule that every inline `INV-…` tag in this repo's code must name a REAL entry
@@ -73,7 +73,7 @@ enforces the same bar: lint+type clean at commit time, and a reviewed/tested/tra
   under `[project.optional-dependencies].dev`, NOT `[dependency-groups]`, so a bare `uv run pyrefly
   check` in a fresh worktree/venv fails with `Failed to spawn: pyrefly` (not installed). Found this
   by actually running it in the fresh `.claude/worktrees` venv, not by reading the pyproject and
-  assuming. Fixed in the gate code + CLAUDE.md examples.
+  assuming. Fixed in the gate code + AGENTS.md examples.
 - **pyrefly's "basic" preset does not flag every return-type mismatch** (e.g. `def f(x: int) -> str:
   return x` passed with 0 errors) — don't assume a narrow annotation mismatch alone proves the gate
   is wired; the red-then-green proof in this plan used a `missing-import` + `unknown-name` error,

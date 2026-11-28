@@ -863,5 +863,5 @@ upload SUCCEEDS, and the ordering case fails because the status is 400 rather th
 against the pre-fix build.
 
 <!-- Lifecycle: create + commit this FIRST thing when cutting the branch; keep it current; KEEP it —
-     it merges to main with the branch as a durable record (since 2026-07-28; see CLAUDE.md
+     it merges to main with the branch as a durable record (since 2026-07-28; see AGENTS.md
      "Per-branch plan"). -->

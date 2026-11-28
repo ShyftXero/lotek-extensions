@@ -1,6 +1,6 @@
 """The ONE home for diagram tenancy — visibility + write authorization (lotek#585, INV-TENANCY-05).
 
-Both surfaces route through here so the two cannot drift (CLAUDE.md "one derived-state predicate, one
+Both surfaces route through here so the two cannot drift (AGENTS.md "one derived-state predicate, one
 home"): the cookie blueprint (``blueprint.py`` / ``api.py``, principal = the browser-session user) and the
 PAT machine API (``api_pat.py``, principal = the bearer token). They differ only in how they resolve the
 actor's ``(is_admin, owner_id)``; they pass it in, and the ENGAGEMENT predicates below ask the host about

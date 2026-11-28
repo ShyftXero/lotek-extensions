@@ -87,7 +87,7 @@ ADVERSARIAL_MARKER_BASENAME = "claude-adversarial-review.json"
 TRANSCRIPTS_MARKER_BASENAME = "claude-guard-transcripts.json"
 
 # The independent uv subprojects. A staged path's first component identifies which one owns it (or
-# None for a repo-level path like CLAUDE.md, scripts/, .github/, plans/).
+# None for a repo-level path like AGENTS.md, scripts/, .github/, plans/).
 #
 # `kit` is NOT an extension — it is the shared contract library (see kit/README.md) — but it is a
 # subproject in every sense this gate cares about: its own pyproject.toml, its own venv and lock, its
@@ -528,7 +528,7 @@ def _g_clean_checks(ctx: Ctx) -> Verdict:
             # sandbox. Fall back to `uv run` only when the venv has no pyrefly yet. Each subproject
             # declares `pyrefly`/`ruff`/`pytest` under `[project.optional-dependencies].dev`, NOT
             # `[dependency-groups]` — so `uv run` does not pull them in by default; `--extra dev` is
-            # required (same reason lotek's own CLAUDE.md calls out `--extra extensions` when
+            # required (same reason lotek's own AGENTS.md calls out `--extra extensions` when
             # consuming these packages from the other side).
             venv_pyrefly = os.path.join(sub_dir, ".venv", "bin", "pyrefly")
             if os.access(venv_pyrefly, os.X_OK):

@@ -17,7 +17,7 @@ loader later, reusing the same TOML schema and the pure ``_parse_theme_toml`` be
 
 ## The force-include trap this module deliberately AVOIDS
 
-``CLAUDE.md`` documents a real trap in this repo: ``lotek-extension.toml`` and ``docs/SCRIBBLE.md``
+``AGENTS.md`` documents a real trap in this repo: ``lotek-extension.toml`` and ``docs/SCRIBBLE.md``
 live at the REPO ROOT, outside ``[tool.hatch.build.targets.wheel] packages = ["scribble"]``, so
 hatchling's default wheel build never sees them — they need an explicit ``force-include`` stanza to be
 copied INTO the built wheel, or the mount manifest is silently absent and extension discovery (which
@@ -43,7 +43,7 @@ no-op-today stanza would be::
 (PEP 420), which ``importlib.resources.files("scribble.report_themes")`` resolves correctly — verified
 against this checkout's own editable dev install, which is the same API path a real zipimport wheel
 uses. This module reads exclusively through ``importlib.resources``, never ``__file__`` arithmetic, for
-exactly the reason ``CLAUDE.md`` calls out: ``__file__``-relative paths break under zipimport, and a
+exactly the reason ``AGENTS.md`` calls out: ``__file__``-relative paths break under zipimport, and a
 broken loader here would fail exactly as silently as a missing force-include — the Theme just wouldn't
 exist at runtime, with nothing in the logs pointing at why.
 

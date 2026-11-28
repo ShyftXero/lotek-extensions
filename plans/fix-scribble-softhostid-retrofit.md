@@ -22,7 +22,7 @@ integer column **even when the value is NULL**. Every insert into that table fai
 template instantiation, promote, dashboard, all of it. `SELECT count(*) FROM scribble_findings` on prod
 was **0** — the feature had never once worked there.
 
-CLAUDE.md already documented this trap and prescribed a manual `ALTER TABLE`. Nobody ran it for these
+AGENTS.md already documented this trap and prescribed a manual `ALTER TABLE`. Nobody ran it for these
 two columns, because "which columns are SoftHostId" was carried in someone's head. This branch makes
 `create_all` do it.
 

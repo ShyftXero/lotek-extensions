@@ -34,7 +34,7 @@ report board (silent tenancy mix; INV-INPUT/tenancy). Core engagement is the aut
       409 + `assert_promote_anchor` unit) — in progress (worker).
 - [ ] `uvx ruff check` + per-subproject `uv run --extra dev pyrefly check` clean.
 - [ ] `/security-review` + `/adversarial-reviewer` → `--ack-review` / `--ack-adversarial` (cross-repo: core's
-      gate fires from this lotek-rooted session — expect `RAILS_OVERRIDE=1` on the ext PR per ext CLAUDE.md).
+      gate fires from this lotek-rooted session — expect `RAILS_OVERRIDE=1` on the ext PR per ext AGENTS.md).
 - [ ] `--ack-tests` after `cd scribble && uv run --extra dev pytest -q` green.
 - [ ] PR (bot-authored) `Refs ShyftXero/lotek#845`, then self-merge → ext auto-cuts a release tag.
 - [ ] Hand the new ext tag to the #845-core re-pin (CONTEXT.md disambiguation optional — the rename covers it).

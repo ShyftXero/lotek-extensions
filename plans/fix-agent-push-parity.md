@@ -16,7 +16,7 @@ WORKTREE pushes here are already covered by the shared `~/.config/git/lotek-bot.
 - **`push-identity` gate** ported into `.claude/hooks/rails_gate.py` (`_push_args`, `_push_remote`,
   `_bot_auth_active`, `_g_push_identity`; registered in `GATES`). Byte-identical to lotek's. Denies a plain
   SSH push, allows an explicit token remote AND a transparent bot-auth worktree (`_bot_auth_active`).
-- **`CLAUDE.md`**: moved `push-identity` from "not ported" to "PORTED".
+- **`AGENTS.md`**: moved `push-identity` from "not ported" to "PORTED".
 - Verified: `py_compile` OK, `ruff` clean, and a functional smoke (`ext_gate_smoke.py`) — deny SSH-no-botauth,
   allow explicit-token, allow bot-auth-config, deny half-config (insteadOf without a bot helper): all pass.
 
